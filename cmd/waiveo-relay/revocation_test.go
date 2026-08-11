@@ -274,7 +274,8 @@ func TestRevocationSurvivesARelayRestart(t *testing.T) {
 
 // persistAppliedGeneration commits applied to the durable store exactly as
 // desiredstate.VerifyAndApply does once a snapshot has verified: one atomic
-// last-applied row carrying {generation, hash, screen_programs, revoked}
+// last-applied row carrying
+// {generation, hash, screen_programs, revoked, device_inventory}
 // (identity.Store.ApplyGeneration, REL-055/056).
 func persistAppliedGeneration(t *testing.T, store *identity.Store, applied desiredstate.Applied) {
 	t.Helper()
@@ -286,7 +287,11 @@ func persistAppliedGeneration(t *testing.T, store *identity.Store, applied desir
 	if err != nil {
 		t.Fatalf("marshal revoked: %v", err)
 	}
-	if err := store.ApplyGeneration(applied.Generation, fmt.Sprintf("sha256:gen%d", applied.Generation), programsJSON, revokedJSON); err != nil {
+	inventoryJSON, err := json.Marshal(applied.DeviceInventory.Normalized())
+	if err != nil {
+		t.Fatalf("marshal device_inventory: %v", err)
+	}
+	if err := store.ApplyGeneration(applied.Generation, fmt.Sprintf("sha256:gen%d", applied.Generation), programsJSON, revokedJSON, inventoryJSON); err != nil {
 		t.Fatalf("ApplyGeneration(%d): %v", applied.Generation, err)
 	}
 }

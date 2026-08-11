@@ -33,6 +33,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
+	"github.com/maaxton/waiveo-next/internal/relay/keepalive"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 	"github.com/maaxton/waiveo-next/internal/relay/telemetry"
 	"github.com/maaxton/waiveo-next/internal/relay/telemetryhttp"
@@ -229,8 +230,10 @@ func TestLoadConfigECPTargetsAndPolling(t *testing.T) {
 }
 
 func TestLoadConfigDeviceDefaultsOff(t *testing.T) {
-	// No hardware env → nil targets, discovery off, loopback stand-ins stay in
-	// (byte-identical dev/CI behavior).
+	// No hardware env → nil targets and the loopback stand-ins stay in, and
+	// NOTHING on this box touches the network: not the announcing lanes, and
+	// not the SSDP client sweep either. This is the plain `make dev` / CI shape
+	// (see discoveryEnabled and TestDiscoveryFollowsTheDeploymentPosture).
 	cfg, err := loadConfig(func(string) string { return "" })
 	if err != nil {
 		t.Fatalf("loadConfig(defaults): %v", err)
@@ -239,7 +242,8 @@ func TestLoadConfigDeviceDefaultsOff(t *testing.T) {
 		t.Errorf("ecpTargets = %v, want nil", cfg.ecpTargets)
 	}
 	if cfg.discoveryOn {
-		t.Error("discoveryOn = true, want false by default")
+		t.Error("discoveryOn = true for a loopback-bound relay, want false — CI and loopback dev runs must never " +
+			"multicast, and a relay no screen can reach has no fleet to discover")
 	}
 	if cfg.mdnsPatterns != nil {
 		t.Errorf("mdnsPatterns = %v, want nil by default (CI/dev loopback must not multicast)", cfg.mdnsPatterns)
@@ -247,11 +251,105 @@ func TestLoadConfigDeviceDefaultsOff(t *testing.T) {
 	if cfg.ssdpAnnounce {
 		t.Error("ssdpAnnounce = true, want false by default (CI/dev loopback must not multicast)")
 	}
-	if cfg.keepaliveOn {
-		t.Error("keepaliveOn = true, want false by default (must not dispatch an unrequested launch)")
+	// keepaliveOn defaults ON, as discoveryOn above does — see config's own
+	// doc, and TestLoadConfigKeepaliveDefaultsOnAndOptsOut below. It is inert
+	// here regardless: with no ecpTargets there is nothing
+	// to watch, which is what keeps dev/CI byte-identical.
+	if !cfg.keepaliveOn {
+		t.Error("keepaliveOn = false, want true by default (a screen stuck at Home must self-heal)")
 	}
 	if cfg.pollInterval != 5*time.Second {
 		t.Errorf("pollInterval = %s, want the 5s default", cfg.pollInterval)
+	}
+}
+
+// TestDiscoveryFollowsTheDeploymentPosture pins BOTH invariants the SSDP client
+// sweep has to satisfy at once, and they pull in opposite directions:
+//
+//   - A deployed appliance sweeps without being told to. Off-by-default meant a
+//     fresh box discovered nothing until somebody set an environment variable,
+//     and the failure looked like "there are no devices" rather than like a
+//     configuration gap.
+//   - CI and loopback dev runs never multicast. `make dev` on a laptop on an
+//     office LAN must not M-SEARCH strangers and then probe everything that
+//     answers.
+//
+// The listen address is what separates them, so the table below is keyed by it.
+// If either half regresses this is where it shows: a constant default cannot
+// satisfy both, and the previous attempt at "on by default" satisfied only the
+// first while deleting the second from the comment that carried it.
+func TestDiscoveryFollowsTheDeploymentPosture(t *testing.T) {
+	const lan = "0.0.0.0:7421"
+	const loopback = "127.0.0.1:7421"
+
+	cases := []struct {
+		name   string
+		listen string
+		raw    string
+		want   bool
+	}{
+		// Unset: the posture decides.
+		{"deployed appliance, unset", lan, "", true},
+		{"deployed appliance on a LAN IP, unset", "192.168.50.12:7421", "", true},
+		{"loopback dev/CI, unset", loopback, "", false},
+		{"loopback by name, unset", "localhost:7421", "", false},
+		{"whitespace is not a value", loopback, "   ", false},
+		{"whitespace is not a value, LAN", lan, "   ", true},
+
+		// Stated: the operator decides, in both directions.
+		{"explicitly on from a laptop, sweeping a real LAN", loopback, "1", true},
+		{"explicitly on, any truthy spelling", loopback, "yes", true},
+		{"an unrecognized value is not an off value", loopback, "anything-at-all", true},
+		{"explicitly off on a deployed box", lan, "0", false},
+		{"off spellings, all of them", lan, "false", false},
+		{"off spellings, case-insensitive", lan, "FALSE", false},
+		{"off spellings, padded", lan, " Off ", false},
+		{"off spellings, no", lan, "no", false},
+		{"off spellings, disabled", lan, "disabled", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{"WAIVEO_RELAY_LISTEN": tc.listen, "WAIVEO_RELAY_DISCOVERY": tc.raw}
+			cfg, err := loadConfig(func(k string) string { return env[k] })
+			if err != nil {
+				t.Fatalf("loadConfig: %v", err)
+			}
+			if cfg.discoveryOn != tc.want {
+				t.Errorf("listen=%q WAIVEO_RELAY_DISCOVERY=%q → discoveryOn = %v, want %v",
+					tc.listen, tc.raw, cfg.discoveryOn, tc.want)
+			}
+		})
+	}
+}
+
+// The screen keep-alive capability is an OPT-OUT, and the on/off decision is
+// pinned here because getting it wrong is invisible: a relay with the flag
+// silently off looks completely healthy right up until a screen sits at Home
+// for a weekend. The legacy stack ran its equivalent unconditionally, and
+// shipping this switched off reproduced the outage it exists to end.
+func TestLoadConfigKeepaliveDefaultsOnAndOptsOut(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"":         true, // unset — the default that matters
+		"1":        true,
+		"true":     true,
+		"0":        false,
+		"false":    false,
+		"off":      false,
+		"no":       false,
+		"disabled": false,
+		"DISABLED": false, // case-insensitive: an operator's intent is not a spelling test
+		// A value that means nothing keeps the capability running rather than
+		// silently disabling self-healing on a typo.
+		"yes-please": true,
+	} {
+		env := map[string]string{"WAIVEO_RELAY_KEEPALIVE": raw}
+		cfg, err := loadConfig(func(k string) string { return env[k] })
+		if err != nil {
+			t.Fatalf("loadConfig(WAIVEO_RELAY_KEEPALIVE=%q): %v", raw, err)
+		}
+		if cfg.keepaliveOn != want {
+			t.Errorf("WAIVEO_RELAY_KEEPALIVE=%q → keepaliveOn = %v, want %v", raw, cfg.keepaliveOn, want)
+		}
 	}
 }
 
@@ -975,6 +1073,103 @@ func TestRePullSameGenerationIsNoOp(t *testing.T) {
 	lease := pairAndPull(t, srv, grantID)
 	if len(lease.Content) != 1 || lease.Content[0].AssetRef != rePullAssetB {
 		t.Fatalf("served content after a no-op = %+v, want unchanged asset %s", lease.Content, rePullAssetB)
+	}
+}
+
+// TestRePullRefreshesTheKeepaliveAdoptionGate pins the LIVE half of the screen
+// keep-alive adoption gate: an operator who adopts a screen this afternoon
+// gets it kept alive this afternoon.
+//
+// The failure this guards is quiet in the worst way. Adoption wired only at
+// boot leaves the relay serving the new generation's content perfectly while
+// refusing to re-launch the very screen the operator just adopted — no error,
+// no log, nothing to notice until that screen sits at Home. The inverse
+// matters just as much: a screen REMOVED from the inventory must stop being
+// driven live, because that is how a screen is handed back to the legacy
+// stack, and a relay that kept driving it is one half of the two-controller
+// flapping failure.
+func TestRePullRefreshesTheKeepaliveAdoptionGate(t *testing.T) {
+	driver, host, _, _, nowMs := newRePullFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const (
+		adoptedScreen = "screen.hanger"
+		laterScreen   = "screen.lobby"
+	)
+	inventoryWith := func(entityIDs ...string) wire.DeviceInventory {
+		inv := wire.DeviceInventory{Devices: []json.RawMessage{}, PackMatchPatterns: []json.RawMessage{}}
+		for _, id := range entityIDs {
+			raw, err := json.Marshal(wire.DeviceEntry{
+				DeviceID: "device." + id,
+				Driver:   "roku",
+				NativeID: id,
+				Entities: []wire.DeviceEntity{{EntityID: id, DeviceClass: "media-player", Enabled: true, Category: "primary"}},
+			})
+			if err != nil {
+				t.Fatalf("marshal device entry: %v", err)
+			}
+			inv.Devices = append(inv.Devices, raw)
+		}
+		return inv
+	}
+
+	appliedA := buildRePullContentApplied(t, 7, rePullAssetA)
+	appliedA.DeviceInventory = inventoryWith(adoptedScreen)
+	appliedB := buildRePullContentApplied(t, 8, rePullAssetB)
+	appliedB.DeviceInventory = inventoryWith(laterScreen)
+
+	adoption := keepalive.NewAdoptionSet()
+	adoption.Apply(appliedA.Generation, appliedA.DeviceInventory) // the boot seed main.go performs
+	driver.apply(ctx, appliedA, nowMs)
+
+	if !adoption.IsAdopted(adoptedScreen) {
+		t.Fatalf("the boot generation's adopted screen %q is not adopted", adoptedScreen)
+	}
+	if adoption.IsAdopted(laterScreen) {
+		t.Fatalf("%q is adopted before the generation that adopts it was applied", laterScreen)
+	}
+
+	puller := &rePuller{
+		pull:     func(int64) (desiredstate.Applied, error) { return appliedB, nil },
+		driver:   driver,
+		host:     host,
+		adoption: adoption,
+		nowFn:    func() int64 { return nowMs },
+		lastGen:  appliedA.Generation,
+	}
+	if applied := puller.tick(ctx); !applied {
+		t.Fatal("re-pull tick of a higher generation returned applied=false")
+	}
+
+	if !adoption.IsAdopted(laterScreen) {
+		t.Errorf("%q was adopted by the applied generation but the live path never refreshed the gate — it would stay un-driven until a restart", laterScreen)
+	}
+	if adoption.IsAdopted(adoptedScreen) {
+		t.Errorf("%q was dropped from the applied generation's inventory but is still driven — un-adoption must take effect live", adoptedScreen)
+	}
+}
+
+// A relay with keep-alive disabled has no adoption set at all, and the live
+// path must tolerate that rather than panic on the first applied generation.
+func TestRePullToleratesNoAdoptionSet(t *testing.T) {
+	driver, host, _, _, nowMs := newRePullFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	appliedA := buildRePullContentApplied(t, 7, rePullAssetA)
+	appliedB := buildRePullContentApplied(t, 8, rePullAssetB)
+	driver.apply(ctx, appliedA, nowMs)
+
+	puller := &rePuller{
+		pull:    func(int64) (desiredstate.Applied, error) { return appliedB, nil },
+		driver:  driver,
+		host:    host,
+		nowFn:   func() int64 { return nowMs },
+		lastGen: appliedA.Generation,
+	} // adoption deliberately nil
+	if applied := puller.tick(ctx); !applied {
+		t.Fatal("re-pull tick with no adoption set returned applied=false")
 	}
 }
 

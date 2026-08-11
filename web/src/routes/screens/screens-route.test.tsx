@@ -50,6 +50,18 @@ function page(items: unknown[]) {
   return HttpResponse.json({ items, cursor: null }, { headers: { "Trace-Id": TRACE_ID } });
 }
 
+/** A row in the dogfooded Screens table, addressed by the screen's name.
+ *
+ * Scoped to that table rather than to the document, because the page's scope
+ * tree above it names the same nodes: the tree renders the WHOLE hierarchy
+ * (org → site → group → screen) so an operator can build it, while this table
+ * renders the screen-kind nodes it manages. Both showing "Lobby display" is
+ * correct; a document-wide lookup for it is what would be ambiguous. */
+function screenRow(name: string): HTMLElement {
+  const table = screen.getByRole("table", { name: "Screens" });
+  return within(table).getByText(name).closest("tr") as HTMLElement;
+}
+
 describe("Screens — the ui-schema dogfood", () => {
   it("its page.uis.json passes validatePage (the same gate an extension page clears)", () => {
     const result = validatePage(screensPageDoc);
@@ -133,7 +145,7 @@ describe("Screens — create / edit / delete over api/1", () => {
     await screen.findByRole("table", { name: "Screens" });
 
     // Select the row → the detail form appears.
-    const row = screen.getByText("Lobby display").closest("tr");
+    const row = screenRow("Lobby display");
     await user.click(row as HTMLElement);
     const nameInput = await screen.findByLabelText("Display name");
     await user.clear(nameInput);
@@ -172,7 +184,7 @@ describe("Screens — create / edit / delete over api/1", () => {
     renderScreens();
     await screen.findByRole("table", { name: "Screens" });
 
-    const row = screen.getByText("Lobby display").closest("tr");
+    const row = screenRow("Lobby display");
     await user.click(row as HTMLElement);
     const nameInput = await screen.findByLabelText("Display name");
     await user.clear(nameInput);
@@ -208,7 +220,7 @@ describe("Screens — create / edit / delete over api/1", () => {
     renderScreens();
     await screen.findByRole("table", { name: "Screens" });
 
-    const row = screen.getByText("Lobby display").closest("tr");
+    const row = screenRow("Lobby display");
     await user.click(row as HTMLElement);
     const nameInput = await screen.findByLabelText("Display name");
     await user.clear(nameInput);
@@ -241,7 +253,7 @@ describe("Screens — create / edit / delete over api/1", () => {
     const user = userEvent.setup();
     renderScreens();
     await screen.findByRole("table", { name: "Screens" });
-    const row = screen.getByText("Lobby display").closest("tr");
+    const row = screenRow("Lobby display");
     await user.click(row as HTMLElement);
     await user.click(await screen.findByRole("button", { name: "Delete screen" }));
 
@@ -284,7 +296,7 @@ describe("Screens — create / edit / delete over api/1", () => {
     const user = userEvent.setup();
     renderScreens();
     await screen.findByRole("table", { name: "Screens" });
-    await user.click(screen.getByText("Lobby display").closest("tr") as HTMLElement);
+    await user.click(screenRow("Lobby display"));
     await user.click(await screen.findByRole("button", { name: "Delete screen" }));
 
     // The operator is told WHY, in the server's own sentence — not "409", and not a
@@ -302,7 +314,7 @@ describe("Screens — create / edit / delete over api/1", () => {
     expect(shown).not.toMatch(/delete the screen\b/i);
 
     // Nothing was removed, and the refusal was not retried behind the operator's back.
-    expect(screen.getByText("Lobby display")).toBeInTheDocument();
+    expect(screenRow("Lobby display")).toBeInTheDocument();
     expect(deleteCount).toBe(1);
   });
 });
@@ -344,7 +356,7 @@ describe("Screens — a 422 maps its field errors onto the FormField", () => {
     renderScreens();
     await screen.findByRole("table", { name: "Screens" });
 
-    const row = screen.getByText("Lobby display").closest("tr");
+    const row = screenRow("Lobby display");
     await user.click(row as HTMLElement);
     const nameInput = await screen.findByLabelText("Display name");
     await user.clear(nameInput);
@@ -386,7 +398,7 @@ describe("Screens — a 422 maps its field errors onto the FormField", () => {
     await screen.findByRole("table", { name: "Screens" });
 
     // Screen A's edit is rejected 422 → its per-field error lands on A's field.
-    await user.click(screen.getByText("Lobby display").closest("tr") as HTMLElement);
+    await user.click(screenRow("Lobby display"));
     const nameA = await screen.findByLabelText("Display name");
     await user.clear(nameA);
     await user.type(nameA, "Renamed lobby");
@@ -396,7 +408,7 @@ describe("Screens — a 422 maps its field errors onto the FormField", () => {
     // Switch to a DIFFERENT, untouched screen B (never submitted) — its
     // identically-named field must NOT inherit A's stale error; the error is keyed
     // by bind-path, so without a clear on selection change it would bleed across.
-    await user.click(screen.getByText("Cafe board").closest("tr") as HTMLElement);
+    await user.click(screenRow("Cafe board"));
     const tzB = (await screen.findByLabelText("Time zone")) as HTMLInputElement;
     await waitFor(() => expect(tzB.value).toBe("America/Chicago")); // we are on B
     const nameB = screen.getByLabelText("Display name") as HTMLInputElement;
@@ -494,6 +506,10 @@ describe("Screens — responsive at 360px", () => {
       expect(document.querySelector('[data-slot="data-table"][data-layout="stacked"]')).not.toBeNull(),
     );
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
-    expect(screen.getByText("Lobby display")).toBeInTheDocument();
+    // The stacked grid keeps the table's accessible name on a role="group", so
+    // the row is still addressable — and still distinguishable from the same
+    // node's entry in the scope tree above.
+    const stacked = screen.getByRole("group", { name: "Screens" });
+    expect(within(stacked).getByText("Lobby display")).toBeInTheDocument();
   });
 });

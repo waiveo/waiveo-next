@@ -65,6 +65,15 @@ func (f *fakeController) callsFor(entityID string) []dispatchCall {
 	return out
 }
 
+// adoptEverything is the adoption gate every test below that is exercising
+// the DEVICE-STATE machine opts in with. It is spelled out at each call site
+// rather than defaulted inside New for exactly one reason: Config.Adopted is
+// fail-closed in production (a nil gate adopts nothing), and a test helper
+// that quietly supplied a permissive default would mean nothing in this file
+// noticed if that default ever leaked into the real constructor. The gate's
+// own behaviour is tested separately, below.
+func adoptEverything(string) bool { return true }
+
 // obsFor builds a canned state.Observation carrying exactly the two
 // REG-064 attributes evaluate consults — the injected-observation seam
 // recordObservation drives, standing in for a real or synthetic Poller's
@@ -79,7 +88,7 @@ func obsFor(entityID, powerMode, appType string) state.Observation {
 }
 
 func TestNewAppliesDefaults(t *testing.T) {
-	k := New(Config{})
+	k := New(Config{Adopted: adoptEverything})
 	if k.pollInterval != defaultPollInterval {
 		t.Errorf("pollInterval = %s, want default %s", k.pollInterval, defaultPollInterval)
 	}
@@ -92,7 +101,7 @@ func TestNewAppliesDefaults(t *testing.T) {
 }
 
 func TestNewHonorsOverrides(t *testing.T) {
-	k := New(Config{PollInterval: 7 * time.Second, LaunchDelay: 3 * time.Second, Channel: "custom-channel"})
+	k := New(Config{Adopted: adoptEverything, PollInterval: 7 * time.Second, LaunchDelay: 3 * time.Second, Channel: "custom-channel"})
 	if k.pollInterval != 7*time.Second {
 		t.Errorf("pollInterval = %s, want 7s", k.pollInterval)
 	}
@@ -110,7 +119,7 @@ func TestNewHonorsOverrides(t *testing.T) {
 // counts up.
 func TestPowerOnDelayHonored(t *testing.T) {
 	fc := &fakeController{}
-	k := New(Config{LaunchDelay: 1500 * time.Millisecond, Controller: fc})
+	k := New(Config{Adopted: adoptEverything, LaunchDelay: 1500 * time.Millisecond, Controller: fc})
 	t0 := time.Unix(1700000000, 0)
 
 	for _, elapsed := range []time.Duration{0, 500 * time.Millisecond, 1000 * time.Millisecond} {
@@ -139,7 +148,7 @@ func TestPowerOnDelayHonored(t *testing.T) {
 // command carries the configured channel.
 func TestHomeTwoConsecutivePollsFiresExactlyOneLaunch(t *testing.T) {
 	fc := &fakeController{}
-	k := New(Config{LaunchDelay: time.Millisecond, Channel: "myapp", Controller: fc})
+	k := New(Config{Adopted: adoptEverything, LaunchDelay: time.Millisecond, Channel: "myapp", Controller: fc})
 	t0 := time.Unix(1700000000, 0)
 
 	// Baseline PowerOn+foreign poll, far enough back that the delay is long
@@ -167,7 +176,7 @@ func TestHomeTwoConsecutivePollsFiresExactlyOneLaunch(t *testing.T) {
 // many polls accumulate — a person may be using the TV.
 func TestForeignAppNeverFires(t *testing.T) {
 	fc := &fakeController{}
-	k := New(Config{LaunchDelay: time.Millisecond, Controller: fc})
+	k := New(Config{Adopted: adoptEverything, LaunchDelay: time.Millisecond, Controller: fc})
 	t0 := time.Unix(1700000000, 0)
 
 	for i := 0; i < 10; i++ {
@@ -184,7 +193,7 @@ func TestForeignAppNeverFires(t *testing.T) {
 // app_type of "home", and even across many polls over a long span.
 func TestStandbyNeverFires(t *testing.T) {
 	fc := &fakeController{}
-	k := New(Config{LaunchDelay: time.Millisecond, Controller: fc})
+	k := New(Config{Adopted: adoptEverything, LaunchDelay: time.Millisecond, Controller: fc})
 	t0 := time.Unix(1700000000, 0)
 
 	nonPowerOnValues := []string{"Suspend", "Ready", "DisplayOff", "", "SomeFutureFirmwareValue"}
@@ -203,7 +212,7 @@ func TestStandbyNeverFires(t *testing.T) {
 // for a fresh 2-poll streak does keepalive fire again.
 func TestCooldownDoesNotMachineGun(t *testing.T) {
 	fc := &fakeController{}
-	k := New(Config{LaunchDelay: time.Millisecond, Controller: fc})
+	k := New(Config{Adopted: adoptEverything, LaunchDelay: time.Millisecond, Controller: fc})
 	t0 := time.Unix(1700000000, 0)
 
 	k.recordObservation(obsFor("scr1", "PowerOn", "app"), t0) // baseline, clears the delay window
@@ -241,7 +250,7 @@ func TestCooldownDoesNotMachineGun(t *testing.T) {
 // state left over from before the blip.
 func TestPowerOffThenBackOnRestartsDelayAndStreak(t *testing.T) {
 	fc := &fakeController{}
-	k := New(Config{LaunchDelay: 1500 * time.Millisecond, Controller: fc})
+	k := New(Config{Adopted: adoptEverything, LaunchDelay: 1500 * time.Millisecond, Controller: fc})
 	t0 := time.Unix(1700000000, 0)
 
 	k.recordObservation(obsFor("scr1", "PowerOn", "home"), t0)
@@ -271,7 +280,7 @@ func TestPowerOffThenBackOnRestartsDelayAndStreak(t *testing.T) {
 // qualifying poll rather than wedging.
 func TestDispatchErrorIsNonFatal(t *testing.T) {
 	fc := &fakeController{err: errors.New("device unreachable")}
-	k := New(Config{LaunchDelay: time.Millisecond, Controller: fc})
+	k := New(Config{Adopted: adoptEverything, LaunchDelay: time.Millisecond, Controller: fc})
 	t0 := time.Unix(1700000000, 0)
 
 	k.recordObservation(obsFor("scr1", "PowerOn", "app"), t0)
@@ -286,7 +295,7 @@ func TestDispatchErrorIsNonFatal(t *testing.T) {
 // a Config left without one (only ever useful for exercising the state
 // machine alone) never panics when a launch decision fires.
 func TestNilControllerDoesNotPanic(t *testing.T) {
-	k := New(Config{LaunchDelay: time.Millisecond})
+	k := New(Config{Adopted: adoptEverything, LaunchDelay: time.Millisecond})
 	t0 := time.Unix(1700000000, 0)
 	k.recordObservation(obsFor("scr1", "PowerOn", "app"), t0)
 	k.recordObservation(obsFor("scr1", "PowerOn", "home"), t0.Add(time.Second))
@@ -298,7 +307,7 @@ func TestNilControllerDoesNotPanic(t *testing.T) {
 // never be affected by the first screen's confirmed Home recovery.
 func TestScreensAreIndependent(t *testing.T) {
 	fc := &fakeController{}
-	k := New(Config{LaunchDelay: time.Millisecond, Controller: fc})
+	k := New(Config{Adopted: adoptEverything, LaunchDelay: time.Millisecond, Controller: fc})
 	t0 := time.Unix(1700000000, 0)
 
 	k.recordObservation(obsFor("scr1", "PowerOn", "app"), t0)
@@ -361,6 +370,7 @@ func TestRunFiresRecoveryForAScreenStuckAtHome(t *testing.T) {
 	target := newECPFixture(t)
 	fc := &fakeController{}
 	k := New(Config{
+		Adopted:      adoptEverything,
 		Targets:      map[string]Target{"scr1": target},
 		PollInterval: 20 * time.Millisecond,
 		LaunchDelay:  time.Millisecond,
@@ -387,7 +397,7 @@ func TestRunFiresRecoveryForAScreenStuckAtHome(t *testing.T) {
 // TestRunStopsOnContextCancellation proves Run returns ctx.Err() once ctx is
 // canceled, rather than leaking its ticker loop.
 func TestRunStopsOnContextCancellation(t *testing.T) {
-	k := New(Config{PollInterval: 10 * time.Millisecond})
+	k := New(Config{Adopted: adoptEverything, PollInterval: 10 * time.Millisecond})
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan error, 1)
@@ -418,6 +428,7 @@ func TestBlankActiveLeaseSuppressesRecovery(t *testing.T) {
 	fc := &fakeController{}
 	var blank int32 = 1 // atomic bool: 1 = the active Lease is blank
 	k := New(Config{
+		Adopted:     adoptEverything,
 		LaunchDelay: time.Millisecond,
 		Controller:  fc,
 		ActiveDisplay: func(string) string {
@@ -458,7 +469,7 @@ func TestBlankActiveLeaseSuppressesRecovery(t *testing.T) {
 // only pins the safe degrade for a test/Config that doesn't.)
 func TestNilActiveDisplayNeverSuppresses(t *testing.T) {
 	fc := &fakeController{}
-	k := New(Config{LaunchDelay: time.Millisecond, Controller: fc}) // ActiveDisplay left nil
+	k := New(Config{Adopted: adoptEverything, LaunchDelay: time.Millisecond, Controller: fc}) // ActiveDisplay left nil
 	t0 := time.Unix(1700000000, 0)
 
 	k.recordObservation(obsFor("scr1", "PowerOn", "app"), t0)
@@ -552,7 +563,7 @@ func TestEvaluateAllSerializesPerDeviceButNotAcrossScreens(t *testing.T) {
 		})
 	sink := automation.NewCommandSink(surface, "01J8Z3K4N5P6Q7R8S9T0V1RELY")
 
-	k := New(Config{LaunchDelay: time.Millisecond, Controller: sink})
+	k := New(Config{Adopted: adoptEverything, LaunchDelay: time.Millisecond, Controller: sink})
 	now := time.Now()
 	seedConfirmable(k, "scrA", now)
 	seedConfirmable(k, "scrB", now)
@@ -597,7 +608,7 @@ func TestRunCancelsPromptlyWhileADispatchIsInFlight(t *testing.T) {
 		}
 		<-hold
 	}}
-	k := New(Config{PollInterval: 20 * time.Millisecond, LaunchDelay: time.Millisecond, Controller: controller})
+	k := New(Config{Adopted: adoptEverything, PollInterval: 20 * time.Millisecond, LaunchDelay: time.Millisecond, Controller: controller})
 	seedConfirmable(k, "scr1", time.Now())
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -638,7 +649,7 @@ func TestRunCancelsPromptlyUnderConcurrentDispatchLoad(t *testing.T) {
 		entered <- entityID
 		<-hold
 	}}
-	k := New(Config{PollInterval: 20 * time.Millisecond, LaunchDelay: time.Millisecond, Controller: controller})
+	k := New(Config{Adopted: adoptEverything, PollInterval: 20 * time.Millisecond, LaunchDelay: time.Millisecond, Controller: controller})
 
 	now := time.Now()
 	for i := 0; i < screenCount; i++ {
@@ -668,5 +679,126 @@ func TestRunCancelsPromptlyUnderConcurrentDispatchLoad(t *testing.T) {
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("Run did not return promptly after cancellation with many dispatches still in flight (under load) — evaluateAll's per-screen dispatch must never block ctx cancellation, however many screens are outstanding")
+	}
+}
+
+// TestSetTargetsReplacesTheWatchedSet is the API the binary needs to make this
+// capability follow ADOPTION rather than a set frozen at boot. Without it the
+// keep-alive was on by default over cmd/waiveo-relay's deployment-override map
+// — an out-of-band escape hatch that is empty in the normal deployment — so it
+// watched nothing in the very scenario it was switched on for.
+func TestSetTargetsReplacesTheWatchedSet(t *testing.T) {
+	k := New(Config{Adopted: adoptEverything, Controller: &fakeController{}})
+
+	k.SetTargets(map[string]Target{"scr1": {Host: "192.168.50.31", Port: 8060}})
+	k.mu.Lock()
+	got := len(k.targets)
+	host := k.targets["scr1"].Host
+	k.mu.Unlock()
+	if got != 1 || host != "192.168.50.31" {
+		t.Fatalf("targets after SetTargets = %d entr(ies) host %q, want 1 / 192.168.50.31", got, host)
+	}
+
+	// A caller's map is copied, not aliased: the adoption gate rebuilds its own
+	// map every tick and must not be able to mutate this one behind our back.
+	src := map[string]Target{"scr2": {Host: "192.168.50.32"}}
+	k.SetTargets(src)
+	delete(src, "scr2")
+	k.mu.Lock()
+	_, still := k.targets["scr2"]
+	k.mu.Unlock()
+	if !still {
+		t.Error("mutating the caller's map after SetTargets changed the watched set")
+	}
+}
+
+// TestARemovedTargetStopsBeingEvaluated is the half that matters for safety.
+// evaluateAll walks the CACHE, not the target map, so a screen dropped from the
+// set would keep being re-evaluated from its last reading — and could fire a
+// recovery launch at a screen the app peer has just un-adopted, which is
+// exactly what the adoption gate exists to prevent.
+func TestARemovedTargetStopsBeingEvaluated(t *testing.T) {
+	fc := &fakeController{}
+	k := New(Config{Adopted: adoptEverything, LaunchDelay: time.Millisecond, Controller: fc})
+	k.SetTargets(map[string]Target{"scr1": {Host: "192.168.50.31"}})
+	t0 := time.Unix(1700000000, 0)
+
+	// One qualifying Home poll: the streak is at 1, one short of firing.
+	k.recordObservation(obsFor("scr1", "PowerOn", "app"), t0)
+	k.recordObservation(obsFor("scr1", "PowerOn", "home"), t0.Add(time.Second))
+	if got := fc.callCount(); got != 0 {
+		t.Fatalf("launch calls after one Home poll = %d, want 0", got)
+	}
+
+	// The screen leaves the watched set — un-adopted, or no longer locatable.
+	k.SetTargets(map[string]Target{})
+
+	// The re-evaluation ticker keeps running. It must find nothing to act on.
+	k.evaluateAll(t0.Add(2 * time.Second))
+	k.evaluateAll(t0.Add(3 * time.Second))
+	k.dispatchWG.Wait()
+	if got := fc.callCount(); got != 0 {
+		t.Fatalf("launch calls for a screen removed from the watched set = %d, want 0 (%+v)", got, fc.calls)
+	}
+
+	// And it comes back re-confirmed from scratch rather than resuming the
+	// streak it had accumulated before it left. Dropping the per-screen state
+	// means the first poll after it returns reads as a fresh entry into PowerOn,
+	// so it serves the settle delay again and then needs its own two
+	// consecutive Home polls.
+	k.SetTargets(map[string]Target{"scr1": {Host: "192.168.50.31"}})
+	k.recordObservation(obsFor("scr1", "PowerOn", "home"), t0.Add(4*time.Second))
+	if got := fc.callCount(); got != 0 {
+		t.Fatalf("a returning screen fired on its FIRST Home poll (%d call(s)); its pre-removal progress must not "+
+			"be resumed", got)
+	}
+	k.recordObservation(obsFor("scr1", "PowerOn", "home"), t0.Add(5*time.Second))
+	if got := fc.callCount(); got != 0 {
+		t.Fatalf("a returning screen fired after one confirming poll (%d call(s)), want its own full streak", got)
+	}
+	k.recordObservation(obsFor("scr1", "PowerOn", "home"), t0.Add(6*time.Second))
+	if got := fc.callCount(); got != 1 {
+		t.Fatalf("launch calls after a fresh, fully confirmed streak = %d, want 1", got)
+	}
+}
+
+// TestSetTargetsWhileRunningStartsPollingTheNewScreen is the half of SetTargets
+// that reaches the network, and it is the whole point of the API: a relay boots
+// before its first sweep has found anything, so the set it starts Run with is
+// routinely EMPTY and every screen it ever watches arrives afterwards. Updating
+// only this package's own map would leave the poller pointed at that empty set
+// forever — switched on, watching nothing, exactly the defect this closes.
+func TestSetTargetsWhileRunningStartsPollingTheNewScreen(t *testing.T) {
+	target := newECPFixture(t)
+	fc := &fakeController{}
+	k := New(Config{
+		Adopted:      adoptEverything,
+		PollInterval: 20 * time.Millisecond,
+		LaunchDelay:  time.Millisecond,
+		Controller:   fc,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Started with NO targets — the boot shape, before discovery has found
+	// anything and before a generation has been applied.
+	go func() { _ = k.Run(ctx) }()
+
+	time.Sleep(60 * time.Millisecond)
+	if got := fc.callCount(); got != 0 {
+		t.Fatalf("keep-alive dispatched %d launch(es) with no targets, want 0", got)
+	}
+
+	// The device becomes adopted and locatable; the binary's sync tick hands it
+	// over.
+	k.SetTargets(map[string]Target{"scr1": target})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && fc.callCount() < 1 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := fc.callsFor("scr1"); len(got) < 1 {
+		t.Fatal("a screen added by SetTargets while Run was already running was never polled — the running poller " +
+			"must be re-pointed, not just this package's own map")
 	}
 }

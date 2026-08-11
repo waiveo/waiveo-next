@@ -162,6 +162,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/devices/{device_id}/adopt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                device_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Adopt a discovered device
+         * @description Puts a device this deployment's relays have discovered under this platform's control, by creating the durable adoption record its relay is then sent in signed desired state (`relay/1` REL-063). Discovery finds devices; adoption is the decision to use one, and this operation is that decision.
+         *
+         *     The record is created with the device's own reported entities enabled and primary — the policy an operator refines afterwards through the `adopted-devices` family. Adopting a device that is already adopted succeeds and changes nothing, so a double-click or a retry-after-timeout is not an error.
+         *
+         *     A mutating POST tagged `mcp:act`, so it accepts `Idempotency-Key`.
+         */
+        post: operations["adoptDevice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/entities": {
         parameters: {
             query?: never;
@@ -604,6 +630,57 @@ export interface paths {
          * @description Partial update. Requires If-Match against the playlist's current ETag/revision, and the POST-DEFINED effective item list is re-validated against the content origin (data-model/1 DAT-041), so a patch cannot introduce an `asset_ref` that was never uploaded.
          */
         patch: operations["updatePlaylist"];
+        trace?: never;
+    };
+    "/casts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List casts
+         * @description Returns a keyset-paginated, selector-filterable page of cast rows.
+         */
+        get: operations["listCasts"];
+        put?: never;
+        /**
+         * Create a cast
+         * @description The `slides` array MUST be non-empty and every slide's `layers` MUST satisfy the shared slide-layer rules (`data-model/1` DAT-043): a closed set of layer kinds, geometry inside the 1920x1080 canvas, and the required fields of each kind. An image layer names only its content-addressed `asset_ref` here — its fetch `url` is derived from the content origin when the slide is projected onto a screen's program, never authored. A cast that would not draw is a 422, and nothing is stored.
+         */
+        post: operations["createCast"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/casts/{cast_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cast_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        /** Read a cast */
+        get: operations["getCast"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a cast
+         * @description Requires If-Match against the cast's current ETag/revision. A cast a playlist item still references is refused (422) rather than removed: the reference would otherwise survive as a playlist entry that contributes nothing, and the screen would quietly play a shorter rotation than the playlist says.
+         */
+        delete: operations["deleteCast"];
+        options?: never;
+        head?: never;
+        /**
+         * Update a cast
+         * @description Partial update. Requires If-Match against the cast's current ETag/revision. `slides` is replaced wholesale when present — a slide list is an ordered document, and a member-wise merge of one has no meaning — and the POST-MERGE effective row is re-validated in full, so a patch can no more introduce an undrawable slide than a create can.
+         */
+        patch: operations["updateCast"];
         trace?: never;
     };
     "/screens": {
@@ -1339,13 +1416,78 @@ export interface components {
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
         };
-        /** @description One entry of a playlist's `items` (DAT-041). `source` selects which of the two content shapes the entry uses — `asset` carries `asset_ref`, `playable` carries `pack_id` + `content_id` — and data-model/1 enforces that pairing with its own per-field codes. */
+        /** @description One positioned native element of a slide (`data-model/1` DAT-043). Layers are drawn in ARRAY ORDER — the index IS the z-order — inside a fixed 1920x1080 top-left-origin canvas a player scales to its panel, so geometry is authored against those bounds whatever the real resolution is. Every member beyond `kind` and the geometry is kind-specific. */
+        SlideLayer: {
+            /** @enum {string} */
+            kind: "text" | "rect" | "image" | "clock";
+            x: number;
+            y: number;
+            w: number;
+            h: number;
+            /** @description The literal string for a `text` layer; for a `clock` layer, the Go reference-time layout (`15:04:05`, `3:04 PM`) the player renders the current LOCAL time through, refreshed every second. Required for both of those kinds, unused by `rect`/`image`. */
+            text?: string;
+            /** @description An `image` layer's content-addressed `sha256:` reference — the only half of an image layer that is AUTHORED. Its fetch `url` is derived from the content origin at projection time. */
+            asset_ref?: string;
+            /** @description An `image` layer's direct content-origin fetch target, derived at projection time and present on a SERVED slide. A create/update need not supply it. */
+            url?: string;
+            /** @description Pixel font size for a `text`/`clock` layer. Optional — an omitted size renders at the player's own default. */
+            font_px?: number;
+            /** @description A `rect`'s fill (required) or a `text`/`clock`'s foreground (optional). `#RRGGBB` wherever present. */
+            color?: string;
+            /**
+             * @description A `text` layer's horizontal alignment. Optional.
+             * @enum {string}
+             */
+            align?: "left" | "center" | "right";
+        };
+        /** @description One slide of a cast (`data-model/1` DAT-043): an id unique within its own cast, an optional dwell time, and the ordered layer stack a player draws. The id names a position in one authored document — what a reorder or an undo operates on — and is deliberately not a ULID, because nothing outside the cast ever references it. */
+        CastSlide: {
+            id: string;
+            /** @description This slide's dwell time. When omitted the projected content item falls back to the referencing playlist item's own `duration_seconds` (DAT-042), and when neither is stated the player applies its own default. */
+            duration_ms?: number;
+            layers: components["schemas"]["SlideLayer"][];
+        };
+        /** @description An authored slidecast (`data-model/1` DAT-043) — the ordered set of slides an operator builds once and schedules onto screens by referencing it from a playlist item (`source: "cast"`). One cast edit changes every screen playing it, which is the whole reason it is a row rather than a shape inlined into a playlist. */
+        Cast: {
+            id: components["schemas"]["Ulid"];
+            /** @description Client-assigned identifier (contracts/api-1.md#client-assignable-external_id). */
+            external_id?: string | null;
+            scope_node: components["schemas"]["Ulid"];
+            name: string;
+            slides: components["schemas"]["CastSlide"][];
+            labels: components["schemas"]["LabelMap"];
+            revision: number;
+            created_at: components["schemas"]["Timestamp"];
+            updated_at: components["schemas"]["Timestamp"];
+        };
+        CastCreate: {
+            external_id?: string | null;
+            scope_node: components["schemas"]["Ulid"];
+            name: string;
+            slides: components["schemas"]["CastSlide"][];
+            labels?: components["schemas"]["LabelMap"];
+        };
+        /** @description Partial update — every member optional, at least one present. `slides` replaces the whole ordered list; there is no per-slide patch. */
+        CastUpdate: {
+            external_id?: string | null;
+            scope_node?: components["schemas"]["Ulid"];
+            name?: string;
+            slides?: components["schemas"]["CastSlide"][];
+            labels?: components["schemas"]["LabelMap"];
+        };
+        CastListResponse: {
+            items: components["schemas"]["Cast"][];
+            cursor: components["schemas"]["Cursor"];
+        };
+        /** @description One entry of a playlist's `items` (DAT-041). `source` selects which content shape the entry uses — `asset` carries `asset_ref`, `playable` carries `pack_id` + `content_id`, `cast` carries `cast_id` — and data-model/1 enforces that pairing with its own per-field codes. A `cast` entry is the one source that is not one-to-one with a played item: it expands, at projection time, into one slide content item per slide of the referenced cast, in authored order. */
         PlaylistItem: {
             /** @enum {string} */
-            source: "asset" | "playable";
+            source: "asset" | "playable" | "cast";
             asset_ref?: string;
             pack_id?: string;
             content_id?: string;
+            /** @description The cast this entry plays, required when `source` is `cast`. It MUST name an existing cast row, and that cast cannot be deleted while this reference stands (DAT-043). */
+            cast_id?: string;
             duration_seconds?: number;
         };
         PlaylistCreate: {
@@ -1669,7 +1811,7 @@ export interface components {
         LabelMap: {
             [key: string]: string;
         };
-        /** @description One adopted physical device behind a relay. Read-only on this API: a device is discovered and adopted by its own relay's device plane (`relay/1` Device plane), so this resource carries no `revision` and no optimistic-concurrency envelope — there is no write here to condition on. A device exposes one or more entities; commands are addressed to those entities, never to the device. */
+        /** @description One physical device a relay has found on its own LAN. Its descriptive members are read-only on this API — a device is DISCOVERED by its relay's device plane (`relay/1` Device plane), not authored here, so this resource carries no `revision` and no optimistic-concurrency envelope. The one decision this API does make about a device is `adopted`, taken through the `adoptDevice` operation. A device exposes one or more entities; commands are addressed to those entities, never to the device. */
         Device: {
             id: components["schemas"]["Ulid"];
             /** @description Client-assigned identifier (contracts/api-1.md#client-assignable-external_id). */
@@ -1680,6 +1822,14 @@ export interface components {
             name: string;
             scope_node: components["schemas"]["Ulid"];
             labels: components["schemas"]["LabelMap"];
+            /** @description Where the reporting relay can reach this device on its LAN, as a dialable `host:port` authority. Absent when discovery found the device but no usable address for it — the device was genuinely seen, and no command can be delivered to it until an address is. */
+            address?: string;
+            /** @description The model the device reported when the relay probed it over the driver's own protocol. Absent when the probe did not answer. */
+            model?: string;
+            /** @description The serial number of the physical unit, as the device reported it. Absent when the probe did not answer. */
+            serial?: string;
+            /** @description Whether an adoption record exists for this device — that is, whether it is under this platform's control and carried in the desired state its relay is sent (`relay/1` REL-063). Discovery alone never sets this; `adoptDevice` does. */
+            adopted: boolean;
         };
         DeviceListResponse: {
             items: components["schemas"]["Device"][];
@@ -2405,6 +2555,41 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             429: components["responses"]["TooManyRequests"];
+        };
+    };
+    adoptDevice: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                device_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The device is adopted. The body is the device as it now reads, with `adopted` true. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Device"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     listEntities: {
@@ -3369,6 +3554,176 @@ export interface operations {
                 };
                 content?: never;
             };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            412: components["responses"]["PreconditionFailed"];
+            422: components["responses"]["UnprocessableContent"];
+            428: components["responses"]["PreconditionRequired"];
+        };
+    };
+    listCasts: {
+        parameters: {
+            query?: {
+                /** @description Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client. */
+                cursor?: components["parameters"]["CursorParam"];
+                /** @description Maximum rows to return in this page. */
+                limit?: components["parameters"]["LimitParam"];
+                /** @description A label-selector string: comma-separated, ANDed terms (equality, inequality, set-membership, set-exclusion, existence, non-existence, or a `scope_node subtree <ulid>` term). See `contracts/api-1.md#label-selector-grammar` for the full grammar. */
+                selector?: components["parameters"]["SelectorParam"];
+            };
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of casts. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CastListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    createCast: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CastCreate"];
+            };
+        };
+        responses: {
+            /** @description The created cast. */
+            201: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Cast"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
+        };
+    };
+    getCast: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                cast_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The cast. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Cast"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    deleteCast: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists. */
+                "If-Match": components["parameters"]["IfMatchParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                cast_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. No content. */
+            204: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            412: components["responses"]["PreconditionFailed"];
+            422: components["responses"]["UnprocessableContent"];
+            428: components["responses"]["PreconditionRequired"];
+        };
+    };
+    updateCast: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists. */
+                "If-Match": components["parameters"]["IfMatchParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                cast_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CastUpdate"];
+            };
+        };
+        responses: {
+            /** @description The updated cast. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Cast"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];

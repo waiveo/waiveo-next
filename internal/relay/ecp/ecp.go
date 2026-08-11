@@ -96,10 +96,39 @@ func (t Target) addr() string {
 	return net.JoinHostPort(t.Host, strconv.Itoa(port))
 }
 
+// TargetSource resolves an entityID to the Roku ECP endpoint the relay may
+// dispatch to RIGHT NOW, or reports ok=false for an entity it must not drive.
+//
+// It exists because the set of drivable devices is not a deployment constant.
+// A target enters it when the app peer adopts a device and this relay's own
+// discovery locates it, and leaves it when either half stops being true — so a
+// map fixed at construction can only ever describe the env-var case, which is
+// exactly the shape that left every discovered Roku uncontrollable.
+//
+// A false return MUST mean "refuse", never "fall back to a default": the
+// per-device adoption gate lives on the far side of this seam
+// (internal/relay/devicetargets), and a controller that guessed an address for
+// an unresolved entity would drive a device nobody adopted.
+type TargetSource func(entityID string) (Target, bool)
+
 // Option configures an optional Controller collaborator. New applies each in
 // order after establishing its defaults, so a later Option can override an
 // earlier one.
 type Option func(*Controller)
+
+// WithTargetSource replaces the Controller's fixed target map with a live
+// resolver consulted on EVERY dispatch, so an adoption that lands after this
+// relay booted is drivable without a restart and an un-adoption stops being
+// drivable at the next command rather than at the next process start. A nil
+// source is ignored (matching WithHTTPClient's convention), leaving whatever
+// New was given.
+func WithTargetSource(src TargetSource) Option {
+	return func(c *Controller) {
+		if src != nil {
+			c.resolve = src
+		}
+	}
+}
 
 // WithHTTPClient overrides the *http.Client Dispatch issues ECP requests
 // through — tests point it at an httptest.Server-backed client or one with a
@@ -119,7 +148,7 @@ func WithHTTPClient(client *http.Client) Option {
 // resolved media-player command (REG-066) to the physical Roku device its
 // entityID maps to, over ECP's plain HTTP control surface.
 type Controller struct {
-	targets map[string]Target
+	resolve TargetSource
 	client  *http.Client
 }
 
@@ -131,10 +160,23 @@ type Controller struct {
 // controller has no Target for it there is nowhere to send the command. The
 // default *http.Client has a defaultTimeout deadline; opts (e.g.
 // WithHTTPClient) may override it.
+//
+// targets is COPIED, so a caller's later mutation of the map cannot change
+// where an in-flight dispatch goes. A deployment whose drivable set changes at
+// runtime — the adoption-gated one the relay actually runs — passes
+// WithTargetSource instead of a map, and the two are mutually exclusive by
+// construction: the option replaces the closure this map is captured in.
 func New(targets map[string]Target, opts ...Option) *Controller {
+	fixed := make(map[string]Target, len(targets))
+	for id, t := range targets {
+		fixed[id] = t
+	}
 	c := &Controller{
-		targets: targets,
-		client:  &http.Client{Timeout: defaultTimeout},
+		resolve: func(entityID string) (Target, bool) {
+			t, ok := fixed[entityID]
+			return t, ok
+		},
+		client: &http.Client{Timeout: defaultTimeout},
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -150,7 +192,7 @@ func New(targets map[string]Target, opts ...Option) *Controller {
 // failure, and a *deviceplane.ControllerError carries a taxonomy code wherever
 // one fits (REL-112/113/114).
 func (c *Controller) Dispatch(entityID, command string, params map[string]any) error {
-	target, ok := c.targets[entityID]
+	target, ok := c.resolve(entityID)
 	if !ok {
 		// I2: no configured Target is a config/wiring gap (this controller's
 		// own address book has nothing for entityID), not a device that was

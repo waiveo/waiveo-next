@@ -8,9 +8,20 @@
 // corpus-validated decision function conformance/drivers/player1's own driver
 // already exercises for PLY-150-157 — rather than re-derived here a second,
 // independent way (evaluate calls it directly). On top of that shared
-// decision, this package layers three ADDITIONAL pieces of engineering
+// decision, this package layers four ADDITIONAL pieces of engineering
 // policy, paid for against real hardware, that the contract itself does NOT
 // require but that a real relay needs:
+//
+//  0. THE ADOPTION GATE (Config.Adopted, adoption.go). Nothing here fires for
+//     a screen this deployment has not adopted, whatever its device state.
+//     This is listed first because it is checked first and because it is the
+//     one gate that is about OWNERSHIP rather than timing: the target list is
+//     an addressing fact, adoption is the app peer's signed policy statement,
+//     and during coexistence with the legacy stack the two sets are
+//     deliberately different. It is fail-closed — an unwired Adopted adopts
+//     nothing — which is what makes it safe for this capability to be ON by
+//     default (cmd/waiveo-relay/main.go). See AdoptionSet's own doc for why
+//     driving an un-adopted screen is an active failure and not a redundancy.
 //
 //  1. POWER-ON DELAY SIZING (PLY-154 requires SOME bounded settle wait; this
 //     package picks and times one). When a screen transitions from a
@@ -204,8 +215,9 @@ type Target struct {
 	Port int
 }
 
-// Config configures a Keepalive. Targets, at minimum, must be non-empty for
-// Run to watch anything. PollInterval, LaunchDelay, and Channel each default
+// Config configures a Keepalive. Targets is the STARTING set — SetTargets
+// replaces it while Run is running, which is how the binary keeps the watched
+// set equal to the adopted-and-locatable set. PollInterval, LaunchDelay, and Channel each default
 // (defaultPollInterval, defaultLaunchDelay, defaultChannel) when left at
 // their zero value. Controller is required — a nil Controller means Run
 // silently never dispatches a launch (see dispatchLaunch), which is never
@@ -213,7 +225,8 @@ type Target struct {
 // test that only wants to exercise the state machine.
 type Config struct {
 	// Targets maps entity_id -> the ECP address keepalive polls for that
-	// screen. Every key here is one screen this capability watches.
+	// screen. Every key here is one screen this capability watches at the
+	// moment Run starts; SetTargets replaces the set afterwards.
 	Targets map[string]Target
 
 	// PollInterval is how often keepalive's own second Poller (see the
@@ -262,6 +275,21 @@ type Config struct {
 	// device-state gates alone; PLY-155 has NO effect in a relay that leaves
 	// this unwired.
 	ActiveDisplay func(entityID string) string
+
+	// Adopted reports whether entityID is a screen this deployment has
+	// ADOPTED and may therefore drive — the gate that keeps this capability
+	// from re-launching a channel on a Roku that is still the legacy stack's
+	// to manage. In production it is AdoptionSet.IsAdopted, fed from the
+	// signed snapshot's `device_inventory` on every applied generation
+	// (cmd/waiveo-relay/main.go).
+	//
+	// REQUIRED, and fail-closed: nil means NO screen is adopted and evaluate
+	// never fires for anything. That is the opposite of every other optional
+	// field in this Config, and deliberately so — this capability is now on by
+	// default, so an unwired Adopted must mean "drive nothing", never "drive
+	// every reachable Roku". A test exercising the state machine alone opts in
+	// explicitly by supplying a func.
+	Adopted func(entityID string) bool
 }
 
 // pollSnapshot is keepalive's own cached view of one screen's two
@@ -296,10 +324,16 @@ type Keepalive struct {
 	channel       string
 	controller    deviceplane.DeviceController
 	activeDisplay func(entityID string) string
+	adopted       func(entityID string) bool
 
 	mu      sync.Mutex
 	known   map[string]pollSnapshot
 	screens map[string]*screenState
+
+	// poller is the second Poller Run owns, held so SetTargets can re-point it
+	// mid-flight. nil until Run starts, which is why SetTargets is safe to call
+	// before it (the set is stored and Run picks it up).
+	poller *ecppoll.Poller
 
 	// dispatchWG tracks evaluateAll's own per-screen dispatch goroutines (see
 	// its doc). Run never waits on it — a slow dispatch must never delay ctx
@@ -337,6 +371,7 @@ func New(cfg Config) *Keepalive {
 		channel:       channel,
 		controller:    cfg.Controller,
 		activeDisplay: cfg.ActiveDisplay,
+		adopted:       cfg.Adopted,
 		known:         make(map[string]pollSnapshot, len(targets)),
 		screens:       make(map[string]*screenState, len(targets)),
 	}
@@ -352,11 +387,10 @@ func New(cfg Config) *Keepalive {
 // changes at all (see the package doc's "Poll cadence" section). It returns
 // ctx.Err() once ctx is done.
 func (k *Keepalive) Run(ctx context.Context) error {
-	pollTargets := make(map[string]ecppoll.Target, len(k.targets))
-	for id, t := range k.targets {
-		pollTargets[id] = ecppoll.Target{Host: t.Host, Port: t.Port}
-	}
-	poller := ecppoll.New(pollTargets, k.pollInterval)
+	k.mu.Lock()
+	poller := ecppoll.New(pollTargetsOf(k.targets), k.pollInterval)
+	k.poller = poller
+	k.mu.Unlock()
 	go poller.Run(ctx)
 
 	// Drain loop: this goroutine is keepalive's own sole Next() caller (the
@@ -384,6 +418,59 @@ func (k *Keepalive) Run(ctx context.Context) error {
 			k.evaluateAll(now)
 		}
 	}
+}
+
+// SetTargets replaces the watched set while Run is running, and is how this
+// capability follows ADOPTION instead of a set frozen at boot.
+//
+// Without it the capability was on by default and watched a map fixed at
+// construction — in the deployment it was turned on FOR, the deployment-override
+// map, which since the device-control track is an escape hatch rather than the
+// normal path. A relay whose screens are adopted and discovered normally
+// therefore ran a keep-alive over an empty set: switched on, self-healing
+// nothing, and silent about it. The binary now feeds it the same
+// adopted-and-locatable set the state poller follows (cmd/waiveo-relay's
+// devicePlaneSync), so "what this relay keeps alive" cannot drift from "what
+// this relay drives".
+//
+// A screen that LEAVES the set has its cached snapshot and its per-screen
+// progress dropped, not merely stopped being polled. evaluateAll walks the
+// cache, not the target map, so a retained entry would keep re-evaluating a
+// stale reading — and could fire a recovery launch at a screen this relay has
+// just been told it may no longer drive, which is the exact failure the
+// adoption gate exists to prevent. Dropping the progress also means a screen
+// that comes back is re-confirmed from scratch rather than resuming a streak
+// accumulated before it left.
+func (k *Keepalive) SetTargets(targets map[string]Target) {
+	next := make(map[string]Target, len(targets))
+	for id, t := range targets {
+		next[id] = t
+	}
+
+	k.mu.Lock()
+	k.targets = next
+	for id := range k.known {
+		if _, still := next[id]; !still {
+			delete(k.known, id)
+			delete(k.screens, id)
+		}
+	}
+	poller := k.poller
+	k.mu.Unlock()
+
+	if poller != nil {
+		poller.SetTargets(pollTargetsOf(next))
+	}
+}
+
+// pollTargetsOf projects this package's Target onto the poller's own, the one
+// place the two shapes are adapted.
+func pollTargetsOf(targets map[string]Target) map[string]ecppoll.Target {
+	out := make(map[string]ecppoll.Target, len(targets))
+	for id, t := range targets {
+		out[id] = ecppoll.Target{Host: t.Host, Port: t.Port}
+	}
+	return out
 }
 
 // recordObservation updates obs.Entity's cached (power_mode, app_type)
@@ -496,6 +583,23 @@ func (k *Keepalive) evaluate(entityID, powerMode, appType string, now time.Time)
 	if !ok {
 		s = &screenState{}
 		k.screens[entityID] = s
+	}
+
+	if k.adopted == nil || !k.adopted(entityID) {
+		// The adoption gate (Config.Adopted, AdoptionSet's own doc): this
+		// relay can REACH this Roku — that is what put it in the target list —
+		// but reachability is not permission, and during coexistence the
+		// legacy stack is still watchdogging screens on this same LAN.
+		//
+		// Checked FIRST, before any state is folded in, and the screen's state
+		// is reset while it is un-adopted: a screen that is adopted mid-streak
+		// must start its confirmation fresh rather than fire immediately on
+		// progress accumulated while it was somebody else's to manage.
+		s.wasPoweredOn = false
+		s.poweredOnAt = time.Time{}
+		s.homeStreak = 0
+		s.launched = false
+		return false
 	}
 
 	if powerMode != poweredOnRawValue {

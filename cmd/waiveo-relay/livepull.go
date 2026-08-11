@@ -11,8 +11,10 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/automationhost"
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
+	"github.com/maaxton/waiveo-next/internal/relay/keepalive"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 	"github.com/maaxton/waiveo-next/internal/relay/schedulehost"
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
 // pullFunc pulls one verified desired-state generation, given the caller's
@@ -179,6 +181,40 @@ type rePuller struct {
 	driver *scheduleDriver
 	host   *automationhost.Host
 
+	// Both of the following consume the SAME applied generation's
+	// `device_inventory` (REL-063) — the app peer's adopted-device set — and are
+	// refreshed HERE, on every apply, rather than only at boot. Adoption is an
+	// authored decision: an operator who adopts a device this afternoon expects
+	// the relay to act on it this afternoon, and a boot-only set would leave that
+	// decision inert until the process next restarted — the exact staleness class
+	// this live-apply path exists to close. It rides the generation apply rather
+	// than a clock of its own because adoption IS desired state: a device adopted
+	// in the console becomes drivable the moment the generation carrying that
+	// decision applies, and one un-adopted stops being drivable at the same
+	// instant, with no window where the two views disagree.
+
+	// applyInventory installs the adopted-device set into the relay's
+	// drivable-device gate and the pollers configured from it.
+	//
+	// Optional (nil in tests that drive only the serving side).
+	applyInventory func(wire.DeviceInventory)
+
+	// adoption is the screen keep-alive capability's adoption gate
+	// (internal/relay/keepalive). nil when keep-alive is disabled — nothing
+	// consults the set then, and applying to it would only log.
+	adoption *keepalive.AdoptionSet
+
+	// geo re-points the live consumers of the site's effective geo — the
+	// automation engine's location and a native slide's weather coordinates —
+	// at each freshly adopted site_binding (see siteGeo). Unlike everything
+	// above it is driven from adoptSite, not from an apply: the site arrives on
+	// the hello-ack, one handshake BEFORE the pull, and an offline boot's
+	// missing coordinates must be corrected the moment a connection exists
+	// rather than waiting for the next authored generation.
+	//
+	// Optional (nil in tests that drive only the serving side).
+	geo *siteGeo
+
 	lastGen int64
 	// lastHash is the section hash of the last snapshot whose apply-time effects
 	// actually ran — REL-070's comparison value. Empty until the first apply,
@@ -188,15 +224,29 @@ type rePuller struct {
 	lastHash string
 }
 
-// adoptSite adopts the app peer's authoritative site_binding (REL-036) for
-// every FUTURE schedule-resolver apply — the reconnect supervisor calls this
-// with each fresh connection's hello-ack site before its pull-on-reconnect,
-// so a site rebound while the relay was offline takes effect on the very
-// next apply. Serialized under the same lock every tick applies under.
+// adoptSite adopts the app peer's authoritative site_binding (REL-036) — the
+// reconnect supervisor calls this with each fresh connection's hello-ack site
+// before its pull-on-reconnect, so a site rebound while the relay was offline
+// takes effect on the very next apply. Serialized under the same lock every
+// tick applies under.
+//
+// It adopts the binding into BOTH of its consumers, and that pairing is the
+// point rather than a convenience. The schedule-resolver site (driver.site) was
+// re-adopted here from the start; the site's GEO — the engine's location and a
+// slide's weather coordinates — was installed once at boot and never again, so
+// a relay that booted with no app peer (offline-serve, REL-055/061) kept asking
+// the weather at the zero binding's (0,0) forever, correcting itself only on a
+// restart. There is exactly one moment a fresh authoritative site exists, and
+// this is it: everything derived from the site is re-derived here, together, or
+// the next consumer added will inherit the same staleness bug.
 func (p *rePuller) adoptSite(site hello.SiteBinding) {
 	p.mu.Lock()
 	p.driver.site = site
 	p.mu.Unlock()
+	// Outside p.mu: geo's own consumers take their own locks (the player
+	// server's, the automation host's), and nothing in adoptSite's own critical
+	// section is read by them.
+	p.geo.adopt(site)
 }
 
 // tick performs one live pull and returns whether it applied a new generation.
@@ -273,6 +323,24 @@ func (p *rePuller) tick(ctx context.Context) bool {
 	// process's life — a screen needing a grant this live pull just carried
 	// would never see it become redeemable.
 	p.driver.srv.SetPairingGrants(applied.Generation, applied.PairingGrants)
+
+	// Install this generation's adopted-device set (REL-063) into BOTH consumers,
+	// from the SAME verified generation. Both calls are bracketed deliberately:
+	//
+	//   - AFTER the serving state above, because adopting a screen is permission
+	//     to DRIVE it, and driving it before this generation's program is
+	//     installed would re-launch a channel into the previous generation's
+	//     content.
+	//   - BEFORE the edge rules reload below, because a reloaded rule can fire a
+	//     device_command on the very next observation, and it must resolve
+	//     against the adoption decision of the generation that carries it, not
+	//     the previous one's.
+	if p.applyInventory != nil {
+		p.applyInventory(applied.DeviceInventory)
+	}
+	if p.adoption != nil {
+		p.adoption.Apply(applied.Generation, applied.DeviceInventory)
+	}
 
 	if err := p.host.ApplyEdgeRules(applied.EdgeRules, int(applied.Generation)); err != nil {
 		// ApplyEdgeRules is fail-closed per rule (a bad rule is skipped, not fatal);

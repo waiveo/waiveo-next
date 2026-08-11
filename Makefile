@@ -1,4 +1,4 @@
-.PHONY: dev dev-up dev-down dev-key smoke web-dev web-check web-build web-sse-check web-e2e example-pack
+.PHONY: dev dev-up dev-down dev-key smoke web-dev web-check web-build web-sse-check web-e2e example-pack player-sideload
 # Repo-local run dir (git-ignored): pidfiles + the built binaries live here, so teardown
 # is exact (by PID, not `pkill -f`) and nothing lands in a shared /tmp.
 RUNDIR := $(CURDIR)/.dev
@@ -45,6 +45,11 @@ dev-up: dev-down
 	@# exactly as it is. See scripts/devcred's package doc.
 	@$(MAKE) --no-print-directory dev-key
 	@{ $(FEEDER_BIN) >$(RUNDIR)/feeder.log 2>&1 & echo $$! > $(RUNDIR)/feeder.pid; }
+	@# This relay binds loopback (the WAIVEO_RELAY_LISTEN default), which is what
+	@# keeps `make dev` from multicasting: discovery reads its default off the
+	@# listen address, so a dev run does not M-SEARCH the LAN the laptop is on and
+	@# does not probe whatever answers. There is deliberately no opt-out flag here
+	@# to forget — see discoveryEnabled in cmd/waiveo-relay/main.go.
 	@# WAIVEO_RELAY_DEMO_OBSERVE drives one synthetic screen-on at boot so the demo
 	@# edge rule fires end to end (its automation.run rides the telemetry channel to
 	@# the app event log) — the live input the observability probe reads back. The
@@ -71,6 +76,16 @@ smoke:
 example-pack:
 	@mkdir -p $(RUNDIR) && chmod 700 $(RUNDIR)
 	@go run ./scripts/examplepack -out $(RUNDIR)/menu-board.pack.zip
+
+# Push the current player-v3 build onto the screen fleet (scripts/fleetsideload).
+# The roster defaults to $WAIVEO_RELAY_ECP_TARGETS — the same screens the relay
+# drives — and credentials come from the dev-lab env file; neither is ever
+# spelled here. Override anything by passing flags: `make player-sideload
+# SIDELOAD_ARGS="-devices hanger=192.0.2.51"`. Start with -dry-run.
+#
+# Not part of `make dev`: this touches real hardware.
+player-sideload:
+	@go run ./scripts/fleetsideload $(SIDELOAD_ARGS)
 
 dev-down:
 	@[ -f $(RUNDIR)/feeder.pid ] && kill $$(cat $(RUNDIR)/feeder.pid) 2>/dev/null || true

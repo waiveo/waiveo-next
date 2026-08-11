@@ -114,6 +114,15 @@ func (r *Registry) ApplyCandidates(relayID string, candidates []wire.DeviceCandi
 			// label selector: a relay has no field to set them and gets an
 			// empty map, never a nil one — openapi requires the member present.
 			Labels: map[string]string{},
+			// The discovered reachability/identification facts, carried
+			// through as reported. They are DESCRIPTIVE, not authoritative:
+			// nothing here is an identifier, nothing keys a row, and nothing
+			// an authorization decision reads — so a relay writing them can
+			// mislead an operator's eyes but cannot reach anything the
+			// header's threat argument protects.
+			Address: c.Address,
+			Model:   c.Model,
+			Serial:  c.Serial,
 		}
 		for _, e := range c.Entities {
 			entityRowID := deviceid.Entity(r.site, c.Driver, c.NativeID, e.Key)
@@ -192,6 +201,19 @@ func validateCandidate(c wire.DeviceCandidate) error {
 		return err
 	}
 	if err := checkField("name", c.Name, maxNameBytes, false); err != nil {
+		return err
+	}
+	// The three learned facts are optional but still bounded and still
+	// UTF-8-checked: they are rendered into a JSON response an operator reads,
+	// and checkField's own doc is the argument for why "merely descriptive" is
+	// not a reason to skip the check.
+	if err := checkField("address", c.Address, maxIdentityFieldBytes, false); err != nil {
+		return err
+	}
+	if err := checkField("model", c.Model, maxIdentityFieldBytes, false); err != nil {
+		return err
+	}
+	if err := checkField("serial", c.Serial, maxIdentityFieldBytes, false); err != nil {
 		return err
 	}
 	if len(c.Entities) > maxEntitiesPerDevice {

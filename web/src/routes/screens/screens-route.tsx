@@ -15,6 +15,8 @@ import {
 } from "@/api";
 import screensPageDoc from "./page.uis.json";
 import { PairingPanel } from "./pairing-panel";
+import { ScopeTreePanel } from "./scope-tree-panel";
+import { BulkAssignPanel } from "./bulk-assign-panel";
 
 /**
  * The Screens route — the fleet's scope-nodes of kind `screen`, as a DOGFOODED
@@ -90,6 +92,11 @@ export default function ScreensRoute({ api }: { api?: WaiveoApi }) {
   // loaded from the tree — NOT inferred from an existing screen's parent (which
   // is absent when the list is empty and wrong when the org spans several sites).
   const [parents, setParents] = useState<ScopeNode[]>([]);
+  // The WHOLE tree — org, sites, groups and screen nodes — for the scope-tree
+  // panel. The two lists above are filtered views for the two things that need
+  // one; the tree needs the shape, and a shape assembled from filtered lists
+  // would be missing exactly the org node the "Add site" affordance hangs off.
+  const [tree, setTree] = useState<ScopeNode[]>([]);
   // The parent the next "New" attaches under; defaults to the sole/first candidate
   // and is chosen explicitly via the picker when the org has more than one site.
   const [targetParentId, setTargetParentId] = useState<string | null>(null);
@@ -127,16 +134,19 @@ export default function ScreensRoute({ api }: { api?: WaiveoApi }) {
 
   const load = useCallback(async () => {
     try {
-      const [rows, parentRows] = await Promise.all([
+      const [rows, parentRows, treeRows] = await Promise.all([
         collectPages<ScopeNode>((cursor) => client.scopeNodes.list({ selector: "kind=screen", cursor })),
         collectPages<ScopeNode>((cursor) => client.scopeNodes.list({ selector: PARENT_SELECTOR, cursor })),
+        collectPages<ScopeNode>((cursor) => client.scopeNodes.list({ cursor })),
       ]);
       setScreens(rows);
       setParents(parentRows);
+      setTree(treeRows);
       setLoadError(null);
     } catch (err) {
       setScreens([]);
       setParents([]);
+      setTree([]);
       setLoadError(err instanceof ApiError ? (err.detail ?? err.code) : "The service is unreachable.");
     }
   }, [client]);
@@ -286,6 +296,11 @@ export default function ScreensRoute({ api }: { api?: WaiveoApi }) {
             Couldn't load screens — {loadError}
           </p>
         ) : null}
+        {/* The hierarchy itself, and the only surface that can author it. It sits
+            ABOVE the pairing panel and the placements list because both of those
+            need a site or a group to exist first — on a fresh (or emptied) box
+            this is literally the first thing an operator must use. */}
+        <ScopeTreePanel api={client} nodes={tree} onChanged={reload} />
         {/* grammar-gap: the list-detail grammar's `newAction` is a bare verb with a
             static itemDefault — it cannot carry the required parent choice, and a
             screen's parent is immutable after create (ScopeNodeUpdate has no
@@ -331,6 +346,10 @@ export default function ScreensRoute({ api }: { api?: WaiveoApi }) {
             new Map([...parents, ...(screens ?? [])].map((n) => [n.id, n.name] as [string, string]))
           }
         />
+        {/* The fleet-wide gesture: point a group of screens at a schedule. It
+            reads the same site/group list the pairing panel places new screens
+            under, so "where a screen can go" is one answer on this page. */}
+        <BulkAssignPanel api={client} nodes={parents} onChanged={reload} />
         <h2 className="text-lg font-semibold">Screen placements</h2>
         <main className="min-w-0">
           {screens === null ? (

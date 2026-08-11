@@ -62,6 +62,7 @@ reader nothing and costs a caller the clearer of the two answers.
 | DAT-040 | `contracts/data-model-1.md#scheduling-core-playlist` | - | TBD-wave1 |
 | DAT-041 | `contracts/data-model-1.md#scheduling-core-playlist` | - | TBD-wave1 |
 | DAT-042 | `contracts/data-model-1.md#scheduling-core-playlist` | - | TBD-wave1 |
+| DAT-043 | `contracts/data-model-1.md#scheduling-core-cast` | - | TBD-wave1 |
 | DAT-050 | `contracts/data-model-1.md#scheduling-core-schedule` | `DAT-121-valid-misfire-catchup-vs-skip-by-kind`, `DAT-053-valid-screen-schedule-precedence-over-site` | covered |
 | DAT-051 | `contracts/data-model-1.md#scheduling-core-schedule` | `DAT-051-valid-site-schedule-cascades-to-screen`, `DAT-111-valid-layered-daypart-holiday-over-base`, `DAT-053-valid-equal-priority-specificity-nearer-node-wins`, `DAT-075-valid-masked-preset-fires-on-fall-through` | covered |
 | DAT-052 | `contracts/data-model-1.md#scheduling-core-schedule` | `DAT-118-valid-terminal-default-blank` | covered |

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
 // Error is a data-model/1 validation failure: the contract's own error code (the
@@ -27,6 +28,7 @@ func (e *Error) Error() string { return e.Code + ": " + e.Message }
 // (DAT-101) that no typed struct would otherwise surface.
 type RawRows struct {
 	Playlists       []json.RawMessage
+	Casts           []json.RawMessage
 	Schedules       []json.RawMessage
 	ValidityWindows []json.RawMessage
 	Dayparts        []json.RawMessage
@@ -40,6 +42,7 @@ type RawRows struct {
 // omitted from the set.
 type RowSet struct {
 	Playlists       []Playlist
+	Casts           []Cast
 	Schedules       []Schedule
 	ValidityWindows []ValidityWindow
 	Dayparts        []Daypart
@@ -146,6 +149,36 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 			errs = append(errs, *e)
 		}
 		rs.Playlists = append(rs.Playlists, v)
+	}
+	for _, r := range raw.Casts {
+		if e := checkPackOwnership(r); e != nil {
+			errs = append(errs, *e)
+			continue
+		}
+		var v Cast
+		if !decode(r, &v, &errs) {
+			continue
+		}
+		if e := CheckRowID(v.ID, "id"); e != nil {
+			errs = append(errs, *e)
+		}
+		if e := checkRowPlacement(v.ScopeNode, "cast"); e != nil {
+			errs = append(errs, *e)
+		}
+		// A cast is the row an operator PICKS from a list, so an unnamed one is
+		// unfindable in the only interface that reaches it. The api layer's
+		// declared schema states the same rule for a request body; this is what
+		// makes it true of every writer, including a seed and a restore, which
+		// never pass through that schema.
+		if strings.TrimSpace(v.Name) == "" {
+			errs = append(errs, Error{
+				Field:   "name",
+				Code:    "CAST_NAME_MISSING",
+				Message: "a cast row MUST carry a non-empty name (DAT-043)",
+			})
+		}
+		errs = append(errs, checkCastSlides(v.Slides)...)
+		rs.Casts = append(rs.Casts, v)
 	}
 	for _, r := range raw.Schedules {
 		if e := checkPackOwnership(r); e != nil {
@@ -277,6 +310,72 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 	return rs, errs
 }
 
+// checkCastSlides enforces DAT-043's slide rules over one cast's slides, and
+// reports EVERY failing slide rather than the first — a cast is a document an
+// operator edits as a whole, so an editor that had to re-submit once per bad
+// slide to discover the next one is the API-013 multi-error answer thrown away.
+//
+// The rules:
+//   - the slides array is non-empty. A cast with no slides plays nothing, and a
+//     playlist item referencing it would contribute no content at all: a screen
+//     silently showing less than its playlist says, which is the failure mode
+//     hardest to notice from the outside.
+//   - every slide carries an id, unique within its own cast (never across
+//     casts — see CastSlide's own doc for why it is a document-local name).
+//   - a stated duration_ms is positive. A zero is the absent value (omitempty
+//     writes no key for it) and a negative is a dwell time nothing can honour.
+//   - every slide's layers pass wire.ValidateAuthoredSlideLayers — the SHARED
+//     slide-layer gate, in its authoring form: identical rules to the one a
+//     relay applies before serving, minus the derived image `url` that does not
+//     exist yet at authoring time. Reusing it is what makes "a cast the store
+//     accepted" and "a slide a player will actually be served" the same set;
+//     a private copy of the geometry rules here would drift into accepting
+//     slides that are dropped, unexplained, on the way to a screen.
+func checkCastSlides(slides []CastSlide) []Error {
+	if len(slides) == 0 {
+		return []Error{{
+			Field:   "slides",
+			Code:    "CAST_SLIDES_EMPTY",
+			Message: "a cast row's slides array MUST be non-empty; a cast with no slides plays nothing (DAT-043)",
+		}}
+	}
+	var errs []Error
+	seen := make(map[string]bool, len(slides))
+	for i, s := range slides {
+		switch {
+		case strings.TrimSpace(s.ID) == "":
+			errs = append(errs, Error{
+				Field:   fmt.Sprintf("slides[%d].id", i),
+				Code:    "CAST_SLIDE_ID_INVALID",
+				Message: "every slide MUST carry a non-empty id, unique within its cast (DAT-043)",
+			})
+		case seen[s.ID]:
+			errs = append(errs, Error{
+				Field:   fmt.Sprintf("slides[%d].id", i),
+				Code:    "CAST_SLIDE_ID_INVALID",
+				Message: fmt.Sprintf("slide id %q appears more than once; a slide id MUST be unique within its cast (DAT-043)", s.ID),
+			})
+		default:
+			seen[s.ID] = true
+		}
+		if s.DurationMS < 0 {
+			errs = append(errs, Error{
+				Field:   fmt.Sprintf("slides[%d].duration_ms", i),
+				Code:    "CAST_SLIDE_DURATION_INVALID",
+				Message: "a slide's duration_ms, when stated, MUST be positive; omit it to inherit the playlist item's own duration (DAT-043)",
+			})
+		}
+		if err := wire.ValidateAuthoredSlideLayers(s.Layers); err != nil {
+			errs = append(errs, Error{
+				Field:   fmt.Sprintf("slides[%d].layers", i),
+				Code:    "CAST_SLIDE_LAYERS_INVALID",
+				Message: err.Error() + " (DAT-043)",
+			})
+		}
+	}
+	return errs
+}
+
 // CheckRowID enforces DAT-005a: a row's own identity field — id for every kind
 // but preset-batch, whose identity field is preset_id (DAT-005's byte-exact
 // exception) — MUST be a syntactically valid canonical ULID. It is the one
@@ -342,6 +441,34 @@ func validateReferences(rs RowSet) []Error {
 	presetIDs := map[string]bool{}
 	for _, p := range rs.PresetBatches {
 		presetIDs[p.PresetID] = true
+	}
+	castIDs := map[string]bool{}
+	for _, c := range rs.Casts {
+		castIDs[c.ID] = true
+	}
+
+	// A playlist item that names a cast (DAT-041 `source: "cast"`) MUST name one
+	// that is present. This is the same referential rule the daypart→playlist and
+	// fallback→playlist links already carry, and it earns its place for the same
+	// reason from the other direction: because ValidateRows runs over the RESULTING
+	// full row-set on every write, it is also what refuses the DELETE of a cast a
+	// playlist still plays — otherwise the playlist would keep the reference and
+	// the screen would quietly lose those slides from its rotation.
+	for _, p := range rs.Playlists {
+		for i, item := range p.Items {
+			if item.Source != PlaylistSourceCast {
+				continue
+			}
+			if item.CastID == "" || !castIDs[item.CastID] {
+				errs = append(errs, Error{
+					Field: fmt.Sprintf("items[%d].cast_id", i),
+					Code:  "REFERENCE_INVALID",
+					Message: fmt.Sprintf(
+						"playlist %s item %d declares source %q but its cast_id does not reference an existing cast row (DAT-041/DAT-043)",
+						p.ID, i, PlaylistSourceCast),
+				})
+			}
+		}
 	}
 
 	for _, s := range rs.Schedules {

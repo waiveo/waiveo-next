@@ -2,7 +2,8 @@
 // desired-state movement (REL-050–056): VERIFYING a received
 // `state.snapshot` against the relay's persisted, enrollment-anchored
 // trust anchor (REL-071, `#28`), enforcing generation monotonicity
-// (REL-052), and persisting `{generation, hash, screen_programs}` as
+// (REL-052), and persisting
+// `{generation, hash, screen_programs, revoked, device_inventory}` as
 // last-applied (REL-055, internal/relay/identity). The bytes arrive over
 // the persistent connection (internal/relay/relayconn's state.pull —
 // relayconn.SnapshotFromFrame hands VerifyAndApply exactly the pair it
@@ -189,6 +190,41 @@ type Applied struct {
 	// discipline requires. An empty-but-typed schedule (today's first-photon
 	// state) carries all seven arrays present and empty.
 	Schedule wire.ScheduleSection
+
+	// DeviceInventory is the verified snapshot's sections.device_inventory
+	// (REL-063/064), carried unmodified — the app peer's ADOPTED device set
+	// (`devices`) and the pack-declared discovery patterns (`pack_match_patterns`),
+	// each entry raw JSON for the same byte-identical-remarshal reason every
+	// other opaque section is.
+	//
+	// `devices` is the relay's ONLY authority for what it may drive. The
+	// candidate store knows what is on the LAN; only this section says which of
+	// those an operator adopted, which of their entities are enabled, and under
+	// what identity — which is why it has to reach the process rather than stop
+	// at the verify boundary. It rode the signed snapshot to the store and was
+	// then dropped on the way out, so the layer that gates device control had
+	// nothing to gate on and the gate degenerated to an env var
+	// (internal/relay/devicetargets).
+	//
+	// (REL-063/064), carried unmodified — the app peer's ADOPTED set, which
+	// REL-063 is explicit is "the adoption decision the app authors and ships
+	// down, never a copy of what a relay discovered".
+	//
+	// It is carried because adoption is the only signal in a snapshot that
+	// answers "may this relay drive this entity?", and something has to ask.
+	// internal/relay/keepalive is the first caller: it re-launches a screen's
+	// channel, and doing that to a screen this deployment has NOT adopted is
+	// not a harmless no-op — during coexistence the legacy stack is
+	// watchdogging its own screens, and two controllers relaunching one Roku
+	// is a known, observed flapping failure. `enabled` on the entity is part
+	// of the same statement, so a device adopted but deliberately switched off
+	// is not driven either.
+	//
+	// Carried as the snapshot decoded it, raw arrays included, for the same
+	// reason `edge_rules` is: a consumer decodes the members it needs, and a
+	// member a future minor adds survives here untouched rather than being
+	// dropped by a typed re-marshal.
+	DeviceInventory wire.DeviceInventory
 }
 
 // ServedProgram returns the relay's persisted last-applied screen_programs
@@ -250,6 +286,45 @@ func ServedRevocation(store *identity.Store) ([]string, error) {
 	return revoked, nil
 }
 
+// ServedDeviceInventory returns the relay's persisted last-applied
+// `device_inventory` section (REL-063/064) from store, decoded — the
+// adopted-set counterpart of ServedProgram and ServedRevocation, read on the
+// same OFFLINE boot path for the same reason, and completing the set of things
+// the last-applied row can restate without an app peer.
+//
+// Its sole input is the durable operational store: no network I/O, no app peer.
+// That is what makes the relay's device plane — command dispatch, ECP state
+// polling, and screen keep-alive alike — come up on the adopted set it last
+// synced rather than on nothing, after a restart it did not choose.
+//
+// The asymmetry with the other two is worth stating, because it is why this
+// read is load-bearing rather than tidy. An unrestored screen_programs shows a
+// screen the terminal default, and an unrestored revoked set is caught by the
+// app peer the moment it reconnects. An unrestored ADOPTED set is silent in
+// both directions: every consumer of it is fail-closed, so the relay drives
+// nothing, reports nothing wrong, and looks healthy — while the screens whose
+// channel keep-alive exists to relaunch (player/1 PLY-150-157) sit at the Roku
+// Home screen showing nothing. The boot where that matters most is precisely a
+// power outage, which is also the boot where the app peer is least likely to be
+// up first.
+//
+// The returned inventory is Normalized, so a caller ranging over its arrays
+// sees the section's own empty-array shape rather than a nil (REL-060).
+func ServedDeviceInventory(store *identity.Store) (wire.DeviceInventory, error) {
+	if store == nil {
+		return wire.DeviceInventory{}, fmt.Errorf("desiredstate: ServedDeviceInventory: store must not be nil")
+	}
+	raw, err := store.LastAppliedDeviceInventory()
+	if err != nil {
+		return wire.DeviceInventory{}, fmt.Errorf("desiredstate: ServedDeviceInventory: read persisted device_inventory: %w", err)
+	}
+	var inv wire.DeviceInventory
+	if err := json.Unmarshal(raw, &inv); err != nil {
+		return wire.DeviceInventory{}, fmt.Errorf("desiredstate: ServedDeviceInventory: decode persisted device_inventory: %w", err)
+	}
+	return inv.Normalized(), nil
+}
+
 // extractApplied builds VerifyAndApply's returned Applied from a verified
 // snapshot's sections. ScreenPrograms carries the whole section; the flat
 // convenience fields (ScreenID, ProgramRevision, Priority, Display, Image)
@@ -300,6 +375,7 @@ func extractApplied(generation int64, hash string, sections wire.Sections) (Appl
 		ContentOrigin:   sections.RevocationAndSite.ContentOrigin,
 		ContentURLKey:   decodeContentURLKey(sections.RevocationAndSite.ContentURLKey),
 		Schedule:        sections.Schedule,
+		DeviceInventory: sections.DeviceInventory,
 	}, nil
 }
 

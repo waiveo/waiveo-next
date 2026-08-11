@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/devices"
+	"github.com/maaxton/waiveo-next/internal/app/store"
 	feederrelayconn "github.com/maaxton/waiveo-next/internal/feeder/relayconn"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/apiselector"
@@ -16,9 +17,10 @@ import (
 )
 
 // devices.go is the device plane's api/1 surface: the two read families
-// (openapi listDevices / listEntities) and the one mutating operation
-// (sendEntityCommand), which carries an operator's command down the relay/1
-// persistent connection the target entity's relay already holds open.
+// (openapi listDevices / listEntities) and the two mutating operations —
+// sendEntityCommand, which carries an operator's command down the relay/1
+// persistent connection the target entity's relay already holds open, and
+// adoptDevice, which turns a discovered device into one this platform controls.
 //
 // Neither read family goes through the generic resourceConfig mount: that
 // machinery is built for authored, store-backed resources with a revision and a
@@ -73,12 +75,13 @@ func WithDevicePlane(registry *devices.Registry, dispatcher CommandDispatcher) O
 	}
 }
 
-// mountDevicePlane registers the device plane's routes. The command path's
-// literal `commands` segment is unambiguous against the entities list — the
-// generic list registers only `GET /entities`, and this pattern is a POST on a
-// distinct three-segment shape.
+// mountDevicePlane registers the device plane's routes. The action paths'
+// literal trailing segments are unambiguous against the lists — the generic
+// lists register only `GET /devices` and `GET /entities`, and each of these is a
+// POST on a distinct three-segment shape.
 func (srv *server) mountDevicePlane(rt *router) {
 	rt.HandleFunc("GET "+apiPrefix+"/devices", srv.listDevices)
+	rt.HandleFunc("POST "+apiPrefix+"/devices/{id}/adopt", srv.adoptDevice)
 	rt.HandleFunc("GET "+apiPrefix+"/entities", srv.listEntities)
 	rt.HandleFunc("POST "+apiPrefix+"/entities/{id}/commands", srv.sendEntityCommand)
 }
@@ -175,6 +178,105 @@ func listRegistryPage[T any](
 	}
 
 	writeJSONValue(w, http.StatusOK, apihttp.Page(resourceType, window, limit, idOf))
+}
+
+// ---- adopt ------------------------------------------------------------------
+
+// adoptDevice handles POST /api/v1/devices/{id}/adopt (openapi adoptDevice): it
+// promotes a device the relays have DISCOVERED into one this platform CONTROLS,
+// by creating the durable adoption record that compiles into the signed
+// desired-state `device_inventory` its relay is sent (relay/1 REL-063).
+//
+// The two halves of the device plane meet here, and the split is the whole point
+// (see the header of identityrows.go): the relay is authoritative for what
+// exists on its LAN, this API is authoritative for what has been adopted, and
+// nothing a relay reports can adopt anything. This is the one operation that
+// crosses from the first to the second, and it is an operator action every time.
+//
+// Idempotent by construction — adopting an adopted device changes nothing and
+// answers 200 — and it additionally honors Idempotency-Key like every other
+// mutating POST (API-050/052), so a client that retries a timed-out request
+// replays the recorded outcome rather than re-deriving it.
+func (srv *server) adoptDevice(w http.ResponseWriter, r *http.Request) {
+	// No request body is declared for this operation, so nothing is read or
+	// validated from one. The empty slice is still what the Idempotency-Key
+	// machinery hashes as this request's body (API-051's fingerprint), which is
+	// correct: two adopts of the same device by the same principal on the same
+	// path ARE the same request.
+	srv.idempotent(w, r, nil, func(w http.ResponseWriter) { srv.adoptDeviceExec(w, r) })
+}
+
+// adoptDeviceExec is the adoption's actual work, executed once per fresh
+// (non-replayed) request under the Idempotency-Key guard in adoptDevice.
+func (srv *server) adoptDeviceExec(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	// Resolve against the read model first, for the same reason a command does:
+	// a device nobody has reported is a 404 before anything is written, and the
+	// visible-set check answers an out-of-scope device identically so that the
+	// refusal itself cannot be used to confirm the device exists (scopeview.go).
+	var device devices.Device
+	found := false
+	if srv.devices != nil {
+		device, found = srv.devices.Device(id)
+	}
+	if !found {
+		writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No device exists with this identifier.")
+		return
+	}
+	view, viewErr := srv.scopeView(r)
+	if viewErr != nil {
+		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
+		return
+	}
+	if !view.canRead(device.ScopeNode) {
+		writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No device exists with this identifier.")
+		return
+	}
+	// Adoption WRITES a durable row and changes what the relay is told to do, so
+	// it is authorized as a write at the device's own placement (SEC-005). 403
+	// rather than 404 — the caller has just been shown they may see this device,
+	// so the refusal reports only their own authority.
+	if !view.canWrite(device.ScopeNode) {
+		writeProblem(w, r, http.StatusForbidden, "FORBIDDEN", "Forbidden", unauthorizedWriteDetail)
+		return
+	}
+
+	if _, err := srv.store.AdoptDiscoveredDevice(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrDiscoveredDeviceUnknown) {
+			// The read model knows this device but nothing durable mirrors it —
+			// the narrow window between a relay's first report and the mirror
+			// write, or a deployment running no mirror at all. Answered as the
+			// retryable UNAVAILABLE rather than a 404: the device demonstrably
+			// exists (it is in the list the caller just read it from), so
+			// reporting it as absent would be a lie the client would cache.
+			writeProblem(w, r, http.StatusServiceUnavailable, "UNAVAILABLE", "Service Unavailable",
+				"This device has been reported but not yet recorded; retry shortly.")
+			return
+		}
+		var verr *store.ValidationError
+		if errors.As(err, &verr) {
+			// The adoption record the discovered facts build did not validate —
+			// in practice a device reported under an identity another adopted row
+			// already claims (DEVICE_IDENTITY_DUPLICATE). 422 with the field
+			// errors, the same answer the /adopted-devices family gives for the
+			// same body, since it is the same body.
+			apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
+				"VALIDATION_FAILED", "Validation Failed",
+				"One or more fields failed validation.", validationExtra(verr.Errors))
+			return
+		}
+		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
+		return
+	}
+
+	// The durable record is committed; teach the read model so the very response
+	// to this request reports the device as adopted. Ordering matters: marking
+	// first would leave the list claiming an adoption that a failed write never
+	// made.
+	srv.devices.MarkAdopted(id)
+	adopted, _ := srv.devices.Device(id)
+	writeJSONValue(w, http.StatusOK, adopted)
 }
 
 // ---- command --------------------------------------------------------------

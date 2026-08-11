@@ -38,6 +38,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/shared/paircode"
 	"github.com/maaxton/waiveo-next/internal/shared/tlsboot"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
+	"github.com/maaxton/waiveo-next/internal/slidelive"
 )
 
 // channelTokenTTL bounds a minted channel token's lifetime at issuance —
@@ -282,6 +283,40 @@ type Server struct {
 	// own render reports be observed end to end today.
 	renderStarts []RenderStartRequest
 	renderEnds   []RenderEndRequest
+
+	// slideLive is the live data a native slide's server-resolved widgets are
+	// filled from as a Lease is issued (internal/slidelive) — installed once by
+	// the deployment via SetSlideLive, never per screen, exactly like the
+	// signing key above and for the same reason: it is a property of the RELAY
+	// (its site coordinates, its device-plane view), identical for every screen
+	// it serves.
+	//
+	// Its zero value is fully valid and is what every test and conformance
+	// construction leaves it at: a Sources with no weather and no entity source
+	// resolves every live widget to its unavailable placeholder, so a slide
+	// still draws and no construction has to know this field exists.
+	slideLive slidelive.Sources
+}
+
+// SetSlideLive installs the live data source a native slide's `weather` and
+// `entity` layers are resolved against as this relay issues Leases
+// (internal/slidelive — see that package's doc for why resolution happens at
+// issuance rather than in either upstream projection).
+//
+// A deployment calls it at boot and AGAIN on every site adoption, because the
+// coordinates it carries come from the app peer's authoritative site_binding
+// (REL-036) and a relay that booted into offline-serve (REL-055/061) has not
+// been told them yet. Re-calling is the supported way to correct that: this is
+// a wholesale install under the lock, so the newest call wins and the next
+// Lease resolves against it. Until a site with real coordinates is adopted —
+// and forever, on a relay with neither source configured — every live widget
+// shows slidelive.Unavailable, which is the correct thing for a relay that
+// genuinely cannot answer (slidelive.Sources.HasGeo: coordinates it does not
+// have are not a location it may guess at).
+func (s *Server) SetSlideLive(src slidelive.Sources) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.slideLive = src
 }
 
 // WallClockMs reads the host wall clock in epoch milliseconds.

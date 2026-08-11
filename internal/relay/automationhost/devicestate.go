@@ -69,6 +69,24 @@ func (s *SyntheticSource) Next() (state.Observation, bool) {
 func (h *Host) Observe(obs state.Observation) ([]engine.RunDisposition, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	// Record the observed state before advancing the engine, so EntityState
+	// reflects what the relay has SEEN even for an entity no loaded rule
+	// subjects (see the field's doc). It is recorded unconditionally, not only
+	// when obs.StateChanged: the poller's first snapshot per entity arrives as a
+	// self-transition seed with StateChanged false, and that seed is precisely
+	// the reading that first populates a slide's entity widget after boot.
+	//
+	// Under stateMu, held for this assignment alone and released before the
+	// engine advances: everything below this line can dispatch a device command
+	// and block on a wedged TV, and a Lease being issued on another goroutine
+	// must never wait behind that (stateMu's doc). Doing it FIRST also means the
+	// reading is visible to a reader for the whole duration of the dispatch it
+	// may have caused, rather than only after it completes.
+	h.stateMu.Lock()
+	h.entityStates[obs.Entity.ID] = obs.Entity.State
+	h.stateMu.Unlock()
+
 	disps := h.engine.Observe(obs)
 	atMs := h.clk.WallMillis()
 	for _, d := range disps {

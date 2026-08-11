@@ -524,6 +524,95 @@ func TestApplyExposesRevoked(t *testing.T) {
 	}
 }
 
+// TestServedDeviceInventorySurvivesTheStore is REL-063/064's durability half,
+// and the counterpart of TestServedRevocationSurvivesTheStore below: the same
+// verified `device_inventory` section, read back through the OFFLINE accessor
+// from a store closed and reopened from its own on-disk file.
+//
+// The section reached the process on the returned Applied and went no further,
+// so the adopted set — the relay's only statement of which devices it may drive
+// — lived exactly as long as the process. That is invisible while the app peer
+// is up, because the very next pull restates it. It stops being invisible on
+// the boot that follows a power cut, where there is no pull: every consumer of
+// the set fails closed, so the relay comes up healthy and drives nothing, and
+// screen keep-alive — whose whole job is that a screen idling at Home shows
+// NOTHING until a human walks past — relaunches nothing at all.
+//
+// The read path takes only the store: no feeder, no app peer, no connection.
+func TestServedDeviceInventorySurvivesTheStore(t *testing.T) {
+	img := loadTestImage(t)
+	id := testFeederIdentity(t)
+
+	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	if err != nil {
+		t.Fatalf("snapshot.Build: %v", err)
+	}
+	want := wire.DeviceInventory{
+		Devices: []json.RawMessage{json.RawMessage(
+			`{"device_id":"01J8Z3K4N5P6Q7R8S9T0V1DEV1","driver":"roku","native_id":"uuid:roku:ecp:AA11","entities":[{"entity_id":"01J8Z3K4N5P6Q7R8S9T0V1ENT1","device_class":"media-player","enabled":true}]}`)},
+		PackMatchPatterns: []json.RawMessage{json.RawMessage(`{"ssdp":"roku:ecp"}`)},
+	}.Normalized()
+	snap.Sections.DeviceInventory = want
+	snap.Hash, err = wire.HashSections(snap.Sections)
+	if err != nil {
+		t.Fatalf("wire.HashSections: %v", err)
+	}
+	canon, err := wire.SignedScopeBytes(snap.Generation, snap.Hash)
+	if err != nil {
+		t.Fatalf("wire.SignedScopeBytes: %v", err)
+	}
+	snap.Signature = wire.EncodeSignature(signhash.Sign(id.SigningPriv(), canon))
+
+	dbPath := filepath.Join(t.TempDir(), "relay.db")
+	ts := newTestFeeder(t, id)
+	store := enrolledStoreAt(t, ts, dbPath)
+
+	if _, err := applySnapshot(t, store, snap); err != nil {
+		t.Fatalf("VerifyAndApply: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("store.Close(): %v", err)
+	}
+
+	reopened, err := identity.Open(dbPath)
+	if err != nil {
+		t.Fatalf("identity.Open (reopen): %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+
+	got, err := ServedDeviceInventory(reopened)
+	if err != nil {
+		t.Fatalf("ServedDeviceInventory: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ServedDeviceInventory after a restart = %+v, want %+v (REL-063/064 carried through REL-055/061's durable row)", got, want)
+	}
+}
+
+// TestServedDeviceInventoryEmptyOnFreshStore asserts a relay that has never
+// applied a generation reads back an empty inventory rather than an error — a
+// boot with nothing synced must not fail on the read itself. What that empty
+// set MEANS is the fail-closed answer every consumer already gives it: a relay
+// that has synced no adoption decision drives nothing.
+func TestServedDeviceInventoryEmptyOnFreshStore(t *testing.T) {
+	id := testFeederIdentity(t)
+	ts := newTestFeeder(t, id)
+	store := enrolledStore(t, ts)
+
+	got, err := ServedDeviceInventory(store)
+	if err != nil {
+		t.Fatalf("ServedDeviceInventory on a store that has applied nothing: %v", err)
+	}
+	if len(got.Devices) != 0 || len(got.PackMatchPatterns) != 0 {
+		t.Errorf("ServedDeviceInventory on a fresh store = %+v, want both arrays empty", got)
+	}
+	// Normalized, not nil: REL-060's own "present and empty" shape, so a caller
+	// ranging over either array sees the section rather than an absence.
+	if got.Devices == nil || got.PackMatchPatterns == nil {
+		t.Errorf("ServedDeviceInventory on a fresh store returned a nil array (%+v); want the REL-060 empty placeholder's shape", got)
+	}
+}
+
 // TestServedRevocationSurvivesTheStore is REL-123's durability half: the same
 // verified `revoked` list, read back through the OFFLINE accessor from a store
 // closed and reopened from its own on-disk file. Carrying it only on the

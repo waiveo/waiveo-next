@@ -16,9 +16,9 @@ import (
 // recompute (REL-053), signature verification against the persisted
 // enrollment-anchored trust anchor (REL-071/072), generation monotonicity
 // (REL-052) — and, only when every gate passes, persists
-// {generation, hash, screen_programs} as ONE atomic apply-unit
-// (REL-055/056, store.ApplyGeneration; re-applying an already-applied
-// generation is REL-070's no-op).
+// {generation, hash, screen_programs, revoked, device_inventory} as ONE
+// atomic apply-unit (REL-055/056, store.ApplyGeneration; re-applying an
+// already-applied generation is REL-070's no-op).
 //
 // Extracted from Pull so the persistent-connection transport
 // (internal/relay/relayconn) can apply a state.snapshot FRAME through the
@@ -97,19 +97,26 @@ func VerifyAndApply(store *identity.Store, body wire.StateSnapshotBody, rawSecti
 		return Applied{}, fmt.Errorf("desiredstate: VerifyAndApply: %w", err)
 	}
 
-	// 4. Persist {generation, hash}, the applied screen_programs AND this
-	// generation's `revocation_and_site.revoked` set as ONE atomic apply-unit
-	// (REL-055/056) — see Pull's original comment for the torn-write hazard
-	// store.ApplyGeneration closes. Only reached once hash + signature have
-	// both verified and the generation has not regressed. Re-applying the same
-	// already-applied generation is a no-op by construction (REL-070) — the row
-	// is upserted to the same values.
+	// 4. Persist {generation, hash}, the applied screen_programs, this
+	// generation's `revocation_and_site.revoked` set AND its `device_inventory`
+	// section as ONE atomic apply-unit (REL-055/056) — see Pull's original
+	// comment for the torn-write hazard store.ApplyGeneration closes. Only
+	// reached once hash + signature have both verified and the generation has
+	// not regressed. Re-applying the same already-applied generation is a no-op
+	// by construction (REL-070) — the row is upserted to the same values.
 	//
 	// `revoked` is persisted here rather than only carried on the returned
 	// Applied because REL-123 enforces it "regardless of connectivity", and a
 	// process restart is the connectivity gap an in-memory-only copy cannot
 	// survive: the relay would come back serving its persisted programs to its
 	// persisted channel tokens with nothing revoked (ServedRevocation's own
+	// doc).
+	//
+	// `device_inventory` is persisted for the same reason and against the same
+	// gap. It is the ONLY statement of what this relay may drive, every
+	// consumer of it is fail-closed, and a relay that restarts during an
+	// app-peer outage would otherwise come back adopting nothing — driving no
+	// device and keeping no screen alive, silently (ServedDeviceInventory's own
 	// doc).
 	programsJSON, err := json.Marshal(applied.ScreenPrograms)
 	if err != nil {
@@ -119,7 +126,13 @@ func VerifyAndApply(store *identity.Store, body wire.StateSnapshotBody, rawSecti
 	if err != nil {
 		return Applied{}, fmt.Errorf("desiredstate: VerifyAndApply: marshal applied revoked: %w", err)
 	}
-	if err := store.ApplyGeneration(body.Generation, body.Hash, programsJSON, revokedJSON); err != nil {
+	// Normalized, so a section that arrived with a null array is persisted in
+	// the shape REL-060 describes rather than in the shape it decoded to.
+	inventoryJSON, err := json.Marshal(applied.DeviceInventory.Normalized())
+	if err != nil {
+		return Applied{}, fmt.Errorf("desiredstate: VerifyAndApply: marshal applied device_inventory: %w", err)
+	}
+	if err := store.ApplyGeneration(body.Generation, body.Hash, programsJSON, revokedJSON, inventoryJSON); err != nil {
 		return Applied{}, fmt.Errorf("desiredstate: VerifyAndApply: persist applied generation: %w", err)
 	}
 

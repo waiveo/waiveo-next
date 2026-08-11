@@ -177,6 +177,140 @@ func TestPlaylistUnknownAssetRefRejected(t *testing.T) {
 	}
 }
 
+// assertUnresolvableAssetRefused drives one create over the real mux and pins
+// the shared answer: 422 VALIDATION_FAILED, a per-field REFERENCE_INVALID naming
+// the missing asset_ref at the JSON path that carries it (API-013), and nothing
+// stored in that family.
+func assertUnresolvableAssetRefused(t *testing.T, e *testEnv, path, wantField, unknownRef string, body []byte) {
+	t.Helper()
+	resp, raw := e.do(t, http.MethodPost, path, body, nil)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST %s with an un-uploaded asset_ref: status = %d, want 422 — the row was ACCEPTED, "+
+			"both projections will mint a fetch url for it and the screen shows a 404 (body %s)", path, resp.StatusCode, raw)
+	}
+	p := assertProblem(t, resp, raw, "VALIDATION_FAILED")
+	errsAny, _ := p["errors"].([]any)
+	found := false
+	for _, ei := range errsAny {
+		em, _ := ei.(map[string]any)
+		msg, _ := em["message"].(string)
+		if em["code"] == "REFERENCE_INVALID" && em["field"] == wantField && strings.Contains(msg, unknownRef) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("VALIDATION_FAILED errors did not carry a REFERENCE_INVALID at %q naming %q: %v", wantField, unknownRef, errsAny)
+	}
+
+	resp, raw = e.do(t, http.MethodGet, path, nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list %s: status %d, body %s", path, resp.StatusCode, raw)
+	}
+	var listed struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &listed); err != nil {
+		t.Fatalf("decode the list: %v", err)
+	}
+	if len(listed.Items) != 0 {
+		t.Fatalf("the refused row was stored anyway: %d item(s) in %s", len(listed.Items), path)
+	}
+}
+
+// imageLayerNaming is a full-canvas authored image layer — the shape whose
+// asset_ref a projection turns into a fetch url.
+func imageLayerNaming(ref string) wire.Layer {
+	return wire.Layer{Kind: wire.LayerKindImage, X: 0, Y: 0, W: 1920, H: 1080, AssetRef: ref}
+}
+
+// TestCastUnknownAssetRefRejected is the cast half of the rule a playlist item
+// has always been held to, and the family where it matters most: a cast is THE
+// image-carrying authoring surface.
+//
+// Before this, POST /casts with an image layer naming an asset nobody had
+// uploaded answered 201 while the identical digest in a playlist item answered
+// 422 — and casts.go's own doc claimed "an accepted cast is by construction a
+// cast a screen can be served".
+func TestCastUnknownAssetRefRejected(t *testing.T) {
+	e := newEnv(t)
+	siteID := e.createNode(t, siteNode(""))
+	screenID := e.createNode(t, screenNode("", siteID, ""))
+
+	unknown := signhash.ContentID([]byte("a cast image nobody ever uploaded"))
+	cast := datamodel.Cast{
+		ScopeNode: screenID, Name: "Dangling Image Cast",
+		Slides: []datamodel.CastSlide{
+			{ID: "title", Layers: []wire.Layer{
+				{Kind: wire.LayerKindRect, X: 0, Y: 0, W: 1920, H: 1080, Color: "#101828"},
+			}},
+			{ID: "photo", Layers: []wire.Layer{imageLayerNaming(unknown)}},
+		},
+	}
+	assertUnresolvableAssetRefused(t, e, "/api/v1/casts", "slides[1].layers[0].asset_ref", unknown,
+		rowCreateBody(t, cast))
+}
+
+// TestPlaylistInlineSlideUnknownAssetRefRejected closes the same hole on the
+// playlist side. A `source: "slide"` item's content IS its layer stack, so it
+// carries no item-level asset_ref — and the check that read only that field saw
+// an inline slide as referencing nothing at all.
+func TestPlaylistInlineSlideUnknownAssetRefRejected(t *testing.T) {
+	e := newEnv(t)
+	siteID := e.createNode(t, siteNode(""))
+	screenID := e.createNode(t, screenNode("", siteID, ""))
+
+	unknown := signhash.ContentID([]byte("an inline slide image nobody ever uploaded"))
+	pl := datamodel.Playlist{
+		ScopeNode: screenID, Name: "Dangling Inline Slide",
+		Items: []datamodel.PlaylistItem{
+			{Source: "slide", Slide: &datamodel.Slide{Layers: []wire.Layer{imageLayerNaming(unknown)}}},
+		},
+	}
+	assertUnresolvableAssetRefused(t, e, "/api/v1/playlists", "items[0].slide.layers[0].asset_ref", unknown,
+		rowCreateBody(t, pl))
+}
+
+// TestCastPatchCannotIntroduceAnUnresolvableImage is the update half. A patch
+// REPLACES a cast's slide list, so a family gated only on create would let an
+// operator swap a resolvable image for an unresolvable one and go dark on the
+// next projection.
+func TestCastPatchCannotIntroduceAnUnresolvableImage(t *testing.T) {
+	e := newEnv(t)
+	siteID := e.createNode(t, siteNode(""))
+	screenID := e.createNode(t, screenNode("", siteID, ""))
+	present := e.uploadContent(t, []byte("waiveo-next: a cast image that WAS uploaded")).AssetRef
+
+	createResp, createRaw := e.do(t, http.MethodPost, "/api/v1/casts", rowCreateBody(t, datamodel.Cast{
+		ScopeNode: screenID, Name: "Menu",
+		Slides: []datamodel.CastSlide{{ID: "photo", Layers: []wire.Layer{imageLayerNaming(present)}}},
+	}), nil)
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create a cast naming an uploaded image: status %d, body %s", createResp.StatusCode, createRaw)
+	}
+	created := decodeID(t, createRaw)
+
+	unknown := signhash.ContentID([]byte("the replacement image nobody uploaded"))
+	patch := mustJSON(t, map[string]any{
+		"slides": []datamodel.CastSlide{{ID: "photo", Layers: []wire.Layer{imageLayerNaming(unknown)}}},
+	})
+	resp, raw := e.do(t, http.MethodPatch, "/api/v1/casts/"+created, patch,
+		map[string]string{"If-Match": createResp.Header.Get("ETag")})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("PATCH swapping in an un-uploaded image: status = %d, want 422 (body %s)", resp.StatusCode, raw)
+	}
+
+	// And the stored cast still names the resolvable image — a refused patch
+	// changes nothing.
+	getResp, getRaw := e.do(t, http.MethodGet, "/api/v1/casts/"+created, nil, nil)
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET the cast: status %d, body %s", getResp.StatusCode, getRaw)
+	}
+	if got := decodeCast(t, getRaw); got.Slides[0].Layers[0].AssetRef != present {
+		t.Fatalf("the refused patch changed the stored cast: asset_ref = %q, want %q", got.Slides[0].Layers[0].AssetRef, present)
+	}
+}
+
 // TestPlaylistReauthoringSurvivesOriginRestart pins the second-order effect of
 // the persistence asymmetry: validatePlaylistAssets gates on origin.Store.Has at
 // write time, so if the content origin lost an uploaded asset on restart, a PATCH

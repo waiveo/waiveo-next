@@ -65,7 +65,9 @@ export interface DataTableProps<TData, TValue = unknown> {
   skeletonRows?: number;
   /** Rendered when there are no rows (and not loading). Defaults to an EmptyState. */
   emptyState?: ReactNode;
-  /** Trailing per-row actions (e.g. a dropdown of row commands). */
+  /** Trailing per-row actions (e.g. a dropdown of row commands). Clicks and key
+   * presses inside them NEVER reach `onRowPress` — the table stops them at the
+   * actions cell, so an action button is only ever its own action. */
   rowActions?: (row: TData) => ReactNode;
   /** Whole-row press (the ui-schema `table` `rowPress` event, UIS-070). When set,
    * each row becomes a keyboard-operable button whose accessible name is the row
@@ -105,6 +107,25 @@ export function DataTable<TData, TValue = unknown>({
           className: "cursor-pointer",
         }
       : {};
+
+  // Row actions live INSIDE the pressable row, so without this every Adopt /
+  // Delete / Release press ALSO fires `onRowPress` — the row's own click
+  // handler is an ancestor of the button's. That is not a cosmetic problem: on
+  // the Devices page pressing Adopt silently re-filtered the entities table,
+  // and cancelling the modal left it filtered with nothing to explain why.
+  //
+  // The guard belongs HERE rather than on each button for two reasons: a page
+  // author cannot see the coupling (it is created by a prop on a different
+  // component), and it is a whole CLASS of bug — one missed `stopPropagation`
+  // on one new button in any table reintroduces it. Both event kinds are
+  // stopped because the row is keyboard-operable too: Enter on a nested button
+  // bubbles as `keydown` and would press the row as well.
+  const stopRowPress = (e: { stopPropagation: () => void }) => e.stopPropagation();
+  const actionsFor = (rowData: TData) => (
+    <div data-slot="row-actions" onClick={stopRowPress} onKeyDown={stopRowPress}>
+      {rowActions?.(rowData)}
+    </div>
+  );
 
   const table = useReactTable({
     data,
@@ -187,7 +208,7 @@ export function DataTable<TData, TValue = unknown>({
               </dl>
               {rowActions ? (
                 <div className="flex justify-end border-t border-border pt-2">
-                  {rowActions(row.original)}
+                  {actionsFor(row.original)}
                 </div>
               ) : null}
             </div>
@@ -300,7 +321,7 @@ export function DataTable<TData, TValue = unknown>({
                     );
                   })}
                   {rowActions ? (
-                    <TableCell className="text-right">{rowActions(row.original)}</TableCell>
+                    <TableCell className="text-right">{actionsFor(row.original)}</TableCell>
                   ) : null}
                 </TableRow>
                 );

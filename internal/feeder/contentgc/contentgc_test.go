@@ -476,8 +476,8 @@ func TestSweepReportsThePlaylistRowCountItActedOn(t *testing.T) {
 	h.reference("01J8ZH000000000000000000R1", kept)
 	h.reference("01J8ZH000000000000000000R2", kept)
 
-	if got := h.sweep().PlaylistRows; got != 2 {
-		t.Errorf("a sweep over two playlist rows reported PlaylistRows=%d, want 2 — the feeder's "+
+	if got := h.sweep().SourceRows; got != 2 {
+		t.Errorf("a sweep over two playlist rows reported SourceRows=%d, want 2 — the feeder's "+
 			"zero-row reclamation note reads this, so a wrong count silences it or fires it falsely", got)
 	}
 	_ = dropped
@@ -491,8 +491,8 @@ func TestSweepOverNoPlaylistsReportsZeroRows(t *testing.T) {
 	orphan := h.add("an asset no playlist has ever named")
 
 	first := h.sweep()
-	if first.PlaylistRows != 0 {
-		t.Fatalf("a sweep over a workspace with no playlists reported PlaylistRows=%d, want 0", first.PlaylistRows)
+	if first.SourceRows != 0 {
+		t.Fatalf("a sweep over a workspace with no playlists reported SourceRows=%d, want 0", first.SourceRows)
 	}
 
 	// And the same sweep must still reclaim: the count is reported, never a guard.
@@ -500,7 +500,7 @@ func TestSweepOverNoPlaylistsReportsZeroRows(t *testing.T) {
 	h.age()
 	if second := h.sweep(); second.Reclaimed != 1 {
 		t.Errorf("a sweep over a zero-playlist workspace reclaimed %d unreferenced asset(s), want 1 — "+
-			"PlaylistRows must be REPORTED and never gate reclamation, or content uploaded before it is "+
+			"SourceRows must be REPORTED and never gate reclamation, or content uploaded before it is "+
 			"scheduled would accumulate forever", second.Reclaimed)
 	}
 	if h.onDisk(orphan) {

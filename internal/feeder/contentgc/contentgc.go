@@ -17,13 +17,19 @@
 //
 // # What "still in use" means, exactly
 //
-// Content reaches a screen by exactly one path: a playlist item's `asset_ref`
-// (data-model/1 DAT-041), resolved per screen into that generation's screen
+// Content reaches a screen by one mechanism with three authored spellings: a
+// playlist item's `asset_ref`, an image layer inside an inline `source: "slide"`
+// item, and an image layer inside a slide of a referenced cast (data-model/1
+// DAT-041/043). Each is resolved per screen into that generation's screen
 // program (internal/feeder/snapshot), signed, pulled by a relay, and handed to a
 // screen as a lease whose `url` the screen fetches from this origin DIRECTLY
 // (relay/1 REL-061/140 — the relay is never in the data path and holds no asset
 // store of its own, REL-141/142). So the reference set is "every asset_ref every
-// playlist row names", and the app store is the only place it can be read from.
+// asset-bearing row names", the app store is the only place it can be read from,
+// and it is read through the ONE shared projection (store.RowAssetReferences)
+// the authoring guard and the workspace export also use — a second, narrower
+// copy here is precisely how a cast's images became reclaimable while a screen
+// was playing them.
 //
 // The hard part is not the current generation. It is that a relay may be serving
 // an OLDER one. The store keeps no generation history — a snapshot is rebuilt
@@ -75,8 +81,9 @@
 // asset can commit in the window between "nothing references this" and the unlink,
 // and the platform hands a client a 201 for a playlist that resolves to a 404 on
 // every screen. See that method's own doc for the interleaving, and
-// api.playlistAssetGuard for the other half — the in-transaction check that turns
-// the losing race into an honest 422 instead of a stored dangling reference.
+// api.rowAssetGuards for the other half — the in-transaction check, carried by
+// every asset-bearing kind, that turns the losing race into an honest 422
+// instead of a stored dangling reference.
 package contentgc
 
 import (
@@ -201,12 +208,13 @@ type Result struct {
 	FleetConverged bool
 	FleetKnown     bool
 	Scanned        int
-	// PlaylistRows is how many playlist rows the reference set this pass acted on
-	// was derived from. Carried out rather than consulted here: no rule inside the
-	// pass can act on it (see store.ContentReferences), but a reclamation taken
-	// from a zero-row reference set is worth saying out loud, and only the caller
-	// has somewhere to say it.
-	PlaylistRows   int
+	// SourceRows is how many asset-bearing rows (playlists and casts — see
+	// store.AssetBearingKinds) the reference set this pass acted on was derived
+	// from. Carried out rather than consulted here: no rule inside the pass can
+	// act on it (see store.ContentReferences), but a reclamation taken from a
+	// zero-row reference set is worth saying out loud, and only the caller has
+	// somewhere to say it.
+	SourceRows     int
 	Reclaimed      int
 	ReclaimedBytes int64
 	Retained       map[Reason]int
@@ -316,7 +324,7 @@ func (s *Sweeper) Sweep(ctx context.Context) (Result, error) {
 		converged := fleetKnown && convergedAtAsked && askedGen == refs.Generation
 
 		res.Generation = refs.Generation
-		res.PlaylistRows = refs.PlaylistRows
+		res.SourceRows = refs.SourceRows
 		res.FleetConverged = convergedAtAsked
 		res.FleetKnown = fleetKnown
 

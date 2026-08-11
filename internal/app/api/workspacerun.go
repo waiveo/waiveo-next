@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -13,7 +12,6 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/app/workspacekey"
 	"github.com/maaxton/waiveo-next/internal/archive"
-	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/shared/apijob"
 	"github.com/maaxton/waiveo-next/internal/shared/secretfile"
 )
@@ -307,10 +305,17 @@ func (srv *server) workspacePackLocks(ctx context.Context) ([]archive.PackLock, 
 // "an asset referenced by workspace data but absent from the manifest entirely
 // MUST cause `MANIFEST_INVALID` at manifest-validation time".
 //
-// The references come from the playlist rows' items — the same `asset_ref`
-// projection validatePlaylistAssets already guards on write (scheduling.go), so
-// the export enumerates precisely the set the authoring surface enforces is
-// resolvable. Each ref appears once, in the order first encountered, so the
+// The references come from store.RowAssetReferences over every
+// store.AssetBearingKinds row — the SAME projection the authoring guard
+// (assetrefs.go) enforces on write and the retention sweep keeps bytes for — so
+// the export enumerates precisely the set the rest of the platform agrees is in
+// use. Enumerating only playlist items here, which is what this did, produced an
+// archive that carried cast rows whose image asset_refs appeared nowhere in the
+// manifest: exactly the MANIFEST_INVALID this function's own doc quotes, or a
+// silently image-less restore.
+//
+// Each ref appears once, in the order first encountered — rows are read
+// kind-by-kind in AssetBearingKinds order and id order within a kind — so the
 // manifest is stable across exports of an unchanged workspace.
 //
 // An asset present in the content origin is `embedded` and its bytes ride the
@@ -320,32 +325,37 @@ func (srv *server) workspacePackLocks(ctx context.Context) ([]archive.PackLock, 
 // Dropping it instead would produce a manifest that is invalid by ARC-064's own
 // rule, and silently so.
 func (srv *server) workspaceAssets(ctx context.Context) ([]archive.AssetEntry, error) {
-	rows, err := srv.store.List(ctx, store.KindPlaylist, store.ListFilter{})
-	if err != nil {
-		return nil, err
-	}
 	seen := map[string]bool{}
 	entries := []archive.AssetEntry{}
-	for _, res := range rows {
-		var pl struct {
-			Items []datamodel.PlaylistItem `json:"items"`
+	for _, kind := range store.AssetBearingKinds {
+		rows, err := srv.store.List(ctx, kind, store.ListFilter{})
+		if err != nil {
+			return nil, err
 		}
-		if err := json.Unmarshal(res.Body, &pl); err != nil {
-			continue
-		}
-		for _, item := range pl.Items {
-			if item.AssetRef == "" || seen[item.AssetRef] {
+		for _, res := range rows {
+			refs, err := store.RowAssetReferences(kind, res.Body)
+			if err != nil {
+				// A row this export cannot decode is a row it cannot describe.
+				// Skipping it is right HERE and wrong in the retention sweep
+				// (store.WithContentReferences aborts instead): an export that
+				// drops one row is still an export, where a sweep that treats an
+				// unreadable row's references as absent deletes live content.
 				continue
 			}
-			seen[item.AssetRef] = true
-			entry := archive.AssetEntry{AssetRef: item.AssetRef, Storage: archive.StorageByReference}
-			if srv.content != nil {
-				if b := srv.content.Serve(strings.TrimPrefix(item.AssetRef, "sha256:")); b != nil {
-					entry.Storage = archive.StorageEmbedded
-					entry.Size = int64(len(b))
+			for _, ref := range refs {
+				if seen[ref.Ref] {
+					continue
 				}
+				seen[ref.Ref] = true
+				entry := archive.AssetEntry{AssetRef: ref.Ref, Storage: archive.StorageByReference}
+				if srv.content != nil {
+					if b := srv.content.Serve(ref.HexDigest()); b != nil {
+						entry.Storage = archive.StorageEmbedded
+						entry.Size = int64(len(b))
+					}
+				}
+				entries = append(entries, entry)
 			}
-			entries = append(entries, entry)
 		}
 	}
 	return entries, nil

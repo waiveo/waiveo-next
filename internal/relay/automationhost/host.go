@@ -108,6 +108,68 @@ type Host struct {
 	// the engine (app-class and uncompilable rules in the section are skipped),
 	// for the binary's "automation engine loaded: N edge rule(s)" log line.
 	loadedEdge int
+
+	// stateMu guards entityStates, and it is deliberately NOT mu.
+	//
+	// mu is held across engine advancement, which dispatches device commands:
+	// deviceplane.CommandSurface.Execute makes a real ECP HTTP request with a
+	// three-second timeout, and a firing rule can make several. EntityState is
+	// called from the Lease-issuance path (playerserver -> slidelive.
+	// ResolveContent -> EntitySourceFunc), whose contract — written into
+	// slidelive.Sources' own doc, "Like Current it must not block" — is that
+	// resolving a live widget answers from a map that is already maintained.
+	// Reading under mu would make issuing a Lease wait on a wedged TV, stalling
+	// the poll of a screen that has nothing to do with the device being
+	// commanded. That is the whole reason the weather source was built
+	// non-blocking; the entity source was wired without it.
+	//
+	// A second lock is enough because the two sides are asymmetric: the only
+	// writer is Observe, already serialized by mu, and its write is one map
+	// assignment with no I/O under it, so a reader's worst case is that
+	// assignment rather than a network round trip.
+	stateMu sync.RWMutex
+
+	// entityStates is the last canonical state string observed for each entity —
+	// the relay's live device-plane view, read by EntityState.
+	//
+	// It is maintained HERE, in Observe, rather than read out of the engine,
+	// even though the engine keeps a snapshot of its own. Two reasons, both
+	// structural. The engine's snapshot exists to evaluate rules and only ever
+	// sees what rules subject: an entity no loaded rule mentions is still a real
+	// device whose state a slide may display, and a relay with zero edge rules
+	// would otherwise know nothing at all. And exposing the engine's internal
+	// map would put a reader on state that must be advanced serially, whereas
+	// this one is written on one already-serialized path and read under a lock
+	// of its own (stateMu) that no device I/O is ever held across.
+	//
+	// It is process-lifetime only: nothing persists it, so after a relay restart
+	// an entity reads as unknown until its next observation arrives — which, for
+	// a polled device, is within one poll interval. A slide widget shows its
+	// unavailable placeholder for that window rather than a value the relay
+	// cannot currently vouch for.
+	entityStates map[string]string
+}
+
+// EntityState returns the last canonical state observed for entityID
+// (rules/1 state.Entity.State — "on", "off", "playing", …) and whether this relay
+// has ever observed it. It satisfies internal/slidelive.EntitySource, which is
+// what lets a native slide's `entity` widget show live device state: the relay
+// resolves the value onto the layer as it issues a Lease, so the player draws
+// text rather than needing device-plane access of its own.
+//
+// ok=false means "never observed", which is deliberately distinct from an
+// observed empty state — the caller renders both as its unavailable placeholder,
+// but only one of them is a device that has actually reported.
+//
+// It MUST NOT BLOCK on device I/O, and that is a contract rather than a
+// nicety: its caller is the goroutine issuing a screen's Lease. It therefore
+// takes stateMu — not the engine lock a firing rule holds across an ECP round
+// trip. See stateMu's own doc.
+func (h *Host) EntityState(entityID string) (string, bool) {
+	h.stateMu.RLock()
+	defer h.stateMu.RUnlock()
+	st, ok := h.entityStates[entityID]
+	return st, ok
 }
 
 // New builds the relay's edge-automation stack over the operational store and
@@ -149,7 +211,7 @@ func New(store *identity.Store, dc deviceclass.Registry, controller deviceplane.
 	reg := registry.FromDeviceClass(dc, registry.Overlay{})
 	eng := engine.New(reg, clk, sink, nil)
 
-	return &Host{engine: eng, buf: buf, clk: clk, surface: surface}, nil
+	return &Host{engine: eng, buf: buf, clk: clk, surface: surface, entityStates: map[string]string{}}, nil
 }
 
 // ApplyEdgeRules compiles the desired-state generation's edge_rules and loads

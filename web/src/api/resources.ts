@@ -18,12 +18,21 @@ import { type Page } from "./pagination";
 import { crud } from "./crud";
 import { createAuthModule, type AuthModule } from "./auth";
 import {
+  createDevicePlaneModules,
+  type AdoptedDevice,
+  type AdoptedDeviceCreate,
+  type AdoptedDeviceUpdate,
+  type DevicesModule,
+  type EntitiesModule,
+} from "./devices";
+import {
   createPacksModule,
   packData,
   type PackRow,
   type PackRowWrite,
   type PacksModule,
 } from "./packs";
+import { createCastsModule, type CastsModule } from "./casts";
 
 // ── Generated (contract-canonical) types ────────────────────────────────────
 
@@ -43,13 +52,60 @@ export type PairingCodeResult = components["schemas"]["PairingCodeResult"];
 
 // ── Scheduling-core Wire shapes (data-model/1; not yet in the OpenAPI) ───────
 
-/** A playlist item (DAT-041): `asset` (asset_ref present) or `playable` (pack). */
+/** Which content shape one playlist entry carries (DAT-041). `asset` names
+ * content-addressed bytes, `playable` names a pack's content, and `cast` names
+ * an AUTHORED cast row by id — the source that makes the Studio reach a TV.
+ *
+ * A `cast` entry is the one source that is not one-to-one with a played item:
+ * at projection time it expands into one slide content item per slide of the
+ * referenced cast, in authored order (internal/feeder/snapshot and
+ * internal/relay/schedulehost both do this), which is exactly why the reference
+ * is by id and not an inlined copy — editing the cast changes every screen
+ * playing it. */
+export const PLAYLIST_ITEM_SOURCES = ["asset", "playable", "cast"] as const;
+export type PlaylistItemSource = (typeof PLAYLIST_ITEM_SOURCES)[number];
+
+/** A playlist item (DAT-041): `asset` (asset_ref), `playable` (pack_id +
+ * content_id) or `cast` (cast_id). */
 export interface PlaylistItem {
-  source: "asset" | "playable";
+  source: PlaylistItemSource;
   asset_ref?: string;
   pack_id?: string;
   content_id?: string;
+  cast_id?: string;
   duration_seconds?: number;
+}
+
+/** The members that belong to each `source`, and nothing else. */
+const ITEM_FIELDS_BY_SOURCE: Record<PlaylistItemSource, readonly (keyof PlaylistItem)[]> = {
+  asset: ["asset_ref"],
+  playable: ["pack_id", "content_id"],
+  cast: ["cast_id"],
+};
+
+/**
+ * Drop the members that do not belong to an item's `source` before it is sent.
+ *
+ * An editor that lets an operator SWITCH an item's source leaves the previous
+ * source's members behind on the object — flip an asset item to a cast and it
+ * still carries `asset_ref: ""`. That matters twice over: the server validates
+ * an item against its declared source, and `asset_ref` in particular is
+ * reference-checked against the content origin (`validatePlaylistAssets`), so a
+ * leftover from a source the item no longer declares is a stale claim about
+ * content this entry does not play.
+ *
+ * Lives here, beside the type, rather than in the one page that edits playlists
+ * today: any surface that writes an item has the same obligation, and a second
+ * copy of this list is how the two drift.
+ */
+export function normalizePlaylistItem(item: PlaylistItem): PlaylistItem {
+  const out: PlaylistItem = { source: item.source };
+  for (const field of ITEM_FIELDS_BY_SOURCE[item.source] ?? []) {
+    const value = item[field];
+    if (value !== undefined) Object.assign(out, { [field]: value });
+  }
+  if (item.duration_seconds !== undefined) out.duration_seconds = item.duration_seconds;
+  return out;
 }
 
 export interface Playlist {
@@ -157,6 +213,16 @@ export interface ContentUploadResult {
   url: string;
 }
 
+/** One row of the content-origin listing (GET /api/v1/content): the upload
+ * response shape WIDENED with the size and store time a media browser shows and
+ * sorts by (internal/app/api/content.go `contentEntry`). Deliberately the same
+ * `{asset_ref, url}` vocabulary, so a ref pasted from either surface is the same
+ * ref. */
+export interface ContentAsset extends ContentUploadResult {
+  size_bytes: number;
+  stored_at: number;
+}
+
 // ── Resource module contract ────────────────────────────────────────────────
 
 /** A resource read: the record plus its captured ETag — the If-Match a later
@@ -249,12 +315,27 @@ export interface ContentModule {
   /** Upload raw bytes to the content origin; returns the content-addressed
    * {asset_ref, url}. */
   upload(bytes: BodyInit, contentType?: string): Promise<ContentUploadResult>;
+  /** Every asset the origin currently serves — the read half upload used to
+   * lack. A media browser and the Studio's image picker resolve against this. */
+  list(): Promise<ContentAsset[]>;
 }
 
 function contentModule(client: ApiClient): ContentModule {
   return {
     upload(bytes, contentType) {
       return client.upload<ContentUploadResult>("/content", bytes, contentType);
+    },
+    async list() {
+      // NOT `client.list`, and the difference is the server's, not a shortcut
+      // here: the content origin answers `{content: [...]}` with no cursor
+      // because it is a DIRECTORY of the origin (digest-ordered, complete),
+      // not a keyset-paginated resource family. Feeding it through the paging
+      // verb would look for an `items`/`cursor` pair that is never sent and
+      // hand every caller an empty library. `read` is the plain
+      // GET-and-parse-JSON verb; the ETag it also captures is unused here
+      // (the listing is not a mutable resource) and harmless.
+      const res = await client.read<{ content?: ContentAsset[] }>("/content");
+      return res.data.content ?? [];
     },
   };
 }
@@ -275,6 +356,20 @@ export interface WaiveoApi {
   playlists: ResourceModule<Playlist, PlaylistCreate, PlaylistUpdate>;
   automations: AutomationsModule;
   content: ContentModule;
+  /** Devices a relay has DISCOVERED behind it — a read model the relay owns, so
+   * list plus the single `adopt` operation and nothing else (api/devices.ts
+   * explains why it is not a ResourceModule). */
+  devices: DevicesModule;
+  /** The entities those devices expose, plus the entity-addressed command
+   * operation the virtual remote and rules/1 both dispatch through. */
+  entities: EntitiesModule;
+  /** The AUTHORED adoption records (DAT-004a). Discovery lists a device;
+   * creating one of these rows is what adopts it. */
+  adoptedDevices: ResourceModule<AdoptedDevice, AdoptedDeviceCreate, AdoptedDeviceUpdate>;
+  /** Authored native-slide documents — the Studio's resource family. Its shapes
+   * and its path live entirely in api/casts.ts (see that file's header: the
+   * server routes are landing in parallel, so the guesswork is quarantined). */
+  casts: CastsModule;
   /** Installed declarative packs — list/get/install/uninstall + page docs and
    * locale catalogs (manifest/1). */
   packs: PacksModule;
@@ -290,6 +385,7 @@ export function createApi(opts?: ApiClientOptions): WaiveoApi {
   const client = new ApiClient(opts);
   return {
     client,
+    ...createDevicePlaneModules(client),
     auth: createAuthModule(client),
     scopeNodes: crud<ScopeNode, ScopeNodeCreate, ScopeNodeUpdate>(client, "/scope-nodes"),
     screens: screensModule(client),
@@ -298,6 +394,7 @@ export function createApi(opts?: ApiClientOptions): WaiveoApi {
     playlists: crud<Playlist, PlaylistCreate, PlaylistUpdate>(client, "/playlists"),
     automations: automationsModule(client),
     content: contentModule(client),
+    casts: createCastsModule(client),
     packs: createPacksModule(client),
     packData: (packId, collection) => packData(client, packId, collection),
   };

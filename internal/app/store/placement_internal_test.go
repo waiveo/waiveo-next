@@ -75,6 +75,10 @@ var placementExcludedTables = map[string]string{
 	"events": "an immutable historical record; blocking a delete because history mentions a node would make " +
 		"every node that ever did anything permanently undeletable",
 	"pairing_grants": "minted, consumed and swept on expiry; never a durable placement",
+	"discovered_devices": "a cache of what the relays currently SEE, replaced wholesale on every report and " +
+		"authored by nobody — letting a sighting block a node delete would make a node undeletable because a " +
+		"TV happened to be powered on, and the row is gone at the next report anyway. The ADOPTED row a " +
+		"sighting can become is a real placement and is scanned (adopted_devices)",
 }
 
 // TestEveryScopeNodeColumnIsScannedOrExcluded closes the gap the kind-derivation

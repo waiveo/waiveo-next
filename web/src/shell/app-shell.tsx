@@ -5,6 +5,7 @@ import {
   AudioWaveform,
   CalendarClock,
   FileText,
+  Film,
   Images,
   LayoutDashboard,
   LayoutTemplate,
@@ -14,6 +15,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Puzzle,
+  Radio,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
@@ -49,8 +51,11 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
   { to: "/screens", label: "Screens", icon: MonitorPlay },
+  { to: "/devices", label: "Devices", icon: Radio },
   { to: "/schedules", label: "Schedules", icon: CalendarClock },
+  { to: "/casts", label: "Casts", icon: LayoutTemplate },
   { to: "/content", label: "Content", icon: Images },
+  { to: "/media", label: "Media", icon: Film },
   { to: "/automations", label: "Automations", icon: Workflow },
   { to: "/activity", label: "Activity", icon: Activity },
   { to: "/pages", label: "Pages", icon: LayoutTemplate },

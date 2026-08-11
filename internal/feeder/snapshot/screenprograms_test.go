@@ -567,11 +567,61 @@ func TestStoreWithNoScreenRowsYieldsAnEmptySection(t *testing.T) {
 // Without this, the two projections could drift apart silently — a screen would
 // be delivered one thing in the signed baseline and another the moment the relay
 // first ticked, with nothing failing.
+//
+// It runs over two stores rather than one. The seeded demo covers the plain
+// asset and inline-slide items; the cast case covers the one item shape whose
+// projection is not one-to-one — a `source:"cast"` item fans out into one slide
+// content item per slide (DAT-043), so the two sides must agree not only on each
+// item's fields but on HOW MANY items one authored entry became and in what
+// order. A cast is also the only shape whose expansion depends on a row carried
+// separately in the schedule section, which is the part a feeder that
+// pre-flattened its casts would break.
 func TestDerivedContentMatchesRelaySideProjection(t *testing.T) {
-	id := testIdentity(t)
 	const asset = "sha256:7777111111111111111111111111111111111111111111111111111111111111"
-	const origin = "https://origin.example"
-	s := seededStore(t, asset)
+	t.Run("seeded demo", func(t *testing.T) {
+		assertProjectionsAgree(t, seededStore(t, asset))
+	})
+	t.Run("playlist referencing a cast", func(t *testing.T) {
+		s := seededStore(t, asset)
+		castID := writeCast(t, s, castWithThreeSlides(asset))
+		replaceSeedPlaylistItems(t, s, []datamodel.PlaylistItem{
+			{Source: "asset", AssetRef: asset},
+			{Source: datamodel.PlaylistSourceCast, CastID: castID, DurationSeconds: intPtr(11)},
+		})
+		// The fan-out itself, asserted here rather than left implicit in the
+		// two-sided comparison: an agreement on zero content items would pass a
+		// pure equality check while proving nothing about casts.
+		prog := programForScreen(t, buildSnapshot(t, s).Sections.ScreenPrograms, store.SeedScreenID)
+		if len(prog.Content) != 4 {
+			t.Fatalf("content = %d items, want 4 (one asset + the cast's three slides); got %+v", len(prog.Content), prog.Content)
+		}
+		assertProjectionsAgree(t, s)
+	})
+}
+
+// parityOrigin is the content origin both sides of the parity comparison derive
+// their URLs from. It has to be ONE value: the whole claim is that two
+// projections handed the same origin produce the same URLs.
+const parityOrigin = "https://origin.example"
+
+// buildSnapshot builds the signed snapshot for s at the seeded content instant.
+func buildSnapshot(t *testing.T, s *store.Store) SignedSnapshot {
+	t.Helper()
+	snap, _, err := BuildFromStore(desiredState(t, s), parityOrigin, testIdentity(t), contentInstant(t), nil)
+	if err != nil {
+		t.Fatalf("BuildFromStore: %v", err)
+	}
+	return snap
+}
+
+// assertProjectionsAgree is the comparison itself: build the app-signed program
+// for the seeded screen, re-project the SAME snapshot's schedule section through
+// the relay's own resolver at the same instant, and require the two to describe
+// the same playback.
+func assertProjectionsAgree(t *testing.T, s *store.Store) {
+	t.Helper()
+	id := testIdentity(t)
+	const origin = parityOrigin
 	ds := desiredState(t, s)
 	at := contentInstant(t)
 

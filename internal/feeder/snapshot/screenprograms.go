@@ -173,11 +173,14 @@ const displayContent = "content"
 //
 // An `asset` item projects to a content-addressed reference; a `slide` item
 // (native slide rendering, parity milestone 2) projects to a `content_type:
-// "slide"` reference carrying the authored layer stack. A `playable` (pack)
-// item names content this contract has no direct reference form for and is
-// skipped, not faked — and a `slide` whose layers do not validate
-// (wire.ValidateSlideLayers, applied in resolveSlideLayers) is likewise skipped
-// rather than emitted malformed.
+// "slide"` reference carrying the authored layer stack; a `cast` item
+// (data-model/1 DAT-043) projects to ONE such reference PER SLIDE of the
+// referenced cast, in authored order (castContent) — the one source under which
+// an item is not one-to-one with a played item. A `playable` (pack) item names
+// content this contract has no direct reference form for and is skipped, not
+// faked — and a slide whose layers do not validate (wire.ValidateSlideLayers,
+// applied in resolveLayers) is likewise skipped rather than emitted malformed,
+// whether it came from an inline item or a cast.
 //
 // An item's own `duration_seconds` override (DAT-042) rides onto `duration_ms`
 // as seconds*1000 when present and non-zero (REL-061a); an item with no override
@@ -210,6 +213,10 @@ func playlistContent(rowStore datamodel.RowStore, playlistID string, contentBase
 			var durationMS int64
 			if item.DurationSeconds != nil && *item.DurationSeconds != 0 {
 				durationMS = int64(*item.DurationSeconds) * 1000
+			}
+			if item.Source == datamodel.PlaylistSourceCast {
+				content = append(content, castContent(rowStore, item.CastID, durationMS, contentBaseURL)...)
+				continue
 			}
 			if item.Source == sourceSlide {
 				layers, ok := resolveSlideLayers(item.Slide, contentBaseURL)
@@ -244,6 +251,74 @@ func playlistContent(rowStore datamodel.RowStore, playlistID string, contentBase
 	return content
 }
 
+// castContent expands ONE `source: "cast"` playlist item (DAT-041) into the
+// REL-061 content references its cast's slides project to: one reference per
+// slide, in authored order, each a `content_type: "slide"` entry carrying that
+// slide's own layer stack. A playlist item and a played item are one-to-one for
+// every other source; for a cast they are not, and that fan-out is the whole
+// point — an operator schedules one cast and a screen plays all of its slides.
+//
+// itemDurationMS is the referencing playlist item's own `duration_seconds`
+// override already converted to ms (0 when it stated none). Each slide's own
+// `duration_ms` wins over it, and when neither is stated the reference carries
+// no `duration_ms` at all (the field's omitempty) and the player applies its own
+// default. That three-step resolution is stated in ONE sentence in
+// datamodel.CastSlide's doc and implemented identically here and in
+// internal/relay/schedulehost, because a screen must see the same dwell times
+// whether it is playing the app-signed baseline or the relay's re-resolution of
+// a daypart boundary.
+//
+// An unknown cast id contributes nothing rather than a placeholder. The store
+// refuses a playlist naming a cast that does not exist and refuses the deletion
+// of one that is named (datamodel.ValidateRows), so this is a degraded-store
+// path, and on a degraded store the honest projection of "content that is not
+// there" is no content — never an item a screen would stall on.
+//
+// A slide whose layers do not validate is skipped for the same reason a
+// standalone `slide` item is (see resolveSlideLayers): a player has no defined
+// behavior for a malformed layer, so a slide that would not draw cleanly never
+// reaches the wire. One bad slide costs its own slot and not the whole cast.
+func castContent(rowStore datamodel.RowStore, castID string, itemDurationMS int64, contentBaseURL string) []wire.ContentRef {
+	out := []wire.ContentRef{}
+	if castID == "" {
+		return out
+	}
+	for i := range rowStore.Rows.Casts {
+		c := rowStore.Rows.Casts[i]
+		if c.ID != castID {
+			continue
+		}
+		for _, slide := range c.Slides {
+			layers, ok := resolveLayers(slide.Layers, contentBaseURL)
+			if !ok {
+				continue
+			}
+			out = append(out, wire.ContentRef{
+				ContentType: contentTypeSlide,
+				Layers:      layers,
+				ExpiresAt:   contentURLExpiresAt,
+				DurationMS:  slideDurationMS(slide, itemDurationMS),
+			})
+		}
+		return out
+	}
+	return out
+}
+
+// slideDurationMS resolves one cast slide's dwell time: the slide's own
+// `duration_ms` when it states one, otherwise the referencing playlist item's
+// already-converted `duration_seconds` override, otherwise 0 (no `duration_ms`
+// key at all — the player's own default). Shared by nothing on this side, but
+// spelled as its own function because internal/relay/schedulehost implements the
+// identical resolution and a reader comparing the two should be comparing one
+// named rule, not two inlined expressions.
+func slideDurationMS(slide datamodel.CastSlide, itemDurationMS int64) int64 {
+	if slide.DurationMS > 0 {
+		return slide.DurationMS
+	}
+	return itemDurationMS
+}
+
 // sourceSlide is the data-model/1 playlist-item `source` value (DAT-041) whose
 // content is an authored layer stack rather than a content-addressed asset —
 // the native-slide item kind (native slide rendering, parity milestone 2).
@@ -271,8 +346,18 @@ func resolveSlideLayers(slide *datamodel.Slide, contentBaseURL string) ([]wire.L
 	if slide == nil {
 		return nil, false
 	}
-	layers := make([]wire.Layer, len(slide.Layers))
-	for i, l := range slide.Layers {
+	return resolveLayers(slide.Layers, contentBaseURL)
+}
+
+// resolveLayers is the layer-level half of that job, shared with the cast
+// expansion (castContent): a cast's slides carry the same wire.Layer stack an
+// inline `slide` item does, and they must reach the wire through the identical
+// URL derivation and the identical validation gate — two paths that agreed today
+// and diverged later would show an operator a cast slide that renders and an
+// inline slide that does not, from the same authored layers.
+func resolveLayers(authored []wire.Layer, contentBaseURL string) ([]wire.Layer, bool) {
+	layers := make([]wire.Layer, len(authored))
+	for i, l := range authored {
 		if l.Kind == wire.LayerKindImage {
 			// An image layer's URL is derived from the content origin, never
 			// authored — the same content-URL grammar and empty-origin degrade a

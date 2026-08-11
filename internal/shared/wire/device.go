@@ -52,6 +52,15 @@ type DeviceCandidatesBody struct {
 // records WHICH declared discovery pattern caused the observation (manifest/1
 // MAN-071), which is the relay's own provenance for the sighting, not a member
 // of the device the app peer lists.
+//
+// Address, Model and Serial are REL-004 additive members beyond REL-110a's own
+// set, and they are what makes a reported candidate actionable rather than
+// merely countable. `native_id` identifies a device; it does not say where the
+// device is, so an operator shown a list of USNs has no way to tell which
+// physical TV is which, and an adopted device with no address has nowhere for a
+// command to go. All three are omitempty and all three may be absent: a relay
+// whose sighting carried no usable LOCATION, or whose identification probe did
+// not answer, reports what it does know rather than dropping the device.
 type DeviceCandidate struct {
 	Match        json.RawMessage   `json:"match"`
 	Provenance   string            `json:"provenance"`
@@ -63,6 +72,9 @@ type DeviceCandidate struct {
 	NativeID     string            `json:"native_id"`
 	DeviceClass  string            `json:"device_class"`
 	Name         string            `json:"name,omitempty"`
+	Address      string            `json:"address,omitempty"`
+	Model        string            `json:"model,omitempty"`
+	Serial       string            `json:"serial,omitempty"`
 	Entities     []CandidateEntity `json:"entities"`
 }
 

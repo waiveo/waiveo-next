@@ -10,7 +10,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
-import { createApi, updateWithReview } from "./resources";
+import { createApi, normalizePlaylistItem, updateWithReview, type PlaylistItem } from "./resources";
 import { TEST_BASE, TRACE_ID, ULID_A, ULID_B, ULID_C, etag, ok, problem, scopeNode } from "./test-support";
 
 const server = setupServer();
@@ -153,5 +153,43 @@ describe("automations run", () => {
     expect(key).toMatch(UUID_RE);
     expect(result.disposition).toBe("ran");
     expect(result.run_id).toBe(ULID_B);
+  });
+});
+
+describe("playlist item normalisation", () => {
+  // An editor that lets an operator SWITCH an item's source leaves the previous
+  // source's members on the object. That is not cosmetic: the server validates
+  // an item against the source it declares, and `asset_ref` is
+  // reference-checked against the content origin, so a leftover is a claim
+  // about content the entry no longer plays.
+  it("keeps only the members the declared source owns", () => {
+    const switched = {
+      source: "cast",
+      cast_id: ULID_B,
+      asset_ref: "sha256:aa11",
+      pack_id: "left",
+      content_id: "over",
+      duration_seconds: 10,
+    } as PlaylistItem;
+    expect(normalizePlaylistItem(switched)).toEqual({
+      source: "cast",
+      cast_id: ULID_B,
+      duration_seconds: 10,
+    });
+  });
+
+  it("leaves an untouched item of every source exactly as it was", () => {
+    const asset: PlaylistItem = { source: "asset", asset_ref: "sha256:aa11", duration_seconds: 5 };
+    const playable: PlaylistItem = { source: "playable", pack_id: "p", content_id: "c" };
+    const cast: PlaylistItem = { source: "cast", cast_id: ULID_A };
+    expect(normalizePlaylistItem(asset)).toEqual(asset);
+    expect(normalizePlaylistItem(playable)).toEqual(playable);
+    expect(normalizePlaylistItem(cast)).toEqual(cast);
+  });
+
+  // An absent member is not the same statement as a present empty one, and the
+  // request schema is additionalProperties:false — so nothing is invented.
+  it("does not invent members the item never carried", () => {
+    expect(normalizePlaylistItem({ source: "asset" })).toEqual({ source: "asset" });
   });
 });

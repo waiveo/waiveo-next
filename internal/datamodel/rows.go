@@ -32,9 +32,10 @@ type Playlist struct {
 }
 
 // PlaylistItem is one entry of a playlist's items array (DAT-041). `source` is
-// `asset` (asset_ref present), `playable` (pack_id + content_id present), or
-// `slide` (a `slide` object carrying the authored layer stack — native slide
-// rendering, parity milestone 2). A nested pack_id here names the item's content
+// `asset` (asset_ref present), `playable` (pack_id + content_id present),
+// `slide` (a `slide` object carrying one authored layer stack — native slide
+// rendering, parity milestone 2), or `cast` (a `cast_id` naming an authored
+// multi-slide Cast row, DAT-043). A nested pack_id here names the item's content
 // pack and is NOT a row-level pack-ownership field (DAT-101 bars only the latter).
 //
 // Slide is set ONLY for a `source: "slide"` item and is `omitempty`, so every
@@ -44,6 +45,14 @@ type Playlist struct {
 // and an image layer inside it names content-addressed bytes exactly as a plain
 // asset item's asset_ref does (DAT-041 discipline), resolved to a fetch URL at
 // projection time (internal/feeder/snapshot and internal/relay/schedulehost).
+//
+// CastID is set ONLY for a `source: "cast"` item, likewise `omitempty`. It is a
+// REFERENCE where Slide is an inline literal, and that is the whole difference
+// between the two: a cast is the unit an operator authors once and schedules in
+// several places, so editing it must change every screen playing it, which an
+// inlined copy per playlist could never do. One cast item expands, at projection
+// time, into ONE CONTENT ITEM PER SLIDE in authored order — a playlist item and
+// a played item are not one-to-one for this source.
 type PlaylistItem struct {
 	Source          string `json:"source"`
 	AssetRef        string `json:"asset_ref,omitempty"`
@@ -51,6 +60,71 @@ type PlaylistItem struct {
 	ContentID       string `json:"content_id,omitempty"`
 	DurationSeconds *int   `json:"duration_seconds,omitempty"`
 	Slide           *Slide `json:"slide,omitempty"`
+	CastID          string `json:"cast_id,omitempty"`
+}
+
+// PlaylistSourceCast is the DAT-041 playlist-item `source` value whose content
+// is an authored Cast row referenced by `cast_id`.
+//
+// It is exported and lives HERE, on the contract's own reference implementation,
+// rather than being spelled as a private constant in each place that recognizes
+// it. Three independent components have to agree on this one string — the row
+// validator that resolves the reference, and BOTH content projections that
+// expand it (internal/feeder/snapshot and internal/relay/schedulehost) — and the
+// consequence of one of them disagreeing is not a compile error: the projection
+// simply stops recognizing cast items and a screen silently plays fewer slides
+// than its playlist says. The pre-existing `slide` source predates this and is
+// still spelled locally in each projection; a cast is not going to repeat that.
+const PlaylistSourceCast = "cast"
+
+// Cast is a cast row (DAT-043) — a "slidecast": the ordered set of authored
+// slides an operator builds once and schedules onto screens, and the unit the
+// legacy system's operators worked in. It is the resource-row baseline
+// (DAT-005–008) plus `name` and a non-empty ordered `slides` array.
+//
+// A cast is deliberately its OWN row rather than a shape inlined into a playlist
+// item. It is referenced by id from a playlist item (`source: "cast"`), so one
+// authored cast plays on every screen whose schedule reaches a playlist naming
+// it, and one edit changes all of them. An inlined copy would make "change the
+// lunch menu" an edit of every playlist that shows it — which is the operator
+// experience the rewrite exists to replace, not reproduce.
+//
+// The slides are the row's whole content: unlike a playlist, a cast references
+// no other row, so a cast is complete on its own and a screen playing one needs
+// nothing but the row and the content origin its image layers resolve against.
+type Cast struct {
+	ID         string            `json:"id"`
+	ScopeNode  string            `json:"scope_node"`
+	Name       string            `json:"name"`
+	Slides     []CastSlide       `json:"slides"`
+	ExternalID string            `json:"external_id,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
+	Revision   int               `json:"revision"`
+	CreatedAt  int64             `json:"created_at"`
+	UpdatedAt  int64             `json:"updated_at"`
+}
+
+// CastSlide is one slide of a cast (DAT-043): an id unique within its own cast,
+// an optional per-slide dwell time, and the ordered stack of positioned native
+// layers a player draws — the SAME wire.Layer shape a `source: "slide"` playlist
+// item carries and the player ultimately renders, so an authored slide and a
+// served slide are one type end to end rather than two that must be kept equal.
+//
+// ID is scoped to the cast, not to the workspace, and is deliberately NOT a
+// ULID: it names a position in one authored document (what an editor's undo
+// stack and a reorder operate on), never a row anything else can reference. What
+// it must be is stable and unique within the cast, which is what the validator
+// enforces — a duplicate would make "the slide the operator moved" ambiguous.
+//
+// DurationMS is the slide's own dwell time in milliseconds, `omitempty`. When it
+// is absent the projected content item falls back to the referencing playlist
+// item's `duration_seconds` override (DAT-042), and when neither is stated the
+// item carries no duration at all and the player applies its own default —
+// the same three-step resolution on both projections.
+type CastSlide struct {
+	ID         string       `json:"id"`
+	DurationMS int64        `json:"duration_ms,omitempty"`
+	Layers     []wire.Layer `json:"layers"`
 }
 
 // Slide is a `source: "slide"` playlist item's authored content (DAT-041; native

@@ -136,13 +136,6 @@
       ]
     },
     {
-      "package": "internal/relay/automationhost",
-      "reason": "The automation host's device-command sink. Rules that dispatch a device command reach the device plane through the relay's own command path; this host-level entry point is exercised only by tests.",
-      "funcs": [
-        "Host.DeviceCommand"
-      ]
-    },
-    {
       "package": "internal/relay/clocktrust",
       "reason": "The relay constructs the clock-trust Controller at boot and takes its clock, and then never asks it about trust: reading the state, reporting it, applying a verified time, and accepting a hint are all uncalled, as is peer-certificate validation. The controller tracks state; the consumers that were meant to branch on it \u2014 the ones that refuse or degrade while the clock is untrusted \u2014 are the missing half.",
       "funcs": [

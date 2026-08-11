@@ -38,6 +38,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
 
 	"net/http/httptest"
 )
@@ -379,6 +380,75 @@ func TestExportWorkspaceEmbedsReferencedAssets(t *testing.T) {
 	}
 	if !carried {
 		t.Fatalf("container carries no assets/%s entry for the embedded asset (ARC-061)", wantHex)
+	}
+}
+
+// TestExportWorkspaceCarriesCastReferencedAssets is ARC-064 for the family that
+// carries most of a signage workspace's images.
+//
+// The row export loops every kind, so the container already carried cast rows —
+// while the asset manifest enumerated playlist items only. The result is exactly
+// the manifest this function's own doc forbids: "an asset referenced by
+// workspace data but absent from the manifest entirely MUST cause
+// MANIFEST_INVALID at manifest-validation time" — so the archive either fails on
+// restore or restores image-less.
+func TestExportWorkspaceCarriesCastReferencedAssets(t *testing.T) {
+	e := newWorkspaceEnv(t)
+	e.seedWorkspace(t)
+	who := e.auth.Credential()
+
+	screenID := seedSchedulingScope(t, e.testEnv)
+	castAsset := []byte("waiveo-next: the image a cast's slide draws")
+	castRef := e.uploadContent(t, castAsset).AssetRef
+	resp, raw := e.as(t, who, http.MethodPost, "/api/v1/casts", rowCreateBody(t, datamodel.Cast{
+		ScopeNode: screenID, Name: "Exported Menu",
+		Slides: []datamodel.CastSlide{{ID: "photo", Layers: []wire.Layer{
+			{Kind: wire.LayerKindImage, X: 0, Y: 0, W: 1920, H: 1080, AssetRef: castRef},
+		}}},
+	}), nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create cast: status %d, body %s", resp.StatusCode, raw)
+	}
+
+	resp, raw = e.postWorkspace(t, who, "export", map[string]any{"passphrase": testExportPassphrase})
+	job := acceptedJob(t, resp, raw)
+	e.runJobs()
+	if got := e.polledJob(t, who, job.ID); got.State != "succeeded" {
+		t.Fatalf("export job state = %q, want succeeded (targets %+v)", got.State, got.Targets)
+	}
+
+	manifest, entries := e.openArchive(t, job.ID)
+
+	var found bool
+	for _, a := range manifest.Assets {
+		if a.AssetRef != castRef {
+			continue
+		}
+		found = true
+		if a.Storage != archive.StorageEmbedded {
+			t.Errorf("cast asset storage = %q, want embedded — the origin holds these bytes", a.Storage)
+		}
+		if a.Size != int64(len(castAsset)) {
+			t.Errorf("cast asset size = %d, want %d", a.Size, len(castAsset))
+		}
+	}
+	if !found {
+		t.Fatalf("the manifest omits the cast's image %s (ARC-064): the archive fails MANIFEST_INVALID on restore, "+
+			"or restores a cast with no image; assets = %+v", castRef, manifest.Assets)
+	}
+
+	wantHex := hexOf(castAsset)
+	var carried bool
+	for _, en := range entries {
+		if en.Name == "assets/"+wantHex {
+			carried = true
+			if string(en.Body) != string(castAsset) {
+				t.Errorf("embedded cast asset bytes differ from the uploaded content")
+			}
+		}
+	}
+	if !carried {
+		t.Fatalf("container carries no assets/%s entry for the cast's image (ARC-061)", wantHex)
 	}
 }
 

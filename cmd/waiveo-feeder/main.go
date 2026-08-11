@@ -765,6 +765,17 @@ func main() {
 	// of the identity tuple both peers derive a device_id from (REL-153/110b).
 	deviceRegistry := devices.New(firstPhotonSite.ScopeNode, nowMs)
 
+	// Pre-populate it from the durable mirror BEFORE the API starts serving, so
+	// a restart does not blank the device list until the relays next report
+	// (candidatemirror.go). Non-fatal: a feeder that cannot read its own cache
+	// still serves correctly the moment a relay connects, and refusing to boot
+	// over a cache would turn a cosmetic degradation into an outage.
+	if restored, err := restoreDeviceRegistry(context.Background(), st, deviceRegistry); err != nil {
+		log.Printf("waiveo-feeder: restoring the discovered-device mirror failed (the list fills as relays report): %v", err)
+	} else if restored > 0 {
+		log.Printf("waiveo-feeder: restored %d discovered device(s) from the last run", restored)
+	}
+
 	relayConnSrv := relayconn.New(
 		src.current,
 		enrollSrv.RelayEnrollmentKey,
@@ -772,9 +783,10 @@ func main() {
 		firstPhotonSite,
 		hello.AppPeerImplementedMinors(1, 1),
 		firstPhotonRecognizedFeatures,
-		// The read model IS the candidate sink: no adapter, no shim — the
-		// connection layer's CandidateSink is exactly its ApplyCandidates.
-		relayconn.WithCandidateSink(deviceRegistry),
+		// The read model plus its durable mirror, applied in that order: the
+		// live view answers `GET /devices` now, the mirror answers it after a
+		// restart before any relay has reconnected (candidatemirror.go).
+		relayconn.WithCandidateSink(candidateMirror{registry: deviceRegistry, st: st}),
 		// REL-124's upstream redemption report, retiring the reported grant
 		// from later generations (redemptionsink.go). Retirement TRAILS the
 		// redemption and enforces nothing — the site-wide at-most-once

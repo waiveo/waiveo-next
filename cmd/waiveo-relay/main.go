@@ -57,6 +57,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/clocktrust"
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
 	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
+	"github.com/maaxton/waiveo-next/internal/relay/devicetargets"
 	"github.com/maaxton/waiveo-next/internal/relay/discovery"
 	"github.com/maaxton/waiveo-next/internal/relay/ecp"
 	"github.com/maaxton/waiveo-next/internal/relay/ecppoll"
@@ -77,6 +78,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/rules/state"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
+	"github.com/maaxton/waiveo-next/internal/slidelive"
 )
 
 // buildVersion/buildChannel are this binary's channel-index/1 identity
@@ -113,25 +115,74 @@ type config struct {
 	pairHost  string // dial host a formed pairing code encodes
 	pairPort  int    // dial port a formed pairing code encodes
 
-	// Hardware device plane (all optional; absent → the loopback stand-ins,
-	// byte-identical dev/CI behavior). ecpTargets maps entity_id → the LAN
-	// Roku its device_commands dispatch to AND its state is polled from
-	// (WAIVEO_RELAY_ECP_TARGETS="entity=host[:port],..."). pollInterval is
+	// Hardware device plane (all optional). ecpTargets is the deployment
+	// OVERRIDE map, entity_id → the LAN Roku its device_commands dispatch to
+	// AND its state is polled from
+	// (WAIVEO_RELAY_ECP_TARGETS="entity=host[:port],...").
+	//
+	// It is no longer what turns device control on. The drivable set is the
+	// adoption gate's (internal/relay/devicetargets): what the app peer adopted
+	// in `device_inventory` intersected with what this relay's discovery can
+	// locate. These entries are the out-of-band escape hatch on top of it — a
+	// device on a subnet SSDP does not cross, one whose LOCATION is wrong, or a
+	// bring-up before any adoption record exists. An empty map is the normal
+	// deployment, not a disabled device plane. pollInterval is
 	// the ECP state-poll period (WAIVEO_RELAY_POLL_MS, default 5000).
 	// discoveryOn enables the SSDP client sweep feeding the candidate store
-	// (WAIVEO_RELAY_DISCOVERY=1, REL-110/111). mdnsPatterns enables the mDNS
-	// listener feeding the SAME candidate store (WAIVEO_RELAY_MDNS_PATTERNS,
-	// comma-separated MAN-071 service-type strings e.g. "_waiveo._tcp";
-	// empty/unset is off, internal/relay/mdns). ssdpAnnounce enables the
-	// SSDP RESPONDER — answering a player's own M-SEARCH for this relay's
-	// player/1 pairing surface (WAIVEO_RELAY_SSDP_ANNOUNCE=1, PLY-021/022).
-	// keepaliveOn enables the screen keep-alive capability
-	// (WAIVEO_RELAY_KEEPALIVE=1, internal/relay/keepalive, player/1
+	// (REL-110/111). mdnsPatterns enables the mDNS listener feeding the SAME
+	// candidate store (WAIVEO_RELAY_MDNS_PATTERNS, comma-separated MAN-071
+	// service-type strings e.g. "_waiveo._tcp"; empty/unset is off,
+	// internal/relay/mdns). ssdpAnnounce enables the SSDP RESPONDER —
+	// answering a player's own M-SEARCH for this relay's player/1 pairing
+	// surface (WAIVEO_RELAY_SSDP_ANNOUNCE=1, PLY-021/022). keepaliveOn enables
+	// the screen keep-alive capability (internal/relay/keepalive, player/1
 	// PLY-150-154): a second ECP poller over the SAME ecpTargets that
 	// re-launches a screen's player channel once it safely idles at Home.
-	// All four default off: CI and loopback dev runs must never multicast,
-	// and must not dispatch an unrequested launch, so dev/CI stay
-	// byte-identical to today.
+	//
+	// # Which of these default on, and why they split the way they do
+	//
+	// TWO of the four default ON and are switched off explicitly:
+	// discoveryOn (WAIVEO_RELAY_DISCOVERY=0, and only for a LAN-bound
+	// deployment — see discoveryEnabled) and keepaliveOn
+	// (WAIVEO_RELAY_KEEPALIVE=0). The other two — mdnsPatterns and
+	// ssdpAnnounce — default OFF and are switched on explicitly.
+	//
+	// The line between them is not "safe vs. unsafe", it is what the box does
+	// to a network or a device that did not ask for it:
+	//
+	//   - mdnsPatterns and ssdpAnnounce make this box ANNOUNCE itself or bind
+	//     a well-known multicast port. That is intrusive on a network that did
+	//     not ask and, in mDNS's case, collides outright with the host's own
+	//     avahi daemon. CI and loopback dev runs must never multicast, so both
+	//     stay off until a deployment states otherwise.
+	//   - discoveryOn is the opposite posture: an M-SEARCH is a control point
+	//     ASKING who is out there, which is the entire job of a signage
+	//     appliance that has to find the TVs it drives. Off by default meant a
+	//     fresh box discovered nothing at all until somebody knew to set an
+	//     environment variable — the appliance shipped unable to see its own
+	//     hardware, and the legacy system it replaces swept always-on. It is
+	//     nonetheless bound by the SAME invariant as the two above: CI and
+	//     loopback dev runs must never multicast. Both hold at once because
+	//     the default is read off the LISTEN address rather than being a
+	//     constant — a loopback-bound relay serves no screen on any LAN and so
+	//     has no fleet to discover, and does not sweep. discoveryEnabled has
+	//     the full reasoning.
+	//   - keepaliveOn drives an ADOPTED screen back to its channel. A screen
+	//     sitting at Home is a screen showing nothing, and it stays that way
+	//     until somebody notices — which, on an unattended wall, is the next
+	//     time a human walks past. The legacy stack ran its equivalent
+	//     unconditionally for exactly that reason, and shipping the capability
+	//     switched off reproduced the outage it exists to end. What makes
+	//     on-by-default safe is the ADOPTION GATE it carries
+	//     (keepalive.AdoptionSet): the relay drives only screens the app peer's
+	//     signed `device_inventory` says this deployment has adopted, so a
+	//     relay that can reach a Roku the legacy stack still owns does nothing
+	//     to it.
+	//
+	// Dev/CI behavior is unchanged by either flip: a loopback dev run does not
+	// sweep at all (discoveryEnabled), and with nothing discovered and no
+	// override configured the adoption gate is empty, so keepalive watches
+	// nothing.
 	ecpTargets   map[string]ecp.Target
 	pollInterval time.Duration
 	discoveryOn  bool
@@ -217,18 +268,92 @@ func loadConfig(env func(string) string) (config, error) {
 	if err != nil || pollMS <= 0 {
 		return config{}, fmt.Errorf("WAIVEO_RELAY_POLL_MS %q is not a positive integer", pollMSStr)
 	}
+	listen := envOr(env, "WAIVEO_RELAY_LISTEN", "127.0.0.1:7421")
 	return config{
-		listen:       envOr(env, "WAIVEO_RELAY_LISTEN", "127.0.0.1:7421"),
+		listen:       listen,
 		feederURL:    envOr(env, "WAIVEO_FEEDER_URL", "https://127.0.0.1:7420"),
 		pairHost:     envOr(env, "WAIVEO_RELAY_PAIR_HOST", "127.0.0.1"),
 		pairPort:     port,
 		ecpTargets:   targets,
 		pollInterval: time.Duration(pollMS) * time.Millisecond,
-		discoveryOn:  env("WAIVEO_RELAY_DISCOVERY") == "1" || env("WAIVEO_RELAY_DISCOVERY") == "true",
+		discoveryOn:  discoveryEnabled(env("WAIVEO_RELAY_DISCOVERY"), listen),
 		mdnsPatterns: parseMDNSPatterns(env("WAIVEO_RELAY_MDNS_PATTERNS")),
 		ssdpAnnounce: env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "1" || env("WAIVEO_RELAY_SSDP_ANNOUNCE") == "true",
-		keepaliveOn:  env("WAIVEO_RELAY_KEEPALIVE") == "1" || env("WAIVEO_RELAY_KEEPALIVE") == "true",
+		keepaliveOn:  keepaliveEnabled(env("WAIVEO_RELAY_KEEPALIVE")),
 	}, nil
+}
+
+// offValue reports whether raw spells an explicit "off" for one of this
+// binary's two OPT-OUT switches (WAIVEO_RELAY_DISCOVERY, WAIVEO_RELAY_KEEPALIVE
+// — see config's own doc for why those two default on and the multicast
+// announce switches do not).
+//
+// Written as an explicit off-list rather than as `!= "0"` so a typo — the
+// classic `=disabled` — does not silently mean "on" for an operator who plainly
+// intended otherwise. Anything NOT on the list (including a typo the list does
+// not anticipate) leaves the capability on, which is the safe direction for a
+// default that exists so the box works out of the box.
+//
+// One shared list rather than one per switch, deliberately: the two flags are
+// spelled the same way in the same deployment file, and an operator who learns
+// that WAIVEO_RELAY_KEEPALIVE=disabled works is entitled to expect
+// WAIVEO_RELAY_DISCOVERY=disabled to work too. The tracks that introduced these
+// two switches independently arrived at off-lists differing by exactly that one
+// spelling; unifying on the LONGER list keeps every spelling either track
+// already honored.
+func offValue(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "0", "false", "off", "no", "disabled":
+		return true
+	default:
+		return false
+	}
+}
+
+// discoveryEnabled decides whether this process sweeps, from
+// WAIVEO_RELAY_DISCOVERY and — when that says nothing — from the deployment
+// posture the listen address states.
+//
+// A STATED value wins in both directions: any explicit off value disables the
+// sweep anywhere, and any other explicit value enables it anywhere (including
+// on a loopback-bound run, which is how a developer deliberately sweeps a real
+// LAN from a laptop).
+//
+// UNSET is where the two invariants this function has to satisfy at once meet:
+//
+//   - A deployed appliance must sweep. Off-by-default meant a fresh box
+//     discovered nothing until somebody knew to set an environment variable —
+//     it shipped unable to see the TVs it exists to drive, while the legacy
+//     stack it replaces swept always-on.
+//   - CI and loopback dev runs must never multicast. `make dev` on a laptop
+//     on an office or café LAN must not M-SEARCH strangers and then HTTP-GET
+//     /query/device-info on everything that answers, and a CI runner must not
+//     either.
+//
+// The listen address separates them, and it is the honest discriminator rather
+// than a proxy for one: a relay bound to loopback is by construction serving
+// nothing but this machine — no screen on any LAN can reach it — so there is
+// no fleet for it to discover. A relay bound anywhere else is reachable by the
+// devices it is supposed to find.
+//
+// Deriving it from the binary's own configuration is deliberate, and is the
+// second half of this fix. The invariant previously lived in a
+// WAIVEO_RELAY_DISCOVERY=0 on one line of one make target, which is a guard
+// rail that protects exactly the one command someone remembered to edit; the
+// dev target it was supposed to protect had already lost it. A rule the
+// process enforces about itself cannot be left off a launcher.
+func discoveryEnabled(raw, listen string) bool {
+	if strings.TrimSpace(raw) == "" {
+		return !isLoopbackHost(hostOf(listen))
+	}
+	return !offValue(raw)
+}
+
+// keepaliveEnabled reads WAIVEO_RELAY_KEEPALIVE as an OPT-OUT: unset, or any
+// value other than an explicit off, leaves the screen keep-alive capability
+// running (see config.keepaliveOn's own doc for why the default is on).
+func keepaliveEnabled(raw string) bool {
+	return !offValue(raw)
 }
 
 // parseMDNSPatterns parses "svc1,svc2" into the mdns package's Config.Patterns
@@ -490,14 +615,15 @@ func main() {
 	// nudges decouples the connection's state.changed dispatcher (wired into
 	// every Dial, including redials) from the live apply path installed further
 	// down — see nudgeSink's own doc.
+	// commands is the same decoupling for the device plane: relayconn.Config's
+	// OnDeviceCommand has to be supplied at dial time, and the automation host
+	// that executes a command does not exist until several boot steps later —
+	// see deviceCommandSink's own doc for why that ordering is what left the
+	// callback nil in the shipped binary.
 	nudges := &nudgeSink{}
+	commands := &deviceCommandSink{}
 	dialConn := func() (*relayconn.Client, error) {
-		return relayconn.Dial(relayconn.Config{
-			URL:                 cfg.feederURL,
-			Store:               store,
-			Declaration:         relayHelloDeclaration(cfg),
-			OnGenerationAdvance: nudges.deliver,
-		})
+		return relayconn.Dial(relayDialConfig(cfg, store, nudges, commands))
 	}
 	client, err := dialWithRetry(dialConn)
 	helloOK := err == nil
@@ -584,57 +710,16 @@ func main() {
 	// comparison against values this relay derived itself.
 	candStore := deviceplane.NewStore(relayID.RelayID)
 
-	// Select the device plane's controller + resolver pair ONCE and use it for
-	// BOTH dispatch paths (edge rules via bootAutomationStack, preset batches
-	// via scheduleSink below), so a fired command resolves and dispatches
-	// identically regardless of which engine fired it (REL-112/113/115).
-	// Configured ECP targets swap in the real hardware adapter; otherwise the
-	// loopback stand-ins keep dev/CI behavior byte-identical.
-	var (
-		devController  deviceplane.DeviceController = loopbackController{}
-		baseController deviceplane.DeviceController = loopbackController{}
-		devResolver    deviceplane.EntityResolver   = loopbackResolver
-	)
-	if len(cfg.ecpTargets) > 0 {
-		baseController = ecp.New(cfg.ecpTargets)
-		devController = loggingController{inner: baseController, source: "automation"}
-		targets := cfg.ecpTargets
-		devResolver = func(entityID string) (deviceID, deviceClass string, ok bool) {
-			// Wave-1 bridge resolver: a configured ECP target IS the adopted
-			// entity (device_id = entity_id, class media-player). The real
-			// adopted-entity records arrive with the app peer (data-model/1).
-			if _, present := targets[entityID]; present {
-				return entityID, "media-player", true
-			}
-			return "", "", false
-		}
-	}
-	// Discovered-but-unadopted entities resolve too, and are tried FIRST: a
-	// configured ECP target is a deployment-time assertion about one entity id,
-	// while the candidate store is what this relay actually observed, so a
-	// discovered device never has its own command silently answered by an
-	// unrelated bridge entry. Falling through keeps the bridge working for the
-	// ids it does name.
-	{
-		bridge := devResolver
-		devResolver = func(entityID string) (string, string, bool) {
-			if deviceID, deviceClass, ok := candStore.ResolveEntity(entityID); ok {
-				return deviceID, deviceClass, true
-			}
-			return bridge(entityID)
-		}
-		// Name what is actually installed. This line said "ECP controller live"
-		// unconditionally, including on the default path where the controller is
-		// the loopback stand-in and no command reaches hardware — an operator
-		// reading the boot log had every reason to believe otherwise.
-		if len(cfg.ecpTargets) > 0 {
-			log.Printf("waiveo-relay device plane: ECP controller live (%d target(s))", len(cfg.ecpTargets))
-		} else {
-			log.Printf("waiveo-relay device plane: NO device adapter configured — discovered entities resolve, but every command is refused (set WAIVEO_RELAY_ECP_TARGETS)")
-		}
-	}
+	// The relay's device plane: the adoption gate, the ECP controller reading
+	// its targets through it, and the entity resolver behind both dispatch paths
+	// (edge rules and preset batches). Built by newDevicePlane so the wiring the
+	// binary runs is the wiring a test can hold — see its own doc.
+	plane := newDevicePlane(cfg.ecpTargets, candStore)
+	deviceTargets, devController, baseController, devResolver := plane.targets, plane.controller, plane.base, plane.resolve
+	log.Printf("waiveo-relay device plane: ECP controller live, adoption-gated (%d configured override(s); adopted devices resolve from device_inventory)",
+		len(cfg.ecpTargets))
 
-	host, err := bootAutomationStack(store, relayID, applied, site, deviceRegistry, devController, devResolver)
+	host, err := bootAutomationStack(store, relayID, applied, site, deviceRegistry, devController, devResolver, commands)
 	if err != nil {
 		log.Fatalf("waiveo-relay: boot automation stack: %v", err)
 	}
@@ -708,6 +793,39 @@ func main() {
 	// role; see playerserver.Server.EnablePersistence's own doc). Must happen
 	// before pairingSrv.Register mounts routes onto mux below.
 	pairingSrv.EnablePersistence(store)
+
+	// Install the live data a native slide's server-resolved widgets are filled
+	// from as this relay signs each Lease (internal/slidelive):
+	//
+	//   - Weather comes from the keyless Open-Meteo source, asked at the site's
+	//     OWN coordinates — the app peer's authoritative site_binding (REL-036),
+	//     which is the site scope node's DAT-033 effective geo already resolved
+	//     by the app. That is the same value bootAutomationStack adopts into the
+	//     engine for sun/schedule triggers, so a slide's weather and a rule's
+	//     sunset agree about where this relay is by construction.
+	//   - Entity state comes from the automation host, which records every
+	//     device-plane observation that flows through it (Host.EntityState). A
+	//     relay with no polled devices simply never populates it and every
+	//     entity widget shows the unavailable placeholder.
+	//
+	// Installed through siteGeo rather than written here once, because `site` is
+	// the zero binding on an offline boot (REL-055/061) and this relay must
+	// self-correct when the real one arrives on a later hello-ack instead of
+	// asking the weather at (0,0) until someone restarts the process — see
+	// siteGeo's own doc, and slidelive.Sources.HasGeo for why (0,0) draws a dash
+	// rather than the Gulf of Guinea's forecast. The same value is adopted into
+	// the automation engine's location, so a slide's weather and a rule's sunset
+	// agree about where this relay is by construction, on every adoption and not
+	// just the first. The forecast pull itself is background and never blocks a
+	// Lease.
+	geo := &siteGeo{
+		setSlideLive: pairingSrv.SetSlideLive,
+		setLocation:  host.SetLocation,
+		weather:      slidelive.NewOpenMeteo(slidelive.OpenMeteoConfig{}),
+		entity:       slidelive.EntitySourceFunc(host.EntityState),
+	}
+	geo.adopt(site)
+
 	logPairingCodes(cfg, applied, certDER, relayID.RelayID)
 
 	// Configure the serving surface from the relay's OWN durable last-applied
@@ -761,34 +879,97 @@ func main() {
 	// trigger baselines incl. attributes, fires nothing — RUL-300/304/330);
 	// real transitions follow on the same stream, so no separate seeding step
 	// exists. Host.Run pulls until the poller's stream closes on ctx cancel.
-	if len(cfg.ecpTargets) > 0 {
-		pollTargets := make(map[string]ecppoll.Target, len(cfg.ecpTargets))
-		for entityID, t := range cfg.ecpTargets {
-			pollTargets[entityID] = ecppoll.Target{Host: t.Host, Port: t.Port}
-		}
-		poller := ecppoll.New(pollTargets, cfg.pollInterval)
-		go poller.Run(rootCtx)
-		go func() {
-			if err := host.Run(rootCtx, poller); err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("waiveo-relay: device-state drive loop ended: %v", err)
-			}
-		}()
-		log.Printf("waiveo-relay device polling live (%d target(s), every %s)", len(pollTargets), cfg.pollInterval)
+	//
+	// The poller runs UNCONDITIONALLY and takes its target set from the same
+	// adoption gate the controller dispatches through, refreshed on every
+	// generation apply (installInventory below). It used to start only when
+	// WAIVEO_RELAY_ECP_TARGETS was set, which meant the default deployment
+	// observed nothing: no rule could fire on a real device, and no entity ever
+	// reported a state. With zero targets the loop is a no-op tick, so starting
+	// it always costs nothing and removes the "polling exists but only for the
+	// env-var deployment" split.
+	poller := ecppoll.New(nil, cfg.pollInterval)
+
+	// installInventory is the ONE place a generation's adopted-device set
+	// (REL-063) becomes drivable: it replaces the gate's adopted set and
+	// re-points the poller at the resulting target set, so "what this relay
+	// commands" and "what this relay observes" can never be two different lists.
+	// It runs once here for the boot generation and then on every live apply
+	// (rePuller.applyInventory).
+	installInventory := func(inv wire.DeviceInventory) {
+		adopted := deviceTargets.SetInventory(inv.Devices)
+		targets := pollTargetsFor(deviceTargets)
+		poller.SetTargets(targets)
+		log.Printf("waiveo-relay device plane: %d adopted+enabled entit(ies) in device_inventory, %d currently drivable (adopted and locatable, plus overrides)",
+			adopted, len(targets))
 	}
+	installInventory(applied.DeviceInventory)
+
+	go poller.Run(rootCtx)
+	go func() {
+		if err := host.Run(rootCtx, poller); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("waiveo-relay: device-state drive loop ended: %v", err)
+		}
+	}()
+	log.Printf("waiveo-relay device polling live (every %s; targets follow the adopted set)", cfg.pollInterval)
 
 	// Screen keep-alive (internal/relay/keepalive, player/1 PLY-150-157): a
-	// second, independent ECP poller over the SAME cfg.ecpTargets that
-	// re-launches a screen's player channel once it safely idles at Home
-	// (power-on settle delay, ≥2-consecutive-poll Home confirmation, never
-	// while standby, never while the screen's own active Lease is blank) —
-	// see keepalive's own package doc for why this needs its OWN Poller
-	// rather than sharing the one host.Run above already exclusively
-	// consumes. Off by default (WAIVEO_RELAY_KEEPALIVE unset).
-	if cfg.keepaliveOn && len(cfg.ecpTargets) > 0 {
-		kaTargets := make(map[string]keepalive.Target, len(cfg.ecpTargets))
-		for entityID, t := range cfg.ecpTargets {
-			kaTargets[entityID] = keepalive.Target{Host: t.Host, Port: t.Port}
+	// second, independent ECP poller over the adopted set that re-launches a
+	// screen's player channel once it safely idles at Home (power-on settle
+	// delay, ≥2-consecutive-poll Home confirmation, never while standby, never
+	// while the screen's own active Lease is blank) — see keepalive's own
+	// package doc for why this needs its OWN Poller rather than sharing the one
+	// host.Run above already exclusively consumes. ON by default
+	// (WAIVEO_RELAY_KEEPALIVE=0 disables it) — see config.keepaliveOn's own doc.
+	//
+	// Its target set is the ADOPTION GATE's, refreshed on every devicePlaneSync
+	// tick like the state poller's, and that is what makes the on-by-default
+	// flip mean anything. It used to be cfg.ecpTargets, fixed at construction —
+	// and cfg.ecpTargets is, since the device-control track, an out-of-band
+	// escape hatch rather than the normal path. So the capability was switched
+	// on in a deployment where the map it watched was empty: it self-healed
+	// nothing, silently, in exactly the power-cut scenario it was turned on for.
+	// It is started whenever the capability is on, with whatever the gate
+	// resolves at boot (possibly nothing), because the set it watches is now
+	// something that arrives later rather than something known here.
+	//
+	// Widening what it WATCHES does not widen what it may drive: adoption is
+	// enforced separately, per dispatch, by the Adopted gate wired below, and
+	// the target set is itself already the adopted-and-locatable intersection.
+	//
+	// keepaliveAdoption is declared out here, above the block, because two
+	// places need it: this wiring reads it on every poll, and the live
+	// re-pull path (rePuller, livepull.go) REFRESHES it on every applied
+	// generation. It stays nil when the capability is off, which is the
+	// signal the puller uses to skip refreshing a set nothing consults.
+	var keepaliveAdoption *keepalive.AdoptionSet
+	var keepaliveTargetSink keepaliveTargets
+	if cfg.keepaliveOn {
+		kaTargets := make(map[string]keepalive.Target)
+		for entityID, ep := range deviceTargets.Targets() {
+			kaTargets[entityID] = keepalive.Target{Host: ep.Host, Port: ep.Port}
 		}
+
+		// The adoption gate, seeded from the generation this boot applied and
+		// refreshed by every later one. Seeding here rather than leaving it
+		// empty until the first live pull matters on the path this whole
+		// capability exists for: after a power cut the relay boots, applies
+		// its persisted or freshly-pulled generation, and the screens are
+		// already sitting at Home — waiting for a nudge that may be minutes
+		// away would be waiting through exactly the outage.
+		//
+		// "Its persisted OR freshly-pulled generation" is load-bearing, and was
+		// for a while simply false. A boot whose pull fails leaves `applied`
+		// the zero value (see the pull site above), so this line seeded the
+		// gate with an EMPTY device_inventory and keep-alive relaunched
+		// nothing — on the offline boot, which is the power-cut boot, which is
+		// the scenario. It is true now because `device_inventory` is persisted
+		// in the last-applied row beside screen_programs and revoked, and
+		// installPersistedServingState restores it onto `applied` before this
+		// point (REL-055/061/063).
+		keepaliveAdoption = keepalive.NewAdoptionSet()
+		keepaliveAdoption.Apply(applied.Generation, applied.DeviceInventory)
+
 		ka := keepalive.New(keepalive.Config{
 			Targets:      kaTargets,
 			PollInterval: cfg.pollInterval,
@@ -827,14 +1008,33 @@ func main() {
 			// both suppress recovery on a live screen and relaunch an
 			// intentionally blanked one.
 			ActiveDisplay: blankSuppressionReader(pairingSrv),
+			// The adoption gate (keepalive.AdoptionSet): reachability is not
+			// permission. This relay can reach every Roku on the LAN,
+			// including the ones the legacy stack is still watchdogging
+			// during coexistence, and two controllers re-launching one Roku
+			// makes it flap. Only entities the app peer's signed
+			// `device_inventory` marks adopted + enabled are driven.
+			Adopted: keepaliveAdoption.IsAdopted,
 		})
+		keepaliveTargetSink = ka
 		go func() {
 			if err := ka.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("waiveo-relay: screen keep-alive ended: %v", err)
 			}
 		}()
-		log.Printf("waiveo-relay screen keep-alive live (%d target(s), every %s)", len(kaTargets), cfg.pollInterval)
+		log.Printf("waiveo-relay screen keep-alive live (%d target(s) at boot, following the adopted set, every %s)",
+			len(kaTargets), cfg.pollInterval)
 	}
+
+	// The periodic join across the device plane: re-derive the drivable set,
+	// re-point both pollers at it, and copy what the state poller has observed
+	// onto the candidates the device.candidates report is built from. It is a
+	// named unit (deviceplanesync.go) rather than a closure here because it is
+	// the sole mechanism behind two user-facing behaviours and, as a closure,
+	// could be deleted whole with every gate still green — and it is started
+	// through a named function, rather than assembled and `go`-ed here, so that
+	// deleting THIS line cannot be green either (TestMainStartsTheDevicePlaneSync).
+	startDevicePlaneSync(rootCtx, deviceTargets, poller, candStore, keepaliveTargetSink, cfg.pollInterval)
 
 	// Discovery (REL-110/111): SSDP client sweep + mDNS listener each mint
 	// per-DEVICE candidates into ONE SHARED candidate store when both lanes
@@ -852,15 +1052,31 @@ func main() {
 	// a discovery response could state.
 	if cfg.discoveryOn || len(cfg.mdnsPatterns) > 0 {
 		if cfg.discoveryOn {
+			// One HTTP client for every identification probe: connections to a
+			// device are pooled and reused across sweeps instead of being dialed
+			// fresh each time (see ecp.NewIdentifyClient for the timeout).
+			identifyClient := ecp.NewIdentifyClient()
 			disc, err := discovery.New(discovery.Config{
 				Watches: []discovery.Watch{{
 					Match:       deviceplane.Match{SSDP: rokuSearchTarget},
 					Driver:      rokuDriver,
 					DeviceClass: mediaPlayerClass,
+					DefaultPort: rokuECPPort,
 					Entities:    []deviceplane.CandidateEntity{{Key: mainEntityKey, DeviceClass: mediaPlayerClass}},
 				}},
 				Store:     candStore,
 				NowMillis: func() int64 { return time.Now().UnixMilli() },
+				// The identification probe: a discovered address that answers
+				// Roku's ECP device-info query IS a Roku, and says which one.
+				// Without it a sweep reports opaque USNs an operator cannot map
+				// onto the TVs in front of them (internal/relay/ecp).
+				Identify: func(ctx context.Context, address string) (discovery.Identity, bool) {
+					info, err := ecp.QueryDeviceInfo(ctx, identifyClient, address)
+					if err != nil {
+						return discovery.Identity{}, false
+					}
+					return discovery.Identity{Name: info.Name, Model: info.Model, Serial: info.SerialNumber}, true
+				},
 			})
 			if err != nil {
 				log.Fatalf("waiveo-relay: configure SSDP discovery: %v", err)
@@ -978,11 +1194,14 @@ func main() {
 	// here: an unaccepted relay serves its persisted last-applied snapshot
 	// offline and nothing more, until a redial is accepted.
 	puller := &rePuller{
-		nowFn:    func() int64 { return time.Now().UnixMilli() },
-		driver:   driver,
-		host:     host,
-		lastGen:  applied.Generation,
-		lastHash: applied.Hash,
+		nowFn:          func() int64 { return time.Now().UnixMilli() },
+		driver:         driver,
+		host:           host,
+		lastGen:        applied.Generation,
+		lastHash:       applied.Hash,
+		applyInventory: installInventory,
+		adoption:       keepaliveAdoption,
+		geo:            geo,
 	}
 	puller.pull = func(since int64) (desiredstate.Applied, error) {
 		c := liveConn.get()
@@ -1299,16 +1518,28 @@ func enrollWithRetry(feederURL string, store *identity.Store) error {
 // bootAutomationStack builds the relay's edge-automation Host over the
 // operational store and loads the verified desired-state generation's signed
 // edge_rules into it (REL-062), logging how many edge rules loaded. The caller
-// selects the DeviceController + EntityResolver pair (real ECP when targets are
-// configured, loopback stand-ins otherwise) so both dispatch paths share it. dc
-// is the relay's ONE canonical device-class registry (device-class-registry/1's
-// own built-in, REG-060-066) — automationhost.New wires it directly into the
-// device plane's CommandVocab and, adapted, into the engine's registry.Registry.
-func bootAutomationStack(store *identity.Store, relayID identity.RelayIdentity, applied desiredstate.Applied, site hello.SiteBinding, dc deviceclass.Registry, controller deviceplane.DeviceController, resolveEntity deviceplane.EntityResolver) (*automationhost.Host, error) {
+// selects the DeviceController + EntityResolver pair (newDevicePlane) so both
+// dispatch paths share it. dc is the relay's ONE canonical device-class registry
+// (device-class-registry/1's own built-in, REG-060-066) — automationhost.New
+// wires it directly into the device plane's CommandVocab and, adapted, into the
+// engine's registry.Registry.
+//
+// commands is the connection's inbound `device.command` sink, and this function
+// ARMS it with the host it just built (REL-112). That is deliberately not the
+// caller's job: this is the only function in the binary that produces a Host, so
+// arming here makes "the wire can reach the device plane" a property of building
+// the device plane at all, rather than a separate line a boot sequence can omit
+// — which is exactly what it did omit, leaving every app-issued command answered
+// "this relay has no device plane wired" for the life of the process.
+func bootAutomationStack(store *identity.Store, relayID identity.RelayIdentity, applied desiredstate.Applied, site hello.SiteBinding, dc deviceclass.Registry, controller deviceplane.DeviceController, resolveEntity deviceplane.EntityResolver, commands *deviceCommandSink) (*automationhost.Host, error) {
 	host, err := automationhost.New(store, dc, controller, resolveEntity, relayID.RelayID)
 	if err != nil {
 		return nil, err
 	}
+	// Armed BEFORE the rule load below, not after: ApplyEdgeRules can take a
+	// moment on a large generation, and a command arriving in that window should
+	// execute rather than be told the device plane is not up.
+	commands.set(host.DeviceCommand)
 	// Adopt the app peer's authoritative site_binding (REL-036) into the engine
 	// before loading rules, so the edge engine's schedule/sun triggers evaluate
 	// against the site's real timezone and coordinates from the first tick.
@@ -1537,12 +1768,13 @@ func serveAppAuthoredPrograms(srv *playerserver.Server, generation int64, served
 }
 
 // installPersistedServingState configures srv from the relay's OWN durable
-// last-applied row — the app-authored per-screen programs (REL-055/061) and the
-// generation's `revocation_and_site.revoked` set (REL-066) — and returns applied
-// with its Revoked filled from that same row. It performs no network I/O and
-// contacts no app peer: its sole input is the operational store, so a boot
-// during an app-peer outage installs exactly what a boot with a live connection
-// does (Offline continuity).
+// last-applied row — the app-authored per-screen programs (REL-055/061), the
+// generation's `revocation_and_site.revoked` set (REL-066) and its
+// `device_inventory` adopted set (REL-063/064) — and returns applied with its
+// Revoked and DeviceInventory filled from that same row. It performs no network
+// I/O and contacts no app peer: its sole input is the operational store, so a
+// boot during an app-peer outage installs exactly what a boot with a live
+// connection does (Offline continuity).
 //
 // # The programs
 //
@@ -1578,6 +1810,25 @@ func serveAppAuthoredPrograms(srv *playerserver.Server, generation int64, served
 // exactly the set it returned, in that same row write, so the durable copy and
 // applied.Revoked are the same list — and reading the durable one keeps both
 // boot paths on a single source of truth rather than two that can drift.
+//
+// # The adopted set, and why it is read here at all
+//
+// `device_inventory` is returned the same way and for a strictly worse failure
+// than the revocation set's. It is the ONLY statement of which devices this
+// relay may drive; every consumer of it fails CLOSED (keepalive.AdoptionSet
+// adopts nothing on an empty set, devicetargets makes nothing drivable). So a
+// boot that left it at the zero value's empty section did not degrade loudly —
+// it came up healthy, connected to nothing, driving nothing, and keeping no
+// screen alive.
+//
+// Which is the power-cut boot. Both the app peer and the relay come back at
+// once, the relay's pull loses that race, and the ONE capability whose entire
+// job is "a screen idling at Home shows NOTHING until a human walks past"
+// (screen keep-alive, PLY-150-157) had an empty gate to consult. It relaunched
+// nothing, in the exact scenario it exists for. Reading the adopted set from
+// the same durable row as the programs it applies to is what makes this
+// function's own claim — that an offline boot installs what an online one does
+// — true of the device plane and not only of the serve path.
 func installPersistedServingState(store *identity.Store, srv *playerserver.Server, applied desiredstate.Applied) (desiredstate.Applied, error) {
 	served, err := desiredstate.ServedProgram(store)
 	if err != nil {
@@ -1600,6 +1851,14 @@ func installPersistedServingState(store *identity.Store, srv *playerserver.Serve
 	if len(revoked) > 0 {
 		log.Printf("waiveo-relay: persisted last-applied snapshot revokes %d screen(s); enforced from boot against every credential decision, app peer reachable or not (REL-123)", len(revoked))
 	}
+
+	inventory, err := desiredstate.ServedDeviceInventory(store)
+	if err != nil {
+		return applied, fmt.Errorf("read persisted device_inventory for offline device plane: %w", err)
+	}
+	applied.DeviceInventory = inventory
+	log.Printf("waiveo-relay: persisted last-applied snapshot adopts %d device(s); the device plane and screen keep-alive come up on that set with no app peer needed (REL-055/061/063)", len(inventory.Devices))
+
 	return applied, nil
 }
 
@@ -1690,10 +1949,30 @@ func relayHelloDeclaration(cfg config) hello.Declaration {
 	}
 }
 
-// loopbackController is the Wave-1 stand-in DeviceController: it accepts every
-// resolved device command and logs it, standing in for the real ECP/Roku adapter
-// (hardware, deferred) so the wired automation stack can be exercised without a
-// physical device. It never fails, so a fired rule's dispatch always succeeds.
+// pollTargetsFor projects the drivable-device gate's current answer onto the
+// ECP poller's own Target type. The two packages deliberately declare separate
+// address types (ecp.Target, ecppoll.Target) so neither driver depends on the
+// other; this is the one place the gate's answer is adapted for the poller, so
+// the poll set is BY CONSTRUCTION the command set and no drift is possible.
+func pollTargetsFor(targets *devicetargets.Registry) map[string]ecppoll.Target {
+	resolved := targets.Targets()
+	out := make(map[string]ecppoll.Target, len(resolved))
+	for entityID, ep := range resolved {
+		out[entityID] = ecppoll.Target{Host: ep.Host, Port: ep.Port}
+	}
+	return out
+}
+
+// loopbackController is a TEST-ONLY stand-in DeviceController: it refuses every
+// dispatch with a typed error, so a test can exercise the automation stack's
+// wiring (rules load, fire, and reach the device plane) with no hardware and no
+// ECP server.
+//
+// It is no longer the production default and no longer stands in for anything
+// deferred. The relay now installs the real ECP adapter unconditionally and
+// gates it on adoption (deviceplane.go's newDevicePlane); this remains only as
+// the double the serving-side tests hand to bootAutomationStack when the device
+// plane is not what they are testing.
 type loopbackController struct{}
 
 // Dispatch REFUSES rather than reporting success.
@@ -1764,6 +2043,12 @@ const (
 	mdnsDriver       = "mdns"
 	mediaPlayerClass = "media-player"
 	mainEntityKey    = "main"
+	// rokuECPPort is Roku's well-known ECP port, declared on the watch so a
+	// NOTIFY whose LOCATION header is missing or malformed can still be turned
+	// into a dialable address from the packet's own source IP
+	// (internal/relay/discovery/address.go). A Roku's LOCATION normally names
+	// this port itself; this is the fallback, not the usual path.
+	rokuECPPort = 8060
 )
 
 // candidateReportInterval is how often the relay re-reports its full candidate
@@ -1877,17 +2162,25 @@ func toWireCandidates(cands []deviceplane.Candidate) []wire.DeviceCandidate {
 			NativeID:     c.NativeID,
 			DeviceClass:  c.DeviceClass,
 			Name:         c.Name,
+			Address:      c.Address,
+			Model:        c.Model,
+			Serial:       c.Serial,
 			Entities:     ents,
 		})
 	}
 	return out
 }
 
-// loopbackResolver is the Wave-1 stand-in entity resolver: it maps every
+// loopbackResolver is a TEST-ONLY stand-in entity resolver: it maps every
 // entity_id to a single media-player loopback device so a loaded edge rule's
-// device_command resolves against the fixture registry's vocabulary (REL-112/113).
-// The real resolver reads the device plane's adopted-entity records (data-model/1)
-// and is a later concern.
+// device_command resolves against the fixture registry's vocabulary
+// (REL-112/113) without a candidate store or an adopted inventory.
+//
+// It is deliberately NOT wired in production, and the reason is the whole point
+// of this track: resolving every id to one device means every id is a device
+// this relay claims, which is a blanket claim over a shared LAN. The production
+// resolver (deviceplane.go) resolves only what this relay discovered or what the
+// app peer adopted.
 func loopbackResolver(entityID string) (deviceID, deviceClass string, ok bool) {
 	return "01J8Z3K4N5P6Q7R8S9T0V1DEVA", "media-player", true
 }

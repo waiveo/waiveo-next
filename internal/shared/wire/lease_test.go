@@ -212,6 +212,57 @@ func TestValidateSlideLayers(t *testing.T) {
 	}
 }
 
+// TestValidateAuthoredSlideLayersDiffersOnlyOnTheDerivedImageURL pins the exact
+// and only difference between the two exported gates.
+//
+// The authoring gate exists because an image layer's `url` is DERIVED from the
+// content origin at projection time, so requiring it of an operator would make
+// every image layer unstorable. That is a narrow carve-out and it must STAY
+// narrow: the danger of a second entry point is that it slowly becomes a second,
+// looser rule set, and an authoring gate that accepted what the serving gate
+// later drops would show an operator a stored slide that silently never reaches
+// a screen.
+//
+// So this asserts the difference in both directions — the url case diverges, and
+// a representative rule from every other family (kind, geometry, per-kind
+// required field, color) answers IDENTICALLY through both.
+func TestValidateAuthoredSlideLayersDiffersOnlyOnTheDerivedImageURL(t *testing.T) {
+	imageNoURL := []Layer{{Kind: LayerKindImage, X: 0, Y: 0, W: 100, H: 100, AssetRef: "sha256:aa"}}
+	if err := ValidateAuthoredSlideLayers(imageNoURL); err != nil {
+		t.Errorf("the authoring gate rejected an image layer with no derived url: %v", err)
+	}
+	if err := ValidateSlideLayers(imageNoURL); err == nil {
+		t.Error("the serving gate accepted an image layer with no url; a player could not fetch it")
+	}
+
+	// An image layer with NEITHER half is refused by both: the asset_ref is
+	// authored, and without it there is nothing to derive a url from either.
+	imageNothing := []Layer{{Kind: LayerKindImage, X: 0, Y: 0, W: 100, H: 100}}
+	if err := ValidateAuthoredSlideLayers(imageNothing); err == nil {
+		t.Error("the authoring gate accepted an image layer with no asset_ref")
+	}
+
+	shared := map[string][]Layer{
+		"empty stack":         {},
+		"unknown kind":        {{Kind: "video", X: 0, Y: 0, W: 10, H: 10}},
+		"zero area":           {{Kind: LayerKindRect, X: 0, Y: 0, W: 0, H: 10, Color: "#ffffff"}},
+		"off canvas":          {{Kind: LayerKindRect, X: 1900, Y: 0, W: 100, H: 10, Color: "#ffffff"}},
+		"text with no text":   {{Kind: LayerKindText, X: 0, Y: 0, W: 10, H: 10}},
+		"clock with no fmt":   {{Kind: LayerKindClock, X: 0, Y: 0, W: 10, H: 10}},
+		"rect with no color":  {{Kind: LayerKindRect, X: 0, Y: 0, W: 10, H: 10}},
+		"unparseable color":   {{Kind: LayerKindRect, X: 0, Y: 0, W: 10, H: 10, Color: "green"}},
+		"a well-formed stack": {{Kind: LayerKindText, X: 0, Y: 0, W: 10, H: 10, Text: "hi"}},
+	}
+	for name, layers := range shared {
+		t.Run(name, func(t *testing.T) {
+			authored, served := ValidateAuthoredSlideLayers(layers), ValidateSlideLayers(layers)
+			if (authored == nil) != (served == nil) {
+				t.Errorf("the two gates disagree on a rule that is not the derived url: authored=%v served=%v", authored, served)
+			}
+		})
+	}
+}
+
 // TestIsHexColor pins the #RRGGBB grammar isHexColor enforces.
 func TestIsHexColor(t *testing.T) {
 	valid := []string{"#000000", "#ffffff", "#FFFFFF", "#0a1B2c", "#123456"}
