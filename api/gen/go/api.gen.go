@@ -2648,6 +2648,21 @@ type CreateCastParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// ImportCastParams defines parameters for ImportCast.
+type ImportCastParams struct {
+	// ScopeNode The node in THIS deployment's tree the imported cast is placed at.
+	ScopeNode Ulid `form:"scope_node" json:"scope_node"`
+
+	// Name Rename the cast on the way in. Absent, the bundle's own name is used.
+	Name *string `form:"name,omitempty" json:"name,omitempty"`
+
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // DeleteCastParams defines parameters for DeleteCast.
 type DeleteCastParams struct {
 	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
@@ -2668,6 +2683,12 @@ type UpdateCastParams struct {
 	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
 	IfMatch IfMatchParam `json:"If-Match"`
 
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// ExportCastParams defines parameters for ExportCast.
+type ExportCastParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
@@ -3540,6 +3561,9 @@ type ClientInterface interface {
 
 	CreateCast(ctx context.Context, params *CreateCastParams, body CreateCastJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ImportCastWithBody request with any body
+	ImportCastWithBody(ctx context.Context, params *ImportCastParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// DeleteCast request
 	DeleteCast(ctx context.Context, castId Ulid, params *DeleteCastParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -3550,6 +3574,9 @@ type ClientInterface interface {
 	UpdateCastWithBody(ctx context.Context, castId Ulid, params *UpdateCastParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	UpdateCast(ctx context.Context, castId Ulid, params *UpdateCastParams, body UpdateCastJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ExportCast request
+	ExportCast(ctx context.Context, castId Ulid, params *ExportCastParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListContent request
 	ListContent(ctx context.Context, params *ListContentParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4195,6 +4222,18 @@ func (c *Client) CreateCast(ctx context.Context, params *CreateCastParams, body 
 	return c.Client.Do(req)
 }
 
+func (c *Client) ImportCastWithBody(ctx context.Context, params *ImportCastParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewImportCastRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) DeleteCast(ctx context.Context, castId Ulid, params *DeleteCastParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewDeleteCastRequest(c.Server, castId, params)
 	if err != nil {
@@ -4233,6 +4272,18 @@ func (c *Client) UpdateCastWithBody(ctx context.Context, castId Ulid, params *Up
 
 func (c *Client) UpdateCast(ctx context.Context, castId Ulid, params *UpdateCastParams, body UpdateCastJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewUpdateCastRequest(c.Server, castId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ExportCast(ctx context.Context, castId Ulid, params *ExportCastParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewExportCastRequest(c.Server, castId, params)
 	if err != nil {
 		return nil, err
 	}
@@ -6636,6 +6687,96 @@ func NewCreateCastRequestWithBody(server string, params *CreateCastParams, conte
 	return req, nil
 }
 
+// NewImportCastRequestWithBody generates requests for ImportCast with any type of body
+func NewImportCastRequestWithBody(server string, params *ImportCastParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/casts/import")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "scope_node", params.ScopeNode, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+			return nil, err
+		} else {
+			for _, qp := range strings.Split(queryFrag, "&") {
+				rawQueryFragments = append(rawQueryFragments, qp)
+			}
+		}
+
+		if params.Name != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "name", *params.Name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewDeleteCastRequest generates requests for DeleteCast
 func NewDeleteCastRequest(server string, castId Ulid, params *DeleteCastParams) (*http.Request, error) {
 	var err error
@@ -6807,6 +6948,55 @@ func NewUpdateCastRequestWithBody(server string, castId Ulid, params *UpdateCast
 			}
 
 			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewExportCastRequest generates requests for ExportCast
+func NewExportCastRequest(server string, castId Ulid, params *ExportCastParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "cast_id", castId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/casts/%s/export", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
 		}
 
 	}
@@ -11342,6 +11532,9 @@ type ClientWithResponsesInterface interface {
 
 	CreateCastWithResponse(ctx context.Context, params *CreateCastParams, body CreateCastJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateCastResponse, error)
 
+	// ImportCastWithBodyWithResponse request with any body
+	ImportCastWithBodyWithResponse(ctx context.Context, params *ImportCastParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ImportCastResponse, error)
+
 	// DeleteCastWithResponse request
 	DeleteCastWithResponse(ctx context.Context, castId Ulid, params *DeleteCastParams, reqEditors ...RequestEditorFn) (*DeleteCastResponse, error)
 
@@ -11352,6 +11545,9 @@ type ClientWithResponsesInterface interface {
 	UpdateCastWithBodyWithResponse(ctx context.Context, castId Ulid, params *UpdateCastParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateCastResponse, error)
 
 	UpdateCastWithResponse(ctx context.Context, castId Ulid, params *UpdateCastParams, body UpdateCastJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateCastResponse, error)
+
+	// ExportCastWithResponse request
+	ExportCastWithResponse(ctx context.Context, castId Ulid, params *ExportCastParams, reqEditors ...RequestEditorFn) (*ExportCastResponse, error)
 
 	// ListContentWithResponse request
 	ListContentWithResponse(ctx context.Context, params *ListContentParams, reqEditors ...RequestEditorFn) (*ListContentResponse, error)
@@ -12335,6 +12531,42 @@ func (r CreateCastResponse) ContentType() string {
 	return ""
 }
 
+type ImportCastResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON201                   *Cast
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON503 *ServiceUnavailable
+}
+
+// Status returns HTTPResponse.Status
+func (r ImportCastResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ImportCastResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ImportCastResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type DeleteCastResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
@@ -12433,6 +12665,40 @@ func (r UpdateCastResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r UpdateCastResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ExportCastResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON429 *TooManyRequests
+	ApplicationproblemJSON503 *ServiceUnavailable
+}
+
+// Status returns HTTPResponse.Status
+func (r ExportCastResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ExportCastResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ExportCastResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -14919,6 +15185,15 @@ func (c *ClientWithResponses) CreateCastWithResponse(ctx context.Context, params
 	return ParseCreateCastResponse(rsp)
 }
 
+// ImportCastWithBodyWithResponse request with arbitrary body returning *ImportCastResponse
+func (c *ClientWithResponses) ImportCastWithBodyWithResponse(ctx context.Context, params *ImportCastParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ImportCastResponse, error) {
+	rsp, err := c.ImportCastWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseImportCastResponse(rsp)
+}
+
 // DeleteCastWithResponse request returning *DeleteCastResponse
 func (c *ClientWithResponses) DeleteCastWithResponse(ctx context.Context, castId Ulid, params *DeleteCastParams, reqEditors ...RequestEditorFn) (*DeleteCastResponse, error) {
 	rsp, err := c.DeleteCast(ctx, castId, params, reqEditors...)
@@ -14952,6 +15227,15 @@ func (c *ClientWithResponses) UpdateCastWithResponse(ctx context.Context, castId
 		return nil, err
 	}
 	return ParseUpdateCastResponse(rsp)
+}
+
+// ExportCastWithResponse request returning *ExportCastResponse
+func (c *ClientWithResponses) ExportCastWithResponse(ctx context.Context, castId Ulid, params *ExportCastParams, reqEditors ...RequestEditorFn) (*ExportCastResponse, error) {
+	rsp, err := c.ExportCast(ctx, castId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseExportCastResponse(rsp)
 }
 
 // ListContentWithResponse request returning *ListContentResponse
@@ -16873,6 +17157,74 @@ func ParseCreateCastResponse(rsp *http.Response) (*CreateCastResponse, error) {
 	return response, nil
 }
 
+// ParseImportCastResponse parses an HTTP response from a ImportCastWithResponse call
+func ParseImportCastResponse(rsp *http.Response) (*ImportCastResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ImportCastResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest Cast
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ServiceUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseDeleteCastResponse parses an HTTP response from a DeleteCastWithResponse call
 func ParseDeleteCastResponse(rsp *http.Response) (*DeleteCastResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -17043,6 +17395,60 @@ func ParseUpdateCastResponse(rsp *http.Response) (*UpdateCastResponse, error) {
 			return nil, err
 		}
 		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseExportCastResponse parses an HTTP response from a ExportCastWithResponse call
+func ParseExportCastResponse(rsp *http.Response) (*ExportCastResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ExportCastResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ServiceUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
 
 	}
 

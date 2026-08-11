@@ -704,6 +704,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/casts/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import a cast from a portable `.cast` bundle
+         * @description The request body is a `.cast` bundle — one authored design plus the bytes of every image it draws — as produced by `exportCast`. The destination placement is the `scope_node` query parameter, because the body is a binary file and because a bundle deliberately carries no placement of its own: a scope node names a tree the source deployment had and this one does not.
+         *
+         *     The bundle is UNTRUSTED INPUT. Every asset's bytes are re-hashed and must match the reference they are carried under, the manifest is the sole list of what will be written (an entry it does not declare is a refusal, not a silent extra file), and the slides are then validated by the platform's own authoring rules — because the import writes through the SAME path `createCast` does, not a second one. So an imported cast is held to exactly the bar an authored one is, never a lower one, and the response is `createCast`'s own: `201` with the created cast, its ETag and its Location.
+         *
+         *     The cast's identity is minted here, as it is for any create: a bundle carries no `id`, no `revision` and no `external_id`, all of which describe the box it came from. `name` optionally renames on the way in, which is what importing a second copy of a design onto one box needs.
+         */
+        post: operations["importCast"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/casts/{cast_id}": {
         parameters: {
             query?: never;
@@ -729,6 +753,34 @@ export interface paths {
          * @description Partial update. Requires If-Match against the cast's current ETag/revision. `slides` is replaced wholesale when present — a slide list is an ordered document, and a member-wise merge of one has no meaning — and the POST-MERGE effective row is re-validated in full, so a patch can no more introduce an undrawable slide than a create can.
          */
         patch: operations["updateCast"];
+        trace?: never;
+    };
+    "/casts/{cast_id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cast_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Export a cast as a portable `.cast` bundle
+         * @description One authored design plus the bytes of every image it draws, as one file an operator can email, carry on a stick, and import onto another box (`importCast`).
+         *
+         *     This is deliberately NOT the workspace archive. That moves the whole workspace and REPLACES the destination; this moves one design and adds it. The bundle is unencrypted and unsigned on purpose: its content is a design somebody is choosing to hand over, and the importing box establishes trust by re-deriving every asset's hash from the bytes and re-validating the slides — which answers the question that matters, where a signature would only say who made the file.
+         *
+         *     Carries the name, the slides, the per-slide dwell, the labels and the images. Carries no `id`, `scope_node`, `external_id` or `revision`: each describes THIS deployment and would be wrong on the next one.
+         *
+         *     A cast referencing an image this box no longer holds is refused `409` rather than exported with a hole in it — the hole would surface only on the destination, as a slide that renders blank, long after anyone could connect it to this export.
+         */
+        get: operations["exportCast"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/screens": {
@@ -4150,6 +4202,48 @@ export interface operations {
             422: components["responses"]["UnprocessableContent"];
         };
     };
+    importCast: {
+        parameters: {
+            query: {
+                /** @description The node in THIS deployment's tree the imported cast is placed at. */
+                scope_node: components["schemas"]["Ulid"];
+                /** @description Rename the cast on the way in. Absent, the bundle's own name is used. */
+                name?: string;
+            };
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description The imported cast, as created. */
+            201: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Cast"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
     getCast: {
         parameters: {
             query?: never;
@@ -4249,6 +4343,37 @@ export interface operations {
             412: components["responses"]["PreconditionFailed"];
             422: components["responses"]["UnprocessableContent"];
             428: components["responses"]["PreconditionRequired"];
+        };
+    };
+    exportCast: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                cast_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The bundle, as an attachment. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/zip": string;
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     listScreens: {

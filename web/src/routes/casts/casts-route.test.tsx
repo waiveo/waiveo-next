@@ -390,3 +390,90 @@ describe("Casts library — templates", () => {
     expect(seen.body).toBeDefined();
   });
 });
+
+describe("Casts library — portability (.cast bundles)", () => {
+  it("offers each cast a download link to its own bundle", async () => {
+    server.use(...listing([cast()]));
+    renderCasts();
+
+    const link = await screen.findByRole("link", { name: /export lobby loop as a \.cast bundle/i });
+    // An anchor, not a fetch: a bundle carries every image the design draws, and
+    // the browser streams it straight to disk from a link.
+    expect(link).toHaveAttribute("href", `/api/v1/casts/${ULID_A}/export`);
+    expect(link).toHaveAttribute("download");
+  });
+
+  it("imports a bundle at the placement the operator chose, and renames on request", async () => {
+    const seen: { url: URL; body: Uint8Array; type: string | null }[] = [];
+    server.use(
+      ...listing([]),
+      http.post("*/api/v1/casts/import", async ({ request }) => {
+        const body = await request.arrayBuffer();
+        seen.push({
+          url: new URL(request.url),
+          body: new Uint8Array(body),
+          type: request.headers.get("Content-Type"),
+        });
+        return HttpResponse.json(cast({ name: "Imported menu" }), {
+          status: 201,
+          headers: { ETag: '"1"', "Trace-Id": TRACE_ID },
+        });
+      }),
+    );
+    renderCasts();
+
+    await userEvent.click(await screen.findByRole("button", { name: /import \.cast/i }));
+    const file = new File([new Uint8Array([80, 75, 3, 4, 1, 2, 3])], "menu.cast", {
+      type: "application/zip",
+    });
+    await userEvent.upload(screen.getByLabelText(/^Bundle/), file);
+    await userEvent.type(screen.getByLabelText(/^Name/), "Imported menu");
+    await userEvent.click(screen.getByRole("button", { name: "Import" }));
+
+    await screen.findByText(/Imported Imported menu/i);
+    expect(seen).toHaveLength(1);
+    // The placement rides the request — a bundle carries none, so the console
+    // must supply one and must not let the server guess.
+    expect(seen[0]!.url.searchParams.get("scope_node")).toBe(ULID_ROOT);
+    expect(seen[0]!.url.searchParams.get("name")).toBe("Imported menu");
+    // The FILE'S OWN BYTES were sent, not a JSON description of them: the body
+    // opens with the zip magic the fixture starts with.
+    expect(seen[0]!.body.length).toBeGreaterThan(0);
+    expect(Array.from(seen[0]!.body.slice(0, 4))).toEqual([0x50, 0x4b, 0x03, 0x04]);
+    expect(seen[0]!.type).toBe("application/octet-stream");
+  });
+
+  it("shows the server's own refusal sentence, because they mean different things", async () => {
+    // "That is not a cast bundle", "this file has been altered" and "this bundle
+    // is incomplete" are three different next actions for the operator. A
+    // generic "import failed" would send them to retry the thing that cannot
+    // work.
+    server.use(
+      ...listing([]),
+      http.post("*/api/v1/casts/import", () =>
+        problem(
+          422,
+          "VALIDATION_FAILED",
+          "An image in this bundle does not match the reference it is carried under; the file has been altered or corrupted in transit. Nothing was imported.",
+        ),
+      ),
+    );
+    renderCasts();
+
+    await userEvent.click(await screen.findByRole("button", { name: /import \.cast/i }));
+    await userEvent.upload(
+      screen.getByLabelText(/^Bundle/),
+      new File([new Uint8Array([1, 2, 3])], "menu.cast"),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Import" }));
+
+    expect(await screen.findByText(/does not match the reference it is carried under/)).toBeInTheDocument();
+  });
+
+  it("will not import until a bundle has been chosen", async () => {
+    server.use(...listing([]));
+    renderCasts();
+    await userEvent.click(await screen.findByRole("button", { name: /import \.cast/i }));
+    expect(screen.getByRole("button", { name: "Import" })).toBeDisabled();
+  });
+});

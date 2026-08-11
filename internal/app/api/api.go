@@ -330,6 +330,12 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// scheduling-content row like the three above, but the one an operator
 	// actually authors in, and it declares its full request/response schema.
 	srv.mount(rt, castsConfig())
+	// The cast family's two PORTABILITY operations (parity row 1.9,
+	// castbundles.go): one authored design, plus the images it draws, out of one
+	// box and into another. Mounted beside the family rather than inside the
+	// generic machinery — a cast is the only kind with a portable single-row
+	// bundle, because it is the only kind an operator hands to another operator.
+	srv.mountCastBundles(rt)
 	srv.mount(rt, automationsConfig())
 	// The two data-model/1 identity kinds (identityrows.go). They are ordinary
 	// resourceConfig mounts on purpose: a screen and an adopted device are

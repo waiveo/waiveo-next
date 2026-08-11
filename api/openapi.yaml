@@ -1877,6 +1877,81 @@ paths:
           $ref: "#/components/responses/Conflict"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
+  /casts/import:
+    post:
+      operationId: importCast
+      summary: Import a cast from a portable `.cast` bundle
+      description: >-
+        The request body is a `.cast` bundle — one authored design plus the
+        bytes of every image it draws — as produced by `exportCast`. The
+        destination placement is the `scope_node` query parameter, because the
+        body is a binary file and because a bundle deliberately carries no
+        placement of its own: a scope node names a tree the source deployment
+        had and this one does not.
+
+
+        The bundle is UNTRUSTED INPUT. Every asset's bytes are re-hashed and
+        must match the reference they are carried under, the manifest is the
+        sole list of what will be written (an entry it does not declare is a
+        refusal, not a silent extra file), and the slides are then validated by
+        the platform's own authoring rules — because the import writes through
+        the SAME path `createCast` does, not a second one. So an imported cast
+        is held to exactly the bar an authored one is, never a lower one, and
+        the response is `createCast`'s own: `201` with the created cast, its
+        ETag and its Location.
+
+
+        The cast's identity is minted here, as it is for any create: a bundle
+        carries no `id`, no `revision` and no `external_id`, all of which
+        describe the box it came from. `name` optionally renames on the way in,
+        which is what importing a second copy of a design onto one box needs.
+      tags: [casts, "mcp:act"]
+      parameters:
+        - name: scope_node
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/Ulid"
+          description: The node in THIS deployment's tree the imported cast is placed at.
+        - name: name
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Rename the cast on the way in. Absent, the bundle's own name is used.
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "201":
+          description: The imported cast, as created.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cast"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /casts/{cast_id}:
     parameters:
       - name: cast_id
@@ -1982,6 +2057,64 @@ paths:
           $ref: "#/components/responses/UnprocessableContent"
         "428":
           $ref: "#/components/responses/PreconditionRequired"
+  /casts/{cast_id}/export:
+    parameters:
+      - name: cast_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    get:
+      operationId: exportCast
+      summary: Export a cast as a portable `.cast` bundle
+      description: >-
+        One authored design plus the bytes of every image it draws, as one file
+        an operator can email, carry on a stick, and import onto another box
+        (`importCast`).
+
+
+        This is deliberately NOT the workspace archive. That moves the whole
+        workspace and REPLACES the destination; this moves one design and adds
+        it. The bundle is unencrypted and unsigned on purpose: its content is a
+        design somebody is choosing to hand over, and the importing box
+        establishes trust by re-deriving every asset's hash from the bytes and
+        re-validating the slides — which answers the question that matters,
+        where a signature would only say who made the file.
+
+
+        Carries the name, the slides, the per-slide dwell, the labels and the
+        images. Carries no `id`, `scope_node`, `external_id` or `revision`:
+        each describes THIS deployment and would be wrong on the next one.
+
+
+        A cast referencing an image this box no longer holds is refused `409`
+        rather than exported with a hole in it — the hole would surface only on
+        the destination, as a slide that renders blank, long after anyone could
+        connect it to this export.
+      tags: [casts, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The bundle, as an attachment.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   # ---------------------------------------------------------------------
   # content — the content-addressed asset upload.

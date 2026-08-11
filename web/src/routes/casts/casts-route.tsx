@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { BookmarkPlus, Copy, LayoutTemplate, Pencil, Plus, Trash2 } from "lucide-react";
+import { BookmarkPlus, Copy, Download, LayoutTemplate, Pencil, Plus, Trash2, Upload } from "lucide-react";
 import {
   Button,
   ConfirmModal,
@@ -158,6 +158,13 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
   /** The cast a "Save as template" is being named for, and the name so far. */
   const [templateFrom, setTemplateFrom] = useState<Cast | null>(null);
   const [templateName, setTemplateName] = useState("");
+  /** The `.cast` import: the chosen file, where it lands, and an optional
+   * rename. Held here rather than inside the modal so a failed import keeps the
+   * operator's choices — retyping them after a bad file is pure tax. */
+  const [importOpen, setImportOpen] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importScope, setImportScope] = useState("");
+  const [importName, setImportName] = useState("");
 
   // ONE list, split. A template is a cast with the flag set, so reading them
   // separately would be two round trips for one answer — and would let the two
@@ -274,6 +281,52 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
     [client, load],
   );
 
+  /**
+   * Import a `.cast` bundle (parity row 1.9) — the design AND the images it
+   * draws, from another box.
+   *
+   * The placement is asked for, never inferred. A bundle deliberately carries no
+   * scope node (it names a tree the source box had and this one does not), and
+   * guessing would put an operator's design at a node they did not choose and,
+   * half the time, cannot see.
+   *
+   * The server holds the bundle to the SAME rules the editor is held to and
+   * answers a refusal with a `detail` that says which kind of wrong it is
+   * ("that is not a cast bundle" / "this file has been altered" / "this bundle
+   * is incomplete"). Those are three different next actions, so the toast shows
+   * the server's sentence rather than a generic one of its own.
+   */
+  const runImport = useCallback(async () => {
+    const scope = importScope || scopes[0]?.id;
+    if (!importFile) {
+      toast.error("Choose a .cast bundle to import.");
+      return;
+    }
+    if (!scope) {
+      toast.error("Add a site before importing a cast — a cast lives under a site or group.");
+      return;
+    }
+    setBusy(true);
+    try {
+      // Read to bytes here rather than handing the File to fetch: a File's
+      // identity as a request body varies with the runtime (a browser streams
+      // it; a test environment's fetch does not necessarily recognise the same
+      // File class), and a bundle is a few megabytes — small enough that
+      // materializing it is free and certain.
+      const bytes = await importFile.arrayBuffer();
+      const imported = await client.casts.importBundle(bytes, scope, importName.trim() || undefined);
+      setImportOpen(false);
+      setImportFile(null);
+      setImportName("");
+      toast.success(`Imported ${imported.name}`);
+      await load();
+    } catch (err) {
+      reportProblem("Couldn't import that bundle", err);
+    } finally {
+      setBusy(false);
+    }
+  }, [client, importFile, importName, importScope, load, scopes]);
+
   const duplicate = useCallback(
     async (cast: Cast) => {
       try {
@@ -347,7 +400,26 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
           variant="hero"
           title="Casts"
           description="The slide documents your screens play. Open one in the Studio to lay out text, shapes, images and a live clock on the 1920×1080 canvas."
-          actions={<Button icon={Plus} onClick={() => openNew(SOURCE_BLANK)}>New cast</Button>}
+          actions={
+            <div className="flex items-center gap-2">
+              {/* Import sits beside New because it IS a way of making a cast —
+                  the one an operator uses when the design already exists on
+                  another box. */}
+              <Button
+                variant="secondary"
+                icon={Upload}
+                onClick={() => {
+                  setImportScope(scopes[0]?.id ?? "");
+                  setImportOpen(true);
+                }}
+              >
+                Import .cast
+              </Button>
+              <Button icon={Plus} onClick={() => openNew(SOURCE_BLANK)}>
+                New cast
+              </Button>
+            </div>
+          }
         />
 
         {loadError ? (
@@ -397,6 +469,21 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
                   void duplicate(cast);
                 }}
               />
+              {/* Export is an ANCHOR, not a button: a bundle carries every
+                  image the design draws, and the browser streams it straight to
+                  disk from a link. A fetch-into-a-Blob would hold the whole
+                  thing in the tab for no benefit. The row itself is pressable,
+                  so the click must stop here or the download would also
+                  navigate to the Studio. */}
+              <a
+                className="inline-flex size-8 items-center justify-center rounded-btn hover:bg-accent"
+                href={client.casts.exportUrl(cast.id)}
+                download
+                aria-label={`Export ${cast.name} as a .cast bundle`}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Download aria-hidden className="size-4" />
+              </a>
               <Button
                 size="icon"
                 variant="ghost"
@@ -487,6 +574,70 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
           />
         </section>
       </div>
+
+      <Modal
+        title="Import a cast"
+        description="A .cast bundle carries a design and every image it draws — export one from another box, then bring it in here."
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setImportOpen(false)}>
+              Cancel
+            </Button>
+            <Button disabled={busy || !importFile} onClick={() => void runImport()}>
+              {busy ? "Importing…" : "Import"}
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          <FormField label="Bundle" help="The .cast file another box's Export produced.">
+            {(field) => (
+              <input
+                {...field}
+                type="file"
+                accept=".cast,application/zip"
+                className={fieldClass}
+                onChange={(e) => setImportFile(e.target.files?.[0] ?? null)}
+              />
+            )}
+          </FormField>
+          <FormField
+            label="Where it lives"
+            help="A bundle carries no placement — it names a tree the other box had, not this one — so the cast lands where you put it."
+          >
+            {(field) => (
+              <select
+                {...field}
+                className={fieldClass}
+                value={importScope}
+                onChange={(e) => setImportScope(e.target.value)}
+              >
+                {scopes.map((n) => (
+                  <option key={n.id} value={n.id}>
+                    {n.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </FormField>
+          <FormField
+            label="Name (optional)"
+            help="Leave blank to keep the bundle's own name. Rename when you are importing a second copy onto the same box."
+          >
+            {(field) => (
+              <input
+                {...field}
+                className={fieldClass}
+                value={importName}
+                onChange={(e) => setImportName(e.target.value)}
+                placeholder="Keep the bundle's name"
+              />
+            )}
+          </FormField>
+        </div>
+      </Modal>
 
       <Modal
         title="New cast"
