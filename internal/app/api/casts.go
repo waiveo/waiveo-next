@@ -108,7 +108,7 @@ func castsConfig() resourceConfig {
 // inside the write transaction. store.RowAssetReferences is what knows that a
 // cast's references live at `slides[i].layers[j].asset_ref`; nothing here
 // restates it.
-func validateCastAssets(srv *server, body []byte) []datamodel.Error {
+func validateCastAssets(srv *server, _ scopeView, body []byte) []datamodel.Error {
 	return validateRowAssets(srv, store.KindCast, body)
 }
 

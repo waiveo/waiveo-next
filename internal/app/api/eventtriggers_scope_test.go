@@ -3,9 +3,12 @@ package api_test
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/app/api"
+	"github.com/maaxton/waiveo-next/internal/app/devices"
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
 // eventtriggers_scope_test.go is the AUTHORITY half of the `event` trigger path:
@@ -269,5 +272,170 @@ func moveScreenToNode(t *testing.T, e *testEnv, screenID, node string) {
 		map[string]string{"If-Match": get.Header.Get("ETag")})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("move screen %s to %s: %d %s", screenID, node, resp.StatusCode, body)
+	}
+}
+
+// TestAuthoringRefusalNeverDisclosesAnUnreadableTarget is the OTHER half of the
+// authoring check above, and the pair is the point: the same 422 that helps an
+// operator who can see the target is an existence-and-placement oracle when
+// aimed at one they cannot.
+//
+// The check above was written against the raw store, and against a principal
+// holding authority at one node only it produced this, on one surface, for one
+// caller:
+//
+//	GET  /api/v1/screens/{id}                      → 404 "No screen exists with this identifier."
+//	POST /api/v1/automations naming that screen_id → 422 "…placed at scope node {ULID}…"
+//
+// First "no such screen", then its exact placement. The run side added in the
+// same commit refuses to build that — automations_exec.go's `targets` states
+// BOTH possibilities in its refusal precisely because "asserting the scope
+// reason would disclose the existence of a row the view is not permitted to
+// see" — and the two halves of one surface may not disagree about it.
+//
+// Both arms run as SCOPE-BOUND principals rather than the env's root-bound
+// seeder, because the whole distinction is what the CALLER may read: a root
+// principal can read everything, so it can only ever exercise the second arm.
+func TestAuthoringRefusalNeverDisclosesAnUnreadableTarget(t *testing.T) {
+	e := newEnv(t)
+	nodeA := e.placementNode(t)
+	e.seedPlacementNodes(t, eventScopeNodeB)
+
+	// Seeded by the env's root-bound identity, so both rows genuinely exist: an
+	// arm that passed because nothing was there would prove nothing.
+	outsideScreen := mintSignageScreen(t, e, eventScopeNodeB, "Boardroom")
+	castID := mintSignageCast(t, e, nodeA, "Service Requested")
+
+	authoring := func(screenID string) []byte {
+		return mustJSON(t, map[string]any{
+			"name":       "Reaches Too Far",
+			"scope_node": nodeA,
+			"enabled":    true,
+			"mode":       "single",
+			"triggers":   []any{map[string]any{"type": "event", "event": "screen.interaction"}},
+			"actions": []any{
+				map[string]any{"type": "play_cast", "screen_id": screenID, "cast_id": castID},
+			},
+		})
+	}
+
+	// ARM 1 — UNREADABLE. Authority at nodeA only; eventScopeNodeB is a sibling,
+	// so the screen is outside this caller's visible set entirely.
+	blind := e.principalAt(t, nodeA)
+
+	// The other half of the oracle, established first: on this same surface, as
+	// this same caller, that screen does not exist.
+	if resp, raw := e.as(t, blind, http.MethodGet, "/api/v1/screens/"+outsideScreen, nil, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET the out-of-reach screen as the author-to-be: %d, want 404 — this arm only means something "+
+			"if the row is genuinely invisible to this caller (body %s)", resp.StatusCode, raw)
+	}
+
+	resp, raw := e.as(t, blind, http.MethodPost, "/api/v1/automations", authoring(outsideScreen), nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST an automation naming a screen the author CANNOT READ: status %d, want 201 — a target the "+
+			"caller cannot see must be unresolvable to the check rather than refused; refusing it answers a "+
+			"question the same surface answers 404 for (body %s)", resp.StatusCode, raw)
+	}
+	if strings.Contains(string(raw), eventScopeNodeB) {
+		t.Fatalf("the response to a write naming an unreadable screen disclosed its placement node %s: %s",
+			eventScopeNodeB, raw)
+	}
+
+	// ARM 2 — READABLE, and still outside the rule's subtree. The refusal must
+	// SURVIVE: this is the case authoring exists for, and a fix that silenced it
+	// too would restore the accepts-work-it-never-performs defect wholesale.
+	sighted := e.principalAt(t, nodeA, eventScopeNodeB)
+
+	if got, gotRaw := e.as(t, sighted, http.MethodGet, "/api/v1/screens/"+outsideScreen, nil, nil); got.StatusCode != http.StatusOK {
+		t.Fatalf("GET the out-of-subtree screen as a caller bound at its node: %d, want 200 — arm 2 needs a "+
+			"target this caller can genuinely read (body %s)", got.StatusCode, gotRaw)
+	}
+
+	resp2, raw2 := e.as(t, sighted, http.MethodPost, "/api/v1/automations", authoring(outsideScreen), nil)
+	if resp2.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST an automation at %s naming a READABLE screen at %s: status %d, want 422 — the run refuses "+
+			"this target every time, so accepting the write stores a rule that fires and performs nothing (body %s)",
+			nodeA, eventScopeNodeB, resp2.StatusCode, raw2)
+	}
+	p := assertProblem(t, resp2, raw2, "VALIDATION_FAILED")
+	if !problemCarriesCode(p, "actions[0].screen_id", "ACTION_TARGET_OUT_OF_SCOPE") {
+		t.Errorf("want ACTION_TARGET_OUT_OF_SCOPE on actions[0].screen_id, got %s", raw2)
+	}
+	if !strings.Contains(string(raw2), eventScopeNodeB) {
+		t.Errorf("the refusal must NAME the placement node when the caller can read the target; a refusal that "+
+			"says only \"one of your actions is out of scope\" is not something an operator can act on. got %s", raw2)
+	}
+}
+
+// TestAuthoringRefusalNeverDisclosesAnUnreadableEntityTarget is the same pair
+// for the OTHER explicitly-named target shape, `entity_id` (RUL-010).
+//
+// It is a separate case rather than a table row because it resolves through a
+// different source — the device registry, not the store — and a fix applied to
+// the screen path alone would leave the entity path disclosing exactly what the
+// screen path stopped disclosing. Both arms are asserted for the same reason
+// they are above: silencing the refusal is as wrong as over-stating it.
+func TestAuthoringRefusalNeverDisclosesAnUnreadableEntityTarget(t *testing.T) {
+	registry := devices.New(autoScopeNode, func() int64 { return fixedNowMs })
+	if err := registry.PutDevice(devices.Device{
+		ID: sigDeviceID, RelayID: sigRelayID, DeviceClass: "media-player",
+		Name: "Boardroom TV", ScopeNode: eventScopeNodeB, Labels: map[string]string{},
+	}); err != nil {
+		t.Fatalf("PutDevice: %v", err)
+	}
+	// The entity sits at eventScopeNodeB — a sibling of the node the rule below
+	// is placed at, so it is outside the rule's subtree either way. What varies
+	// between the arms is only whether the AUTHOR can read it.
+	if err := registry.PutEntity(devices.Entity{
+		ID: autoScreenEntity, DeviceID: sigDeviceID, RelayID: sigRelayID, DeviceClass: "media-player",
+		Name: "Boardroom TV player", ScopeNode: eventScopeNodeB, Labels: map[string]string{}, State: "on",
+	}); err != nil {
+		t.Fatalf("PutEntity: %v", err)
+	}
+
+	e := newEnvWithOptions(t, api.WithDevicePlane(registry, &fakeDispatcher{result: wire.DeviceCommandResultBody{OK: true}}))
+	nodeA := e.placementNode(t)
+	e.seedPlacementNodes(t, eventScopeNodeB)
+
+	body := mustJSON(t, map[string]any{
+		"name":       "Commands Too Far",
+		"scope_node": nodeA,
+		"enabled":    true,
+		"mode":       "single",
+		"triggers":   []any{map[string]any{"type": "event", "event": "screen.interaction"}},
+		"actions": []any{
+			map[string]any{"type": "device_command", "entity_id": autoScreenEntity, "command": "launch"},
+		},
+	})
+
+	// ARM 1 — the author cannot read where the entity sits.
+	blind := e.principalAt(t, nodeA)
+	if resp, raw := e.as(t, blind, http.MethodGet, "/api/v1/entities/"+autoScreenEntity, nil, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET the out-of-reach entity as the author-to-be: %d, want 404 — this arm only means something "+
+			"if the row is genuinely invisible to this caller (body %s)", resp.StatusCode, raw)
+	}
+	resp, raw := e.as(t, blind, http.MethodPost, "/api/v1/automations", body, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST an automation naming an entity the author CANNOT READ: status %d, want 201 — "+
+			"refusing it answers a question the same surface answers 404 for (body %s)", resp.StatusCode, raw)
+	}
+	if strings.Contains(string(raw), eventScopeNodeB) {
+		t.Fatalf("the response to a write naming an unreadable entity disclosed its placement node %s: %s",
+			eventScopeNodeB, raw)
+	}
+
+	// ARM 2 — readable, still outside the rule's subtree: the refusal survives.
+	sighted := e.principalAt(t, nodeA, eventScopeNodeB)
+	resp2, raw2 := e.as(t, sighted, http.MethodPost, "/api/v1/automations", body, nil)
+	if resp2.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST an automation at %s naming a READABLE entity at %s: status %d, want 422 (body %s)",
+			nodeA, eventScopeNodeB, resp2.StatusCode, raw2)
+	}
+	p := assertProblem(t, resp2, raw2, "VALIDATION_FAILED")
+	if !problemCarriesCode(p, "actions[0].entity_id", "ACTION_TARGET_OUT_OF_SCOPE") {
+		t.Errorf("want ACTION_TARGET_OUT_OF_SCOPE on actions[0].entity_id, got %s", raw2)
+	}
+	if !strings.Contains(string(raw2), eventScopeNodeB) {
+		t.Errorf("the refusal must NAME the placement node when the caller can read the target; got %s", raw2)
 	}
 }

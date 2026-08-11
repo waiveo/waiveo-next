@@ -223,3 +223,76 @@ func TestAutomationScopeViewIsBoundedByTheAutomationsOwnSubtree(t *testing.T) {
 		}
 	}
 }
+
+// TestAutomationSubtreeBoundRefusesEitherEndTheTreeDoesNotHold is the guard that
+// shipped without one: the both-ends presence test in automationSubtreeBound.
+//
+// The view-level case above covers one cell of it — a rule whose own placement
+// is gone cannot write AT that placement. This is the whole matrix, asserted
+// directly on the predicate both the run view and the authoring check are built
+// from, because "a deleted node is not a node this rule may reach" is a claim
+// about four situations and the string-comparison bug it replaced was in exactly
+// one of them: node == scopeNode, where the old code answered from the two
+// strings and asked the tree nothing.
+//
+// The state is not reachable through the api today — scopeNodeDeleteGuards'
+// DAT-021 arm refuses to delete a node an automation is placed at — so this is a
+// defence-in-depth rule, and that is precisely why it needs the test. A seed, a
+// workspace restore, or a future relaxation of that delete rule reaches it with
+// nothing in between, and a fail-closed guard nobody exercises is a guard
+// nobody notices the loss of.
+func TestAutomationSubtreeBoundRefusesEitherEndTheTreeDoesNotHold(t *testing.T) {
+	const (
+		org     = "01J8Z0V1EW00000000000000RG"
+		site    = "01J8Z0V1EW0000000000000S1T"
+		nodeA   = "01J8Z0V1EW00000000000000AA"
+		deep    = "01J8Z0V1EW0000000000000AA1"
+		deleted = "01J8Z0V1EW00000000000000DL" // never in the tree: a node since removed
+	)
+	strp := func(s string) *string { return &s }
+	tree, _ := datamodel.BuildScopeTree([]datamodel.ScopeNode{
+		{ID: org, Kind: "org", Name: "Org"},
+		{ID: site, Kind: "site", ParentID: strp(org), Name: "Site"},
+		{ID: nodeA, Kind: "screen", ParentID: strp(site), Name: "A"},
+		{ID: deep, Kind: "screen", ParentID: strp(nodeA), Name: "A deep"},
+	})
+
+	// An orphan: its parent_id names the deleted node, so it is the row a cascade
+	// left behind. It must NOT become reachable by a rule placed at the node that
+	// is gone — that would make deleting a scope node a way to widen a rule.
+	const orphan = "01J8Z0V1EW00000000000000OR"
+	orphaned, _ := datamodel.BuildScopeTree([]datamodel.ScopeNode{
+		{ID: org, Kind: "org", Name: "Org"},
+		{ID: site, Kind: "site", ParentID: strp(org), Name: "Site"},
+		{ID: orphan, Kind: "screen", ParentID: strp(deleted), Name: "Orphan"},
+	})
+
+	for _, c := range []struct {
+		name      string
+		tree      datamodel.ScopeTree
+		scopeNode string
+		node      string
+		want      bool
+		why       string
+	}{
+		{"both ends present, same node", tree, nodeA, nodeA, true,
+			"the control: the rule's own node is reachable, or the whole feature is a no-op"},
+		{"both ends present, descendant", tree, nodeA, deep, true,
+			"the other control: SEC-010 inherits downward and the rule mirrors that"},
+		{"placement deleted, target present", tree, deleted, nodeA, false,
+			"a rule whose placement is gone mirrors no authority at all"},
+		{"placement present, target deleted", tree, nodeA, deleted, false,
+			"a target row pointing at a node the tree no longer holds is not in anyone's subtree"},
+		{"BOTH ends the deleted node", tree, deleted, deleted, false,
+			"THE case the string comparison waved through: node == scopeNode answered true from two " +
+				"strings without asking the tree, so a rule whose placement had been deleted still " +
+				"authorized itself there — unknown-fails-closed with a hole at the node a rule uses most"},
+		{"placement deleted, orphan still points at it", orphaned, deleted, orphan, false,
+			"a cascade that left a child pointing at a removed parent must not make that child " +
+				"reachable from the removed parent"},
+	} {
+		if got := automationSubtreeBound(c.tree, c.scopeNode)(c.node); got != c.want {
+			t.Errorf("%s: bound(scopeNode=%s)(%s) = %v, want %v — %s", c.name, c.scopeNode, c.node, got, c.want, c.why)
+		}
+	}
+}

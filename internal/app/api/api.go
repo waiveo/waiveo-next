@@ -478,10 +478,20 @@ type resourceConfig struct {
 	// EFFECTIVE request body — the create body, or a patch shallow-merged onto the
 	// current row — BEFORE the store write; a non-empty result is rendered
 	// 422 / VALIDATION_FAILED carrying the per-field errors as the api/1 `errors`
-	// extension (API-013), and nothing is stored. Only the playlist kind sets it:
-	// each item's asset_ref must resolve in the shared content origin (you cannot
-	// schedule content that was never uploaded, DAT-041) — see scheduling.go.
-	validate func(srv *server, body []byte) []datamodel.Error
+	// extension (API-013), and nothing is stored. The playlist and cast kinds set
+	// it for the asset-reference rule (you cannot schedule content that was never
+	// uploaded, DAT-041 — assetrefs.go); webhook_endpoint for its URL rule; the
+	// automation kind for the action-target scope bound (automationtargets.go).
+	//
+	// It is handed the REQUEST'S OWN scopeView, not just the body, and that is a
+	// requirement rather than a convenience. A validation that reads stored rows
+	// to decide a refusal decides it from rows the caller may not be permitted to
+	// see, and the refusal message is a channel back to the caller — so a check
+	// written against the unfiltered store turns a 422 into an existence oracle
+	// for rows a GET answers 404 for. Any validation that consults stored state
+	// MUST resolve it through this view (canRead), so that an unreadable row is
+	// UNRESOLVABLE to the check rather than merely un-namable in its message.
+	validate func(srv *server, view scopeView, body []byte) []datamodel.Error
 	// writeGuards, when non-nil, contributes per-kind store.WriteGuards evaluated
 	// over the EFFECTIVE body INSIDE the store's write transaction, beside the
 	// external_id-uniqueness guard every kind already carries.
@@ -727,7 +737,7 @@ func (rs *resource) createExec(w http.ResponseWriter, r *http.Request, raw []byt
 		return
 	}
 
-	if rs.writeValidationFailed(w, r, body) {
+	if rs.writeValidationFailed(w, r, view, body) {
 		return
 	}
 
@@ -1053,7 +1063,7 @@ func (rs *resource) patch(w http.ResponseWriter, r *http.Request) {
 	// A per-kind pre-write validation (playlist asset_refs) runs over the EFFECTIVE
 	// post-merge body, so a patch that introduces an un-uploaded asset_ref is
 	// rejected exactly as a create would be — never stored.
-	if rs.writeValidationFailed(w, r, merged) {
+	if rs.writeValidationFailed(w, r, view, merged) {
 		return
 	}
 
@@ -1245,11 +1255,16 @@ func mergedBody(current, patch []byte) []byte {
 // Problem carrying the per-field errors as the api/1 `errors` extension (API-013),
 // returning true so the caller aborts before any store write. It returns false
 // (writing nothing) when the kind declares no validation or the body passes.
-func (rs *resource) writeValidationFailed(w http.ResponseWriter, r *http.Request, body []byte) bool {
+//
+// view is the caller's own visible set, threaded through rather than rebuilt: a
+// validation that reads stored rows must see exactly what this request may see,
+// and from the same tree read the placement authorization above was decided on.
+// See the `validate` field's doc for why that is load-bearing.
+func (rs *resource) writeValidationFailed(w http.ResponseWriter, r *http.Request, view scopeView, body []byte) bool {
 	if rs.cfg.validate == nil {
 		return false
 	}
-	verrs := rs.cfg.validate(rs.srv, body)
+	verrs := rs.cfg.validate(rs.srv, view, body)
 	if len(verrs) == 0 {
 		return false
 	}

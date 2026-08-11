@@ -32,8 +32,9 @@
 //
 //	ack_through_seq S means: every ordinary entry at or below S has been
 //	terminally handled — appended to the durable event log and then handed to
-//	the app-side deliverer, whose run CONCLUDED — or terminally dropped as
-//	invalid (EVT-013). Nothing at or below S is still in flight.
+//	the app-side deliverer, whose run CONCLUDED (returned, ran out its budget,
+//	or panicked and was contained) — or terminally dropped as invalid
+//	(EVT-013). Nothing at or below S is still in flight.
 //
 // The relay may therefore discard its retained copies of everything at or below
 // S (REL-092), which is exactly what it does. Nothing above S is promised, and
@@ -67,6 +68,18 @@
 // deliveryBudget. That bound is a WEDGE bound, not a work budget — the deliverer's
 // own per-command timeout is what paces real work — and it is the reason
 // "concluded" above can be promised at all.
+//
+// Neither can a CRASHING deliverer. The runner is detached, so nothing above it
+// would turn a panic into anything but a dead process; it therefore contains one
+// (deliverOne) and records the seq as concluded, which keeps every clause of the
+// contract above true and keeps the promise finite. "Terminally handled" covers
+// three endings, not two: appended-and-delivered, dropped-invalid (EVT-013), and
+// appended-then-delivery-panicked. The last one loses that event's ACTION and
+// says so in the log, with the stack; it does not lose the EVENT, which was
+// appended to the durable log before it was ever queued for delivery. The trade
+// against the alternative — never ack a poisoned seq — is argued in full at
+// deliverOne, and it turns on the cursor being a PREFIX promise: one seq held
+// pending forever pins the ack for every later seq too.
 //
 // It appends through an EventSink rather than a bare *events.EventLog: in
 // production the sink is the eventsse.Hub, whose Append records the event AND
@@ -113,6 +126,7 @@ import (
 	"encoding/json"
 	stdlog "log"
 	"net/http"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -188,6 +202,11 @@ type EventSink interface {
 // A deliverer is given a context carrying its push's VALUES, with that request's
 // cancellation removed and deliveryBudget applied. It should honour it: the
 // budget is what lets a wedged run be declared concluded so the cursor can move.
+//
+// A deliverer that PANICS does not take the process with it. It runs on a
+// detached runner with no http.Server recover above it, so the panic is caught
+// where it is raised, logged with its stack, and that one entry recorded as
+// concluded — see deliverOne for why concluded rather than held.
 type EventDeliverer func(context.Context, events.Envelope)
 
 // deliveryQueueDepth bounds how many appended-but-not-yet-delivered envelopes
@@ -573,11 +592,20 @@ func (in *Ingest) startDeliveryLocked() {
 }
 
 // drainQueue is the single delivery runner: it takes the head of the queue, runs
-// the deliverer for it OFF the lock and under deliveryBudget, then records that
-// seq as concluded and lets the ack cursor advance over it.
+// the deliverer for it OFF the lock, under deliveryBudget and with a panic it
+// raises CONTAINED (deliverOne), then records that seq as concluded and lets the
+// ack cursor advance over it.
 //
 // Marking the seq delivered AFTER the deliverer returns is the whole ordering
-// the contract rests on. The budget is what guarantees it returns.
+// the contract rests on. The budget is what guarantees it returns, and
+// deliverOne's recover is what guarantees it returns HERE rather than through
+// the top of a goroutine nobody is watching.
+//
+// The bookkeeping below the delivery is deliberately NOT under a recover. It is
+// this package's own arithmetic, it runs with mu held and unlocked explicitly
+// rather than by defer, and a panic inside it would leave the mutex held — an
+// ingest wedged for every relay, silently. That is a state worth crashing on;
+// the deliverer's unbounded, operator-driven work is not.
 func (in *Ingest) drainQueue() {
 	for {
 		in.mu.Lock()
@@ -594,19 +622,90 @@ func (in *Ingest) drainQueue() {
 		in.queue[0] = queuedDelivery{}
 		in.queue = in.queue[1:]
 		deliver := in.deliver
+		// Captured under the lock beside the deliverer rather than reached for
+		// off it: every other read of these two fields is made holding mu, and a
+		// runner that took one from under the lock and the other from outside it
+		// would be the only place in this file where that is not true.
+		logf := in.logf
 		in.mu.Unlock()
 
-		func() {
-			ctx, cancel := context.WithTimeout(item.ctx, deliveryBudget)
-			defer cancel()
-			deliver(ctx, item.env)
-		}()
+		deliverOne(deliver, logf, item)
 
 		in.mu.Lock()
 		delete(in.pending, item.seq)
 		in.recomputeAckLocked()
 		in.mu.Unlock()
 	}
+}
+
+// deliverOne runs the deliverer for one queued envelope, off the lock, under
+// deliveryBudget, and CONTAINS a panic it raises.
+//
+// # Why the recover is not defensive decoration
+//
+// This runner is detached: startDeliveryLocked spawns it with `go`, so there is
+// no `net/http` per-connection recover above it the way there was when delivery
+// ran on the push's own request goroutine. An unrecovered panic here does not
+// fail one request — it terminates the feeder process, taking the relay
+// connection, the SSE hub and the signage control plane with it.
+//
+// The input is not trusted. The production deliverer is the app peer's
+// fireEventTriggers → runAutomationNow: rules/1 trigger matching, entity and
+// screen resolution, report marshalling and relay dispatch, driven by
+// relay-supplied telemetry payloads and operator-authored rule documents. A
+// panic anywhere in that is a bug, but it is a bug reachable from data this
+// process does not author.
+//
+// # The poisoned-entry trade: CONCLUDED, not held
+//
+// A delivery that panicked is recorded as concluded exactly as one that returned
+// — the caller deletes the seq from `pending` and lets the ack cursor advance
+// over it. That is a deliberate choice between two bad options, and the reason
+// is that the other one is unbounded:
+//
+//   - CONCLUDED (chosen). One event's ACTION is lost — the rules it would have
+//     fired do not fire — and the loss is loud: the panic value and its full
+//     stack are logged against the seq, the envelope id and the schema. What is
+//     NOT lost is the event itself: processOne appended it to the durable log
+//     BEFORE it was ever queued here, so it is in `events.EventLog`, it went out
+//     over /events/v1, and it is readable afterwards. The durability contract in
+//     this package's doc is about the RECORD reaching the log and the handoff
+//     concluding, and both are still true.
+//
+//   - HELD (rejected). Never acking a poisoned seq does not preserve it — the
+//     ack cursor is a PREFIX promise (recomputeAckLocked holds it one below the
+//     lowest pending seq), so one permanently-pending seq pins the cursor for
+//     the process's lifetime and NOTHING above it is ever acked either. The
+//     relay retains its whole stream, fills its 1024-entry buffer and begins
+//     REL-096 drop-oldest on entries that would have delivered fine. Nor is the
+//     poisoned entry ever retried into a different outcome: it is at or below
+//     receivedThrough, so a redelivery of that seq is skipped as
+//     already-processed before an id is minted (REL-097). Holding would trade
+//     one lost action for unbounded loss of later ones, and buy no retry.
+//
+// The pre-round-2 behaviour is a third option and is the one being replaced: the
+// panic escaped, the process died, the entry was never acked so the relay kept
+// it (REL-097) and re-pushed it 2 s after restart, where — both cursors being
+// in-memory — it was appended again and panicked again. A duplicate in the
+// durable log per cycle, and a feeder that never stays up.
+func deliverOne(deliver EventDeliverer, logf func(string, ...any), item queuedDelivery) {
+	defer func() {
+		p := recover()
+		if p == nil {
+			return
+		}
+		// debug.Stack rather than a bare %v of the panic value: the value alone
+		// names no frame, and the only reader of this line is someone trying to
+		// find which rule action did it.
+		logf("eventingest: PANIC delivering telemetry seq %d (event %s, schema %s): %v\n%s\n"+
+			"this entry's delivery is recorded as CONCLUDED and is not retried, so the ack cursor advances "+
+			"past it; the envelope itself IS in the durable event log (appended before delivery) — see "+
+			"deliverOne's doc for why holding it would wedge the cursor for every later seq",
+			item.seq, item.env.ID, item.env.Schema, p, debug.Stack())
+	}()
+	ctx, cancel := context.WithTimeout(item.ctx, deliveryBudget)
+	defer cancel()
+	deliver(ctx, item.env)
 }
 
 // Drain blocks until every envelope this ingest has appended has had its

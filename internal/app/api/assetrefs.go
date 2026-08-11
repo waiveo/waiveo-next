@@ -57,6 +57,12 @@ import (
 // A body that will not decode returns no errors: its real failure surfaces on
 // the store write, and inventing a second diagnosis for it here would answer the
 // client with whichever of the two the api happened to ask first.
+//
+// It takes no scopeView (its two callers discard theirs) and that is safe for a
+// reason, not by omission: it reads only the body being written and the CONTENT
+// ORIGIN, which is content-addressed and carries no placement — there is no row
+// whose existence it could disclose. `validate`'s doc requires the view of any
+// validation that consults SCOPED stored state; this consults none.
 func validateRowAssets(srv *server, kind store.Kind, body []byte) []datamodel.Error {
 	refs, err := store.RowAssetReferences(kind, body)
 	if err != nil {

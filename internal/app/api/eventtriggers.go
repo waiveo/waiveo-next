@@ -413,6 +413,29 @@ func automationScopeView(tree datamodel.ScopeTree, scopeNode string) scopeView {
 // accepts-work-it-never-performs shape this file's own doc condemns — and two
 // transcriptions of "is this node within the rule's reach" is how that gap
 // reopens.
+//
+// # The both-ends test is ONE statement on purpose
+//
+// It reads as two conditions and used to be written as two `if`s, and that form
+// was untestable in a way worth naming rather than living with: over the tree
+// this package builds, EITHER half alone produces the whole predicate's
+// behaviour, so deleting either one on its own left every test in the repository
+// green. Not because the rule is untested — deleting BOTH is caught — but
+// because the two are exactly redundant:
+//
+//   - node == scopeNode makes the two tests the same test.
+//   - inSubtree can only be true when scopeNode appears in AncestorChain(node),
+//     and AncestorChain yields only ids the tree holds (it returns nil for an
+//     absent node and STOPS at a dangling parent_id), so it already implies
+//     both ends are present.
+//
+// Two mutually-dead statements are worse than one live one: no test can pin
+// either, and the pair looks like coverage. Written as one loop over both ends
+// the guard is a single deletable unit, and
+// TestAutomationSubtreeBoundRefusesEitherEndTheTreeDoesNotHold kills that
+// deletion. The redundancy is kept deliberately — the predicate must not depend
+// on AncestorChain's dangling-parent behaviour staying what it is today — it is
+// just no longer spelled as two things that can rot apart.
 func automationSubtreeBound(tree datamodel.ScopeTree, scopeNode string) func(string) bool {
 	inSubtree := subtreePredicate(tree)
 	return func(node string) bool {
@@ -420,12 +443,14 @@ func automationSubtreeBound(tree datamodel.ScopeTree, scopeNode string) func(str
 			return false
 		}
 		// Both ends must be nodes the tree actually holds. A deleted node is not
-		// a node this rule may reach, whichever end of the comparison it is on.
-		if _, ok := tree.KindOf(scopeNode); !ok {
-			return false
-		}
-		if _, ok := tree.KindOf(node); !ok {
-			return false
+		// a node this rule may reach, whichever end of the comparison it is on —
+		// and the automation's OWN placement is an end like any other, which is
+		// the end the `node == scopeNode` arm below would otherwise wave through
+		// on a string comparison that asked the tree nothing.
+		for _, end := range [...]string{scopeNode, node} {
+			if _, ok := tree.KindOf(end); !ok {
+				return false
+			}
 		}
 		return node == scopeNode || inSubtree(scopeNode, node)
 	}

@@ -47,9 +47,54 @@ import (
 //     a rule before adopting the device it names, and refusing that would make
 //     the order of two independent operations load-bearing. An unresolvable
 //     target is reported by the run instead, which is where it becomes true.
+//   - a target the AUTHOR CANNOT READ. Not an exception to the rule above — it
+//     is the same case, because the resolution runs through the author's own
+//     view. See the next section; this is the half that decides whether the
+//     refusal is a disclosure.
 //   - anything at all when the device plane is not wired. `entity_id` targets
 //     are then unresolvable by construction; screens are still checked, because
 //     they come from the store.
+//
+// # Resolution runs through the AUTHOR'S view, and that is what makes the
+// # refusal safe to state
+//
+// Every target here is resolved against what the REQUEST's principal may read
+// (scopeView.canRead), never against the raw store. A target the caller cannot
+// read does not resolve, so it is not refused, so nothing about it is said.
+//
+// The refusal message names the target's placement node. That is only sayable
+// about a row the caller can already GET — and it must be sayable, or the
+// refusal is useless: "one of your actions is out of scope" with no node is not
+// something an operator can act on. Resolving through the view is what separates
+// the two cases structurally rather than by wording:
+//
+//	READABLE, outside the subtree   → 422 ACTION_TARGET_OUT_OF_SCOPE, node named.
+//	                                  The caller could have read that node from a
+//	                                  GET on the row; the refusal adds nothing.
+//	UNREADABLE                      → not refused. The write is accepted and the
+//	                                  run reports the target, exactly as it does
+//	                                  for a target that names nothing at all.
+//
+// Against the unfiltered store this surface leaked in the other direction, and
+// the demonstration is one request pair from a principal holding `operator` at
+// one site only:
+//
+//	GET  /api/v1/screens/{id}                      → 404 "No screen exists with this identifier."
+//	POST /api/v1/automations naming that screen_id → 422 "…placed at scope node {ULID}…"
+//
+// Same surface, same caller: first "no such screen", then its exact placement. A
+// working existence-and-placement oracle across a scope boundary, and one this
+// commit's own run side (automations_exec.go's `targets`) refuses to build —
+// it states BOTH possibilities in its refusal precisely because "asserting the
+// scope reason would disclose the existence of a row the view is not permitted
+// to see". The two halves of one commit may not disagree about that.
+//
+// The un-refused case is not a hole. An unreadable target was ALREADY going to
+// be refused at run time — automationScopeView bounds the run to the
+// automation's own subtree, and a node the author cannot read is not in it — so
+// nothing is admitted that would otherwise have been blocked. What changes is
+// only WHERE the operator learns it: the run's report rather than the write's
+// 422, which is the same place they learn about a target that does not exist.
 //
 // # Why the same predicate as the run
 //
@@ -77,7 +122,13 @@ import (
 // stored row — so re-placing an automation at a narrower node is checked against
 // the targets it will then carry, and adding a target to an existing rule is
 // checked against the placement it already has.
-func automationTargetsInScope(srv *server, body []byte) []datamodel.Error {
+//
+// view is the REQUEST's own visible set and every target is resolved through it:
+// a target the author cannot read does not resolve and is therefore not refused.
+// See this file's "Resolution runs through the AUTHOR'S view" section — without
+// it, the refusal message is an existence-and-placement oracle for rows a GET on
+// the same surface answers 404 for.
+func automationTargetsInScope(srv *server, view scopeView, body []byte) []datamodel.Error {
 	scopeNode := parseFields(body).ScopeNode
 	if scopeNode == "" {
 		// DAT-006 requires the placement and the store refuses a row without one;
@@ -110,7 +161,7 @@ func automationTargetsInScope(srv *server, body []byte) []datamodel.Error {
 	}
 
 	var errs []datamodel.Error
-	screens := srv.screenScopeNodes(ctx)
+	screens := srv.screenScopeNodes(ctx, view)
 	for _, ref := range refs {
 		node, resolved := "", false
 		switch ref.kind {
@@ -118,7 +169,11 @@ func automationTargetsInScope(srv *server, body []byte) []datamodel.Error {
 			node, resolved = screens[ref.id]
 		case targetKindEntity:
 			if srv.devices != nil {
-				if e, found := srv.devices.Entity(ref.id); found {
+				// Resolved only if the AUTHOR can read where the entity sits. An
+				// entity outside the caller's visible set is unresolvable here for
+				// the same reason an unadopted one is: this check may not answer a
+				// question about a row the caller is not permitted to see.
+				if e, found := srv.devices.Entity(ref.id); found && view.canRead(e.ScopeNode) {
 					node, resolved = e.ScopeNode, true
 				}
 			}
@@ -138,22 +193,32 @@ func automationTargetsInScope(srv *server, body []byte) []datamodel.Error {
 	return errs
 }
 
-// screenScopeNodes maps every stored screen id to its placement. It is read once
-// per validation rather than per target: a rule naming ten screens must not cost
-// ten list reads, and every target has to be judged against the same snapshot as
-// every other or the answer depends on write timing.
+// screenScopeNodes maps every screen THE CALLER MAY READ to its placement. It is
+// read once per validation rather than per target: a rule naming ten screens must
+// not cost ten list reads, and every target has to be judged against the same
+// snapshot as every other or the answer depends on write timing.
+//
+// The canRead filter is the same one every list on this surface applies (api.go's
+// visible-set filter), applied here for the same reason: a row the caller cannot
+// enumerate must not become resolvable just because a different operation reads
+// the same table. Omitting it is what let a 422 name the placement of a screen a
+// GET answers 404 for — see this file's doc.
 //
 // A read failure yields an empty map, which resolves nothing and therefore
 // refuses nothing — the same fail-open-at-authoring, fail-closed-at-run posture
 // the tree read above takes, and for the same reason.
-func (srv *server) screenScopeNodes(ctx context.Context) map[string]string {
+func (srv *server) screenScopeNodes(ctx context.Context, view scopeView) map[string]string {
 	rows, err := srv.store.List(ctx, store.KindScreen, store.ListFilter{})
 	if err != nil {
 		return map[string]string{}
 	}
 	out := make(map[string]string, len(rows))
 	for _, res := range rows {
-		out[res.ID] = parseFields(res.Body).ScopeNode
+		node := parseFields(res.Body).ScopeNode
+		if !view.canRead(node) {
+			continue
+		}
+		out[res.ID] = node
 	}
 	return out
 }

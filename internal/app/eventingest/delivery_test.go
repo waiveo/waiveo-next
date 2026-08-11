@@ -3,8 +3,10 @@ package eventingest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -286,5 +288,146 @@ func TestANilDelivererIsLegalAndSilent(t *testing.T) {
 	}
 	if got := log.After(""); len(got) != 1 {
 		t.Fatalf("the log holds %d envelope(s), want 1", len(got))
+	}
+}
+
+// poisonDeliverer is an EventDeliverer that PANICS on the nth envelope it is
+// handed and records every one. It is a named type with a named method on
+// purpose: its symbol is what the stack assertion below looks for, and a
+// closure's would be the test function's.
+type poisonDeliverer struct {
+	poisonNth int32
+
+	calls atomic.Int32
+	mu    sync.Mutex
+	seen  []string
+}
+
+func (d *poisonDeliverer) deliver(_ context.Context, env events.Envelope) {
+	n := d.calls.Add(1)
+	d.mu.Lock()
+	d.seen = append(d.seen, env.ID)
+	d.mu.Unlock()
+	if n == d.poisonNth {
+		panic("deliverer blew up")
+	}
+}
+
+func (d *poisonDeliverer) delivered() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.seen...)
+}
+
+// TestAPanickingDelivererDoesNotKillTheRunner is the containment assertion, and
+// it is the half of round 2's async-delivery change that was not built.
+//
+// Moving delivery off the request removed the only recover that was ever above
+// it: net/http installs one per connection, so on the synchronous design a
+// panicking deliverer cost one HTTP 500 and a logged stack. On a goroutine
+// spawned by startDeliveryLocked there is nothing above it at all, so the same
+// panic terminates the feeder — relay connection, SSE hub and signage control
+// plane with it. Measured before the fix, verbatim:
+//
+//	panic: deliverer blew up
+//	  …eventingest.(*Ingest).drainQueue(…) eventingest.go:603
+//	  created by …startDeliveryLocked in goroutine 42  eventingest.go:572
+//
+// And it does not stop at one crash: the poisoned entry is never acked, so the
+// relay retains it (REL-097) and re-pushes 2 s after the restart, where both
+// in-memory cursors have been reset — it is appended to the durable log a second
+// time and panics again. A crash loop that duplicates an envelope per cycle.
+//
+// What this asserts, in the order the failure would show up: the process
+// survives; the runner keeps serving the entries BEHIND the poisoned one in the
+// same batch; the ack cursor advances past it rather than being pinned; the
+// envelope is in the durable log either way; and the log line names the panic
+// value AND carries real frames.
+//
+// The deliverer panics on its SECOND call, which is seq 2 — delivery follows
+// append order globally because one runner performs it (drainQueue).
+func TestAPanickingDelivererDoesNotKillTheRunner(t *testing.T) {
+	log := events.NewEventLog(0)
+	d := &poisonDeliverer{poisonNth: 2}
+	h := New(log, siteScope, seqIDs(), testWallMs, testRelay().Authorizer(), d.deliver)
+
+	var logMu sync.Mutex
+	var logged []string
+	h.logf = func(format string, args ...any) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		logged = append(logged, fmt.Sprintf(format, args...))
+	}
+
+	postBatch(t, h, pushBatch(
+		autoEntry(1, validAutomationRunPayload()),
+		autoEntry(2, validAutomationRunPayload()), // this one's delivery panics
+		autoEntry(3, validAutomationRunPayload()),
+	))
+	if err := h.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+
+	// The runner survived the panic AND kept draining: seq 3 sits BEHIND the
+	// poisoned entry in the same queue, so it is delivered only if the runner is
+	// still alive after the panic.
+	if got := d.delivered(); len(got) != 3 {
+		t.Fatalf("%d envelope(s) delivered, want 3 — a panic in one delivery must not lose the runner, "+
+			"and the entries queued behind it must still be served", len(got))
+	}
+
+	// A LATER push, after the runner has exited on an empty queue, must start a
+	// fresh one and deliver normally: containment must not have left `draining`
+	// or the queue in a state no subsequent batch can restart.
+	postBatch(t, h, pushBatch(telemetry.Entry{
+		Seq: 4, Schema: events.SchemaDeviceHeartbeat, Payload: validDeviceHeartbeatPayload(),
+	}))
+	if err := h.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain after the later push: %v", err)
+	}
+	if got := d.delivered(); len(got) != 4 {
+		t.Fatalf("%d envelope(s) delivered after a later push, want 4 — the ingest must still deliver "+
+			"batches that arrive after a poisoned entry", len(got))
+	}
+
+	// The poisoned seq is CONCLUDED, not held. Held would pin the ack cursor one
+	// below it for the process's lifetime — the cursor is a prefix promise — so
+	// seqs 3 and 4 would never be acked either and the relay would retain its
+	// whole stream until REL-096 drop-oldest started discarding good entries.
+	if ack := postBatch(t, h, pushBatch()); ack.AckThroughSeq != 4 {
+		t.Fatalf("ack_through_seq = %d after a poisoned delivery, want 4 — a permanently-pending seq pins "+
+			"the cursor for every later seq too, which is unbounded loss traded for one lost action", ack.AckThroughSeq)
+	}
+
+	// The EVENT is not lost, only its action: processOne appended it before it
+	// was ever queued for delivery, which is what makes "concluded" honest.
+	if got := log.After(""); len(got) != 4 {
+		t.Fatalf("the durable log holds %d envelope(s), want 4 — the poisoned entry was appended before "+
+			"delivery and must still be readable", len(got))
+	}
+
+	// And the panic is loud, with frames. A bare %v of the recovered value names
+	// no function, and the only reader of this line is someone trying to find
+	// which rule action did it.
+	logMu.Lock()
+	defer logMu.Unlock()
+	var panicLine string
+	for _, l := range logged {
+		if strings.Contains(l, "PANIC") {
+			panicLine = l
+		}
+	}
+	if panicLine == "" {
+		t.Fatalf("a panicking delivery must be logged; got %v", logged)
+	}
+	if !strings.Contains(panicLine, "deliverer blew up") {
+		t.Fatalf("the panic log must carry the panic value; got %q", panicLine)
+	}
+	if !strings.Contains(panicLine, "poisonDeliverer") {
+		t.Fatalf("the panic log must carry debug.Stack() frames naming the function that panicked — "+
+			"a bare %%v of the panic value is not diagnosable; got %q", panicLine)
+	}
+	if !strings.Contains(panicLine, "seq 2") {
+		t.Fatalf("the panic log must name the telemetry seq it was delivering; got %q", panicLine)
 	}
 }
