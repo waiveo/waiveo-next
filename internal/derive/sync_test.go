@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -771,10 +772,12 @@ func TestApplyRenderedRefusesHalfAPair(t *testing.T) {
 // every other layer's finished PNG: one malformed row in one playlist discarded
 // the completed work of every other row in the workspace.
 //
-// The authoring gate now refuses that layer (datamodel.checkPlaylistItems), so
-// this fixture is a row stored before that gate existed. Both halves are
-// asserted: the bad layer FAILS with a reason, and every other layer in the same
-// pass is rendered, uploaded and written back.
+// Nothing upstream is trusted to make the shape unreachable. A cast slide's
+// stack is gated at authoring time; an inline `source: "slide"` item's is not on
+// this branch, and either way a row can arrive from a restore, a seed, or a
+// build older than whatever gate is current. Both halves are asserted: the bad
+// layer FAILS with a reason, and every other layer in the same pass is rendered,
+// uploaded and written back.
 func TestASpeclessLayerFailsItsOwnJobAndNothingElse(t *testing.T) {
 	ff, c, r, pr := newSyncEnv(t)
 	// Slide 1 keeps the two good derive layers; a second slide carries the
@@ -814,6 +817,84 @@ func TestASpeclessLayerFailsItsOwnJobAndNothingElse(t *testing.T) {
 	}
 }
 
+// TestSyncSurvivesEveryMalformedShapeAStoreCanHold is the STANDALONE-SAFETY
+// assertion for this branch, and it is the reason the branch does not carry an
+// inline authoring gate of its own.
+//
+// The four shapes below are exactly the ones `POST /playlists` accepts with a
+// 201 today — a zero-layer inline slide, a `derive` layer with no spec, an
+// unknown layer kind, geometry off the canvas — and the same four a workspace
+// restore or a seed bundle can deliver whatever any gate does next. An inline
+// gate is coming from the interactive-layers track together with the prior-fault
+// diff that makes adding one safe; duplicating it here would have bought nothing
+// this test does not already prove, and (measured) would have bricked CREATE,
+// UPDATE and DELETE for every playlist in a store holding one such row.
+//
+// The stand-in feeder deliberately does NOT omit the undrawable job the way the
+// real queue does, so what is exercised here is the renderer's own defences with
+// nothing upstream helping: renderOne's refusal and renderGuarded's recover.
+//
+// The assertion is all three of: the pass RETURNS (no crash), it REPORTS the
+// malformed layer with a reason, and it still renders and writes back the good
+// work sitting in the same rows.
+func TestSyncSurvivesEveryMalformedShapeAStoreCanHold(t *testing.T) {
+	ff, c, r, pr := newSyncEnv(t)
+
+	// Every shape a store can hold, in ONE workspace, alongside real work.
+	ff.playlist = datamodel.Playlist{
+		ID: "01J8LIST0000000000000000BB", Name: "Foyer loop",
+		Items: []datamodel.PlaylistItem{
+			// 1. A zero-layer inline slide.
+			{Source: "slide", Slide: &datamodel.Slide{Layers: []wire.Layer{}}},
+			// 2. A `derive` layer with no spec — the shape that killed the pass.
+			{Source: "slide", Slide: &datamodel.Slide{Layers: []wire.Layer{
+				{Kind: wire.LayerKindDerive, X: 0, Y: 0, W: 400, H: 400},
+			}}},
+			// 3. An unknown layer kind, sharing a stack with genuine outstanding
+			//    work so a tool that gave up on the ROW would be caught.
+			{Source: "slide", Slide: &datamodel.Slide{Layers: []wire.Layer{
+				{Kind: "hologram", X: 0, Y: 0, W: 100, H: 100},
+				{Kind: wire.LayerKindDerive, X: 200, Y: 200, W: 360, H: 360, Derive: &wire.DeriveSpec{
+					Kind: wire.DeriveKindQR, Data: "https://waiveo.local/pair/SURVIVOR", ECLevel: "Q",
+				}},
+			}}},
+			// 4. Geometry off the canvas.
+			{Source: "slide", Slide: &datamodel.Slide{Layers: []wire.Layer{
+				{Kind: wire.LayerKindRect, X: 1900, Y: 0, W: 100, H: 100, Color: "#ffffff"},
+			}}},
+		},
+	}
+
+	rep, err := Sync(context.Background(), c, r)
+	if err != nil {
+		t.Fatalf("Sync returned an error rather than a report: %v", err)
+	}
+
+	// The two cast layers plus the one good inline layer: real work, finished,
+	// while four malformed shapes sat in the same pass.
+	if len(rep.Rendered) != 3 {
+		t.Errorf("rendered = %d, want 3 (2 cast + 1 inline); failed = %+v", len(rep.Rendered), rep.Failed)
+	}
+	if pr.calls() != 3 {
+		t.Errorf("the renderer ran %d time(s), want 3 — no malformed layer may reach it", pr.calls())
+	}
+	if ff.playlist.Items[2].Slide.Layers[1].AssetRef == "" {
+		t.Error("the good inline layer sharing a stack with an unknown kind was not written back")
+	}
+
+	// The spec-less layer is REPORTED, not silently dropped: an operator asked
+	// for something and has to learn the row is malformed.
+	if len(rep.Failed) != 1 {
+		t.Fatalf("failed = %d, want exactly the spec-less layer: %+v", len(rep.Failed), rep.Failed)
+	}
+	if got := rep.Failed[0].Err; got == nil || !strings.Contains(got.Error(), "no spec") {
+		t.Errorf("the spec-less layer failed with %v, want a reason naming the missing spec", got)
+	}
+	if len(rep.RowErrs) != 0 {
+		t.Errorf("row errors = %+v, want none — a malformed LAYER must never fail its whole row", rep.RowErrs)
+	}
+}
+
 // TestAPanickingRenderCostsOneLayer is the CLASS the guard above is one instance
 // of. A renderer is a browser driver over third-party bytes; a panic anywhere
 // under it — the page builder, an image encoder, the driver itself — must cost
@@ -836,6 +917,83 @@ func TestAPanickingRenderCostsOneLayer(t *testing.T) {
 	if ff.cast.Slides[0].Layers[2].AssetRef == "" {
 		t.Error("the layer that rendered was not written back — a panic in one unit discarded a finished PNG in another")
 	}
+}
+
+// TestAPanickingRenderChargesTheCircuitBreaker is the OTHER half of the guard
+// above, and it is the half the round that wrote the recover() did not build.
+//
+// Surviving a panic is not the whole failure path. Runner.Render charges
+// recordFailure on each of its error returns and a panic unwinds straight past
+// every one of them, so a recovered panic used to be reported and then
+// forgotten: measured as three consecutive attempts on one key with circuitOpen
+// false every time and the browser relaunched three times. A deterministically
+// panicking layer — a malformed row, a spec the page builder cannot handle — is
+// precisely the input the breaker exists for, and it got a full-rate relaunch
+// every pass, forever.
+//
+// Driven through renderGuarded directly rather than through Sync because the
+// property is about the SECOND attempt on one key, and Sync renders each distinct
+// digest exactly once per pass.
+func TestAPanickingRenderChargesTheCircuitBreaker(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	pr := &countingPanicRenderer{}
+	r := NewRunner(pr, RunnerOptions{Concurrency: 1, JobTimeout: time.Minute, Now: clk.now})
+
+	layer := wire.Layer{Kind: wire.LayerKindDerive, W: 400, H: 400, Derive: &wire.DeriveSpec{
+		Kind: wire.DeriveKindQR, Data: "https://waiveo.local/pair/BOOM",
+	}}
+	digest := wire.DeriveDigest(layer)
+
+	if _, err := renderGuarded(context.Background(), r, layer, digest, nil); err == nil {
+		t.Fatal("a panicking render returned no error")
+	}
+	if _, open := r.circuitOpen(digest); !open {
+		t.Fatal("a recovered panic left the circuit CLOSED: the layer will be retried at full rate on " +
+			"every pass, relaunching the browser each time, until the row itself changes — the survive " +
+			"half of the guard without the backoff half")
+	}
+
+	// Two more passes over the same key: the open breaker must now refuse them
+	// before any render capacity — and therefore any browser — is taken.
+	for i := 2; i <= 3; i++ {
+		_, err := renderGuarded(context.Background(), r, layer, digest, nil)
+		if !errors.Is(err, ErrCircuitOpen) {
+			t.Errorf("attempt %d returned %v, want ErrCircuitOpen", i, err)
+		}
+	}
+	if got := pr.calls.Load(); got != 1 {
+		t.Errorf("the renderer was entered %d time(s) across three attempts, want 1", got)
+	}
+}
+
+// TestAPanicReportsItsStack: the panic VALUE alone is one line with no frames,
+// and the recover is what stopped the runtime from printing the trace, so if the
+// guard does not carry it nothing does. A genuine bug then surfaces as a shrug.
+func TestAPanicReportsItsStack(t *testing.T) {
+	r := NewRunner(&countingPanicRenderer{}, RunnerOptions{Concurrency: 1, JobTimeout: time.Minute})
+	layer := wire.Layer{Kind: wire.LayerKindDerive, W: 400, H: 400, Derive: &wire.DeriveSpec{
+		Kind: wire.DeriveKindQR, Data: "https://waiveo.local/pair/TRACE",
+	}}
+
+	_, err := renderGuarded(context.Background(), r, layer, wire.DeriveDigest(layer), nil)
+	if err == nil {
+		t.Fatal("a panicking render returned no error")
+	}
+	// The frame the panic came FROM, named. Asserting on "goroutine" alone would
+	// pass for a trace that begins after the panicking frames were unwound.
+	if !strings.Contains(err.Error(), "countingPanicRenderer") {
+		t.Errorf("the panic error names no frame from the panicking call:\n%v", err)
+	}
+}
+
+// countingPanicRenderer panics on EVERY page and counts how often it was entered
+// — which is how "the breaker refused the attempt" is told apart from "the
+// attempt ran and failed again".
+type countingPanicRenderer struct{ calls atomic.Int32 }
+
+func (p *countingPanicRenderer) Render(_ context.Context, _ Page) ([]byte, error) {
+	p.calls.Add(1)
+	panic("simulated renderer panic")
 }
 
 // panicRenderer panics on any page whose HTML contains `on`, and renders

@@ -235,19 +235,11 @@ type CastSlide struct {
 // layers a player draws directly, its shape single-sourced from wire.Layer (the
 // player/1 Lease `layers` shape) so an authored slide and the served slide are
 // the SAME layer type end-to-end, never a re-encoding. Layers are back-to-front
-// (array index is z-order).
-//
-// The stack IS validated at authoring time, by the same gate a cast slide's is:
-// checkPlaylistItems runs wire.ValidateAuthoredSlideLayers over it. It once was
-// not, and the gap was not a smaller rule but the absence of the rule — a stack
-// a cast refused with a 422 was accepted inline with a 201, and every consumer
-// downstream inherited a shape the authoring surface says cannot exist. The
-// AUTHORED form of the gate is the right one here for the reason it is right
-// for a cast: an image layer's fetch URL is derived from the content origin at
-// projection, so only the content-addressed asset_ref is authored. The serve-time
-// form (wire.ValidateSlideLayers, url required) is still applied by the producer
-// that projects it (feeder snapshot / relay schedulehost), which drops a slide
-// whose layers do not validate rather than serving it malformed.
+// (array index is z-order). The stack is not validated at authoring time — an
+// image layer's fetch URL is derived from the content origin at projection, so
+// wire.ValidateSlideLayers is applied by the producer that projects it (feeder
+// snapshot / relay schedulehost), which drops a slide whose layers do not
+// validate rather than serving it malformed.
 type Slide struct {
 	Layers []wire.Layer `json:"layers"`
 }

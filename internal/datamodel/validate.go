@@ -324,17 +324,16 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 	return rs, errs
 }
 
-// checkPlaylistItems enforces the DAT-041 rules that govern one playlist item's
-// own members: its `content_type` — the field that decides whether an asset item
-// PLAYS as a video or is drawn as a still image (PlaylistItem.ContentType) — and
-// the AUTHORED LAYER STACK a `source: "slide"` item carries inline.
+// checkPlaylistItems enforces the DAT-041 rules that govern a playlist item's
+// own `content_type` — the field that decides whether an asset item PLAYS as a
+// video or is drawn as a still image (PlaylistItem.ContentType).
 //
 // It reports EVERY failing item rather than the first, for the same reason
 // checkCastSlides does: a playlist is a document an operator edits as a whole,
 // and an editor forced to re-submit once per bad item to discover the next one
 // is API-013's multi-field answer thrown away.
 //
-// Three rules, and every one of them exists because the alternative is silence:
+// Two rules, and both exist because the alternative is silence:
 //
 //   - a stated content_type is one of the closed vocabulary (image/video). An
 //     unrecognised value would ride, unaltered, all the way onto the Lease
@@ -349,45 +348,12 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 //     any of those cannot change what the screen plays. Accepting it would
 //     store an operator's stated intent that nothing will ever honour — the
 //     accepts-work-it-never-performs shape — so it is refused instead.
-//   - a `source: "slide"` item's INLINE layer stack passes
-//     wire.ValidateAuthoredSlideLayers — the SAME gate checkCastSlides applies
-//     to a cast slide's stack, from the same function, never a second copy.
-//
-// That third rule was missing, and its absence was not a smaller version of the
-// cast rule — it was the whole rule. The two shapes are identical downstream:
-// store.RowLayerStacks enumerates both, both content projections run both
-// through the identical resolveLayers, the retention sweep holds both shapes'
-// asset references, and GET /derive/pending queues both. Only the AUTHORING gate
-// read one of them. So a layer stack a cast refused with a 422 was accepted with
-// a 201 inline, and every consumer downstream then had to cope with a shape the
-// authoring surface promises cannot exist: a zero-layer slide, an unknown layer
-// kind, geometry off the canvas, a `derive` layer with NO SPEC AT ALL. The last
-// one crashed the off-appliance renderer outright (a nil spec dereferenced mid
-// pass), taking every other layer's completed work in that pass with it — the
-// exact "built the enforcement half, skipped the authoring half" shape this
-// package's own comments keep naming.
-//
-// The reported field is `items[i].slide.layers`, the same JSON path
-// store.RowLayerStacks and store.RowAssetReferences build their references
-// under, so an operator is pointed at the layer rather than at "the playlist".
 //
 // Nothing here re-validates `source` itself or the source/field pairing: those
-// belong to DAT-041's own rules and are not this function's business. In
-// particular a `slide` object hung on a NON-slide item is that rule's business,
-// not this one's — but its layers are still checked, because the alternative is
-// storing an unvalidatable stack on the strength of a mislabelled source.
+// belong to DAT-041's own rules and are not this function's business.
 func checkPlaylistItems(items []PlaylistItem) []Error {
 	var errs []Error
 	for i, item := range items {
-		if item.Slide != nil {
-			if err := wire.ValidateAuthoredSlideLayers(item.Slide.Layers); err != nil {
-				errs = append(errs, Error{
-					Field:   fmt.Sprintf("items[%d].slide.layers", i),
-					Code:    "PLAYLIST_ITEM_SLIDE_LAYERS_INVALID",
-					Message: err.Error() + " (DAT-041)",
-				})
-			}
-		}
 		if item.ContentType == "" {
 			continue
 		}

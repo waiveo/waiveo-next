@@ -138,13 +138,20 @@ func (srv *server) listPendingDerives(w http.ResponseWriter, r *http.Request) {
 						// would be this surface violating its own contract and handing
 						// the tool a job whose only possible outcome is a crash.
 						//
-						// It cannot be authored any more — wire.ValidateAuthoredSlideLayers
-						// requires the spec, and BOTH shapes now pass through it
-						// (datamodel.checkCastSlides and checkPlaylistItems) — so the only
-						// row that can reach here is one stored before the inline gate
-						// existed. Omitting it is honest about what this queue is for:
-						// nothing this tool can do makes that layer draw, and the fix is an
-						// edit to the row, not a render.
+						// It is REACHABLE, and that is the point of checking rather than
+						// asserting. A cast slide's stack passes
+						// wire.ValidateAuthoredSlideLayers, which requires the spec; an
+						// INLINE `source: "slide"` item's stack does not pass an authoring
+						// gate on this branch (the sibling interactive-layers branch adds
+						// one), and a row can also arrive from a workspace restore, a seed
+						// bundle, or any build older than whatever gate is current. A queue
+						// that trusted the authoring surface would be the same
+						// enforcement-half-only shape this file exists to close.
+						//
+						// Omitting it — rather than the row — is honest about what this
+						// queue is for: nothing this tool can do makes THAT layer draw, and
+						// the fix is an edit to the row. The other layers of the same stack
+						// are real outstanding work and stay queued.
 						continue
 					}
 					job := derivePendingLayer{

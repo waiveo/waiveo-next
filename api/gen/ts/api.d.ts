@@ -1685,12 +1685,11 @@ export interface components {
             items: components["schemas"]["Cast"][];
             cursor: components["schemas"]["Cursor"];
         };
-        /** @description One entry of a playlist's `items` (DAT-041). `source` selects which content shape the entry uses — `asset` carries `asset_ref`, `playable` carries `pack_id` + `content_id`, `slide` carries an inline `slide`, `cast` carries `cast_id` — and data-model/1 enforces that pairing with its own per-field codes. A `cast` entry is the one source that is not one-to-one with a played item: it expands, at projection time, into one slide content item per slide of the referenced cast, in authored order. */
+        /** @description One entry of a playlist's `items` (DAT-041). `source` selects which content shape the entry uses — `asset` carries `asset_ref`, `playable` carries `pack_id` + `content_id`, `cast` carries `cast_id` — and data-model/1 enforces that pairing with its own per-field codes. A `cast` entry is the one source that is not one-to-one with a played item: it expands, at projection time, into one slide content item per slide of the referenced cast, in authored order. */
         PlaylistItem: {
             /** @enum {string} */
-            source: "asset" | "playable" | "slide" | "cast";
+            source: "asset" | "playable" | "cast";
             asset_ref?: string;
-            slide?: components["schemas"]["PlaylistInlineSlide"];
             /**
              * @description What this `asset` item's bytes ARE, and therefore how a screen presents them: `image` is drawn as a still for the item's dwell time, `video` is played. Optional; an item that states none is served as `image` (`relay/1` REL-061a's stated default for an absent content_type), so every playlist authored before this field existed behaves exactly as it did. Only meaningful on `source: "asset"` — a `cast` item's content type is decided by its source — and stating it on any other source is refused, rather than stored as an intent nothing will honour.
              * @enum {string}
@@ -1701,14 +1700,6 @@ export interface components {
             /** @description The cast this entry plays, required when `source` is `cast`. It MUST name an existing cast row, and that cast cannot be deleted while this reference stands (DAT-043). */
             cast_id?: string;
             duration_seconds?: number;
-        };
-        /**
-         * @description A `source: "slide"` playlist item's INLINE authored content: the ordered layer stack a player draws directly, with no cast row in between. It is the same layer shape a cast slide carries and it is validated by the same gate at authoring time (data-model/1 DAT-041, `PLAYLIST_ITEM_SLIDE_LAYERS_INVALID`), so an inline slide and a cast slide cannot disagree about what a drawable stack is.
-         *     It carries no id and no `duration_ms`: an inline slide belongs to exactly one item, so the item's own `duration_seconds` is its dwell time and there is nothing outside the item that could address it.
-         *     This shape was reachable and undeclared. `PATCH /playlists/{id}` is how `waiveo-derive` writes a rasterized layer's `asset_ref` back into an inline slide, and that write was legal only because this family declares the MEMBER half of its schema rather than the whole body — so the first declaration of the whole body would have broken the renderer's write-back with no test anywhere failing. Declaring the shape is what makes that impossible rather than merely unlikely.
-         */
-        PlaylistInlineSlide: {
-            layers: components["schemas"]["SlideLayer"][];
         };
         PlaylistCreate: {
             external_id?: string | null;

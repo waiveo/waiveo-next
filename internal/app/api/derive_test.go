@@ -505,14 +505,22 @@ func (e *testEnv) etagOfDefault(t *testing.T, path string) string {
 	return etag
 }
 
-// ── The authoring gate, over HTTP, for BOTH authored shapes ─────────────────
+// ── The queue's own answer for a malformed authored layer ───────────────────
 //
-// Everything below drives the defect the way it was measured: the same layer
-// stack, POSTed as a cast and as a `source: "slide"` playlist item, must get the
-// same answer. It did not. A cast refused a spec-less `derive` layer with a 422;
-// the inline shape answered 201, queued the layer, and handed waiveo-derive a
-// work order it crashed on — taking every other layer's finished PNG in that
-// pass with it.
+// Everything below drives the shape that started this: a `source: "slide"`
+// playlist item carrying a `derive` layer with NO SPEC. A cast refuses that
+// stack with a 422; the inline path stores it with a 201, because THIS branch
+// deliberately does not carry an inline authoring gate — the sibling `w3-interact`
+// adds one, together with the prior-faults diff that keeps a row already in the
+// store from vetoing every future write of its kind, and this branch merges after
+// it rather than shipping a second copy of the same rule.
+//
+// What this branch owns is every defence DOWNSTREAM of authoring, and those are
+// the ones that have to hold for a row that is already stored — from `main`, from
+// a restore, from a seed — whatever the authoring surface does next. There are
+// two: the queue never SERVES a work order it knows is undrawable, and the
+// renderer never DIES on one (internal/derive: renderOne's refusal and
+// renderGuarded's recover).
 
 // inlineSlidePlaylist wraps one layer stack in a `source: "slide"` playlist item.
 func inlineSlidePlaylist(scopeNode, name string, layers []wire.Layer) datamodel.Playlist {
@@ -522,55 +530,56 @@ func inlineSlidePlaylist(scopeNode, name string, layers []wire.Layer) datamodel.
 	}
 }
 
-// TestAnInlineSlideIsHeldToTheSameLayerRulesAsACastSlide is the api-level parity
-// check: one stack, two shapes, one answer. The four stacks are the four
-// measured symptoms, and every one of them was 422/201 before this.
-func TestAnInlineSlideIsHeldToTheSameLayerRulesAsACastSlide(t *testing.T) {
+// TestTheQueueOmitsASpecLessLayerRatherThanServingItNull is the queue guard,
+// driven end to end through the stored row that can actually reach it.
+//
+// `DerivePendingLayer` declares `spec` REQUIRED and non-nullable, and the queue
+// used to serve `"spec": null` for a layer that carried none — this surface
+// violating its own contract and handing waiveo-derive a job whose only outcome
+// was a nil dereference that killed the pass. The guard that stops it had NO
+// coverage: the only test that claimed it built its rows through the API, and
+// while an inline authoring gate was in place the API could not construct the
+// input at all, so deleting the guard left the whole package green.
+//
+// The valid layer in the same playlist is the other half of the assertion: an
+// omission must be exactly one layer wide. A guard that dropped the ROW would
+// take real outstanding work off the queue with it, and the operator's other
+// layer would never be drawn.
+func TestTheQueueOmitsASpecLessLayerRatherThanServingItNull(t *testing.T) {
 	e := newEnv(t)
 	screenID := seedSchedulingScope(t, e)
 
-	cases := []struct {
-		name   string
-		layers []wire.Layer
-	}{
-		{"a derive layer with no spec", []wire.Layer{
-			{Kind: wire.LayerKindDerive, X: 0, Y: 0, W: 400, H: 400},
-		}},
-		{"font_px on a qr spec", []wire.Layer{
-			{Kind: wire.LayerKindDerive, X: 0, Y: 0, W: 400, H: 400, Derive: &wire.DeriveSpec{
-				Kind: wire.DeriveKindQR, Data: "https://waiveo.local/x", FontPx: 64,
-			}},
-		}},
-		{"geometry off the canvas", []wire.Layer{
-			{Kind: wire.LayerKindRect, X: 1900, Y: 0, W: 100, H: 100, Color: "#ffffff"},
-		}},
-		{"an unknown layer kind", []wire.Layer{
-			{Kind: "hologram", X: 0, Y: 0, W: 100, H: 100},
-		}},
-		{"a zero-layer slide", []wire.Layer{}},
+	listID := decodeID(t, e.createOK(t, "/api/v1/playlists", rowCreateBody(t,
+		datamodel.Playlist{
+			ScopeNode: screenID, Name: "Half Broken",
+			Items: []datamodel.PlaylistItem{{Source: "slide", Slide: &datamodel.Slide{Layers: []wire.Layer{
+				// Layer 0: no spec at all. Undrawable, and unqueueable.
+				{Kind: wire.LayerKindDerive, X: 0, Y: 0, W: 400, H: 400},
+				// Layer 1: perfectly good outstanding work, in the same stack.
+				{Kind: wire.LayerKindDerive, X: 0, Y: 500, W: 900, H: 300, Derive: &wire.DeriveSpec{
+					Kind: wire.DeriveKindText, Text: "SCAN TO PAIR", FontPx: 96,
+				}},
+			}}}},
+		})))
+
+	var mine []map[string]any
+	for _, j := range derivePendingList(t, e) {
+		if j["resource_id"] == listID {
+			mine = append(mine, j)
+		}
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			castResp, castRaw := e.do(t, http.MethodPost, "/api/v1/casts", rowCreateBody(t, datamodel.Cast{
-				ScopeNode: screenID, Name: "Parity Cast",
-				Slides: []datamodel.CastSlide{{ID: "s1", Layers: tc.layers}},
-			}), nil)
-			if castResp.StatusCode != http.StatusUnprocessableEntity {
-				t.Errorf("POST the cast = %d, want 422 (body %s)", castResp.StatusCode, castRaw)
-			}
-
-			listResp, listRaw := e.do(t, http.MethodPost, "/api/v1/playlists",
-				rowCreateBody(t, inlineSlidePlaylist(screenID, "Parity Playlist", tc.layers)), nil)
-			if listResp.StatusCode != http.StatusUnprocessableEntity {
-				t.Fatalf("POST the SAME stack as an inline playlist slide = %d, want 422 — "+
-					"the two authored shapes are projected, swept and queued identically, so an "+
-					"authoring gate that reads only one of them does not make the other more "+
-					"permissive, it leaves it unvalidated (body %s)", listResp.StatusCode, listRaw)
-			}
-			p := assertProblem(t, listResp, listRaw, "VALIDATION_FAILED")
-			errorsHasFieldCode(t, p, "items[0].slide.layers", "PLAYLIST_ITEM_SLIDE_LAYERS_INVALID")
-		})
+	if len(mine) != 1 {
+		t.Fatalf("the queue reported %d job(s) for this playlist, want exactly 1 — "+
+			"the spec-less layer must be omitted and the well-formed one beside it must NOT be: %+v", len(mine), mine)
+	}
+	if spec, ok := mine[0]["spec"]; !ok || spec == nil {
+		t.Fatalf("the queued job carries no spec (%+v); `DerivePendingLayer.spec` is declared required and "+
+			"non-nullable, and a work order with nothing to draw is not a work order — it is a nil "+
+			"dereference in the renderer", mine[0])
+	}
+	if got := mine[0]["layer_index"]; got != float64(1) {
+		t.Errorf("the queued job is layer_index %v, want 1 — the omission shifted the index, so the "+
+			"renderer would write its raster back onto the wrong layer", got)
 	}
 }
 

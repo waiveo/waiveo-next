@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sort"
 	"sync"
 
@@ -451,12 +452,51 @@ func renderUnits(ctx context.Context, r *Runner, units []*renderUnit, fonts map[
 // third-party bytes, and a panic anywhere under it — here, in the page builder,
 // in an image encoder — must cost the one unit that provoked it and nothing
 // else. A per-unit failure is already a shape this loop reports and continues
-// past, so the recover simply routes into it.
+// past, so the recover routes into it.
+//
+// # A recovered panic CHARGES THE BREAKER, and that is half the guard
+//
+// Routing into the failure path means BOTH halves of it: the report and the
+// backoff. Runner.Render charges r.recordFailure on each of its error returns
+// and a panic unwinds straight past all of them, so for one round this recover
+// built only the report half — the survive-half-without-the-backoff-half shape
+// this file's own header keeps naming. Measured: three consecutive panicking
+// attempts on one key, circuitOpen false every time, Chromium relaunched three
+// times. A deterministically-panicking layer is the exact thing the breaker
+// exists for (it fails identically every pass until the row changes), and
+// instead it got a full-rate browser relaunch on every pass, forever.
+//
+// The charge is here rather than inside Runner.Render because Render would have
+// to recover to notice a panic at all, and a recover-then-repanic there would
+// truncate the trace this one captures. digest IS Runner's breaker key (renderOne
+// builds Job.Key from it), so charging it here is charging the same entry
+// Render's own error paths do — exactly once per panicking attempt, since no
+// path through Render both charges and panics.
+//
+// # The stack
+//
+// The panic VALUE alone is one line with no frames — "rendering <digest>
+// panicked: runtime error: index out of range [3]" — which for a genuine bug in
+// the page builder or an encoder is the difference between a diagnosis and a
+// shrug, and there is no second copy of the trace anywhere because the recover
+// is what stopped the runtime printing one.
+//
+// So debug.Stack() rides IN the error, not in a log line. This package writes
+// nothing to a stream (its result is the SyncReport; the command prints it), and
+// a diagnostic that only exists in a place the caller does not read is the same
+// half-built pair as the missing charge above. A panic is a bug, and a bug's
+// report is worth being several lines long; every other failure this loop reports
+// stays one.
 func renderGuarded(ctx context.Context, r *Runner, layer wire.Layer, digest string, fonts map[string]fontResult) (png []byte, err error) {
 	defer func() {
 		if p := recover(); p != nil {
+			// Captured before anything else: still inside the deferred call the
+			// runtime is running as it unwinds, which is where the panicking
+			// frames are still on the stack.
+			stack := debug.Stack()
+			r.recordFailure(digest)
 			png = nil
-			err = fmt.Errorf("derive: rendering %s panicked: %v", digest, p)
+			err = fmt.Errorf("derive: rendering %s panicked: %v\n%s", digest, p, stack)
 		}
 	}()
 	return renderOne(ctx, r, layer, digest, fonts)

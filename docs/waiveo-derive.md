@@ -76,14 +76,23 @@ behind the retention/write-time projection, and `store.LayerStackKinds` — whic
 the queue *aliases* rather than copies — is the single list of kinds either one
 scans, so the two cannot know about different shapes.
 
-Both shapes are also held to the **same authoring gate**: an inline slide's
-layers pass `wire.ValidateAuthoredSlideLayers` exactly as a cast slide's do
-(`PLAYLIST_ITEM_SLIDE_LAYERS_INVALID`). They once did not, and the gap was not a
-looser rule but the absence of one — a `derive` layer with no spec was a 422 in a
-cast and a 201 inline, and this tool then dereferenced the nil mid-pass. A job
-whose layer carries no spec is refused by the renderer with a reason, and the
-queue does not emit one at all: `DerivePendingLayer.spec` is declared required
-and non-nullable, and a work order with nothing to draw is not a work order.
+The two shapes are **not** held to the same authoring gate, and this tool does
+not assume they are. A cast slide's stack passes
+`wire.ValidateAuthoredSlideLayers`; an inline slide's does not, so a `derive`
+layer with no spec is a 422 in a cast and a 201 inline. (An inline authoring gate
+is being added on the interactive-layers track, and it is deliberately not
+duplicated here.) Either way a malformed row can also arrive from a workspace
+restore, a seed bundle, or a build older than whatever gate is current — so the
+guards that matter are the ones downstream of authoring, and there are two:
+
+- The **queue never serves an undrawable job**. `DerivePendingLayer.spec` is
+  declared required and non-nullable, and a layer carrying none is omitted from
+  the listing — that layer only, never the row, so the real outstanding work
+  beside it stays queued.
+- The **renderer never dies on one**. `renderOne` refuses a spec-less layer with
+  a reason instead of dereferencing it, and every unit renders under a
+  `recover()`, so a panic anywhere under the browser driver costs exactly the one
+  layer that provoked it and charges that layer's circuit breaker.
 
 The credential is read from the dev key file (`make dev-key`) or from
 `-token-file`, never from a flag — an argument is visible in `ps` and lands in
