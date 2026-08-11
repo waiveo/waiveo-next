@@ -29,6 +29,18 @@ var versionRe = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][
 // default extension glyph at render, never a broken icon or a refused install.
 var iconNameRe = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
 
+// IsIDSegment reports whether s is ONE well-formed pack-id segment (MAN-001) —
+// a publisher namespace on its own, or a pack name on its own.
+//
+// It exists because a publisher namespace is a first-class configuration value
+// in its own right, not only the half of an id that arrives attached to a name:
+// marketplace/1 MKT-062's reserved-namespace authorization is a host-provisioned
+// list of bare namespaces (internal/app/packs' registry sources document), and a
+// namespace outside this grammar can never equal the publisher segment of any
+// installable pack id — every one of those is pinned here by Validate — so
+// authorizing it would silently authorize nothing.
+func IsIDSegment(s string) bool { return idSegmentRe.MatchString(s) }
+
 // IsPublisherNameID reports whether id is a well-formed pack id (MAN-001):
 // exactly <publisher>/<name>, each segment matching idSegmentRe.
 func IsPublisherNameID(id string) bool {
@@ -40,7 +52,7 @@ func IsPublisherNameID(id string) bool {
 	if strings.Contains(name, "/") {
 		return false
 	}
-	return idSegmentRe.MatchString(pub) && idSegmentRe.MatchString(name)
+	return IsIDSegment(pub) && IsIDSegment(name)
 }
 
 // IsMsgRef reports whether s is a locale-catalog reference (MAN-003): the msg:

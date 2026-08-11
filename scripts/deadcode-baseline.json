@@ -34,13 +34,6 @@
       ]
     },
     {
-      "package": "internal/app/api",
-      "reason": "A functional option the feeder does not pass. cmd/waiveo-feeder builds the API surface without a marketplace, because marketplace source resolution is itself unwired (see internal/app/packs below) \u2014 the same gap marketplace/1's nine unimplemented error codes record from the contract side.",
-      "funcs": [
-        "WithMarketplace"
-      ]
-    },
-    {
       "package": "internal/app/auth",
       "reason": "ValidCredentialKind has no caller at all \u2014 not in a binary, a driver, a script, or a test; the credential-kind vocabulary is validated inline where it is read. DecodeTOTPSecret is the inverse of EncodeTOTPSecret and exists so a test can compute the enrollee's own codes (internal/app/auth/totphttp_test.go); the server stores and compares sealed, never decoding back.",
       "funcs": [
@@ -76,11 +69,8 @@
     },
     {
       "package": "internal/app/packs",
-      "reason": "The marketplace half of pack installation is built and not mounted: NewMarket, its source list, and the file-backed fetcher have no caller outside this package's own tests, so the feeder installs packs from an uploaded zip and never from a registry source. Bundle.Has is a reader on the same unwired path.",
+      "reason": "Bundle.Has asks a read pack whether it holds a named file; every caller on the install path reads the file it wants and handles absence from that, so the predicate has no caller. The rest of this group is GONE rather than baselined: cmd/waiveo-feeder now mounts the marketplace from a host-provisioned registry sources document (internal/app/packs/sourcesfile.go), so NewMarket, the ordered source list and the file-backed fetcher are all reachable from a shipped binary.",
       "funcs": [
-        "FileFetcher.Fetch",
-        "FileFetcher.resolve",
-        "NewMarket",
         "Bundle.Has"
       ]
     },
