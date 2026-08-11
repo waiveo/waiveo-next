@@ -68,6 +68,19 @@ const messages: Record<string, string> = {
   "msg:variables.detail.off": "False",
   "msg:variables.detail.save": "Save changes",
   "msg:variables.detail.delete": "Delete variable",
+  // A variable is SHARED RULE STATE: a rules/1 condition reads it (RUL-150) and an
+  // action writes it (RUL-220), so deleting one can silently stop an automation
+  // that depends on it. One misclick, no undo — hence the gate.
+  //
+  // This was ungated until now, and the reason is worth keeping: this page was
+  // authored BEFORE a confirm existed on an ActionRef. The track recorded that
+  // honestly; UIS-165 landed two merges later in ui-schema/1 1.1 and nothing
+  // re-read the note (HV-21).
+  "msg:variables.delete.confirm.title": "Delete this variable?",
+  "msg:variables.delete.confirm.body":
+    "Any automation that reads this variable in a condition, or writes it in an action, will stop finding it. Those rules keep running — the condition simply stops matching — so nothing will report an error. Deleting it does not delete them.",
+  "msg:variables.delete.confirm.ok": "Delete it",
+  "msg:variables.delete.confirm.cancel": "Keep it",
 };
 
 /** The three value types DAT-132 admits. */

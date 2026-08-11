@@ -1,7 +1,9 @@
 {
   "pageType": "list-detail",
   "context": {
-    "nodes": { "collection": "nodes" }
+    "nodes": {
+      "collection": "nodes"
+    }
   },
   "list": {
     "source": "variables",
@@ -11,13 +13,31 @@
       "props": {
         "source": "variables",
         "columns": [
-          { "headerMsg": "msg:variables.col.name", "cell": "item.name" },
-          { "headerMsg": "msg:variables.col.value", "cell": "item.value_display" },
-          { "headerMsg": "msg:variables.col.kind", "cell": "item.value_kind" },
-          { "headerMsg": "msg:variables.col.scope", "cell": "item.scope_name" }
+          {
+            "headerMsg": "msg:variables.col.name",
+            "cell": "item.name"
+          },
+          {
+            "headerMsg": "msg:variables.col.value",
+            "cell": "item.value_display"
+          },
+          {
+            "headerMsg": "msg:variables.col.kind",
+            "cell": "item.value_kind"
+          },
+          {
+            "headerMsg": "msg:variables.col.scope",
+            "cell": "item.scope_name"
+          }
         ]
       },
-      "on": { "rowPress": { "verb": "set", "target": "$ui.selected", "value": "item.id" } }
+      "on": {
+        "rowPress": {
+          "verb": "set",
+          "target": "$ui.selected",
+          "value": "item.id"
+        }
+      }
     }
   },
   "detail": {
@@ -25,7 +45,9 @@
     "emptyMsg": "msg:variables.detail.empty",
     "root": {
       "type": "section",
-      "props": { "titleMsg": "msg:variables.detail.title" },
+      "props": {
+        "titleMsg": "msg:variables.detail.title"
+      },
       "children": [
         {
           "type": "text-input",
@@ -57,9 +79,18 @@
             "options": {
               "kind": "literal",
               "items": [
-                { "value": "string", "labelMsg": "msg:variables.kind.string" },
-                { "value": "number", "labelMsg": "msg:variables.kind.number" },
-                { "value": "boolean", "labelMsg": "msg:variables.kind.boolean" }
+                {
+                  "value": "string",
+                  "labelMsg": "msg:variables.kind.string"
+                },
+                {
+                  "value": "number",
+                  "labelMsg": "msg:variables.kind.number"
+                },
+                {
+                  "value": "boolean",
+                  "labelMsg": "msg:variables.kind.boolean"
+                }
               ]
             }
           }
@@ -74,7 +105,9 @@
                 "render": {
                   "type": "text-input",
                   "bind": "value_text",
-                  "props": { "labelMsg": "msg:variables.detail.valueText" }
+                  "props": {
+                    "labelMsg": "msg:variables.detail.valueText"
+                  }
                 }
               },
               {
@@ -82,7 +115,9 @@
                 "render": {
                   "type": "number-input",
                   "bind": "value_number",
-                  "props": { "labelMsg": "msg:variables.detail.valueNumber" }
+                  "props": {
+                    "labelMsg": "msg:variables.detail.valueNumber"
+                  }
                 }
               },
               {
@@ -102,13 +137,35 @@
         },
         {
           "type": "button",
-          "props": { "labelMsg": "msg:variables.detail.save", "style": "primary" },
-          "on": { "press": { "verb": "submit" } }
+          "props": {
+            "labelMsg": "msg:variables.detail.save",
+            "style": "primary"
+          },
+          "on": {
+            "press": {
+              "verb": "submit"
+            }
+          }
         },
         {
           "type": "button",
-          "props": { "labelMsg": "msg:variables.detail.delete", "style": "destructive" },
-          "on": { "press": { "verb": "delete", "target": "$root" } }
+          "props": {
+            "labelMsg": "msg:variables.detail.delete",
+            "style": "destructive"
+          },
+          "on": {
+            "press": {
+              "verb": "delete",
+              "target": "$root",
+              "confirm": {
+                "titleMsg": "msg:variables.delete.confirm.title",
+                "bodyMsg": "msg:variables.delete.confirm.body",
+                "confirmLabelMsg": "msg:variables.delete.confirm.ok",
+                "cancelLabelMsg": "msg:variables.delete.confirm.cancel",
+                "destructive": true
+              }
+            }
+          }
         }
       ]
     }

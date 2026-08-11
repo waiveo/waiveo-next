@@ -248,9 +248,59 @@ describe("Variables — create / edit / delete, driven", () => {
 
     await user.click(variableRow("guest_mode"));
     await user.click(await screen.findByRole("button", { name: "Delete variable" }));
+    // The delete is GATED now (HV-21) — confirming is part of the act.
+    await user.click(await screen.findByRole("button", { name: "Delete it" }));
 
     await waitFor(() => expect(screen.queryByText("guest_mode")).not.toBeInTheDocument());
     expect(ifMatch).toBe('"5"');
+  });
+
+  it("does NOT delete until the confirmation is confirmed, and Keep it cancels", async () => {
+    // The regression this pins is the one that shipped: Delete fired on the first
+    // click, with no gate, for SHARED RULE STATE that automations read (RUL-150).
+    // A variable's deletion is silent to the rules that depended on it — they keep
+    // running and simply stop matching — so an accidental one is not self-announcing.
+    const state = { rows: [variable({ id: ULID_A, name: "guest_mode", revision: 5 })] };
+    let deletes = 0;
+    server.use(
+      http.get("*/api/v1/variables", () => page(state.rows)),
+      http.get("*/api/v1/scope-nodes", () => page(nodes)),
+      http.delete("*/api/v1/variables/:id", () => {
+        deletes += 1;
+        state.rows = [];
+        return new HttpResponse(null, { status: 204, headers: { "Trace-Id": TRACE_ID } });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderVariables();
+    await screen.findByRole("table", { name: "Variables" });
+    await user.click(variableRow("guest_mode"));
+    await user.click(await screen.findByRole("button", { name: "Delete variable" }));
+
+    // Asking is not doing.
+    expect(deletes).toBe(0);
+    expect(screen.getByText("Delete this variable?")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Keep it" }));
+    expect(deletes).toBe(0);
+    expect(within(screen.getByRole("table", { name: "Variables" })).getByText("guest_mode")).toBeInTheDocument();
+  });
+
+  it("names the consequence, not just the act", async () => {
+    // A dialog that says "are you sure?" is one an operator dismisses by habit.
+    const state = { rows: [variable({ id: ULID_A, name: "guest_mode", revision: 5 })] };
+    server.use(
+      http.get("*/api/v1/variables", () => page(state.rows)),
+      http.get("*/api/v1/scope-nodes", () => page(nodes)),
+    );
+    const user = userEvent.setup();
+    renderVariables();
+    await screen.findByRole("table", { name: "Variables" });
+    await user.click(variableRow("guest_mode"));
+    await user.click(await screen.findByRole("button", { name: "Delete variable" }));
+    expect(screen.getByText(/stop finding it/i)).toBeInTheDocument();
+    expect(screen.getByText(/nothing will report an error/i)).toBeInTheDocument();
   });
 });
 
