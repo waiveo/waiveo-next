@@ -6,7 +6,7 @@ import { setupServer } from "msw/node";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import StudioRoute from "./studio-route";
-import { TRACE_ID, ULID_A, cast, contentAsset, problem } from "@/api/test-support";
+import { TRACE_ID, ULID_A, ULID_B, ULID_C, cast, contentAsset, problem } from "@/api/test-support";
 
 /**
  * The Studio, driven the way an operator drives it: click a layer, drag it,
@@ -37,13 +37,29 @@ afterAll(() => server.close());
 /** What the last PATCH carried, captured for assertions. */
 interface SavedBody {
   name?: string;
+  default_duration_ms?: number | null;
   slides?: Array<{ id: string; duration_ms?: number; layers: Array<Record<string, unknown>> }>;
 }
+
+/** The entities the editor reads on mount for the `entity` widget's subject
+ * picker. Two, with different states, so a test that picked the wrong one is
+ * visible in the saved body rather than passing on a single-row list. */
+const STUDIO_ENTITIES = [
+  { id: ULID_B, external_id: null, device_id: ULID_C, relay_id: "relay-1", device_class: "media-player", name: "Lobby TV", scope_node: ULID_A, labels: {}, state: "on" },
+  { id: ULID_C, external_id: null, device_id: ULID_C, relay_id: "relay-1", device_class: "media-player", name: "Cafe TV", scope_node: ULID_A, labels: {}, state: "off" },
+];
 
 function serveCast(body: ReturnType<typeof cast>, saved: { body?: SavedBody; ifMatch?: string | null }) {
   return [
     http.get("*/api/v1/casts/:id", () =>
       HttpResponse.json(body, { headers: { ETag: '"1"', "Trace-Id": TRACE_ID } }),
+    ),
+    // The editor reads the entity list on mount, for the entity widget's
+    // subject picker. Stubbed for EVERY case rather than only the widget ones,
+    // because `onUnhandledRequest: "error"` would otherwise turn an ordinary
+    // text-layer test into a failure about the device plane.
+    http.get("*/api/v1/entities", () =>
+      HttpResponse.json({ items: STUDIO_ENTITIES, cursor: null }, { headers: { "Trace-Id": TRACE_ID } }),
     ),
     http.patch("*/api/v1/casts/:id", async ({ request }) => {
       saved.ifMatch = request.headers.get("If-Match");
@@ -526,13 +542,13 @@ describe("Studio — slides", () => {
     renderStudio();
     await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
 
-    const duration = screen.getByLabelText(/slide duration/i);
+    const duration = screen.getByLabelText("Slide duration (seconds)");
     expect(duration).toHaveValue(10);
     fireEvent.change(duration, { target: { value: "20" } });
     await user.click(saveButton());
     expect((await waitForSave(saved)).slides?.[0]?.duration_ms).toBe(20_000);
 
-    fireEvent.change(screen.getByLabelText(/slide duration/i), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Slide duration (seconds)"), { target: { value: "" } });
     await user.click(saveButton());
     expect("duration_ms" in ((await waitForSave(saved)).slides?.[0] ?? {})).toBe(false);
   });
@@ -653,3 +669,208 @@ async function waitForSave(saved: { body?: SavedBody | undefined }): Promise<Sav
   saved.body = undefined;
   return body;
 }
+
+/**
+ * The WIDGET PICKER and the four live widget kinds (parity row 3.6).
+ *
+ * Every case here goes all the way to the PATCH body, because the failure this
+ * feature exists to fix was precisely a rendered capability nothing could
+ * author: the four kinds shipped on the wire, in the box's resolver and in the
+ * player while the Studio's toolbar and the request schema still knew four.
+ * "The picker opened" and "a countdown reached the server with its target" are
+ * different claims, and only the second one is worth anything.
+ */
+describe("Studio — the widget picker", () => {
+  /** Open the picker and choose one widget by its name in the dialog. */
+  async function insertWidget(user: ReturnType<typeof userEvent.setup>, name: RegExp) {
+    await user.click(screen.getByRole("button", { name: /add widget/i }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name }));
+  }
+
+  it("offers every live kind, with what each one draws from", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(screen.getByRole("button", { name: /add widget/i }));
+    const dialog = await screen.findByRole("dialog");
+    const choices = within(dialog).getAllByRole("button", { name: /date|countdown|weather|entity/i });
+    expect(choices).toHaveLength(4);
+    // The blurbs are the reason the picker is a dialog and not four more
+    // toolbar buttons: they say where the value comes from.
+    expect(within(dialog).getByText(/fetched by the box/i)).toBeInTheDocument();
+  });
+
+  it("inserts a DATE layer, takes a format preset, and saves the layout", async () => {
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await insertWidget(user, /^Date$/);
+    // It landed on top of the stack and is selected, so the panel is already
+    // editing it — the same contract every other insert has.
+    expect(canvasLayer(4, /Layer 4: Date/)).toHaveAttribute("aria-pressed", "true");
+
+    await user.selectOptions(screen.getByLabelText("Date format preset"), "Jan 2, 2006");
+    await user.click(saveButton());
+
+    const layer = (await waitForSave(saved)).slides?.[0]?.layers[3];
+    expect(layer).toMatchObject({ kind: "date", text: "Jan 2, 2006" });
+  });
+
+  it("inserts a COUNTDOWN and saves the target as an absolute epoch-ms instant", async () => {
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await insertWidget(user, /^Countdown$/);
+    // It arrives VALID — a target is already set, so the save gate is not
+    // holding and the widget is visibly counting rather than reading 00:00:00.
+    expect(saveButton()).toBeEnabled();
+
+    // A local wall time in, an absolute instant out. Asserting against
+    // Date.parse of the same string is the whole conversion under test: any
+    // UTC-vs-local slip shows up as a several-hour difference.
+    fireEvent.change(screen.getByLabelText(/counts down to/i), { target: { value: "2027-01-01T18:30" } });
+    await user.selectOptions(screen.getByLabelText("Remaining-time format preset"), "DD:HH:MM:SS");
+    await user.click(saveButton());
+
+    const layer = (await waitForSave(saved)).slides?.[0]?.layers[3];
+    expect(layer).toMatchObject({
+      kind: "countdown",
+      target_ms: Date.parse("2027-01-01T18:30"),
+      text: "DD:HH:MM:SS",
+    });
+  });
+
+  it("inserts a WEATHER widget and appends a token by clicking it", async () => {
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await insertWidget(user, /^Weather$/);
+    const template = screen.getByLabelText("Display template");
+    await user.clear(template);
+    await user.type(template, "Now ");
+    await user.click(screen.getByRole("button", { name: "Insert {tempc}" }));
+
+    await user.click(saveButton());
+    const layer = (await waitForSave(saved)).slides?.[0]?.layers[3];
+    expect(layer).toMatchObject({ kind: "weather", text: "Now {tempc}" });
+  });
+
+  it("inserts an ENTITY widget, lists the box's REAL entities, and saves the chosen one", async () => {
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await insertWidget(user, /entity state/i);
+
+    // Until a subject is chosen the slide will not draw, so the save is HELD
+    // and the panel says which layer is at fault — an entity id nobody chose
+    // would otherwise be accepted and resolve to a dash on the wall forever.
+    expect(saveButton()).toBeDisabled();
+    expect(screen.getAllByRole("status").some((n) => /which entity/i.test(n.textContent ?? ""))).toBe(true);
+
+    // The options are the rows GET /entities returned, named and stated — not
+    // ids typed by hand.
+    const picker = screen.getByLabelText("Entity");
+    expect(within(picker).getByRole("option", { name: /Lobby TV — on/ })).toBeInTheDocument();
+    expect(within(picker).getByRole("option", { name: /Cafe TV — off/ })).toBeInTheDocument();
+
+    await user.selectOptions(picker, ULID_C);
+    expect(saveButton()).toBeEnabled();
+    await user.click(saveButton());
+
+    const layer = (await waitForSave(saved)).slides?.[0]?.layers[3];
+    expect(layer).toMatchObject({ kind: "entity", entity_id: ULID_C, text: "{state}" });
+  });
+
+  it("degrades the entity picker to a plain id field when the box knows none", async () => {
+    const saved: { body?: SavedBody } = {};
+    // The empty override goes FIRST: msw resolves the first matching handler,
+    // and serveCast registers a populated /entities of its own.
+    server.use(
+      http.get("*/api/v1/entities", () =>
+        HttpResponse.json({ items: [], cursor: null }, { headers: { "Trace-Id": TRACE_ID } }),
+      ),
+      ...serveCast(cast(), saved),
+    );
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(screen.getByRole("button", { name: /add widget/i }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: /entity state/i }));
+
+    // An empty dropdown with no explanation is the worse dead end: a slide
+    // authored before the devices are adopted must still be finishable.
+    const field = await screen.findByLabelText("Entity");
+    expect(field.tagName).toBe("INPUT");
+    fireEvent.change(field, { target: { value: ULID_B } });
+    await user.click(saveButton());
+    expect((await waitForSave(saved)).slides?.[0]?.layers[3]).toMatchObject({ entity_id: ULID_B });
+  });
+});
+
+/**
+ * Cast-level playback settings (parity row 1.7).
+ *
+ * The CLEAR is the half that would otherwise ship broken, and it is asserted
+ * explicitly: the PATCH body shallow-merges over the stored row, so a save that
+ * simply omitted the member when the field was blanked would leave the old
+ * default in place forever — a control that accepts the work and never performs
+ * it, which is this repo's recurring defect shape.
+ */
+describe("Studio — cast playback settings", () => {
+  it("saves a cast-wide default duration, and an explicit null when it is cleared", async () => {
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast({ default_duration_ms: 8000 }), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    const field = screen.getByLabelText("Default slide duration (seconds)");
+    expect(field).toHaveValue(8);
+
+    fireEvent.change(field, { target: { value: "15" } });
+    await user.click(saveButton());
+    expect((await waitForSave(saved)).default_duration_ms).toBe(15_000);
+
+    fireEvent.change(screen.getByLabelText("Default slide duration (seconds)"), { target: { value: "" } });
+    await user.click(saveButton());
+    const cleared = await waitForSave(saved);
+    // null, not absent: absent means "leave it alone" to a merging server.
+    expect(cleared.default_duration_ms).toBeNull();
+    expect("default_duration_ms" in cleared).toBe(true);
+  });
+
+  it("keeps the per-slide duration and the cast default as separate controls", async () => {
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    // The fixture slide holds 10s of its own; setting a cast default must not
+    // disturb it, and vice versa — they are different rows of the resolution.
+    fireEvent.change(screen.getByLabelText("Default slide duration (seconds)"), { target: { value: "6" } });
+    fireEvent.change(screen.getByLabelText("Slide duration (seconds)"), { target: { value: "25" } });
+    await user.click(saveButton());
+
+    const body = await waitForSave(saved);
+    expect(body.default_duration_ms).toBe(6000);
+    expect(body.slides?.[0]?.duration_ms).toBe(25_000);
+  });
+});

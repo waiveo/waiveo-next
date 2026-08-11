@@ -151,3 +151,56 @@ func TestCastSlideThatWouldNotDrawIsSkippedNotServed(t *testing.T) {
 		}
 	}
 }
+
+// TestCastDefaultDurationFillsSlidesThatStateNone drives the cast-level default
+// dwell time (DAT-043 `default_duration_ms`) through the relay-side projection.
+//
+// It is the arm of the resolution an operator actually authors in the Studio's
+// playback settings: "hold every slide for five seconds" is one edit on the
+// cast, not an edit of every slide, and every slide added afterwards inherits it
+// instead of silently falling to whatever the player defaults to. The assertion
+// is deliberately over ALL THREE slides at once, because the failure that would
+// otherwise pass is a default applied to the whole cast (overwriting the two
+// slides that state their own) rather than only to the slide that said nothing.
+func TestCastDefaultDurationFillsSlidesThatStateNone(t *testing.T) {
+	// No playlist-item override, so the cast's own default is what the third
+	// slide must reach.
+	store := castStore(nil)
+	store.Rows.Casts[0].DefaultDurationMS = 5000
+
+	content := playlistContent(store, castFixturePlaylistID, contentSigner{origin: "https://origin.example"})
+	if len(content) != 3 {
+		t.Fatalf("playlistContent returned %d items, want one per cast slide", len(content))
+	}
+	want := []int64{4000, 9000, 5000}
+	for i, item := range content {
+		if item.DurationMS != want[i] {
+			t.Errorf("content[%d].duration_ms = %d, want %d (slide own → item override → cast default)", i, item.DurationMS, want[i])
+		}
+	}
+}
+
+// TestPlaylistItemOverrideOutranksTheCastDefault pins the ORDER of the two
+// fallbacks against each other, which is the half a test of either one alone
+// cannot see.
+//
+// DAT-042 puts the item's `duration_seconds` above the cast's
+// `default_duration_ms` on purpose: `duration_seconds` is a statement about one
+// PLACEMENT of the cast, `default_duration_ms` a statement about slides that
+// said nothing. Inverting them would make the placement override unreachable for
+// every cast that carries a default — an operator setting 12s on this playlist
+// entry would watch the screen keep showing 5s and have nothing to look at that
+// says why.
+func TestPlaylistItemOverrideOutranksTheCastDefault(t *testing.T) {
+	twelve := 12
+	store := castStore(&twelve)
+	store.Rows.Casts[0].DefaultDurationMS = 5000
+
+	content := playlistContent(store, castFixturePlaylistID, contentSigner{origin: "https://origin.example"})
+	if len(content) != 3 {
+		t.Fatalf("playlistContent returned %d items, want one per cast slide", len(content))
+	}
+	if content[2].DurationMS != 12000 {
+		t.Errorf("the slide that states no duration took %d ms; the playlist item's own 12s override must outrank the cast's 5s default", content[2].DurationMS)
+	}
+}

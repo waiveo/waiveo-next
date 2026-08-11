@@ -380,9 +380,13 @@ func resolveLayers(authored []wire.Layer, sign contentSigner) ([]wire.Layer, boo
 // pins the two together.
 //
 // itemDurationMS is the referencing playlist item's own `duration_seconds`
-// override already converted to ms (0 when it stated none); a slide's own
-// `duration_ms` wins over it, and with neither the item carries no `duration_ms`
-// at all (omitempty) and the player applies its own default.
+// override already converted to ms (0 when it stated none); the resolution from
+// there — slide `duration_ms`, that override, the CAST's `default_duration_ms`,
+// then nothing (omitempty, the player's own default) — is datamodel.SlideDwellMS,
+// the SAME function internal/feeder/snapshot's projection calls. It is one
+// function rather than a copy on each side precisely because these two
+// projections must agree: a divergence here is a screen whose slide timings
+// change at a daypart boundary for no authored reason.
 //
 // An unknown cast id contributes nothing: a carried schedule section that does
 // not resolve is a degraded input, and the honest projection of absent content
@@ -405,26 +409,12 @@ func castContent(store datamodel.RowStore, castID string, itemDurationMS int64, 
 			out = append(out, wire.LeaseContent{
 				Type:       leaseContentTypeSlide,
 				Layers:     layers,
-				DurationMS: slideDurationMS(slide, itemDurationMS),
+				DurationMS: datamodel.SlideDwellMS(slide, c, itemDurationMS),
 			})
 		}
 		return out
 	}
 	return out
-}
-
-// slideDurationMS resolves one cast slide's dwell time: the slide's own
-// `duration_ms` when it states one, otherwise the referencing playlist item's
-// already-converted `duration_seconds` override, otherwise 0 (no `duration_ms`
-// key at all). Deliberately spelled as its own named rule on both sides —
-// snapshot.slideDurationMS is byte-for-byte this function — so a reader
-// comparing the two projections compares one rule rather than two inlined
-// expressions, and so a change to it is visibly a change that must be made twice.
-func slideDurationMS(slide datamodel.CastSlide, itemDurationMS int64) int64 {
-	if slide.DurationMS > 0 {
-		return slide.DurationMS
-	}
-	return itemDurationMS
 }
 
 // contentURL builds a schedule-resolved content item's Lease `url` from the

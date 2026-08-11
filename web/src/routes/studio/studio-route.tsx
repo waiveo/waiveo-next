@@ -5,10 +5,12 @@ import { Button, ConfirmModal, FormField, PageHeader, Toaster, toast } from "@/c
 import {
   ApiError,
   RevisionConflictError,
+  collectPages,
   createApi,
   updateWithReview,
   validateCastSlides,
   type Cast,
+  type Entity,
   type LayerKind,
   type SlideLayer,
   type WaiveoApi,
@@ -56,6 +58,10 @@ import { PropertiesPanel } from "./properties-panel";
  * mounts a plain `BrowserRouter`, so it would throw rather than guard.
  */
 
+/** The shared class for the two cast-level inputs above the filmstrip. */
+const castFieldClass =
+  "flex min-h-[38px] w-full min-w-0 rounded-input border border-border bg-transparent px-2 py-1 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
+
 /** A fresh slide id. Slides are addressed within their cast, so a UUID is
  * plenty; the server may replace it, which is why the reducer takes the id as
  * data rather than minting one itself. */
@@ -78,6 +84,8 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
   const [conflict, setConflict] = useState<{ cast: Cast; etag: string } | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [leaveOpen, setLeaveOpen] = useState(false);
+  /** Every entity the box knows, for an `entity` widget's subject picker. */
+  const [entities, setEntities] = useState<Entity[]>([]);
 
   const slide = currentSlide(state);
   const layer = selectedLayer(state);
@@ -121,6 +129,33 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
       cancelled = true;
     };
   }, [client, castId]);
+
+  // ── Entities, for the entity widget's subject picker ──────────────────────
+  //
+  // Read once when the editor opens rather than when the picker is first shown:
+  // the properties panel is a pure presentational component with no client of
+  // its own, and a read started by a render would fire again on every re-render
+  // of a panel that re-renders on every keystroke.
+  //
+  // A failure is deliberately NOT surfaced as an error. The entity list is an
+  // aid to ONE widget kind out of eight; taking the whole editor down (or
+  // shouting at an operator laying out a text slide) because the device plane is
+  // unreachable would be a worse answer than the picker degrading to a plain id
+  // field, which is exactly what an empty list makes it do.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rows = await collectPages<Entity>((cursor) => client.entities.list({ cursor }));
+        if (!cancelled) setEntities(rows);
+      } catch {
+        if (!cancelled) setEntities([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
 
   // ── Unsaved-changes guard (tab close / reload) ────────────────────────────
   const dirtyRef = useRef(state.dirty);
@@ -170,7 +205,14 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
   );
 
   // ── Editing callbacks (thin: every one is a single dispatch) ──────────────
-  const onInsert = useCallback((kind: LayerKind) => dispatch({ type: "insertLayer", layer: defaultLayer(kind) }), []);
+  // `Date.now()` is read HERE, at the moment of the click, rather than inside
+  // `defaultLayer` — a countdown's default target is "midnight tonight", and a
+  // now captured at render time would be stale by however long the editor has
+  // been open.
+  const onInsert = useCallback(
+    (kind: LayerKind) => dispatch({ type: "insertLayer", layer: defaultLayer(kind, Date.now()) }),
+    [],
+  );
   const onSelectLayer = useCallback((index: number | null) => dispatch({ type: "selectLayer", index }), []);
   const onGeometry = useCallback(
     (index: number, geometry: Pick<SlideLayer, "x" | "y" | "w" | "h">) =>
@@ -260,19 +302,53 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
           </p>
         ) : null}
 
-        <div className="max-w-sm">
+        {/* Cast-level settings: what the whole document is called, and how long
+            its slides hold by default. Both belong beside each other and above
+            the filmstrip because both are properties of the CAST — the
+            properties panel to the right is per-layer and per-slide, and putting
+            a cast-wide control in it would read as "this slide". */}
+        <section aria-label="Playback" className="grid max-w-3xl grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Cast name">
             {(field) => (
               <input
                 {...field}
                 type="text"
-                className="flex min-h-[38px] w-full min-w-0 rounded-input border border-border bg-transparent px-2 py-1 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className={castFieldClass}
                 value={state.name}
                 onChange={(e) => dispatch({ type: "rename", name: e.target.value })}
               />
             )}
           </FormField>
-        </div>
+          <FormField
+            label="Default slide duration (seconds)"
+            help="Applies to every slide that sets no duration of its own. Leave blank and those slides fall back to the playlist's setting, then to the screen's own default. Slides keep looping while this cast is scheduled — a screen always cycles its content."
+          >
+            {(field) => (
+              <input
+                {...field}
+                type="number"
+                min={1}
+                step={1}
+                className={castFieldClass}
+                value={state.defaultDurationMs === null ? "" : String(Math.round(state.defaultDurationMs / 1000))}
+                onChange={(e) => {
+                  const seconds = Number(e.target.value);
+                  // Blank (and anything unparseable) CLEARS, which is a real
+                  // statement the save carries as an explicit null — not the
+                  // same as zero, which is no dwell time at all and which the
+                  // server refuses.
+                  dispatch({
+                    type: "setDefaultDuration",
+                    durationMs:
+                      e.target.value.trim() === "" || !Number.isFinite(seconds) || seconds <= 0
+                        ? null
+                        : seconds * 1000,
+                  });
+                }}
+              />
+            )}
+          </FormField>
+        </section>
 
         {conflict ? (
           <div
@@ -351,6 +427,7 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
                 onDelete={onDeleteLayer}
               />
               <PropertiesPanel
+                entities={entities}
                 layer={layer}
                 problems={slideProblems}
                 layerIndex={state.layerIndex}

@@ -250,3 +250,85 @@ func TestACastRowMayNotBePackOwned(t *testing.T) {
 		t.Fatalf("want SCHEDULER_ROW_PACK_OWNED, got %+v", errs)
 	}
 }
+
+// TestSlideDwellMSResolvesTheFourStepOrder pins DAT-042's dwell-time resolution
+// as ONE table, which is the only place the whole order is visible at once.
+//
+// It matters more than the sum of the projection tests that call it: those each
+// see one arm through a lot of machinery, while an inverted pair (the cast
+// default outranking the playlist item's own override) would still let every one
+// of them pass individually. This is also the function both projections now
+// share, so the order is asserted once rather than twice.
+func TestSlideDwellMSResolvesTheFourStepOrder(t *testing.T) {
+	slideWith := func(ms int64) CastSlide { return CastSlide{ID: "s", DurationMS: ms} }
+	castWith := func(ms int64) Cast { return Cast{DefaultDurationMS: ms} }
+
+	for _, tc := range []struct {
+		name  string
+		slide CastSlide
+		cast  Cast
+		item  int64
+		want  int64
+	}{
+		{"the slide's own wins over everything", slideWith(4000), castWith(5000), 12000, 4000},
+		{"the item override wins over the cast default", slideWith(0), castWith(5000), 12000, 12000},
+		{"the cast default catches a slide nothing else states", slideWith(0), castWith(5000), 0, 5000},
+		{"nothing stated is nothing carried, not a zero invented here", slideWith(0), castWith(0), 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SlideDwellMS(tc.slide, tc.cast, tc.item); got != tc.want {
+				t.Fatalf("SlideDwellMS = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestANonPositiveCastDefaultDurationIsRefused pins the cast-level twin of the
+// per-slide duration rule, reported against the CAST's own field — a negative
+// blamed on `slides[0].duration_ms` would send an operator to the wrong control.
+func TestANonPositiveCastDefaultDurationIsRefused(t *testing.T) {
+	c := validCast()
+	c.DefaultDurationMS = -1
+	if _, errs := ValidateRows(RawRows{Casts: []json.RawMessage{castRow(t, c)}}); !hasErr(errs, "CAST_DEFAULT_DURATION_INVALID", "default_duration_ms") {
+		t.Fatalf("want CAST_DEFAULT_DURATION_INVALID on default_duration_ms, got %+v", errs)
+	}
+
+	c.DefaultDurationMS = 8000
+	if _, errs := ValidateRows(RawRows{Casts: []json.RawMessage{castRow(t, c)}}); len(errs) != 0 {
+		t.Fatalf("a positive default duration was rejected: %+v", errs)
+	}
+}
+
+// TestAPlaylistCannotSchedulATemplateCast drives the template rule at the row-set
+// level, where it lives, and asserts BOTH halves of what makes it useful: a
+// template cast is a perfectly valid row on its own, and it stops being
+// schedulable the moment a playlist names it.
+//
+// Because ValidateRows re-runs over the row-set a write would leave behind, this
+// same assertion is what refuses flipping an already-scheduled cast to a
+// template — the direction a check written at playlist-write time would miss.
+func TestAPlaylistCannotScheduleATemplateCast(t *testing.T) {
+	tpl := validCast()
+	tpl.Template = true
+
+	// On its own: fine. A template is a cast, and refusing it here would make
+	// "save as template" impossible rather than "schedule a template" impossible.
+	if _, errs := ValidateRows(RawRows{Casts: []json.RawMessage{castRow(t, tpl)}}); len(errs) != 0 {
+		t.Fatalf("a template cast was rejected as a row: %+v", errs)
+	}
+
+	items := []PlaylistItem{{Source: PlaylistSourceCast, CastID: castTestID}}
+	_, errs := ValidateRows(RawRows{
+		Playlists: []json.RawMessage{playlistRow(t, items)},
+		Casts:     []json.RawMessage{castRow(t, tpl)},
+	})
+	if !hasErr(errs, "CAST_TEMPLATE_NOT_SCHEDULABLE", "items[0].cast_id") {
+		t.Fatalf("want CAST_TEMPLATE_NOT_SCHEDULABLE on items[0].cast_id, got %+v", errs)
+	}
+	// And NOT the code for a dangling reference: the row is right there, so
+	// answering "does not exist" would send an operator hunting for a cast that
+	// is sitting in their template gallery.
+	if hasErr(errs, "REFERENCE_INVALID", "items[0].cast_id") {
+		t.Fatalf("a resolvable template must not also be reported as a dangling reference: %+v", errs)
+	}
+}

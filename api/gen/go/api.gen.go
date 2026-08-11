@@ -567,22 +567,34 @@ func (e SlideLayerAlign) Valid() bool {
 
 // Defines values for SlideLayerKind.
 const (
-	Clock SlideLayerKind = "clock"
-	Image SlideLayerKind = "image"
-	Rect  SlideLayerKind = "rect"
-	Text  SlideLayerKind = "text"
+	SlideLayerKindClock     SlideLayerKind = "clock"
+	SlideLayerKindCountdown SlideLayerKind = "countdown"
+	SlideLayerKindDate      SlideLayerKind = "date"
+	SlideLayerKindEntity    SlideLayerKind = "entity"
+	SlideLayerKindImage     SlideLayerKind = "image"
+	SlideLayerKindRect      SlideLayerKind = "rect"
+	SlideLayerKindText      SlideLayerKind = "text"
+	SlideLayerKindWeather   SlideLayerKind = "weather"
 )
 
 // Valid indicates whether the value is a known member of the SlideLayerKind enum.
 func (e SlideLayerKind) Valid() bool {
 	switch e {
-	case Clock:
+	case SlideLayerKindClock:
 		return true
-	case Image:
+	case SlideLayerKindCountdown:
 		return true
-	case Rect:
+	case SlideLayerKindDate:
 		return true
-	case Text:
+	case SlideLayerKindEntity:
+		return true
+	case SlideLayerKindImage:
+		return true
+	case SlideLayerKindRect:
+		return true
+	case SlideLayerKindText:
+		return true
+	case SlideLayerKindWeather:
 		return true
 	default:
 		return false
@@ -842,6 +854,10 @@ type Cast struct {
 	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
 	CreatedAt Timestamp `json:"created_at"`
 
+	// DefaultDurationMs The cast's own default dwell time, applied to every slide of it that states no `duration_ms` and whose referencing playlist item states no `duration_seconds` (`data-model/1` DAT-042's full order is: slide → item → cast default → the player's own default). Omit it for "no cast-wide default"; zero is not a value, it is the absent field.
+	// `null` is admitted for one concrete reason and is not decoration: a PATCH shallow-merges over the stored body, so an UPDATE that wants to REMOVE a cast-wide default has no other way to say so — omitting the member means "leave it alone", and the minimum of 1 (correctly) refuses the zero that would otherwise be the clear. A row cleared that way is then SERVED carrying the member as null (the store persists the post-merge bytes verbatim and normalizes only schema-REQUIRED members), which is why the response schema admits null too: null and absent mean the same thing to every reader of this field.
+	DefaultDurationMs *CastDefaultDurationMs `json:"default_duration_ms,omitempty"`
+
 	// ExternalId Client-assigned identifier (contracts/api-1.md#client-assignable-external_id).
 	ExternalId **string `json:"external_id,omitempty"`
 
@@ -857,6 +873,9 @@ type Cast struct {
 	ScopeNode Ulid        `json:"scope_node"`
 	Slides    []CastSlide `json:"slides"`
 
+	// Template Marks this cast a TEMPLATE — a starting point new casts are created from, not a document a screen plays (`data-model/1` DAT-043). A playlist item referencing one is refused (`CAST_TEMPLATE_NOT_SCHEDULABLE`), because a template exists to be edited as the source of future casts and a screen playing it would change every time someone improved the starting point. Omitted (and absent from a served row) means an ordinary cast.
+	Template *CastTemplateFlag `json:"template,omitempty"`
+
 	// UpdatedAt A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
 	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
 	UpdatedAt Timestamp `json:"updated_at"`
@@ -864,7 +883,10 @@ type Cast struct {
 
 // CastCreate defines model for CastCreate.
 type CastCreate struct {
-	ExternalId **string `json:"external_id,omitempty"`
+	// DefaultDurationMs The cast's own default dwell time, applied to every slide of it that states no `duration_ms` and whose referencing playlist item states no `duration_seconds` (`data-model/1` DAT-042's full order is: slide → item → cast default → the player's own default). Omit it for "no cast-wide default"; zero is not a value, it is the absent field.
+	// `null` is admitted for one concrete reason and is not decoration: a PATCH shallow-merges over the stored body, so an UPDATE that wants to REMOVE a cast-wide default has no other way to say so — omitting the member means "leave it alone", and the minimum of 1 (correctly) refuses the zero that would otherwise be the clear. A row cleared that way is then SERVED carrying the member as null (the store persists the post-merge bytes verbatim and normalizes only schema-REQUIRED members), which is why the response schema admits null too: null and absent mean the same thing to every reader of this field.
+	DefaultDurationMs *CastDefaultDurationMs `json:"default_duration_ms,omitempty"`
+	ExternalId        **string               `json:"external_id,omitempty"`
 
 	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
 	Labels *LabelMap `json:"labels,omitempty"`
@@ -873,7 +895,14 @@ type CastCreate struct {
 	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	ScopeNode Ulid        `json:"scope_node"`
 	Slides    []CastSlide `json:"slides"`
+
+	// Template Marks this cast a TEMPLATE — a starting point new casts are created from, not a document a screen plays (`data-model/1` DAT-043). A playlist item referencing one is refused (`CAST_TEMPLATE_NOT_SCHEDULABLE`), because a template exists to be edited as the source of future casts and a screen playing it would change every time someone improved the starting point. Omitted (and absent from a served row) means an ordinary cast.
+	Template *CastTemplateFlag `json:"template,omitempty"`
 }
+
+// CastDefaultDurationMs The cast's own default dwell time, applied to every slide of it that states no `duration_ms` and whose referencing playlist item states no `duration_seconds` (`data-model/1` DAT-042's full order is: slide → item → cast default → the player's own default). Omit it for "no cast-wide default"; zero is not a value, it is the absent field.
+// `null` is admitted for one concrete reason and is not decoration: a PATCH shallow-merges over the stored body, so an UPDATE that wants to REMOVE a cast-wide default has no other way to say so — omitting the member means "leave it alone", and the minimum of 1 (correctly) refuses the zero that would otherwise be the clear. A row cleared that way is then SERVED carrying the member as null (the store persists the post-merge bytes verbatim and normalizes only schema-REQUIRED members), which is why the response schema admits null too: null and absent mean the same thing to every reader of this field.
+type CastDefaultDurationMs = *int
 
 // CastListResponse defines model for CastListResponse.
 type CastListResponse struct {
@@ -890,9 +919,15 @@ type CastSlide struct {
 	Layers     []SlideLayer `json:"layers"`
 }
 
+// CastTemplateFlag Marks this cast a TEMPLATE — a starting point new casts are created from, not a document a screen plays (`data-model/1` DAT-043). A playlist item referencing one is refused (`CAST_TEMPLATE_NOT_SCHEDULABLE`), because a template exists to be edited as the source of future casts and a screen playing it would change every time someone improved the starting point. Omitted (and absent from a served row) means an ordinary cast.
+type CastTemplateFlag = bool
+
 // CastUpdate Partial update — every member optional, at least one present. `slides` replaces the whole ordered list; there is no per-slide patch.
 type CastUpdate struct {
-	ExternalId **string `json:"external_id,omitempty"`
+	// DefaultDurationMs The cast's own default dwell time, applied to every slide of it that states no `duration_ms` and whose referencing playlist item states no `duration_seconds` (`data-model/1` DAT-042's full order is: slide → item → cast default → the player's own default). Omit it for "no cast-wide default"; zero is not a value, it is the absent field.
+	// `null` is admitted for one concrete reason and is not decoration: a PATCH shallow-merges over the stored body, so an UPDATE that wants to REMOVE a cast-wide default has no other way to say so — omitting the member means "leave it alone", and the minimum of 1 (correctly) refuses the zero that would otherwise be the clear. A row cleared that way is then SERVED carrying the member as null (the store persists the post-merge bytes verbatim and normalizes only schema-REQUIRED members), which is why the response schema admits null too: null and absent mean the same thing to every reader of this field.
+	DefaultDurationMs *CastDefaultDurationMs `json:"default_duration_ms,omitempty"`
+	ExternalId        **string               `json:"external_id,omitempty"`
 
 	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
 	Labels *LabelMap `json:"labels,omitempty"`
@@ -901,6 +936,9 @@ type CastUpdate struct {
 	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	ScopeNode *Ulid        `json:"scope_node,omitempty"`
 	Slides    *[]CastSlide `json:"slides,omitempty"`
+
+	// Template Marks this cast a TEMPLATE — a starting point new casts are created from, not a document a screen plays (`data-model/1` DAT-043). A playlist item referencing one is refused (`CAST_TEMPLATE_NOT_SCHEDULABLE`), because a template exists to be edited as the source of future casts and a screen playing it would change every time someone improved the starting point. Omitted (and absent from a served row) means an ordinary cast.
+	Template *CastTemplateFlag `json:"template,omitempty"`
 }
 
 // ClaimRequest A first-boot claim (SEC-120): the one-time setup code, plus the credential the first owner is choosing.
@@ -1532,21 +1570,29 @@ type SessionSummaryRole string
 
 // SlideLayer One positioned native element of a slide (`data-model/1` DAT-043). Layers are drawn in ARRAY ORDER — the index IS the z-order — inside a fixed 1920x1080 top-left-origin canvas a player scales to its panel, so geometry is authored against those bounds whatever the real resolution is. Every member beyond `kind` and the geometry is kind-specific.
 type SlideLayer struct {
-	// Align A `text` layer's horizontal alignment. Optional.
+	// Align A Label-drawn layer's horizontal alignment. Optional.
 	Align *SlideLayerAlign `json:"align,omitempty"`
 
 	// AssetRef An `image` layer's content-addressed `sha256:` reference — the only half of an image layer that is AUTHORED. Its fetch `url` is derived from the content origin at projection time.
 	AssetRef *string `json:"asset_ref,omitempty"`
 
-	// Color A `rect`'s fill (required) or a `text`/`clock`'s foreground (optional). `#RRGGBB` wherever present.
+	// Color A `rect`'s fill (required) or a Label-drawn kind's foreground (optional). `#RRGGBB` wherever present.
 	Color *string `json:"color,omitempty"`
 
-	// FontPx Pixel font size for a `text`/`clock` layer. Optional — an omitted size renders at the player's own default.
-	FontPx *int           `json:"font_px,omitempty"`
-	H      int            `json:"h"`
-	Kind   SlideLayerKind `json:"kind"`
+	// EntityId The platform entity an `entity` layer displays the current state of — the same identifier a device's `entities[].entity_id` carries. Required for `entity`, unused elsewhere. It is the AUTHORED half of an entity widget; the resolved display string is filled by the box at Lease issuance and never appears in an authored row (the same authored/derived split an `image` layer's `asset_ref`/`url` has, which is why there is no `value` member here).
+	EntityId *string `json:"entity_id,omitempty"`
 
-	// Text The literal string for a `text` layer; for a `clock` layer, the Go reference-time layout (`15:04:05`, `3:04 PM`) the player renders the current LOCAL time through, refreshed every second. Required for both of those kinds, unused by `rect`/`image`.
+	// FontPx Pixel font size for any Label-drawn kind — `text`, `clock`, `date`, `countdown`, `weather`, `entity`. Optional; an omitted size renders at the player's own default.
+	FontPx *int `json:"font_px,omitempty"`
+	H      int  `json:"h"`
+
+	// Kind The closed layer-kind set, and it MUST stay equal to `internal/shared/wire`'s own (`slideLayerKinds`). The four LIVE kinds beyond the static three plus `clock` are the widgets: `date` and `countdown` are computed by the player from its own clock, `weather` and `entity` are resolved by the box at Lease issuance (`internal/slidelive`) and drawn verbatim. They are listed here because this enum is the AUTHORING gate: a kind the player renders and this enum omits is a widget nothing can ever create — the shape of defect this repo keeps producing, and the one that shipped in wave 1 (the four kinds landed on the wire and the player, and `POST /casts` answered 422 for every one of them).
+	Kind SlideLayerKind `json:"kind"`
+
+	// TargetMs A `countdown` layer's target instant, in Unix epoch MILLISECONDS (UTC) — the same absolute-instant unit every other time on this wire uses, never a local wall time and never seconds. Absolute is what lets the player count down without knowing the authoring timezone. Required and strictly positive for `countdown`, unused elsewhere; a target already past renders as all zeroes rather than as a negative, so it is deliberately NOT rejected here.
+	TargetMs *int `json:"target_ms,omitempty"`
+
+	// Text The literal string for a `text` layer, and a FORMAT for every kind whose content is generated rather than authored. For `clock` and `date` it is the Go reference-time layout (`15:04:05`, `3:04 PM`, `Monday, January 2`) the player renders the current LOCAL time or date through — not a strftime string. For `countdown` it is an OPTIONAL remaining-time layout in that kind's own tiny grammar (`DD`/`D` days, `HH`/`H` hours, `MM`/`M` minutes, `SS`/`S` seconds; an empty text means the player's `HH:MM:SS`) — deliberately not a reference-time layout, because a duration has no hour-of-day. For `weather` it is the required display template the BOX substitutes into (`{temp}` °F, `{tempc}` °C, `{cond}`), and for `entity` the optional one (`{state}`, the whole template when omitted). Required for `text`, `clock`, `date` and `weather`; unused by `rect`/`image`.
 	Text *string `json:"text,omitempty"`
 
 	// Url An `image` layer's direct content-origin fetch target, derived at projection time and present on a SERVED slide. A create/update need not supply it.
@@ -1556,10 +1602,10 @@ type SlideLayer struct {
 	Y   int     `json:"y"`
 }
 
-// SlideLayerAlign A `text` layer's horizontal alignment. Optional.
+// SlideLayerAlign A Label-drawn layer's horizontal alignment. Optional.
 type SlideLayerAlign string
 
-// SlideLayerKind defines model for SlideLayer.Kind.
+// SlideLayerKind The closed layer-kind set, and it MUST stay equal to `internal/shared/wire`'s own (`slideLayerKinds`). The four LIVE kinds beyond the static three plus `clock` are the widgets: `date` and `countdown` are computed by the player from its own clock, `weather` and `entity` are resolved by the box at Lease issuance (`internal/slidelive`) and drawn verbatim. They are listed here because this enum is the AUTHORING gate: a kind the player renders and this enum omits is a widget nothing can ever create — the shape of defect this repo keeps producing, and the one that shipped in wave 1 (the four kinds landed on the wire and the player, and `POST /casts` answered 422 for every one of them).
 type SlideLayerKind string
 
 // Timestamp A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.

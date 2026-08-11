@@ -177,6 +177,19 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 				Message: "a cast row MUST carry a non-empty name (DAT-043)",
 			})
 		}
+		// A cast-wide default is the same rule as a slide's own dwell time, one
+		// level up: omitting it says "no default", and a non-positive value is a
+		// duration nothing can honour. It is checked beside the name rather than
+		// inside checkCastSlides because it is a property of the CAST, not of
+		// any slide — reporting it against `slides[0]` would send an operator to
+		// the wrong control.
+		if v.DefaultDurationMS < 0 {
+			errs = append(errs, Error{
+				Field:   "default_duration_ms",
+				Code:    "CAST_DEFAULT_DURATION_INVALID",
+				Message: "a cast's default_duration_ms, when stated, MUST be positive; omit it for no cast-wide default (DAT-043)",
+			})
+		}
 		errs = append(errs, checkCastSlides(v.Slides)...)
 		rs.Casts = append(rs.Casts, v)
 	}
@@ -442,9 +455,15 @@ func validateReferences(rs RowSet) []Error {
 	for _, p := range rs.PresetBatches {
 		presetIDs[p.PresetID] = true
 	}
+	// Two maps rather than one, because "the cast is not there" and "the cast is
+	// a template" are different refusals with different remedies (DAT-043).
 	castIDs := map[string]bool{}
+	templateCastIDs := map[string]bool{}
 	for _, c := range rs.Casts {
 		castIDs[c.ID] = true
+		if c.Template {
+			templateCastIDs[c.ID] = true
+		}
 	}
 
 	// A playlist item that names a cast (DAT-041 `source: "cast"`) MUST name one
@@ -466,6 +485,30 @@ func validateReferences(rs RowSet) []Error {
 					Message: fmt.Sprintf(
 						"playlist %s item %d declares source %q but its cast_id does not reference an existing cast row (DAT-041/DAT-043)",
 						p.ID, i, PlaylistSourceCast),
+				})
+				continue
+			}
+			// A TEMPLATE resolves perfectly well — the row is right there — so
+			// this is not a REFERENCE_INVALID and must not be reported as one:
+			// telling an operator the cast "does not exist" while it sits in
+			// their template gallery sends them looking for the wrong problem.
+			// The rule itself is DAT-043's: a template exists to be edited as
+			// the SOURCE of future casts, so a screen playing one would change
+			// every time somebody improved the starting point.
+			//
+			// Enforced HERE, in the whole-row-set validator, rather than as a
+			// create-time guard on the playlist family, for the reason every
+			// referential rule in this file is: ValidateRows re-runs over the
+			// row-set a write would LEAVE BEHIND, so this equally refuses
+			// flipping an already-scheduled cast to `template: true` — which a
+			// one-way check at playlist-write time would let straight through.
+			if templateCastIDs[item.CastID] {
+				errs = append(errs, Error{
+					Field: fmt.Sprintf("items[%d].cast_id", i),
+					Code:  "CAST_TEMPLATE_NOT_SCHEDULABLE",
+					Message: fmt.Sprintf(
+						"playlist %s item %d references cast %s, which is marked template: true; create a cast from the template and schedule that (DAT-043)",
+						p.ID, i, item.CastID),
 				})
 			}
 		}

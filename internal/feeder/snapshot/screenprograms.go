@@ -259,14 +259,15 @@ func playlistContent(rowStore datamodel.RowStore, playlistID string, contentBase
 // point — an operator schedules one cast and a screen plays all of its slides.
 //
 // itemDurationMS is the referencing playlist item's own `duration_seconds`
-// override already converted to ms (0 when it stated none). Each slide's own
-// `duration_ms` wins over it, and when neither is stated the reference carries
-// no `duration_ms` at all (the field's omitempty) and the player applies its own
-// default. That three-step resolution is stated in ONE sentence in
-// datamodel.CastSlide's doc and implemented identically here and in
-// internal/relay/schedulehost, because a screen must see the same dwell times
-// whether it is playing the app-signed baseline or the relay's re-resolution of
-// a daypart boundary.
+// override already converted to ms (0 when it stated none). What each slide's
+// dwell time resolves to from there — slide `duration_ms`, then that override,
+// then the CAST's own `default_duration_ms`, then nothing at all (the field's
+// omitempty, and the player's own default) — is datamodel.SlideDwellMS's rule,
+// called rather than restated. This side and internal/relay/schedulehost used to
+// hold a private copy each, whose doc admitted they were byte-for-byte equal; a
+// screen must see the same dwell times whether it is playing the app-signed
+// baseline or the relay's re-resolution of a daypart boundary, and one function
+// is the only way that stays true.
 //
 // An unknown cast id contributes nothing rather than a placeholder. The store
 // refuses a playlist naming a cast that does not exist and refuses the deletion
@@ -297,26 +298,12 @@ func castContent(rowStore datamodel.RowStore, castID string, itemDurationMS int6
 				ContentType: contentTypeSlide,
 				Layers:      layers,
 				ExpiresAt:   contentURLExpiresAt,
-				DurationMS:  slideDurationMS(slide, itemDurationMS),
+				DurationMS:  datamodel.SlideDwellMS(slide, c, itemDurationMS),
 			})
 		}
 		return out
 	}
 	return out
-}
-
-// slideDurationMS resolves one cast slide's dwell time: the slide's own
-// `duration_ms` when it states one, otherwise the referencing playlist item's
-// already-converted `duration_seconds` override, otherwise 0 (no `duration_ms`
-// key at all — the player's own default). Shared by nothing on this side, but
-// spelled as its own function because internal/relay/schedulehost implements the
-// identical resolution and a reader comparing the two should be comparing one
-// named rule, not two inlined expressions.
-func slideDurationMS(slide datamodel.CastSlide, itemDurationMS int64) int64 {
-	if slide.DurationMS > 0 {
-		return slide.DurationMS
-	}
-	return itemDurationMS
 }
 
 // sourceSlide is the data-model/1 playlist-item `source` value (DAT-041) whose
