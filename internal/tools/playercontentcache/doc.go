@@ -1,7 +1,12 @@
-// Package playercontentcache holds the regression guards for two player-v3
-// behaviours that no other gate in this repo can see: the content cache
-// (player-v3/source/Program.brs) and the video slide layer's render + teardown
-// (player-v3/components/PhotonScene.brs).
+// Package playercontentcache holds the regression guards for the player-v3
+// behaviours no other gate in this repo can see. It began as the content cache's
+// guard (player-v3/source/Program.brs) and now covers everything on that same
+// unwatched surface: the cache, the video slide layer's render + teardown, how a
+// Lease degrades when an asset will not fetch, and what `display: "blank"`
+// (player/1 PLY-093) actually does to the screen — the last two across both
+// Program.brs and player-v3/components/PhotonScene.brs. The name is historical;
+// the subject is "the shipped BrightScript player, where the compile gate is the
+// only other instrument".
 //
 // # Why a guard, and why it reads the shipped source
 //
@@ -28,6 +33,23 @@
 //     replaced it. This player has already been bitten twice by the "a thing
 //     outlives the node that owned it" shape (Task threads, then composed video
 //     layers); this is the same shape a third time.
+//   - one unfetchable asset takes the WHOLE program down again. Every gate in
+//     this repo passed while it did, for a whole session, on real hardware: the
+//     player logged "keeping current content, never-wipe" and kept an hour-old
+//     slide up, and a second slide referencing no assets at all was discarded
+//     with the one that failed (HV-2, 2026-08-11). Nothing crashes, nothing
+//     errors upstream, and the console line reads like correct behaviour.
+//   - a `display: "blank"` Lease is treated as a failed pull. The screen simply
+//     does not change, which is indistinguishable from a healthy screen showing
+//     the same thing — an expired alert override stays on the wall and a screen
+//     scheduled dark overnight never goes dark (HV-4, 2026-08-11). This one was
+//     invisible to the conformance corpus too: internal/virtualplayer honours
+//     `display` correctly, so every case drove the double and passed.
+//   - a slide video is fire-and-forget. It reports no state at all, and because
+//     a Roku screenshot captures only the graphics plane, a black video region
+//     is what a capture shows whether playback is perfect or dead — so there is
+//     no instrument, and playback cannot be verified from outside the device at
+//     all (HV-5).
 //
 // So these tests parse the REAL shipped files — not a copy, which would drift —
 // and assert the structure those behaviours are made of.
@@ -57,6 +79,17 @@
 // what the cache CONTAINS and which files were unlinked. It fails loudly on any
 // construct it cannot model, so a player edit it cannot read is a red test
 // naming the line rather than a silent pass.
+//
+// The same reasoning put wvDoProgram on the executed side (programdegrade_test.go).
+// Which items survive a partial failure, and what a blank instruction resolves
+// to, are decisions over a whole Lease — "wvDoProgram contains a `return r`" is
+// equally true of the player that shipped HV-2 and the one that fixed it. So
+// those tests build a Lease in Go, run the shipped routine over it with only the
+// I/O faked, and assert the cast that comes back. PhotonScene's half of the same
+// two defects stays structural (scenedisplay_test.go), because there the
+// property IS a set of calls against SceneGraph nodes and modelling
+// roSGNode well enough to run it would be a far larger fake than the code under
+// test.
 //
 // What it deliberately does NOT assert is wording, log text, comments, or
 // formatting. Those change constantly and none of them is the property.

@@ -92,6 +92,18 @@ func (a *assoc) del(k string) bool {
 	return true
 }
 
+// arr models an roArray. It is a POINTER type, unlike a Go slice, because
+// BrightScript arrays are references: `castOut.Push(entry)` inside a loop has to
+// be visible to the caller that later reads `castOut.Count()`, and a value type
+// would silently drop every push — an engine that models the language's most
+// ordinary accumulator wrongly would report a Lease as carrying no items no
+// matter what the player did.
+type arr struct{ items []any }
+
+func newArr(items ...any) *arr { return &arr{items: append([]any(nil), items...)} }
+
+func (a *arr) String() string { return fmt.Sprintf("roArray(%d)", len(a.items)) }
+
 // hostObj is a stand-in for a Roku component (only roFileSystem is needed).
 type hostObj struct {
 	name    string
@@ -281,6 +293,18 @@ type sForEach struct {
 	in   expr
 	body []node
 	ln   int
+}
+
+// sForCount is the counted `for i = <from> to <to> [step <by>]` loop. It is
+// modelled rather than refused because wvDoProgram walks a Lease's `content`
+// array — and every layer array inside it — with exactly this form, and an
+// engine that could not read it could not execute the routine where this
+// player's whole degrade-or-drop decision lives.
+type sForCount struct {
+	name           string
+	from, to, step expr
+	body           []node
+	ln             int
 }
 type sReturn struct {
 	x  expr
@@ -547,7 +571,7 @@ func (p *parser) forStatement() node {
 	open := p.cur()
 	p.expectIdent("for")
 	if !p.cur().isIdent("each") {
-		fail(open.ln, "only `for each` is supported; this engine models the cache routines, not a counted loop")
+		return p.forCountStatement(open)
 	}
 	p.i++
 	name := p.next()
@@ -565,6 +589,34 @@ func (p *parser) forStatement() node {
 		p.expectIdent("for")
 	}
 	return &sForEach{name: strings.ToLower(name.text), in: in, body: body, ln: open.ln}
+}
+
+// forCountStatement parses `for <name> = <from> to <to> [step <by>]`, closed by
+// either `end for` or `next` — both spellings appear in Roku code and the player
+// is free to use either.
+func (p *parser) forCountStatement(open token) node {
+	name := p.next()
+	if name.kind != tkIdent {
+		fail(open.ln, "a counted `for` needs a loop variable, found %q", name.text)
+	}
+	p.expectOp("=")
+	from := p.expr()
+	p.expectIdent("to")
+	to := p.expr()
+	s := &sForCount{name: strings.ToLower(name.text), from: from, to: to, ln: open.ln}
+	if p.cur().isIdent("step") {
+		p.i++
+		s.step = p.expr()
+	}
+	p.endOfStatement()
+	s.body = p.block()
+	if p.cur().isIdent("next") {
+		p.i++
+	} else {
+		p.expectIdent("end")
+		p.expectIdent("for")
+	}
+	return s
 }
 
 func (p *parser) tryStatement() node {
@@ -932,6 +984,9 @@ func (in *interp) invoke(name string, args []any, ln int) any {
 	}
 	r, ok := in.routines[lower]
 	if !ok {
+		if v, handled := intrinsic(lower, args, ln); handled {
+			return v
+		}
 		fail(ln, "call to %s, which this file does not define and the engine does not stub", name)
 	}
 	scope := map[string]any{}
@@ -1036,10 +1091,53 @@ func (in *interp) exec(s node, scope map[string]any) flow {
 			}
 		}
 		return flow{}
+	case *sForCount:
+		return in.execForCount(n, scope)
 	case *sTry:
 		return in.execTry(n, scope)
 	}
 	fail(0, "unsupported statement %T", s)
+	return flow{}
+}
+
+// execForCount runs a counted loop with BrightScript's own semantics: the limit
+// and the step are evaluated ONCE, before the first iteration, and a loop whose
+// start is already past its limit runs zero times. The second half is
+// load-bearing here — `for i = 0 to content.Count() - 1` over an empty array is
+// `0 to -1`, which the player relies on running not at all.
+func (in *interp) execForCount(n *sForCount, scope map[string]any) flow {
+	from, ok := in.eval(n.from, scope).(int)
+	if !ok {
+		fail(n.ln, "a counted `for` needs an integer start")
+	}
+	limit, ok := in.eval(n.to, scope).(int)
+	if !ok {
+		fail(n.ln, "a counted `for` needs an integer limit")
+	}
+	step := 1
+	if n.step != nil {
+		step, ok = in.eval(n.step, scope).(int)
+		if !ok {
+			fail(n.ln, "a counted `for` needs an integer step")
+		}
+	}
+	if step == 0 {
+		fail(n.ln, "a counted `for` with step 0 never terminates")
+	}
+	for i := from; (step > 0 && i <= limit) || (step < 0 && i >= limit); i += step {
+		scope[n.name] = i
+		f := in.execBlock(n.body, scope)
+		switch f.c {
+		case ctrlExitFor:
+			return flow{}
+		case ctrlReturn:
+			return f
+		}
+		in.steps++
+		if in.steps > stepBudget {
+			fail(n.ln, "this `for` has run %d iterations without exiting", stepBudget)
+		}
+	}
 	return flow{}
 }
 
@@ -1075,8 +1173,8 @@ func (in *interp) iterable(v any, ln int) []any {
 			out = append(out, k)
 		}
 		return out
-	case []any:
-		return append([]any(nil), x...)
+	case *arr:
+		return append([]any(nil), x.items...)
 	case nil:
 		fail(ln, "`for each` over invalid")
 	}
@@ -1133,12 +1231,12 @@ func (in *interp) eval(e expr, scope map[string]any) any {
 		switch c := obj.(type) {
 		case *assoc:
 			return c.get(toStr(key, x.ln))
-		case []any:
+		case *arr:
 			i, ok := key.(int)
-			if !ok || i < 0 || i >= len(c) {
+			if !ok || i < 0 || i >= len(c.items) {
 				return nil
 			}
-			return c[i]
+			return c.items[i]
 		}
 		fail(x.ln, "cannot index a %T", obj)
 	case *eAssoc:
@@ -1148,9 +1246,9 @@ func (in *interp) eval(e expr, scope map[string]any) any {
 		}
 		return a
 	case *eArray:
-		out := make([]any, 0, len(x.items))
+		out := &arr{}
 		for _, it := range x.items {
-			out = append(out, in.eval(it, scope))
+			out.items = append(out.items, in.eval(it, scope))
 		}
 		return out
 	case *eUnary:
@@ -1182,16 +1280,29 @@ func (in *interp) evalUnary(x *eUnary, scope map[string]any) any {
 }
 
 func (in *interp) evalBinary(x *eBinary, scope map[string]any) any {
-	// `and`/`or` are evaluated left-first; BrightScript does not short-circuit,
-	// but nothing here depends on the difference and evaluating both is the
-	// conservative choice (a side effect in the right operand still happens).
+	// `and`/`or` SHORT-CIRCUIT, which is not a convenience — it is the semantics
+	// this player is written against. `if layers = invalid or layers.Count() = 0`
+	// appears throughout these files, and evaluating the right operand when the
+	// left already decided the answer would call .Count() on invalid, which is a
+	// runtime error on device and would be a spurious engine failure here. The
+	// engine used to evaluate both and got away with it only because the cache
+	// routines never wrote that guard.
+	switch x.op {
+	case "and":
+		if !truthy(in.eval(x.l, scope), x.ln) {
+			return false
+		}
+		return truthy(in.eval(x.r, scope), x.ln)
+	case "or":
+		if truthy(in.eval(x.l, scope), x.ln) {
+			return true
+		}
+		return truthy(in.eval(x.r, scope), x.ln)
+	}
+
 	l := in.eval(x.l, scope)
 	r := in.eval(x.r, scope)
 	switch x.op {
-	case "and":
-		return truthy(l, x.ln) && truthy(r, x.ln)
-	case "or":
-		return truthy(l, x.ln) || truthy(r, x.ln)
 	case "=":
 		return equal(l, r)
 	case "<>":
@@ -1292,9 +1403,9 @@ func (in *interp) method(recv any, name string, args []any, ln int) any {
 			*r = *newAssoc()
 			return nil
 		case "keys":
-			out := make([]any, 0, r.count())
+			out := &arr{}
 			for _, k := range r.keyList() {
-				out = append(out, k)
+				out.items = append(out.items, k)
 			}
 			return out
 		}
@@ -1311,21 +1422,66 @@ func (in *interp) method(recv any, name string, args []any, ln int) any {
 			return len(r)
 		case "trim":
 			return strings.TrimSpace(r)
+		case "mid":
+			// ifStringOps.Mid is ZERO-based, unlike the global Mid(). The
+			// distinction is not pedantry: wvAssetRefKey strips "sha256:" with
+			// `assetRef.Mid(prefix.Len())`, and a one-off here would make every
+			// cache key one character short while still looking plausible.
+			start, ok := args[0].(int)
+			if !ok || start < 0 || start > len(r) {
+				return ""
+			}
+			if len(args) == 1 {
+				return r[start:]
+			}
+			n, ok := args[1].(int)
+			if !ok || n < 0 {
+				return ""
+			}
+			if start+n > len(r) {
+				n = len(r) - start
+			}
+			return r[start : start+n]
+		case "tostr":
+			return r
 		}
 	case int, float64, bool:
 		if strings.EqualFold(name, "tostr") {
 			return toStr(recv, ln)
 		}
-	case []any:
+	case *arr:
 		switch strings.ToLower(name) {
 		case "count":
-			return len(r)
+			return len(r.items)
 		case "push":
-			fail(ln, "Push() on an array is not modelled (arrays are read-only here)")
+			r.items = append(r.items, args[0])
+			return nil
 		}
 	}
 	fail(ln, "no method %s() on a %T", name, recv)
 	return nil
+}
+
+// intrinsic implements the global BrightScript functions these routines call.
+// They are LANGUAGE, not I/O, so they live here rather than in the stubs map —
+// the stubs map's entire meaning is "this is a side effect the engine fakes",
+// and diluting it with builtins would make the list of things this engine does
+// not really run impossible to read. Anything not listed is still a loud
+// failure at its own source line.
+func intrinsic(name string, args []any, ln int) (any, bool) {
+	switch name {
+	case "lcase":
+		return strings.ToLower(toStr(args[0], ln)), true
+	case "ucase":
+		return strings.ToUpper(toStr(args[0], ln)), true
+	case "int":
+		f, ok := asFloat(args[0])
+		if !ok {
+			fail(ln, "Int() of a %T", args[0])
+		}
+		return int(f), true
+	}
+	return nil, false
 }
 
 func truthy(v any, ln int) bool {

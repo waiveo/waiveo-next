@@ -13,6 +13,15 @@
 ' — including a `preempt`-priority one PLY-101 requires be adopted
 ' immediately — is presented as soon as the NEXT poll observes it, rather
 ' than never, which is what a one-shot pull-and-exit left the screen with.
+' Never-wipe is a fallback for UNREACHABILITY, and only for that. A poll that
+' SUCCEEDS and carries an instruction is obeyed, including the instruction to
+' show nothing: a `display: "blank"` Lease (PLY-093) comes back from
+' wvDoProgram as ok:true with contentType "blank", takes the success branch
+' below, and PhotonScene blanks the screen. Treating a valid signed blank as a
+' failed pull — which is what an earlier "empty content array" check did — is
+' how an expired alert override stayed on a wall past its TTL and how a screen
+' scheduled dark overnight never went dark.
+'
 ' A transient poll failure mid-loop does not blank an already-rendering
 ' screen (never-wipe): it is logged and the loop simply retries at the next
 ' interval — this includes a 401 CHANNEL_TOKEN_EXPIRED (PLY-073), which
@@ -148,7 +157,17 @@ sub runPhoton()
             pullFailures = 0
             itemCount = 0
             if prog.items <> invalid then itemCount = prog.items.Count()
-            print "[player-v3] PHOTON — cast (" + itemCount.toStr() + " item(s)) verified + ready to render"
+            if prog.contentType = "blank"
+                ' PLY-093: a successful pull whose instruction is to show
+                ' nothing. It rides the SUCCESS path deliberately — a blank is
+                ' something the platform assigned, not something that went
+                ' wrong, and routing it through the failure path below is the
+                ' defect that left an expired evacuation notice on a wall (see
+                ' Program.brs's own display block).
+                print "[player-v3] PHOTON — display:blank (PLY-093): the program assigns no visible content; blanking the screen"
+            else
+                print "[player-v3] PHOTON — cast (" + itemCount.toStr() + " item(s)) verified + ready to render"
+            end if
             if prog.items <> invalid
                 for i = 0 to prog.items.Count() - 1
                     it = prog.items[i]

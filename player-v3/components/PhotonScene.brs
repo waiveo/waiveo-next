@@ -174,6 +174,43 @@ sub onPhotonResult()
         ' press refused LEASE_UNKNOWN.
         m.leaseId = castStr(res.leaseId)
 
+        ' PLY-093: `display: "blank"` — a successful pull whose instruction is
+        ' "show nothing". Program.brs reports it as contentType "blank" with no
+        ' items, and it is reported as a SUCCESS precisely so this branch can
+        ' exist: the not-ok branch below means "I could not get a program" and
+        ' correctly leaves a status line on screen, which is not what an
+        ' intentionally blanked wall should show.
+        '
+        ' This is a full teardown, not merely an empty cast: startCast on an
+        ' empty items array returns early without hiding the Poster or stopping
+        ' the Video, so a blank arriving over an image would have left that
+        ' image on the wall — the same defect one layer down.
+        '
+        ' Idle defeat goes off with it (PLY-158's obligation is tied to being
+        ' actively assigned NON-blank content, and PLY-155 says a relay treats
+        ' an intentionally blanked screen the same way), and the status label
+        ' stays hidden: a blanked screen is black, not a screen with an
+        ' explanation written across it.
+        '
+        ' Blanking runs ONCE per transition, gated on the same castSignature the
+        ' content path dedupes with rather than on a second flag: the poll loop
+        ' delivers a fresh blank Lease every ten seconds for as long as the
+        ' screen is dark, and tearing down (and printing) on every one of them
+        ' would be a line every ten seconds all night. wvBlankSignature() cannot
+        ' collide with a real cast's signature — castSignature always begins
+        ' with an item count — so "already blank" and "already showing this
+        ' program" are one question with one answer.
+        if castStr(res.contentType) = "blank"
+            if m.castSignature <> wvBlankSignature()
+                tearDownContent()
+                m.castSignature = wvBlankSignature()
+                print "[player-v3] display:blank (PLY-093) — screen blanked; the Lease is still accepted and active (PLY-091/104)"
+            end if
+            setIdleDefeat(false)
+            m.status.visible = false
+            return
+        end if
+
         ' One or more already-fetched, already-verified cast items (PLY-083a),
         ' each either plain image/video or composed (PLY-015); a single-item
         ' cast is the degenerate case of the exact same cycling logic
@@ -201,21 +238,44 @@ sub onPhotonResult()
 
         m.status.visible = false
     else
-        stopCastTimer()
+        ' Could not get a program at all. Tear the screen down through the SAME
+        ' routine the blank path uses, so the two can never disagree about which
+        ' surface one of them forgot — then say so on screen, which is the one
+        ' thing that distinguishes this from an intentional blank.
+        tearDownContent()
         ' PLY-158's obligation is tied to being actively assigned non-blank
         ' content; this branch has torn the content down and is showing a
         ' status line, so stop holding the platform awake.
         setIdleDefeat(false)
-        clearComposed()
-        clearSlide()
-        m.video.control = "stop"
-        m.video.visible = false
-        m.poster.visible = false
         detail = res.status
         if res.error <> "" then detail = detail + " — " + res.error
         m.status.text = "Waiveo Player v3 — " + detail
         m.status.visible = true
     end if
+end sub
+
+' tearDownContent removes EVERYTHING this scene can have on screen and forgets
+' what was showing. It is the one teardown both no-content paths share — an
+' intentional blank (PLY-093) and a failed program — so the two can never
+' diverge on which of the four render surfaces they remembered to clear.
+'
+' Forgetting m.castSignature is part of the teardown, not an extra: the
+' signature exists to answer "is the program already on screen?", and once the
+' screen has been cleared the honest answer for EVERY program is no. Leaving a
+' stale signature behind means the next Lease carrying that same program is
+' recognised as already-showing, startCast is skipped, and the screen stays
+' black under a program it was told to display.
+sub tearDownContent()
+    stopCastTimer()
+    clearComposed()
+    clearSlide()
+    m.video.control = "stop"
+    m.video.visible = false
+    m.poster.visible = false
+    m.castItems = []
+    m.castIndex = 0
+    m.castSignature = ""
+    m.currentDwellMs = 0
 end sub
 
 ' castSignature identifies a cast by its ordered content, so an unchanged
@@ -230,6 +290,14 @@ end sub
 function castStr(v as Dynamic) as String
     if v = invalid then return ""
     return v.toStr()
+end function
+
+' wvBlankSignature is the castSignature value that means "this screen is
+' intentionally blank" (PLY-093). It is deliberately a word: castSignature builds
+' every real value starting with the item COUNT, so no cast can ever produce it,
+' and an equality test against it is therefore an exact "am I already blank?".
+function wvBlankSignature() as String
+    return "blank"
 end function
 
 function castSignature(items as Object) as String
@@ -685,16 +753,34 @@ sub renderSlide(layers as Object)
             m.slideLayers.appendChild(rect)
 
         else if kind = "image"
-            p = CreateObject("roSGNode", "Poster")
-            p.translation = [x, y]
-            p.width = w
-            p.height = h
-            p.loadDisplayMode = "scaleToFill"
-            p.uri = wvSlideStr(layer.contentUri)
-            m.slideLayers.appendChild(p)
+            ' A content layer with no contentUri is a layer whose bytes this
+            ' device does not hold — Program.brs could not fetch or verify them
+            ' and DEGRADED the layer rather than discard the slide (see its
+            ' degrading note, and PLY-087). It gets a visible placeholder, not a
+            ' hole: an absent Poster is indistinguishable on a wall from a slide
+            ' authored without one, and "the picture is missing" is exactly what
+            ' the operator needs to see. This is the same choice slidelive makes
+            ' one level up, where an unreachable weather or entity source draws
+            ' its Unavailable "—" instead of blanking the whole slide.
+            if wvSlideStr(layer.contentUri) = ""
+                m.slideLayers.appendChild(createDegradedLayer(x, y, w, h))
+            else
+                p = CreateObject("roSGNode", "Poster")
+                p.translation = [x, y]
+                p.width = w
+                p.height = h
+                p.loadDisplayMode = "scaleToFill"
+                p.uri = wvSlideStr(layer.contentUri)
+                m.slideLayers.appendChild(p)
+            end if
 
         else if kind = "video"
-            m.slideLayers.appendChild(renderSlideVideo(layer, x, y, w, h))
+            ' Same rule as the image layer above, for the same reason.
+            if wvSlideStr(layer.contentUri) = ""
+                m.slideLayers.appendChild(createDegradedLayer(x, y, w, h))
+            else
+                m.slideLayers.appendChild(renderSlideVideo(layer, x, y, w, h))
+            end if
 
         else if kind = "ping"
             ' A ping is a BUTTON: its label is drawn exactly as a `text` layer's
@@ -808,11 +894,22 @@ end sub
 '     would simply freeze on its last frame for the remainder of the dwell,
 '     which reads on a wall as a crashed screen. Looping makes a 5s clip fill a
 '     30s slide, which is what a signage operator means by putting it there.
-'   - It does NOT observe `state`. Nothing about this node drives sequencing, so
-'     an observer would exist only to log — and an observer on a node this scene
-'     destroys on every item change is one more thing that must be unhooked
-'     correctly. clearSlide's job is already to stop it; giving it nothing else
-'     to unwind is deliberate.
+'   - It OBSERVES `state`. This node drives no sequencing, so the observer exists
+'     only to report — which is the entire point, and the reason it was added
+'     after the fact. Without it a slide video that fails on codec, network stall
+'     or malformed container reports NOTHING: the region is black, no log line
+'     exists anywhere, and there is no diagnosis. That is not a hypothetical
+'     gap. Roku's own /plugin_inspect screenshot captures the GRAPHICS plane
+'     only, so a black video region is what a capture shows even when playback is
+'     perfect — with no state log and no visual channel there is no instrument at
+'     all, and slide-video playback could not honestly be called verified. The
+'     ITEM video path (onVideoStateChange) and the COMPOSED layer path
+'     (onComposedVideoStateChange) both already observe `state`; this was the one
+'     of the three that did not, which is exactly the shape this player keeps
+'     shipping — a mechanism that works beside a reporting half that does not
+'     exist. Teardown needs nothing extra for it: the observer lives on the node,
+'     clearSlide stops and removes that node, and the composed path has been
+'     doing precisely this since it was written.
 '   - disableScreenSaver, matching the plain content Video node and composed
 '     video layers: free, video-only PLY-158 coverage while it plays. It is not
 '     the mechanism (IdleDefeatTask is) — it just costs nothing here.
@@ -825,6 +922,7 @@ function renderSlideVideo(layer as Object, x as Integer, y as Integer, w as Inte
     v.width = w
     v.height = h
     v.disableScreenSaver = true
+    v.observeField("state", "onSlideVideoStateChange")
 
     format = wvSlideStr(layer.streamFormat)
     if format = "" then format = "mp4"
@@ -870,6 +968,90 @@ function createSlideLabel(text as String, layer as Object, x as Integer, y as In
     end if
 
     return lbl
+end function
+
+' createDegradedLayer builds the placeholder drawn in place of a slide `image` or
+' `video` layer whose bytes this device does not hold (Program.brs degraded it —
+' see its degrading note and PLY-087).
+'
+' It is a MUTED BOX with an em dash centred in it, positioned and sized exactly
+' as the missing content would have been. Every part of that is deliberate:
+'
+'   - drawing something rather than nothing. An absent Poster leaves a hole a
+'     viewer reads as "this slide was authored that way" and an operator cannot
+'     see at all; the whole reason the slide is still on screen is that losing
+'     its title, its clock and its other layers to one 403 fixes nothing
+'     (wire.Layer.Value makes the identical argument for a live widget), and that
+'     bargain is only honest if the loss is visible.
+'   - the em dash, and not an error string. It is exactly what slidelive.
+'     Unavailable puts in a weather or entity widget whose source could not
+'     answer, so one convention covers every degraded element of a slide rather
+'     than two that a viewer has to learn separately. A stack trace on a wall
+'     helps nobody; the console log carries the reason (Program.brs prints the
+'     item index, the layer index and the underlying error).
+'   - a muted fill rather than the alert red: this is a missing picture, not an
+'     emergency, and it must not out-shout the content that DID load.
+'
+' The two nodes are wrapped in one translated Group so renderSlide's loop still
+' appends exactly one child per layer, keeping z-order = layer index.
+function createDegradedLayer(x as Integer, y as Integer, w as Integer, h as Integer) as Object
+    g = CreateObject("roSGNode", "Group")
+    g.translation = [x, y]
+
+    ' `fill` rather than `box`: `box` is a BrightScript reserved builtin and
+    ' using it as an identifier is a compile error, not a style preference (the
+    ' same rule `nextIdx` and `cell` already follow elsewhere in this file).
+    fill = CreateObject("roSGNode", "Rectangle")
+    fill.width = w
+    fill.height = h
+    fill.color = wvDegradedLayerColor()
+    g.appendChild(fill)
+
+    mark = CreateObject("roSGNode", "Label")
+    mark.width = w
+    mark.height = h
+    mark.text = wvDegradedLayerText()
+    mark.color = wvDegradedLayerTextColor()
+    mark.horizAlign = "center"
+    mark.vertAlign = "center"
+    font = CreateObject("roSGNode", "Font")
+    font.uri = "font:SystemFontFile"
+    font.size = wvDegradedLayerFontPx(h)
+    mark.font = font
+    g.appendChild(mark)
+
+    return g
+end function
+
+' wvDegradedLayerText is the placeholder glyph — the SAME em dash
+' slidelive.Unavailable uses for a live widget whose source could not answer, so
+' a slide degrades one way rather than two. Keep them equal.
+function wvDegradedLayerText() as String
+    return "—"
+end function
+
+' wvDegradedLayerColor / wvDegradedLayerTextColor are the placeholder's fill and
+' glyph colors: a dark neutral gray under a lighter gray dash. Neutral on
+' purpose — a degraded picture must be legible as missing without competing with
+' the layers that loaded, and must never be mistaken for the alert red an
+' override slide is drawn on (wire.alertBackgroundColor).
+function wvDegradedLayerColor() as String
+    return "0x2B2B2BFF"
+end function
+
+function wvDegradedLayerTextColor() as String
+    return "0x8A8A8AFF"
+end function
+
+' wvDegradedLayerFontPx sizes the dash to the box it sits in — a third of the
+' height — so a small logo slot and a full-bleed background both read correctly,
+' clamped at both ends so a 40px strip still shows something and a full-canvas
+' layer does not render a 360px dash.
+function wvDegradedLayerFontPx(h as Integer) as Integer
+    px = Int(h / 3)
+    if px < 24 then px = 24
+    if px > 96 then px = 96
+    return px
 end function
 
 ' clearSlide tears a slide down completely, in an order that is the whole point:
@@ -1522,5 +1704,38 @@ sub onComposedVideoStateChange(event as Object)
         errMsg = node.errorMsg
         if errMsg = invalid then errMsg = ""
         print "[player-v3] composed layer video ERROR code=" + errCode.toStr() + " msg=" + errMsg
+    end if
+end sub
+
+' onSlideVideoStateChange is the slide `video` layer's observer
+' (renderSlideVideo). It exists ONLY to report, and that is the point — see
+' renderSlideVideo's own doc for why a fire-and-forget slide video is
+' undiagnosable from outside the device.
+'
+' It drives nothing. A slide advances on its own dwell timer, and this node
+' loops, so neither "finished" nor anything else here changes what is on screen —
+' unlike onVideoStateChange, whose "finished" IS the cast's advance signal. Every
+' transition is printed rather than just the failures, because the question row
+' 2.5 has to answer is "did it PLAY", and only a positive signal answers it: a
+' `playing` line is the evidence a screenshot cannot supply (Roku captures the
+' graphics plane only, so the video region reads black either way). The volume is
+' bounded by the slide's own dwell — a handful of lines per render, not a stream.
+'
+' Both values are coerced through wvSlideStr/wvSlideInt before they touch a
+' concatenation. A diagnostic must never be the thing that takes the player
+' down: `"string" + invalid` is a type mismatch that terminates the thread it
+' runs on, which is how a single slide once killed this whole player from inside
+' a log line.
+sub onSlideVideoStateChange(event as Object)
+    node = event.GetRoSGNode()
+    state = wvSlideStr(event.GetData())
+    if state = "error"
+        errMsg = ""
+        if node <> invalid then errMsg = wvSlideStr(node.errorMsg)
+        errCode = 0
+        if node <> invalid then errCode = wvSlideInt(node.errorCode)
+        print "[player-v3] slide layer video ERROR code=" + errCode.toStr() + " msg=" + errMsg + " — this layer's region is black; the rest of the slide is unaffected"
+    else
+        print "[player-v3] slide layer video state -> " + state
     end if
 end sub
