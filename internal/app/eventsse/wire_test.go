@@ -40,7 +40,7 @@ var pushRelay = sync.OnceValue(func() *ingesttest.Relay {
 func newIngestServer(t *testing.T, hub *Hub) (*httptest.Server, *http.Client) {
 	t.Helper()
 	relay := pushRelay()
-	srv := httptest.NewUnstartedServer(eventingest.New(hub, siteScope, ulidSeq(), store.WallClockMs, relay.Authorizer()))
+	srv := httptest.NewUnstartedServer(eventingest.New(hub, siteScope, ulidSeq(), store.WallClockMs, relay.Authorizer(), nil))
 	srv.TLS = relay.ServerTLSConfig(&tls.Config{MinVersion: tls.VersionTLS13})
 	srv.StartTLS()
 

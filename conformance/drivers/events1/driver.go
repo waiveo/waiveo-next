@@ -171,8 +171,10 @@ func newIngestHarness() *ingestHarness {
 	log := events.NewEventLog(0)
 	relay := pushRelay()
 	return &ingestHarness{
-		log:     log,
-		handler: eventingest.New(log, siteScope, monotonicIDs(), store.WallClockMs, relay.Authorizer()),
+		log: log,
+		// No EventDeliverer: events/1's cases are about the envelope the log
+		// holds, not about what any app-side consumer then does with it.
+		handler: eventingest.New(log, siteScope, monotonicIDs(), store.WallClockMs, relay.Authorizer(), nil),
 		relay:   relay,
 	}
 }

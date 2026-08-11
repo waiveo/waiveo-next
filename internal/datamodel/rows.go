@@ -235,11 +235,26 @@ type CastSlide struct {
 // layers a player draws directly, its shape single-sourced from wire.Layer (the
 // player/1 Lease `layers` shape) so an authored slide and the served slide are
 // the SAME layer type end-to-end, never a re-encoding. Layers are back-to-front
-// (array index is z-order). The stack is not validated at authoring time — an
-// image layer's fetch URL is derived from the content origin at projection, so
-// wire.ValidateSlideLayers is applied by the producer that projects it (feeder
-// snapshot / relay schedulehost), which drops a slide whose layers do not
-// validate rather than serving it malformed.
+// (array index is z-order).
+//
+// The stack IS validated at authoring time, by the same gate a cast's own slides
+// pass through (datamodel.slideLayerGate, over
+// wire.ValidateAuthoredSlideLayers). It once was not — the reasoning being that
+// an image layer's fetch URL is derived at projection time, so the producer that
+// projects the slide (feeder snapshot / relay schedulehost) validates it there.
+// That producer DROPS a slide whose layers do not validate, which made the
+// authoring surface accept work it never performed: a 201, and a screen one item
+// short, with the only evidence in a Lease no operator reads. The authoring form
+// of the gate is the answer — identical rules, minus the derived url that does
+// not exist yet.
+//
+// One rule lands differently here than on a cast slide, and it is a property of
+// the SHAPE rather than an exception: a `nav` layer jumps to another slide by
+// CAST-LOCAL slide id, and an inline slide has no cast around it — no siblings,
+// no id of its own — so no target could ever resolve and a nav layer is refused
+// (`PLAYLIST_ITEM_SLIDE_LAYERS_INVALID`). A `ping` is perfectly legal: pressing
+// it records a `screen.interaction` and can fire an automation, which needs no
+// slide id-space at all.
 type Slide struct {
 	Layers []wire.Layer `json:"layers"`
 }

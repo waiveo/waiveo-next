@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/maaxton/waiveo-next/internal/app/auth"
+	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/events"
 	"github.com/maaxton/waiveo-next/internal/rules/model"
 )
@@ -112,5 +114,93 @@ func TestRuleMatchesEventOnlyOnItsOwnSchema(t *testing.T) {
 	}
 	if ruleMatchesEvent(stateRule, env(events.SchemaScreenInteraction, "call_service")) {
 		t.Error("a rule with no event trigger must never be fired by an event")
+	}
+}
+
+// TestAutomationScopeViewIsBoundedByTheAutomationsOwnSubtree pins the AUTHORITY
+// an event-fired run executes under, member by member.
+//
+// The end-to-end cases (eventtriggers_scope_test.go) can only observe the
+// OUTCOME — did the screen change — and canWrite alone decides that. So a view
+// whose canRead said yes everywhere while canWrite was correctly bounded would
+// pass all of them, and it is not a harmless difference: canRead is what a
+// selector's candidate set is filtered by, so a permissive one lets a rule at
+// one node ENUMERATE every screen in the deployment and name the out-of-reach
+// ones in its run record. This is the only place that half can be seen.
+func TestAutomationScopeViewIsBoundedByTheAutomationsOwnSubtree(t *testing.T) {
+	// org
+	//  └── site
+	//       ├── nodeA  (the automation's placement)
+	//       │    └── nodeADeep
+	//       └── nodeB  (a sibling)
+	const (
+		org      = "01J8Z0V1EW00000000000000RG"
+		site     = "01J8Z0V1EW0000000000000S1T"
+		nodeA    = "01J8Z0V1EW00000000000000AA"
+		deep     = "01J8Z0V1EW0000000000000AA1"
+		nodeB    = "01J8Z0V1EW00000000000000BB"
+		nowhere  = "01J8Z0V1EW00000000000000ZZ" // in no tree at all
+		emptyStr = ""
+	)
+	strp := func(s string) *string { return &s }
+	tree, _ := datamodel.BuildScopeTree([]datamodel.ScopeNode{
+		{ID: org, Kind: "org", Name: "Org"},
+		{ID: site, Kind: "site", ParentID: strp(org), Name: "Site"},
+		{ID: nodeA, Kind: "screen", ParentID: strp(site), Name: "A"},
+		{ID: deep, Kind: "screen", ParentID: strp(nodeA), Name: "A deep"},
+		{ID: nodeB, Kind: "screen", ParentID: strp(site), Name: "B"},
+	})
+
+	view := automationScopeView(tree, nodeA)
+
+	for _, c := range []struct {
+		node string
+		want bool
+		why  string
+	}{
+		{nodeA, true, "the automation's own node — exactly the authority its author had to hold to create the row"},
+		{deep, true, "a DESCENDANT: SEC-010 inherits a binding down the tree, so the rule reaches what its author could reach"},
+		{nodeB, false, "a SIBLING: authoring a rule at one node must not be a way to act at another"},
+		{site, false, "an ANCESTOR: write authority does not travel upwards"},
+		{org, false, "the root: likewise"},
+		{nowhere, false, "a node the tree does not contain — unknown must fail closed (SEC-005)"},
+		{emptyStr, false, "an unplaced row: no scope node authorizes nothing, never everything"},
+	} {
+		if got := view.canRead(c.node); got != c.want {
+			t.Errorf("canRead(%s) = %v, want %v — %s", c.node, got, c.want, c.why)
+		}
+		if got := view.canWrite(c.node); got != c.want {
+			t.Errorf("canWrite(%s) = %v, want %v — %s", c.node, got, c.want, c.why)
+		}
+		role, ok := view.roleAt(c.node)
+		if ok != c.want {
+			t.Errorf("roleAt(%s) resolved = %v, want %v — %s", c.node, ok, c.want, c.why)
+		}
+		if c.want && role != auth.RoleOwner {
+			t.Errorf("roleAt(%s) = %q, want %q inside the subtree", c.node, role, auth.RoleOwner)
+		}
+	}
+
+	// inSubtree is the tree's real containment relation and stays strict, so a
+	// `scope_node subtree` selector term still means what it means everywhere
+	// else on this surface (the node itself is the selector's own business).
+	if !view.inSubtree(site, nodeA) {
+		t.Error("inSubtree(site, nodeA) = false; the view is not answering over the real tree")
+	}
+	if view.inSubtree(nodeA, nodeA) {
+		t.Error("inSubtree(nodeA, nodeA) = true; containment is STRICT, and a selector term depends on it")
+	}
+	if view.inSubtree(nodeB, deep) {
+		t.Error("inSubtree(nodeB, deep) = true; the two are in different branches")
+	}
+
+	// An automation carrying NO placement authorizes nothing. This is the
+	// fail-closed direction for a row shape the surface refuses to create but a
+	// seed or a restore could still produce.
+	unplaced := automationScopeView(tree, "")
+	for _, node := range []string{org, site, nodeA, deep, nodeB} {
+		if unplaced.canRead(node) || unplaced.canWrite(node) {
+			t.Errorf("an automation with no scope_node can reach %s; an unplaced rule must authorize nothing", node)
+		}
 	}
 }

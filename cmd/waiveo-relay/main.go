@@ -830,24 +830,13 @@ func main() {
 	// before pairingSrv.Register mounts routes onto mux below.
 	pairingSrv.EnablePersistence(store)
 
-	// Wire the RETURN PATH: an accepted viewer press on an interactive slide
-	// layer (POST /player/v1/interaction) is recorded into the SAME durable
-	// telemetry buffer a fired rule's automation.run goes into, as an events/1
-	// `screen.interaction` (EVT-055). The telemetry Channel constructed further
-	// down pushes that buffer to the app peer, so a press reaches the app's
-	// durable event log — and any automation with a matching `event` trigger —
-	// over the one path that already handles buffering, retry, acking and loss
-	// marking. A press made while the app peer is unreachable is retained and
-	// delivered when it returns, with nothing here that knows about outages.
-	//
-	// Installed BEFORE pairingSrv.Register mounts the routes below, for the
-	// reason SetSigningKey and EnablePersistence are: a request served before
-	// the sink is installed is refused (interaction.go returns 503 with no
-	// recorder), and refusing a real press is exactly what this ordering avoids.
-	interactionBuf := host.TelemetryBuffer()
-	pairingSrv.SetInteractionRecorder(func(schema string, payload json.RawMessage, subject string, atMs int64, traceID string) {
-		interactionBuf.RecordTraced(schema, payload, subject, atMs, traceID)
-	})
+	// Wire the RETURN PATH — a viewer's press on an interactive slide layer into
+	// the durable telemetry buffer, and from there to the app peer's event log
+	// and any automation watching for it. Installed BEFORE pairingSrv.Register
+	// mounts the routes below: with no recorder a press is refused 503, and
+	// refusing a real press is exactly what this ordering avoids. See
+	// wireInteractionRecorder (interactionwiring.go) for the whole argument.
+	wireInteractionRecorder(pairingSrv, host.TelemetryBuffer())
 
 	// Install the live data a native slide's server-resolved widgets are filled
 	// from as this relay signs each Lease (internal/slidelive):

@@ -19,6 +19,13 @@
 // events.EventLog/Validate/ClassFor, and apihttp's Problem/Trace-Id — it
 // re-implements none of them.
 //
+// What ACTS on an ingested event is a second, separate seam — an EventDeliverer,
+// offered every appended envelope once this ingest's own lock is released and
+// before the batch's ack is written. Recording and acting are split precisely
+// because acting is unbounded work (the app peer fires rules/1 `event`
+// triggers from it, which reaches devices over the network), and the one
+// durable telemetry channel every relay shares must not be held while it runs.
+//
 // It appends through an EventSink rather than a bare *events.EventLog: in
 // production the sink is the eventsse.Hub, whose Append records the event AND
 // wakes every connected /events/v1 subscriber under the shared synchronization
@@ -60,6 +67,7 @@
 package eventingest
 
 import (
+	"context"
 	"encoding/json"
 	stdlog "log"
 	"net/http"
@@ -95,6 +103,42 @@ type EventSink interface {
 	Append(events.Envelope)
 }
 
+// EventDeliverer is the POST-APPEND handoff: every envelope this ingest
+// durably appended is offered to it, in the order it was appended, AFTER the
+// ingest's own lock has been released and BEFORE the batch's ack is written.
+//
+// It exists as a seam separate from EventSink because the two have opposite
+// requirements, and collapsing them into one Append cost this path its liveness.
+// A sink's job is to RECORD, which is bounded work under this ingest's own
+// mutex; a deliverer's job is to ACT on the event, which for the app peer means
+// firing every `event` trigger that matches it (rules/1 RUL-080/081) — listing
+// and parsing the deployment's rules, then dispatching device commands over a
+// relay connection with a 15-second timeout, per matching rule, per entry. Done
+// from inside Append that ran with in.mu held, so one unreachable device
+// head-of-line blocked the platform's single durable telemetry ingest for EVERY
+// relay: `device.heartbeat`, `entity.state_changed` and `content.played`
+// delivery stalled deployment-wide behind one screen's button press.
+//
+// The two properties this ordering keeps:
+//
+//   - OFF THE LOCK. Another relay's push proceeds while a rule run is in
+//     flight. The lock's only job is this ingest's own seq bookkeeping, which
+//     is what it now covers and all it covers.
+//   - BEFORE THE ACK. The ack is REL-092's promise that the batch was
+//     processed, and the relay discards retained entries on it. Delivering in a
+//     detached goroutine would let the ack outrun the work, so a crash between
+//     the two would lose a press with the ack already given. Synchronous with
+//     respect to the request, concurrent with respect to other requests.
+//
+// What that concurrency does and does not promise: WITHIN one batch, delivery
+// follows append order. ACROSS concurrent pushes it does not, and never could —
+// a relay pushes strictly in seq order (REL-090) so its own events stay
+// ordered relative to each other, but two relays' pushes were already
+// interleaved arbitrarily by the HTTP layer before they reached here. A
+// deliverer that needs a total order over the deployment must read the event
+// log, which is what records it.
+type EventDeliverer func(context.Context, events.Envelope)
+
 // ingest is the POST /telemetry/v1/push handler. It owns the write side of the
 // shared event log (via an EventSink) and the at-least-once bookkeeping: which
 // telemetry seqs it has terminally processed (appended-if-valid or
@@ -121,6 +165,10 @@ type ingest struct {
 	// logf records an EVT-013 drop; it defaults to the stdlib logger and is a
 	// field so a test can assert a dropped record is logged, not silently lost.
 	logf func(format string, args ...any)
+	// deliver is the post-append handoff (EventDeliverer). A nil deliverer is a
+	// deployment with no app-side consumer of ingested events — legitimate, and
+	// the state every ingest that predates this seam is in.
+	deliver EventDeliverer
 
 	mu sync.Mutex
 	// processed holds telemetry seqs terminally handled within the current batch,
@@ -166,7 +214,14 @@ type ingest struct {
 // boot, from a single call site; a nil that survived construction would surface
 // as a recovered nil-deref inside net/http — one 500 per push, with the batch
 // lost and nothing naming the wiring bug that caused it.
-func New(sink EventSink, siteScopeNode string, idSeq func() string, nowMs func() int64, authorize RelayAuthorizer) http.Handler {
+//
+// deliver is the post-append handoff (EventDeliverer) — the app peer passes its
+// `event`-trigger dispatcher here, and a deployment with no app-side consumer
+// passes nil. It is a REQUIRED positional argument rather than an option so
+// that every construction states the answer: an ingest that silently defaulted
+// to "nothing consumes these events" is the shape the whole `event` trigger
+// path was already stuck in before it was wired at all.
+func New(sink EventSink, siteScopeNode string, idSeq func() string, nowMs func() int64, authorize RelayAuthorizer, deliver EventDeliverer) http.Handler {
 	if nowMs == nil {
 		panic("eventingest: New requires a clock (a deployment passes the app's clock-floor reading, never time.Now)")
 	}
@@ -177,6 +232,7 @@ func New(sink EventSink, siteScopeNode string, idSeq func() string, nowMs func()
 		nowMs:         nowMs,
 		authorize:     authorize,
 		logf:          stdlog.Printf,
+		deliver:       deliver,
 		processed:     make(map[int64]bool),
 	}
 }
@@ -248,7 +304,12 @@ func (in *ingest) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ack := in.ingestBatch(batch)
+	// The delivery context is the request's VALUES without its cancellation
+	// (context.WithoutCancel): a rule run started by this batch belongs to the
+	// deployment, not to the TCP connection that happened to carry the push, and
+	// cancelling a device dispatch because a relay hung up mid-push would leave
+	// half a rule run behind with the other half never attempted.
+	ack := in.ingestBatch(context.WithoutCancel(r.Context()), batch)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -262,15 +323,44 @@ func (in *ingest) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // (REL-092/102). It is idempotent on seq (REL-097): a seq at or below the cursor,
 // or already in the gap set, is skipped before an id is minted, so a redelivered
 // record is never double-appended.
-func (in *ingest) ingestBatch(batch telemetry.PushBatch) telemetry.Ack {
+//
+// It is TWO phases, and the split is the whole reason this function exists
+// separately from appendBatch. The APPEND phase holds in.mu, because the seq
+// bookkeeping is what that lock protects. The DELIVER phase runs with the lock
+// released and the ack not yet written — see EventDeliverer for why both halves
+// of that placement are load-bearing.
+func (in *ingest) ingestBatch(ctx context.Context, batch telemetry.PushBatch) telemetry.Ack {
+	ack, appended := in.appendBatch(batch)
+	if in.deliver != nil {
+		for _, env := range appended {
+			in.deliver(ctx, env)
+		}
+	}
+	return ack
+}
+
+// appendBatch is ingestBatch's locked phase: it appends this batch's envelopes,
+// advances the cursor, and returns the ack alongside the envelopes it appended,
+// in append order, for the caller to deliver once the lock is gone.
+//
+// The returned slice is bounded by the batch's own entry count — it is built
+// per call and dropped by the caller, so it carries nothing across batches and
+// cannot grow. That is the same bound in.processed already lives under, and it
+// is why the handoff is a return value rather than a queue: a queue would need
+// a depth, and a depth needs an answer to "what happens when it is full" that
+// is either unbounded memory or a silently dropped durable event (REL-103).
+func (in *ingest) appendBatch(batch telemetry.PushBatch) (telemetry.Ack, []events.Envelope) {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 
+	var appended []events.Envelope
 	for _, e := range batch.Entries {
 		if e.Seq <= in.ackThrough || in.processed[e.Seq] {
 			continue // already terminally processed — idempotent on seq (REL-097)
 		}
-		in.processOne(e)
+		if env, ok := in.processOne(e); ok {
+			appended = append(appended, env)
+		}
 		in.processed[e.Seq] = true
 	}
 
@@ -307,18 +397,23 @@ func (in *ingest) ingestBatch(batch telemetry.PushBatch) telemetry.Ack {
 	for _, m := range batch.LossMarkers {
 		acked = append(acked, telemetry.SeqRange{FromSeq: m.FromSeq, ToSeq: m.ToSeq})
 	}
-	return telemetry.Ack{AckThroughSeq: in.ackThrough, LossMarkersAcked: acked}
+	return telemetry.Ack{AckThroughSeq: in.ackThrough, LossMarkersAcked: acked}, appended
 }
 
 // processOne reconstructs one wire record into an events/1 envelope and appends
-// it, or drops+logs it if it fails validation (EVT-013). The caller holds mu.
-func (in *ingest) processOne(e telemetry.Entry) {
+// it, or drops+logs it if it fails validation (EVT-013). It reports the appended
+// envelope so the caller can hand it to the deliverer once the lock is released;
+// a dropped record reports ok=false and is delivered to nobody, which is the
+// point of appending first — what acts on an event is exactly what the durable
+// log holds. The caller holds mu.
+func (in *ingest) processOne(e telemetry.Entry) (events.Envelope, bool) {
 	env, err := in.buildEnvelope(e)
 	if err != nil {
 		in.logf("eventingest: dropping telemetry seq %d schema %q: %v (EVT-013)", e.Seq, e.Schema, err)
-		return
+		return events.Envelope{}, false
 	}
 	in.sink.Append(env)
+	return env, true
 }
 
 // buildEnvelope assigns the app-side envelope fields onto a wire record and

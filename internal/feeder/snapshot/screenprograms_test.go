@@ -853,6 +853,19 @@ func TestSeededDemoSlideValidatesAndDerives(t *testing.T) {
 // wire.ValidateSlideLayers is DROPPED from the derived program, never emitted
 // malformed — the producer half of the same refuse-don't-serve discipline the
 // relay applies. A valid asset item alongside it is unaffected.
+//
+// The bad row is injected into the DesiredStateResult rather than written
+// through the store, and that is a deliberate change rather than a shortcut. The
+// store now refuses an inline slide whose layers do not validate
+// (datamodel.slideLayerGate, PLAYLIST_ITEM_SLIDE_LAYERS_INVALID) — which is the
+// real fix for the operator, and is asserted over the HTTP surface in
+// internal/app/api. This drop remains the LAST line and still has to work: a
+// desired-state bundle also arrives from a restore and from a seed, and the
+// authoring gate is applied one step earlier than the serve gate on purpose
+// (a content-bearing layer's url is derived at projection, so a row that was
+// perfectly valid when authored can still be unprojectable here). Writing it
+// through the store would now assert the gate instead of the drop, and the drop
+// would go untested.
 func TestInvalidSlideItemIsSkipped(t *testing.T) {
 	ctx := context.Background()
 	id := testIdentity(t)
@@ -879,11 +892,15 @@ func TestInvalidSlideItemIsSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal playlist: %v", err)
 	}
-	if _, err := s.Update(ctx, store.KindPlaylist, pls[0].ID, pls[0].Revision, body); err != nil {
-		t.Fatalf("update playlist: %v", err)
+	// The store REFUSES this row now; confirming that here is what keeps this
+	// test honest about why it goes around it.
+	if _, err := s.Update(ctx, store.KindPlaylist, pls[0].ID, pls[0].Revision, body); err == nil {
+		t.Fatal("the store accepted a playlist whose inline slide does not validate; the authoring gate is gone")
 	}
+	ds := desiredState(t, s)
+	ds.Rows.Playlists = []json.RawMessage{body}
 
-	snap, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
+	snap, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t), nil)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}

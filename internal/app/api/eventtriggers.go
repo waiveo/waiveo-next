@@ -31,9 +31,11 @@ import (
 //
 // # What fires, and on what
 //
-// Every durable event appended to this deployment's event log is offered here
-// (internal/app/eventingest's sink chain, wired in cmd/waiveo-feeder). An
-// automation fires when ALL of:
+// Every durable event appended to this deployment's event log is offered here —
+// by the telemetry ingest's post-append deliverer (internal/app/eventingest's
+// EventDeliverer, wired in cmd/waiveo-feeder), which hands it over with the
+// ingest's own lock released and the batch's ack not yet written. An automation
+// fires when ALL of:
 //
 //   - it is enabled. A disabled automation firing is the single worst bug this
 //     file could have: an operator disables a rule precisely to stop it acting,
@@ -59,25 +61,55 @@ import (
 //
 // # Authority
 //
-// A firing has no human principal: nobody asked for it, an event did. It
-// therefore runs under a SYSTEM view of the scope tree (systemScopeView) rather
-// than under any user's bindings — the same authority the edge engine already
-// runs edge rules with on the relay, where there is no principal in the picture
-// at all and no per-target authorization is performed. Making it a user's
-// authority instead would mean an automation's behaviour depended on who
-// happened to be logged in when a viewer pressed a button, which is not a
-// security property, just an unpredictable one.
+// A firing has no human principal: nobody asked for it, an event did. It runs
+// under the authority of THE RULE ITSELF — a view bounded by the automation's
+// own `scope_node` subtree (automationScopeView) — and each of the rule's
+// action targets is authorized against that view, per target, inside the run,
+// exactly as a hand-initiated `POST /automations/{id}/run` authorizes each
+// target against the caller's view.
+//
+// Two rejected alternatives, and why each is wrong:
+//
+//   - THE CALLER'S BINDINGS. There is no caller. Substituting whoever happened
+//     to be logged in would make whether a viewer's button press worked depend
+//     on who had a session open at the time, which is not a security property,
+//     just an unpredictable one.
+//   - AN ALL-PERMISSIVE SYSTEM VIEW, which is what this file did first. It is a
+//     privilege escalation, and a total one. `POST /automations` authorizes
+//     only the automation's OWN scope node at write time — automations.go says
+//     so in as many words, and says that per-target authorization inside the run
+//     is what covers the rest — so an operator who may write only at node A
+//     could author a rule whose `play_cast` names a screen at node B, or a
+//     `selector: "*"` that resolves against every screen in the deployment, and
+//     the first `screen.interaction` would execute it fleet-wide. The same rule
+//     run BY HAND is refused per target. The precedent offered for the system
+//     view (the relay's edge engine, which performs no per-target check) does
+//     not transfer: a relay only ever holds its own site's rows, so its scope is
+//     bounded by what it can see; the app peer spans the whole deployment and
+//     has no such bound unless one is imposed.
+//
+// The bound is the automation's placement subtree, INCLUSIVE of the node
+// itself, because that is precisely the authority the author had to hold to
+// create the row: canWrite at the automation's scope node, which SEC-010
+// inherits down to every descendant. A rule can therefore reach exactly what a
+// human authorized to write it could have reached by hand, and nothing more.
 
 // EventTriggerDispatcher is the seam the feeder wires between the durable event
 // log and this package's rule execution.
 //
 // It exists because the api package's server is unexported (api.New returns an
-// http.Handler) while the ingest sink that must reach it is constructed
-// separately in cmd/waiveo-feeder — and the ingest is constructed FIRST, since
-// the api handler is mounted onto the same mux later. A caller therefore creates
-// an empty dispatcher, hands it to eventingest as part of the sink chain, and
-// passes the same pointer to api.New via WithEventTriggers; New binds the live
-// implementation into it.
+// http.Handler) while the ingest that must reach it is constructed separately in
+// cmd/waiveo-feeder — and the ingest is constructed FIRST, since the api handler
+// is mounted onto the same mux later. A caller therefore creates an empty
+// dispatcher, passes its Deliver method to eventingest.New as the ingest's
+// EventDeliverer, and passes the same pointer to api.New via WithEventTriggers;
+// New binds the live implementation into it.
+//
+// Deliver is deliberately NOT part of the ingest's EventSink. A sink runs under
+// the ingest's own mutex, and what this dispatcher starts is a full rule run
+// that reaches devices over the network — holding the one durable telemetry
+// channel every relay shares while that happens stalled heartbeats and playback
+// records deployment-wide behind a single button press.
 //
 // A dispatcher nothing has bound is INERT — Deliver returns immediately. That is
 // the honest degrade for a deployment that never wired the option (every test
@@ -93,10 +125,12 @@ type EventTriggerDispatcher struct {
 // what fires a rule is exactly what the event log durably holds — never a record
 // that failed EVT-013 and was dropped.
 //
-// It is synchronous with respect to the caller's context on purpose: the ingest
-// handler acks a telemetry batch only after processing it, and firing in a
-// detached goroutine would let the ack outrun the work, so a crash between the
-// two would lose a press with the ack already given.
+// It is synchronous with respect to its caller on purpose: the ingest handler
+// acks a telemetry batch only after every envelope in it has been delivered, and
+// firing in a detached goroutine would let the ack outrun the work, so a crash
+// between the two would lose a press with the ack already given. Synchronous
+// with respect to ONE push, and concurrent with respect to every other — the
+// ingest releases its lock first (eventingest.EventDeliverer).
 func (d *EventTriggerDispatcher) Deliver(ctx context.Context, env events.Envelope) {
 	d.mu.RLock()
 	fire := d.fire
@@ -160,8 +194,12 @@ func (srv *server) fireEventTriggers(ctx context.Context, env events.Envelope) {
 		return
 	}
 
-	var view scopeView
-	built := false
+	// The scope tree is read AT MOST ONCE per delivered event, lazily, and only
+	// if some rule actually matched — an event no rule watches must not cost a
+	// tree read. Each matching rule then gets its OWN view over that one tree,
+	// bounded by its own placement: the tree is shared, the authority is not.
+	var tree datamodel.ScopeTree
+	treeRead := false
 	for _, row := range rows {
 		if !automationEnabled(row.Body) {
 			continue
@@ -177,17 +215,24 @@ func (srv *server) fireEventTriggers(ctx context.Context, env events.Envelope) {
 		if !ruleMatchesEvent(rule, env) {
 			continue
 		}
-		if !built {
-			v, verr := srv.systemScopeView(ctx)
-			if verr != nil {
-				log.Printf("event-trigger: building system scope view: %v", verr)
+		if !treeRead {
+			t, terr := srv.scopeTree(ctx)
+			if terr != nil {
+				log.Printf("event-trigger: reading the scope tree: %v", terr)
 				return
 			}
-			view, built = v, true
+			tree, treeRead = t, true
 		}
+		// The rule's OWN placement is the authority its run executes under. It
+		// is read from the stored row rather than from the parsed rule because
+		// scope_node is a resource-row member (DAT-006), not part of rules/1's
+		// rule document — the same read every other placement check on this
+		// surface makes.
+		node := parseFields(row.Body).ScopeNode
+		view := automationScopeView(tree, node)
 		rep := srv.runAutomationNow(ctx, env.TraceID, rule, view, false)
-		log.Printf("event-trigger: %s fired automation %s (%s): %d command(s), %d signage action(s)",
-			env.Schema, row.ID, rep.Disposition, len(rep.Commands), len(rep.Signage))
+		log.Printf("event-trigger: %s fired automation %s at %s (%s): %d command(s), %d signage action(s)",
+			env.Schema, row.ID, node, rep.Disposition, len(rep.Commands), len(rep.Signage))
 	}
 }
 
@@ -289,41 +334,67 @@ func jsonValuesEqual(a, b json.RawMessage) bool {
 	return string(ab) == string(bb)
 }
 
-// systemScopeView is the scope view an EVENT-INITIATED run executes under: the
-// real scope tree (so subtree containment answers correctly for any selector a
-// rule's actions resolve) with read and write permitted everywhere.
-//
-// It is NOT a bypass of scopeView's authorization; it is the absence of a
-// principal to authorize. A request-scoped view answers "may THIS CALLER do
-// this?", and an event has no caller — the platform itself is acting on a rule
-// an operator already authored and enabled, which is precisely the authority the
-// edge engine exercises on the relay for every edge rule, with no per-target
-// check at all. Substituting some user's bindings would make whether a viewer's
-// button press worked depend on who was logged in at the time.
-//
-// roleAt answers auth.RoleOwner: the two operations that consult it are the
-// data-subject ones, which no rule action reaches, and answering "no binding"
-// there would be a different lie than the one this view is telling.
-func (srv *server) systemScopeView(ctx context.Context) (scopeView, error) {
+// scopeTree reads the deployment's scope-node tree from the same
+// DesiredStateRows snapshot every request-scoped view is built from, so an
+// event-fired run and an operator's request answer containment questions the
+// same way.
+func (srv *server) scopeTree(ctx context.Context) (datamodel.ScopeTree, error) {
 	nodes, _, _, _, err := srv.store.DesiredStateRows(ctx)
 	if err != nil {
-		return scopeView{}, err
+		return datamodel.ScopeTree{}, err
 	}
 	tree, _ := datamodel.BuildScopeTree(nodes)
-	return scopeView{
-		inSubtree: func(ancestor, node string) bool {
-			if ancestor == node {
-				return false
-			}
-			for _, id := range tree.AncestorChain(node) {
-				if id == ancestor {
-					return true
-				}
-			}
+	return tree, nil
+}
+
+// automationScopeView is the scope view ONE event-fired automation run executes
+// under: the real scope tree, with read and write permitted exactly within the
+// automation's own placement subtree — the node itself and everything below it —
+// and refused everywhere else.
+//
+// It is a real authorization boundary, not a formality, and it is what makes an
+// event-fired run no more powerful than the operator who authored the rule (see
+// this file's "# Authority" section for the two alternatives this replaced and
+// why the all-permissive one was a privilege escalation). Both halves matter:
+//
+//   - canRead bounds what a `selector` RESOLVES against. screenOverrideSink's
+//     target resolution and resolveEntityRef both filter candidates by canRead
+//     before matching, so `selector: "*"` on a rule placed at a site expands to
+//     that site's screens rather than to every screen in the deployment.
+//   - canWrite bounds what is ACTED on. A target named explicitly by id —
+//     `screen_id`, an `entity_id` — bypasses selector resolution entirely, and
+//     is refused here, per target, and REPORTED as a failed target rather than
+//     silently skipped (relayCommandSink.dispatch, screenOverrideSink.write).
+//
+// A node the tree does not contain has an empty ancestor chain, so it is
+// neither the automation's node nor below it: unknown resolves to refused,
+// which is the fail-closed direction (SEC-005). An automation row carrying no
+// scope_node at all — impossible through this surface, which requires the
+// placement (DAT-006) — authorizes nothing rather than everything, for the same
+// reason.
+//
+// roleAt answers auth.RoleOwner INSIDE the subtree and "no binding" outside it.
+// The two operations that consult it are the data-subject ones, which no rule
+// action reaches; answering it consistently with the other two members is what
+// keeps a future third consumer from finding a view whose three answers
+// disagree.
+func automationScopeView(tree datamodel.ScopeTree, scopeNode string) scopeView {
+	inSubtree := subtreePredicate(tree)
+	within := func(node string) bool {
+		if scopeNode == "" || node == "" {
 			return false
+		}
+		return node == scopeNode || inSubtree(scopeNode, node)
+	}
+	return scopeView{
+		inSubtree: inSubtree,
+		canRead:   within,
+		canWrite:  within,
+		roleAt: func(node string) (auth.Role, bool) {
+			if !within(node) {
+				return "", false
+			}
+			return auth.RoleOwner, true
 		},
-		canRead:  func(string) bool { return true },
-		canWrite: func(string) bool { return true },
-		roleAt:   func(string) (auth.Role, bool) { return auth.RoleOwner, true },
-	}, nil
+	}
 }

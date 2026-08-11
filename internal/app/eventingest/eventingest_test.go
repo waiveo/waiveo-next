@@ -88,7 +88,7 @@ func testWallMs() int64 { return time.Now().UnixMilli() }
 // relay identity.
 func newTestIngest(t *testing.T, sink EventSink) http.Handler {
 	t.Helper()
-	return New(sink, siteScope, seqIDs(), testWallMs, testRelay().Authorizer())
+	return New(sink, siteScope, seqIDs(), testWallMs, testRelay().Authorizer(), nil)
 }
 
 // pushRequest builds the REL-090 telemetry.push request, carrying the connection

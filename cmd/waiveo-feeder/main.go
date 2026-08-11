@@ -898,14 +898,22 @@ func main() {
 	// because the ingest is constructed before the api handler that owns the rule
 	// store and the executor. Until it is bound it is inert; the binding happens
 	// during this same startup, before anything is served.
+	//
+	// It is passed as the ingest's EventDeliverer, NOT as part of its EventSink:
+	// a sink runs under the ingest's own mutex, and a rule run — which reaches
+	// devices over the network — must never hold the one durable telemetry
+	// channel every relay in this deployment shares. The ingest offers each
+	// appended envelope to this dispatcher with that lock released and the
+	// batch's ack not yet written (see eventingest.EventDeliverer).
 	eventTriggers := &api.EventTriggerDispatcher{}
-	telemetryIngest := eventingest.New(eventTriggerSink{hub: eventHub, dispatch: eventTriggers}, firstPhotonSite.ScopeNode, eventIDs, nowMs,
+	telemetryIngest := eventingest.New(eventHub, firstPhotonSite.ScopeNode, eventIDs, nowMs,
 		func(relayID, serial string) bool {
 			if _, enrolled := enrollSrv.RelayEnrollmentKey(relayID); !enrolled {
 				return false
 			}
 			return !enrollSrv.IsRevoked(relayID, serial)
-		})
+		},
+		eventTriggers.Deliver)
 
 	// The workspace signing key (SEC-046) and the destination the data-subject
 	// export writes its archive/1 container to (API-120/121). Establishing the
@@ -1394,34 +1402,6 @@ func startConsoleBinding(authDir string, authStore *auth.Store, clockFloor *auth
 // from separate figures would let the platform publish a window it does not
 // honour, which is worse than publishing none.
 const webhookRotationOverlapMs = events.DefaultRotationOverlapMs
-
-// eventTriggerSink is the telemetry ingest's append target: it records the
-// envelope through the SSE hub exactly as before, and then offers the SAME
-// envelope to the app-side `event`-trigger evaluator (rules/1 RUL-080/081).
-//
-// The ordering is load-bearing. Appending first means what fires a rule is
-// exactly what the durable log holds — a rule can never run on an event a
-// subsequent reader would not find — and it means a subscriber sees the event
-// even if the rule's own actions fail. Firing first would invert both.
-//
-// It is a named type rather than an inline closure because eventingest.EventSink
-// is an interface with one method and a closure cannot satisfy it; keeping it
-// here, next to the wiring, is what makes the whole chain readable in one place.
-type eventTriggerSink struct {
-	hub      *eventsse.Hub
-	dispatch *api.EventTriggerDispatcher
-}
-
-// Append satisfies eventingest.EventSink.
-//
-// The context is Background rather than a request's: the ingest's EventSink
-// carries none, and the work this starts belongs to the deployment rather than
-// to the HTTP request that happened to deliver the batch — cancelling a rule's
-// device dispatch because a relay hung up mid-push would leave half a rule run.
-func (s eventTriggerSink) Append(env events.Envelope) {
-	s.hub.Append(env)
-	s.dispatch.Deliver(context.Background(), env)
-}
 
 // startWebhookDelivery builds and starts the outbound-webhook delivery loop for
 // this deployment, returning the handle the shutdown path drains.
