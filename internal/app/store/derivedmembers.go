@@ -21,11 +21,34 @@ import (
 // permanent address. It stopped being one when content URLs became SIGNED and
 // EXPIRING (internal/feeder/contenturl). The console's media picker hands the
 // Studio the url from `GET /content`, which is now minted with
-// contenturl.ServeTTL, the Studio patches it into the layer, and the cast write
+// contenturl.ServeTTL, the Studio patches it into the layer, and the write
 // persisted it verbatim. An operator building a cast today and reopening it
 // tomorrow met a canvas of broken images and a properties panel showing a dead
 // link — the authoring surface reproducing HV-1's own defect a day late,
 // invisibly, because nothing a screen sees is affected.
+//
+// # Every shape that carries an authored layer stack, not just the one we found
+//
+// The defect was found on a cast, and the first cut of this file stripped
+// `slides[].layers[]` and returned every other kind untouched. That closes it on
+// casts and nowhere else. A playlist item with `source: "slide"` carries the
+// SAME authored layer stack, at `items[].slide.layers[]` (DAT-041); it arrives
+// through the same Store.Create/Store.Update path, from the same media picker,
+// and it persisted the picked url verbatim — signature, deadline and all.
+//
+// assetrefs.go next door has already paid for this lesson: three hand-written
+// per-shape projections all read a playlist item's `asset_ref` and NONE of them
+// read a layer stack, "and three copies is how it stayed one blind spot in three
+// places". A per-shape strip is the same mistake in the same rows. So the shapes
+// are enumerated ONCE, in derivedMemberStrippers below, its key set is required
+// to be exactly AssetBearingKinds (TestEveryAssetBearingKindHasADerivedStrip),
+// and a new asset-bearing shape is therefore added to both files or to neither.
+//
+// The playlist half was latent when it was found — no shipped surface put a url
+// in an inline slide — and it is fixed anyway, because it is a CROSS-TRACK
+// hazard rather than a tidiness question: an importer writing casts through
+// Store.Create inherits the strip for free, and the very same importer writing a
+// playlist inline slide would not have.
 //
 // # Why stripping is the fix, rather than re-resolving on read
 //
@@ -45,107 +68,183 @@ import (
 // the representation, and it completes or reduces what a writer sends rather than
 // bouncing it.
 //
-// # Why the store rather than the api layer
+// # Why the store rather than the api layer, stated accurately
 //
-// The same reason declaredmembers.go gives: every writer of a row goes through
+// Because Store.Create/Store.Update is the choke point every GENERIC row write
+// passes through: the casts handler, the playlists handler, a declarative pack's
+// row install, the make-dev seed. A strip in the cast handler would have to be
+// remembered again in the playlist handler — which is precisely the blind spot
+// described above, in miniature.
+//
+// That is the real reason, and it is narrower than the one this file used to
+// give. The previous wording claimed "every writer of a row goes through
 // Store.Create/Store.Update — the api handlers, the workspace restore, the
-// make-dev seed. A strip in the cast handler would leave a restored workspace
-// carrying urls minted by whatever origin exported it, against a key the
-// importing site does not hold.
+// make-dev seed", and the workspace restore is not one of them. A restore does
+// not write rows at all: it stages a whole SQLite file and swaps it into place
+// (internal/app/restoreswap), and the export half is equally outside the generic
+// path — workspace.go says so outright ("Neither operation is a resource-family
+// CRUD call, so neither goes through the generic Create/Update/Delete path").
+//
+// So the residue is stated rather than implied: a workspace exported before this
+// strip existed, or exported from another site, restores carrying whatever urls
+// ITS origin minted, under a key the importing site does not hold. No screen is
+// affected (both projections re-mint from the asset_ref), and the operator-facing
+// symptom is the same dead link in the properties panel. Closing it belongs to
+// the restore path, which is the only code that sees those rows; it is not
+// closed here, and it is not silently assumed closed either.
 
-// stripDerivedMembers returns body with kind's derived members removed. A body
-// that carries none is returned unchanged, bytes and all — including a body this
-// function cannot parse, which the very next step (parseBaseline) reports
-// properly rather than having it surface here as a mangled row.
-func stripDerivedMembers(kind Kind, body json.RawMessage) json.RawMessage {
-	if kind != KindCast {
-		return body
-	}
-	return stripCastLayerURLs(body)
+// derivedMemberStrippers is the whole enumeration of row shapes carrying a
+// derived member, keyed by kind: the ONE place a new shape is added.
+//
+// Each entry reports whether it changed anything, so a body that carries no
+// derived member is returned as the identical bytes rather than re-encoded (see
+// stripDerivedMembers' doc for the precise fidelity claim).
+//
+// Its key set is required to equal store.AssetBearingKinds — the same
+// enumeration assetrefs.go keeps for the same rows — because the two questions
+// ("which kinds name content?" and "which kinds carry a derived url?") have the
+// same answer for the same reason: both are asking which kinds carry an authored
+// layer stack or an asset reference. Letting them drift apart is how a shape gets
+// covered by one and missed by the other.
+var derivedMemberStrippers = map[Kind]func(json.RawMessage) (json.RawMessage, bool){
+	// A cast's layer stacks: `slides[].layers[]`.
+	KindCast: func(body json.RawMessage) (json.RawMessage, bool) {
+		return editEachElement(body, "slides", stripLayerStackURLs)
+	},
+	// A playlist's: `items[].slide.layers[]`, on `source: "slide"` items. An
+	// item of any other source carries no `slide` member and is left alone by
+	// editMember, so no source check is needed here — the shape IS the check.
+	KindPlaylist: func(body json.RawMessage) (json.RawMessage, bool) {
+		return editEachElement(body, "items", func(item json.RawMessage) (json.RawMessage, bool) {
+			return editMember(item, "slide", stripLayerStackURLs)
+		})
+	},
 }
 
-// stripCastLayerURLs removes `url` from every layer of every slide of a cast
-// row.
+// stripDerivedMembers returns body with kind's derived members removed. A kind
+// that carries none — and a body this function cannot parse, which the very next
+// step (parseBaseline) reports properly rather than having it surface here as a
+// mangled row — is returned unchanged, bytes and all.
 //
-// It walks with json.RawMessage at every level it is not editing, so nothing
-// outside the layer objects it actually changes is re-encoded: member order,
-// number spelling (a duration_ms is not run through float64 and back), and every
-// unrecognized member survive byte for byte. The store persists the exact bytes
-// the api later serves, so a normalization that quietly rewrote the rest of the
-// document would be changing the representation of every cast to remove a member
-// from a few of them.
-func stripCastLayerURLs(body json.RawMessage) json.RawMessage {
-	row := map[string]json.RawMessage{}
-	if err := json.Unmarshal(body, &row); err != nil {
-		return body
-	}
-	rawSlides, ok := row["slides"]
+// # The fidelity claim, precisely
+//
+// A body that needed no edit is returned as the SAME bytes: nothing is decoded
+// and re-encoded, so nothing about it can change.
+//
+// A body that did need one is rebuilt only along the path to the layers it
+// edited. Everything off that path rides as json.RawMessage and is copied
+// verbatim — an untouched slide, an untouched item, a `duration_ms` that is
+// never run through float64 and back, an unrecognized member nobody here knows
+// about.
+//
+// The objects ON that path are re-encoded from a map[string]json.RawMessage, and
+// two things about THEM do change, neither of them a value: Go emits map keys in
+// sorted order, so their members come back alphabetized, and encoding/json
+// re-escapes the three HTML-significant characters inside them: a `<`, `>` or
+// `&` in a text layer comes back as its six-character unicode escape, which
+// decodes to the identical string but is not the identical byte. The earlier
+// version of this comment claimed "member order survives byte for byte", which
+// was true of the rest of the document and untrue of exactly the objects this
+// function touches. Values are preserved exactly; their container's spelling is
+// not.
+func stripDerivedMembers(kind Kind, body json.RawMessage) json.RawMessage {
+	strip, ok := derivedMemberStrippers[kind]
 	if !ok {
 		return body
 	}
-	var slides []json.RawMessage
-	if err := json.Unmarshal(rawSlides, &slides); err != nil {
-		return body
-	}
-
-	changed := false
-	for i, rawSlide := range slides {
-		slide := map[string]json.RawMessage{}
-		if err := json.Unmarshal(rawSlide, &slide); err != nil {
-			continue
-		}
-		rawLayers, ok := slide["layers"]
-		if !ok {
-			continue
-		}
-		var layers []json.RawMessage
-		if err := json.Unmarshal(rawLayers, &layers); err != nil {
-			continue
-		}
-		slideChanged := false
-		for j, rawLayer := range layers {
-			layer := map[string]json.RawMessage{}
-			if err := json.Unmarshal(rawLayer, &layer); err != nil {
-				continue
-			}
-			if _, present := layer["url"]; !present {
-				continue
-			}
-			delete(layer, "url")
-			out, err := json.Marshal(layer)
-			if err != nil {
-				continue
-			}
-			layers[j] = out
-			slideChanged = true
-		}
-		if !slideChanged {
-			continue
-		}
-		encLayers, err := json.Marshal(layers)
-		if err != nil {
-			continue
-		}
-		slide["layers"] = encLayers
-		encSlide, err := json.Marshal(slide)
-		if err != nil {
-			continue
-		}
-		slides[i] = encSlide
-		changed = true
-	}
+	out, changed := strip(body)
 	if !changed {
 		return body
 	}
-
-	encSlides, err := json.Marshal(slides)
-	if err != nil {
-		return body
-	}
-	row["slides"] = encSlides
-	out, err := json.Marshal(row)
-	if err != nil {
-		return body
-	}
 	return out
+}
+
+// stripLayerStackURLs removes `url` from every layer of the object's `layers`
+// array — the one edit this file makes, applied wherever a layer stack is
+// reached from.
+func stripLayerStackURLs(obj json.RawMessage) (json.RawMessage, bool) {
+	return editEachElement(obj, "layers", stripLayerURL)
+}
+
+// stripLayerURL removes the derived `url` member from one layer object.
+func stripLayerURL(layer json.RawMessage) (json.RawMessage, bool) {
+	obj := map[string]json.RawMessage{}
+	if err := json.Unmarshal(layer, &obj); err != nil {
+		return layer, false
+	}
+	if _, present := obj["url"]; !present {
+		return layer, false
+	}
+	delete(obj, "url")
+	return reencode(obj, layer)
+}
+
+// editEachElement applies edit to every element of the ARRAY member named key,
+// and reports whether any element changed.
+//
+// An absent member, a member that is not an array, an element edit that changes
+// nothing: all of them return the input bytes and false, so an unaffected row
+// never gets re-encoded at all.
+func editEachElement(raw json.RawMessage, key string, edit func(json.RawMessage) (json.RawMessage, bool)) (json.RawMessage, bool) {
+	obj := map[string]json.RawMessage{}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return raw, false
+	}
+	rawArray, present := obj[key]
+	if !present {
+		return raw, false
+	}
+	var elems []json.RawMessage
+	if err := json.Unmarshal(rawArray, &elems); err != nil {
+		return raw, false
+	}
+	changed := false
+	for i, elem := range elems {
+		out, elemChanged := edit(elem)
+		if !elemChanged {
+			continue
+		}
+		elems[i] = out
+		changed = true
+	}
+	if !changed {
+		return raw, false
+	}
+	encoded, err := json.Marshal(elems)
+	if err != nil {
+		return raw, false
+	}
+	obj[key] = encoded
+	return reencode(obj, raw)
+}
+
+// editMember applies edit to the single OBJECT member named key. An item with no
+// such member (a playlist item that is not an inline slide) is left exactly as it
+// was.
+func editMember(raw json.RawMessage, key string, edit func(json.RawMessage) (json.RawMessage, bool)) (json.RawMessage, bool) {
+	obj := map[string]json.RawMessage{}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return raw, false
+	}
+	member, present := obj[key]
+	if !present {
+		return raw, false
+	}
+	out, changed := edit(member)
+	if !changed {
+		return raw, false
+	}
+	obj[key] = out
+	return reencode(obj, raw)
+}
+
+// reencode marshals an edited object back to bytes, falling back to the original
+// on the (unreachable) marshal failure — a strip that cannot re-encode must leave
+// the row alone rather than replace it with nothing.
+func reencode(obj map[string]json.RawMessage, original json.RawMessage) (json.RawMessage, bool) {
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return original, false
+	}
+	return out, true
 }

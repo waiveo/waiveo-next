@@ -405,17 +405,32 @@ func TestTheWireDeadlineIsTheOneTheURLActuallyDies_At(t *testing.T) {
 // stretch the deadline to thirty days — a month-long bearer capability for every
 // asset a site displays, bought to cover a gap it still did not close.
 //
-// The gap is now bounded by the feeder itself (contenturl.SnapshotRemintInterval,
-// enforced by cmd/waiveo-feeder's cacheWindowEnd), so the deadline is sized
-// against THAT. Pinning it here rather than only next door to the constants is
-// deliberate: this is the package whose output carries the deadline onto the
-// wire, and a future change to SnapshotTTL made for a snapshot-side reason has to
-// meet the bound where it is actually spent.
+// The gap is now bounded by the feeder itself, at contenturl.SnapshotRemintInterval,
+// so the deadline is sized against THAT. Pinning it here rather than only next
+// door to the constants is deliberate: this is the package whose output carries
+// the deadline onto the wire, and a future change to SnapshotTTL made for a
+// snapshot-side reason has to meet the bound where it is actually spent.
+//
+// # What the bound rests on, since an earlier version of this comment got it wrong
+//
+// It said "a relay that pulled just before a re-mint holds those urls for a full
+// interval after it", implying a next pull that would deliver the newer ones.
+// There is no such pull unless something advances the store GENERATION: relayconn
+// answers `state.unchanged` with no body when the pull's `since_generation`
+// matches, the relay no-ops on a generation it already holds, and its pull has no
+// timer of its own. A cache the feeder refreshes for itself is not a delivery.
+//
+// The bound is therefore cmd/waiveo-feeder's remintLoop, which advances the
+// generation every SnapshotRemintInterval and so nudges every relay to pull a
+// snapshot minted at that instant. What a relay holds is at most one interval
+// old, which is what makes SnapshotTTL >= 2 * SnapshotRemintInterval mean "at
+// least half a life left, always" rather than a ratio between two numbers.
 func TestTheSnapshotTTLOutlivesTheGapItIsMintedAcross(t *testing.T) {
 	if contenturl.SnapshotTTL < 2*contenturl.SnapshotRemintInterval {
-		t.Errorf("SnapshotTTL is %s, less than twice the feeder's re-mint interval (%s). A generation is served until it "+
-			"is re-minted, and a relay that pulled just before a re-mint holds those urls for a full interval after it — "+
-			"so anything shorter hands a screen a url that dies before its next pull.",
+		t.Errorf("SnapshotTTL is %s, less than twice the feeder's re-mint interval (%s). Every relay is nudged to "+
+			"re-pull once an interval (cmd/waiveo-feeder's remintLoop) and is handed urls minted at that instant, so "+
+			"what it holds can be a full interval old — anything shorter than twice the interval hands a screen a url "+
+			"that dies before the next nudge reaches it.",
 			contenturl.SnapshotTTL, contenturl.SnapshotRemintInterval)
 	}
 	// The floor is still a real duration, not merely a multiple: a re-mint

@@ -331,6 +331,105 @@ func TestAPatchDoesNotStoreTheDerivedLayerURL(t *testing.T) {
 	assertNoStoredLayerURL(t, decodeCast(t, getRaw), "a later GET")
 }
 
+// TestAPlaylistInlineSlideDoesNotStoreTheDerivedLayerURL is the SHAPE the first
+// fix missed, and the reason the strip is written per-class rather than per-row.
+//
+// A playlist item with `source: "slide"` carries the same authored layer stack a
+// cast's slide does, at `items[].slide.layers[]` (DAT-041) — same media picker,
+// same expiring url, same Store.Create — and a strip gated on `kind != cast`
+// returned it verbatim, signature and all. internal/app/store/assetrefs.go's own
+// doc is the warning: three hand-written per-shape projections all read a
+// playlist item's `asset_ref` and none of them read a layer stack, "and three
+// copies is how it stayed one blind spot in three places".
+//
+// It is a cross-track hazard rather than a latent nicety: a `.cast` importer
+// writing casts through Store.Create inherits the strip for free, and the same
+// importer writing a playlist inline slide would not have.
+func TestAPlaylistInlineSlideDoesNotStoreTheDerivedLayerURL(t *testing.T) {
+	e := newSigningEnv(t)
+	scope := seedSchedulingScope(t, e)
+
+	poster := []byte("the inline-slide image an operator picked from the media library")
+	assetRef, picked := e.uploadAsset(t, poster)
+
+	// The same premise the cast test asserts: the picked url really is a
+	// capability that DIES, so storing it really does rot.
+	if !strings.Contains(picked, contenturl.QueryExpires+"=") {
+		t.Fatalf("PREMISE FALSE: the picked url %q carries no %s — it is not an expiring capability, so storing it "+
+			"would not rot and this test is not exercising the defect", picked, contenturl.QueryExpires)
+	}
+	if code := fetchAfterDeadline(t, picked, poster); code != http.StatusForbidden {
+		t.Fatalf("PREMISE FALSE: the picked url still answered %d past its own deadline", code)
+	}
+
+	authored := datamodel.Playlist{
+		ScopeNode: scope,
+		Name:      "Lobby Loop",
+		Items: []datamodel.PlaylistItem{
+			// A plain asset item beside it, so the assertion below is about the
+			// inline slide and not about a playlist with nothing else in it.
+			{Source: datamodel.PlaylistSourceAsset, AssetRef: assetRef},
+			{Source: "slide", Slide: &datamodel.Slide{Layers: []wire.Layer{
+				{Kind: wire.LayerKindRect, X: 0, Y: 0, W: 1920, H: 1080, Color: "#101828"},
+				{Kind: wire.LayerKindImage, X: 0, Y: 0, W: 1920, H: 1080, AssetRef: assetRef, URL: picked},
+			}}},
+		},
+	}
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/playlists", rowCreateBody(t, authored), nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /playlists: status %d, body %s", resp.StatusCode, raw)
+	}
+	created := decodePlaylistRow(t, raw)
+	assertNoStoredInlineSlideURL(t, created, "the create response")
+
+	// …and in the STORE, which is what the operator reopens tomorrow.
+	_, getRaw := e.do(t, http.MethodGet, "/api/v1/playlists/"+created.ID, nil, nil)
+	stored := decodePlaylistRow(t, getRaw)
+	assertNoStoredInlineSlideURL(t, stored, "a later GET")
+
+	// The authored half survives, or the strip has simply broken the layer.
+	if got := stored.Items[1].Slide.Layers[1].AssetRef; got != assetRef {
+		t.Errorf("the stored inline slide layer's asset_ref = %q, want %q — the derived half was dropped and the authored half with it", got, assetRef)
+	}
+	if !listingCarriesFetchableURLFor(t, e, assetRef, poster) {
+		t.Errorf("the content listing offers no fetchable url for %s — the console has nothing to render the stored "+
+			"asset_ref from, which is the reason the derived url may be dropped at all", assetRef)
+	}
+}
+
+// decodePlaylistRow decodes a playlist row response.
+func decodePlaylistRow(t *testing.T, raw []byte) datamodel.Playlist {
+	t.Helper()
+	var pl datamodel.Playlist
+	if err := json.Unmarshal(raw, &pl); err != nil {
+		t.Fatalf("decode playlist: %v (body %s)", err, raw)
+	}
+	return pl
+}
+
+// assertNoStoredInlineSlideURL fails when any layer of any inline slide item
+// carries a `url` — the playlist-side twin of assertNoStoredLayerURL, asking
+// about every item and every layer rather than the one the test wrote.
+func assertNoStoredInlineSlideURL(t *testing.T, pl datamodel.Playlist, where string) {
+	t.Helper()
+	for i, it := range pl.Items {
+		if it.Slide == nil {
+			continue
+		}
+		for j, l := range it.Slide.Layers {
+			if l.URL == "" {
+				continue
+			}
+			t.Errorf("%s carries items[%d].slide.layers[%d].url = %q.\n"+
+				"An inline slide's layer stack is the SAME authored stack a cast's slide carries, and a content-bearing "+
+				"layer's url is derived at projection time from the content origin. Since HV-1 it is a signed "+
+				"capability that expires, so persisting one means the operator who reopens this playlist tomorrow sees "+
+				"a broken image and a dead link. The console re-resolves from GET /content instead.",
+				where, i, j, l.URL)
+		}
+	}
+}
+
 // assertNoStoredLayerURL fails when any layer of any slide carries a `url`.
 //
 // It asks about EVERY layer rather than the one the test wrote, because the rule

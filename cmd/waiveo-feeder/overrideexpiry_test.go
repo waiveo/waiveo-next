@@ -331,12 +331,20 @@ func TestTheSnapshotIsRebuiltBeforeItsContentURLsExpire(t *testing.T) {
 	if second.Content[0].URL == first.Content[0].URL {
 		t.Errorf("the url is byte-identical across the re-mint (%q) — the deadline in the signature did not move either", first.Content[0].URL)
 	}
-	// …and the rebuild really was a re-derivation, not a write. DAT-004d's
-	// discipline, applied to this second reason for invalidating: the feeder must
-	// not advance the generation to refresh its own cache, which would nudge every
-	// relay in the site twice a day for a change that is not news to them.
+	// …and the rebuild itself really was a re-derivation, not a write. A READ
+	// path must not mutate the store: current() is called once per relay pull, so
+	// a generation bump in here would advance the generation per pull, nudging
+	// every relay to pull again — a feedback loop, not a publication.
+	//
+	// This is NOT the claim that a re-mint goes unannounced. It is announced, by
+	// remintLoop, which advances the generation on its own cadence precisely
+	// because a refreshed cache reaches nobody otherwise (see remint.go, and
+	// TestARemintReachesTheFleetWithoutRestartingAScreen). The division is the
+	// same one overrideexpiry.go already draws: the derivation is what changes,
+	// the loop is what says so.
 	if genAfter, gerr := st.Generation(ctx); gerr != nil || genAfter != genBefore {
-		t.Errorf("generation moved from %d to %d (err %v) with no write — a re-mint is a re-derivation, not a mutation", genBefore, genAfter, gerr)
+		t.Errorf("generation moved from %d to %d with no write and no loop running (err %v) — deriving a snapshot must "+
+			"not mutate the store; the announcement is remintLoop's job", genBefore, genAfter, gerr)
 	}
 }
 

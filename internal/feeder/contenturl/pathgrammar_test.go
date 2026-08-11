@@ -78,13 +78,58 @@ import (
 // package that mints and verifies it.
 const grammarOwner = "internal/feeder/contenturl"
 
-// scanFloor is a conservative lower bound on the non-test .go files this walk
-// must reach. It exists because the failure mode of a source scan is not a wrong
-// answer, it is a SILENT one: the previous version skipped directories by bare
-// name, so any tree named `web` anywhere — `internal/app/web/`, say — was
-// invisible, and nothing said so. A count that collapses is the observable
-// symptom of that, whatever caused it.
-const scanFloor = 200
+// scanFloor is a lower bound on the non-test .go files this walk must reach. It
+// exists because the failure mode of a source scan is not a wrong answer, it is a
+// SILENT one: the previous version skipped directories by bare name, so any tree
+// named `web` anywhere — `internal/app/web/`, say — was invisible, and nothing
+// said so. A count that collapses is the observable symptom of that, whatever
+// caused it.
+//
+// It is deliberately CLOSE to actual (363 at the time of writing) rather than
+// conservative. At its first value of 200 it did not do the job it was added
+// for: a reviewer narrowed skipDir to also skip `internal/app` — a hundred files,
+// and the tree holding the api producers HV-1 was actually found on — and this
+// test still passed, because 263 clears 200 comfortably. A floor that survives
+// losing the most important quarter of the module is a floor that only detects
+// catastrophe.
+//
+// Deleting files is legitimate; the tripwire is meant to be re-armed by hand when
+// that happens, which is a one-line edit a reviewer can see, not a silent slide.
+const scanFloor = 340
+
+// requiredTrees is the coverage assertion the count alone cannot make: which
+// SUBTREES the walk must reach, and roughly how much of each.
+//
+// A global count is a single number that many different narrowings can satisfy;
+// this is what makes "the walk stopped entering the api package" a distinct,
+// named failure rather than an arithmetic one. The minimums are deliberately well
+// under actual (the parenthesised figures) — they are here to catch a tree going
+// to ZERO or near it, not to track its size.
+//
+// A tree is keyed by its first path segment, or its first two under `internal/`,
+// which is the granularity at which this module is actually organized.
+var requiredTrees = map[string]int{
+	"cmd":              8,  // 13: every binary, including the feeder that mounts the origin
+	"internal/app":     60, // 100: the api producers HV-1 was found on
+	"internal/feeder":  8,  // 13: the origin, the snapshot builder, this package
+	"internal/relay":   30, // 57: the relay-side producers REL-066d will add to
+	"internal/shared":  15, // 27: wire, where a url-bearing type would be declared
+	"internal/rules":   20, // 36
+	"internal/events":  8,  // 16
+	"conformance":      20, // 36: the contract suites
+	"scripts":          8,  // 15: the make-dev loops, one of which is allowlisted
+	"internal/archive": 4,  // 8: the export/restore path
+}
+
+// treeOf is the key requiredTrees is counted by: the first path segment, or the
+// first two under `internal/`.
+func treeOf(rel string) string {
+	parts := strings.Split(rel, "/")
+	if len(parts) >= 2 && parts[0] == "internal" {
+		return parts[0] + "/" + parts[1]
+	}
+	return parts[0]
+}
 
 // allowedSpellings are the paths permitted to spell a `content` path segment
 // outside the owner, each with the reason it is not the content-origin grammar.
@@ -93,16 +138,43 @@ const scanFloor = 200
 //
 // It is deliberately a written list rather than a pattern: two entries, each
 // with a reason a reader can check, is a baseline; a pattern is a hole.
+//
+// # The granularity, stated because it is coarser than it looks
+//
+// An exemption is per FILE (or per directory), not per literal. Nothing here
+// says "this one string in this one function"; it says "the heuristics do not
+// apply to anything in this file". So a second, genuinely wrong `content` path
+// spelled anywhere else in internal/app/api/api.go would go unflagged — the file
+// is 1200 lines of route mounting, and the exemption covers all of it. The
+// heuristics are the only thing exempted (the whole `/content/` grammar is still
+// reported from an allowlisted path, see the check in the walk), which is what
+// keeps the blast radius to half-spellings and joiner shapes.
+//
+// # The one shape that has no escape here
+//
+// If api/openapi.yaml ever grew a route like `GET /content/{asset_ref}`, the
+// generated code under api/gen/ would spell the whole `/content/` grammar as a
+// literal and this test would fail — and the allowlist could not silence it,
+// because an allowlisted path is exempt from the heuristics only, never from the
+// full grammar. That is the intended answer, not an oversight: a second route
+// serving content bytes is exactly the thing this guard exists to make someone
+// argue for. Whoever adds it changes the rule deliberately (or names the new
+// route something that is not this grammar), rather than dropping a line into a
+// map.
 var allowedSpellings = map[string]string{
 	// The app API's OWN /api/v1/content route — the upload and the listing. A
 	// different path space entirely: it is mounted under apiPrefix, it answers
 	// JSON, and it is where a caller GOES to be handed a minted url. It is not a
 	// producer of the origin's fetch grammar; the handler behind it mints
 	// through contenturl.Signer (internal/app/api/content.go).
+	//
+	// File-wide, per the note above: every literal in api.go is exempt from the
+	// heuristics, not just the route string this entry is about.
 	"internal/app/api/api.go": "the app api's own /api/v1/content route (upload + listing), not the content origin's fetch path",
 	// Generated from api/openapi.yaml, which describes that same app api. Nothing
 	// here can be a content-origin producer, because the document it is generated
-	// from does not describe the content origin.
+	// from does not describe the content origin — and if that ever stopped being
+	// true (a `/content/{asset_ref}` route), this entry would not save it.
 	"api/gen/": "generated client/server for the app api surface, from api/openapi.yaml",
 	// The `make dev` content smoke, which POSTs to that same /api/v1/content
 	// route and then fetches the url the SERVER returned — it constructs no
@@ -161,6 +233,7 @@ func TestEveryContentURLIsMintedByThisPackage(t *testing.T) {
 
 	scanned := 0
 	owned := 0
+	byTree := map[string]int{}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -182,6 +255,7 @@ func TestEveryContentURLIsMintedByThisPackage(t *testing.T) {
 			return nil
 		}
 		scanned++
+		byTree[treeOf(rel)]++
 		inOwner := strings.HasPrefix(rel, grammarOwner+"/")
 		// An allowlisted path is exempt from the HEURISTICS only — the half
 		// spellings and the joiner shapes, which are the rules that can mistake
@@ -256,8 +330,20 @@ func TestEveryContentURLIsMintedByThisPackage(t *testing.T) {
 	// a future narrowing of the walk visible instead of silent.
 	if scanned < scanFloor {
 		t.Errorf("the scan parsed only %d non-test .go files, fewer than the %d this module has had for a long time — "+
-			"the walk is skipping part of the tree, and a guard that stops reaching a directory fails by going quiet",
+			"the walk is skipping part of the tree, and a guard that stops reaching a directory fails by going quiet. "+
+			"If files were deliberately deleted, lower scanFloor in the same commit so the tripwire stays armed at the "+
+			"new size rather than being left with slack a future narrowing can hide in",
 			scanned, scanFloor)
+	}
+	// …and it reached each TREE, which is the failure a single total cannot
+	// express. Skipping `internal/app` alone — the api producers HV-1 was found on
+	// — leaves 263 files, which cleared the old floor of 200 with room to spare.
+	for tree, min := range requiredTrees {
+		if byTree[tree] < min {
+			t.Errorf("the scan parsed %d non-test .go files under %s/, fewer than the %d expected there — the walk is "+
+				"not reaching that tree, so every content-url producer inside it is invisible to this guard while the "+
+				"guard goes on passing", byTree[tree], tree, min)
+		}
 	}
 	// The allowlist is a liability, not a feature: an entry naming a file that no
 	// longer exists is an exemption nobody is watching.

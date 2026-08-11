@@ -158,14 +158,31 @@ const (
 	//
 	// # What closes it instead
 	//
-	// Bound the AGE OF THE MINT rather than stretching the deadline: the feeder's
-	// snapshot cache expires on SnapshotRemintInterval as well as on the store
-	// generation, so no generation is ever served with URLs older than half their
-	// own lifetime, whatever an operator does or does not author
-	// (cmd/waiveo-feeder's desiredStateSource). The mechanism was already there —
-	// that cache is ALREADY invalidated on an instant "for reasons no write will
-	// announce", the pending screen-override expiry — so this is one more term in
-	// the same bound, not a new moving part.
+	// Bound the AGE OF THE MINT rather than stretching the deadline: no relay is
+	// left holding URLs older than SnapshotRemintInterval, whatever an operator
+	// does or does not author. That takes TWO halves, and either alone is the
+	// same defect wearing a slower costume:
+	//
+	//   - the feeder's snapshot cache expires on SnapshotRemintInterval as well
+	//     as on the store generation, so a build whose URLs are half dead is
+	//     never SERVED again (cmd/waiveo-feeder's desiredStateSource). That
+	//     mechanism was already there — the cache is ALREADY invalidated on an
+	//     instant "for reasons no write will announce", the pending
+	//     screen-override expiry — so it is one more term in the same bound;
+	//   - and the feeder advances the store generation on the same interval
+	//     (cmd/waiveo-feeder's remintLoop), which is what makes the rebuild
+	//     LEAVE the feeder. A pull whose `since_generation` matches is answered
+	//     `state.unchanged` with no body at all (relayconn), the relay no-ops on
+	//     a generation it already holds, and its pull has no timer — it fires on
+	//     a nudge, and nudges come from store commits. So a re-mint at an
+	//     unchanged generation refreshes a cache nobody reads.
+	//
+	// The second half is affordable only because a re-mint does not disturb a
+	// screen: snapshot.programRevisionFor digests the program through
+	// revisionContent, which drops exactly the `exp`/`sig` a re-mint changes, so
+	// the nudged relay re-applies without any player treating it as a new program
+	// (PLY-090/108). Remove that reduction and this interval becomes a fleet-wide
+	// rotation restart twice a day.
 	//
 	// # The residual, which is REL-066d's to close
 	//
@@ -181,19 +198,24 @@ const (
 	// cliff further out.
 	SnapshotTTL = ServeTTL
 
-	// SnapshotRemintInterval is how often the feeder must rebuild its cached
-	// desired-state generation so the URLs in it are re-minted, independently of
-	// whether anyone authored anything (cmd/waiveo-feeder's desiredStateSource).
+	// SnapshotRemintInterval is how often the feeder re-mints the URLs in its
+	// desired-state generation and PUBLISHES that it has, independently of whether
+	// anyone authored anything: the cap on its snapshot cache
+	// (cmd/waiveo-feeder's desiredStateSource) and the cadence of its generation
+	// advance (cmd/waiveo-feeder's remintLoop) are the same interval, because they
+	// are the two halves of one guarantee.
 	//
 	// It lives here, beside the deadline it is derived from, because the two are
 	// one decision: a re-mint interval at or above SnapshotTTL is no bound at all,
 	// and changing either alone reintroduces the gap. Half the TTL is the ordinary
-	// choice — every URL a pull is answered with has at least half its life left,
-	// so the relay and the screens behind it have a full ServeTTL/2 of slack even
-	// if the feeder then goes away entirely.
+	// choice — every relay is nudged to re-pull at least this often, and the URLs
+	// the pull hands it are minted at that instant, so what a relay holds always
+	// has at least SnapshotTTL - SnapshotRemintInterval of life left in it: a full
+	// ServeTTL/2 of slack even if the feeder then goes away entirely.
 	//
-	// The cost is one snapshot rebuild every twelve hours on a site nobody is
-	// editing, which is a rebuild of in-memory rows: cheaper than the pull it is
+	// The cost is one row-less write transaction and one snapshot rebuild every
+	// twelve hours on a site nobody is editing, plus two extra pulls per relay per
+	// day. The rebuild is a rebuild of in-memory rows: cheaper than the pull it is
 	// answering.
 	SnapshotRemintInterval = SnapshotTTL / 2
 )

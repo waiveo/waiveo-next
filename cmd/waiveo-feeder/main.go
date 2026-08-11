@@ -1211,6 +1211,13 @@ func main() {
 	// self-limiting half does not happen until some unrelated write advances the
 	// generation.
 	go overrideExpiryLoop(context.Background(), st, nowMs, wake)
+	// Publish the content-URL re-mint (remint.go). desiredStateSource caps its
+	// cache so it can never SERVE a generation whose urls are half dead, but a
+	// rebuilt snapshot at an unchanged generation reaches nobody — relayconn
+	// answers `state.unchanged` with no body, and the relay's pull no-ops on a
+	// generation it already holds. Without this the fleet goes on serving the
+	// urls it pulled at T until they 403 at T+SnapshotTTL.
+	go remintLoop(context.Background(), st, contenturl.SnapshotRemintInterval)
 
 	cert, err := tls.X509KeyPair(id.TLSCertPEM(), id.TLSKeyPEM())
 	if err != nil {
@@ -1482,9 +1489,19 @@ func startWebhookDelivery(
 // So the cache window is also capped at contenturl.SnapshotRemintInterval, half
 // the life of the URLs the build stamped. That is what let SnapshotTTL come down
 // from thirty days to one: the deadline no longer has to outlive an authoring
-// lull, because a lull no longer means an un-re-minted snapshot. The relay-side
-// residual (an outage longer than the TTL, which only REL-066d closes) is
-// documented on SnapshotTTL itself.
+// lull, because a lull no longer means an un-re-minted snapshot.
+//
+// This cap is only the SERVING half of that, and on its own it would have been a
+// slower spelling of the same defect: a rebuilt snapshot at an unchanged
+// generation is answered `state.unchanged` with no body and never leaves this
+// process. remint.go is the other half — it advances the generation on the same
+// interval so the fleet actually pulls the fresh mint. Both are needed; neither
+// subsumes the other, and this one stays because a relay pulling for its own
+// reasons (a reconnect, a boot) must never be handed a build whose urls are
+// already half dead.
+//
+// The relay-side residual (an outage longer than the TTL, which only REL-066d
+// closes) is documented on SnapshotTTL itself.
 type desiredStateSource struct {
 	store          *store.Store
 	contentBaseURL string
