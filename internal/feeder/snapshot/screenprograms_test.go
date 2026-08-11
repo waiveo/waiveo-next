@@ -597,6 +597,38 @@ func TestDerivedContentMatchesRelaySideProjection(t *testing.T) {
 		}
 		assertProjectionsAgree(t, s)
 	})
+	// The video shapes, added because the two sides resolve an item's TYPE
+	// differently by construction (the app side carries the authored value, the
+	// relay side substitutes the required default) and because a video layer's
+	// url is derived by a second, independent copy of the same rule. Both are
+	// exactly the kind of near-duplicate that agrees on the day it is written;
+	// without a case that carries a video, the type and layer comparisons above
+	// only ever see items where the two sides trivially match.
+	t.Run("a scheduled video and a slide carrying one", func(t *testing.T) {
+		s := seededStore(t, asset)
+		castID := writeCast(t, s, datamodel.Cast{
+			ID: "01J8ZCASTPAR1TYV1DE0000001", ScopeNode: castScopeNode, Name: "Promo",
+			Slides: []datamodel.CastSlide{{ID: "promo", DurationMS: 12000, Layers: []wire.Layer{
+				{Kind: wire.LayerKindVideo, X: 0, Y: 0, W: 1920, H: 1080, AssetRef: asset},
+			}}},
+		})
+		replaceSeedPlaylistItems(t, s, []datamodel.PlaylistItem{
+			{Source: datamodel.PlaylistSourceAsset, AssetRef: asset, ContentType: datamodel.PlaylistContentTypeVideo},
+			{Source: datamodel.PlaylistSourceAsset, AssetRef: asset},
+			{Source: datamodel.PlaylistSourceCast, CastID: castID},
+		})
+		// The premise, asserted rather than assumed: the app side really did
+		// produce a video item and a surviving slide, so the comparison below is
+		// comparing something.
+		prog := programForScreen(t, buildSnapshot(t, s).Sections.ScreenPrograms, store.SeedScreenID)
+		if len(prog.Content) != 3 {
+			t.Fatalf("content = %d items, want 3 (video asset + image asset + the cast's one slide); got %+v", len(prog.Content), prog.Content)
+		}
+		if prog.Content[0].ContentType != datamodel.PlaylistContentTypeVideo {
+			t.Fatalf("content[0].content_type = %q, want %q", prog.Content[0].ContentType, datamodel.PlaylistContentTypeVideo)
+		}
+		assertProjectionsAgree(t, s)
+	})
 }
 
 // parityOrigin is the content origin both sides of the parity comparison derive
@@ -661,16 +693,41 @@ func assertProjectionsAgree(t *testing.T, s *store.Store) {
 		if derived.Content[i].DurationMS != content[i].DurationMS {
 			t.Errorf("content[%d].duration_ms: app-derived %d != relay-projected %d", i, derived.Content[i].DurationMS, content[i].DurationMS)
 		}
+		// The item's TYPE is what a player switches its renderer on, so the two
+		// sides disagreeing about it is a screen that shows a video at boot and
+		// a still frame the moment a daypart boundary makes the relay
+		// re-resolve — or the reverse. Compared through the REL-061a default
+		// (an absent content_type means `image`) because the two sides
+		// legitimately spell that default differently and must not be forced to
+		// agree on the spelling: a REL-061 ContentRef's content_type is
+		// optional, so the app side carries the authored value verbatim
+		// (including empty), while a Lease's `type` is required, so the relay
+		// side substitutes. What must agree is the RESOLVED type, which is what
+		// this compares.
+		if got, want := leaseContentTypeOf(content[i].Type), leaseContentTypeOf(derived.Content[i].ContentType); got != want {
+			t.Errorf("content[%d].type: app-derived %q != relay-projected %q", i, want, got)
+		}
 		// A slide item's substance is its layers, not an asset_ref/url — so the
 		// two projections must agree on the whole layer stack too (the seeded
 		// demo's last item is a slide, native slide rendering, parity milestone
-		// 2). Both derive image-layer URLs from the same origin through the same
+		// 2). Both derive content-layer URLs from the same origin through the same
 		// wire.ValidateSlideLayers gate, so a mismatch here is exactly the silent
 		// drift this test exists to catch.
 		if !reflect.DeepEqual(derived.Content[i].Layers, content[i].Layers) {
 			t.Errorf("content[%d].layers: app-derived %+v != relay-projected %+v", i, derived.Content[i].Layers, content[i].Layers)
 		}
 	}
+}
+
+// leaseContentTypeOf resolves a content item's type through REL-061a's stated
+// default, so the two projections' equivalent-but-differently-spelled answers
+// for an ordinary image item compare equal while a genuine disagreement (image
+// versus video) still fails.
+func leaseContentTypeOf(contentType string) string {
+	if contentType == "" {
+		return "image"
+	}
+	return contentType
 }
 
 // TestSlidePlaylistItemDerivesToASlideContentRef proves the producer side of the

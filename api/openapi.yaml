@@ -3780,19 +3780,24 @@ components:
       properties:
         kind:
           type: string
-          enum: [text, rect, image, clock, date, countdown, weather, entity]
+          enum: [text, rect, image, clock, date, countdown, weather, entity, video]
           description: >-
             The closed layer-kind set, and it MUST stay equal to
-            `internal/shared/wire`'s own (`slideLayerKinds`). The four LIVE
-            kinds beyond the static three plus `clock` are the widgets: `date`
-            and `countdown` are computed by the player from its own clock,
-            `weather` and `entity` are resolved by the box at Lease issuance
-            (`internal/slidelive`) and drawn verbatim. They are listed here
-            because this enum is the AUTHORING gate: a kind the player renders
-            and this enum omits is a widget nothing can ever create — the shape
-            of defect this repo keeps producing, and the one that shipped in
-            wave 1 (the four kinds landed on the wire and the player, and
-            `POST /casts` answered 422 for every one of them).
+            `internal/shared/wire`'s own (`slideLayerKinds`) — same members, same
+            order. The four LIVE kinds beyond the static three plus `clock` are
+            the widgets: `date` and `countdown` are computed by the player from
+            its own clock, `weather` and `entity` are resolved by the box at
+            Lease issuance (`internal/slidelive`) and drawn verbatim. `video` is
+            image's twin — the second kind whose substance is bytes in the
+            content origin, authored as an `asset_ref` and fetched +
+            content-address-verified by the player before it is presented — and
+            the only moving element a slide can carry; a player draws it as a
+            positioned Video node looped for the slide's dwell time. They are
+            all listed here because this enum is the AUTHORING gate: a kind the
+            player renders and this enum omits is a widget nothing can ever
+            create — the shape of defect this repo keeps producing, and the one
+            that shipped in wave 1 (the four widget kinds landed on the wire and
+            the player, and `POST /casts` answered 422 for every one of them).
         x:
           type: integer
           minimum: 0
@@ -3828,15 +3833,15 @@ components:
         asset_ref:
           type: string
           description: >-
-            An `image` layer's content-addressed `sha256:` reference — the only
-            half of an image layer that is AUTHORED. Its fetch `url` is derived
-            from the content origin at projection time.
+            An `image` or `video` layer's content-addressed `sha256:` reference
+            — the only half of a content-bearing layer that is AUTHORED. Its
+            fetch `url` is derived from the content origin at projection time.
         url:
           type: string
           description: >-
-            An `image` layer's direct content-origin fetch target, derived at
-            projection time and present on a SERVED slide. A create/update need
-            not supply it.
+            An `image` or `video` layer's direct content-origin fetch target,
+            derived at projection time and present on a SERVED slide. A
+            create/update need not supply it.
         target_ms:
           type: integer
           minimum: 1
@@ -4057,6 +4062,19 @@ components:
           enum: [asset, playable, cast]
         asset_ref:
           type: string
+        content_type:
+          type: string
+          enum: [image, video]
+          description: >-
+            What this `asset` item's bytes ARE, and therefore how a screen
+            presents them: `image` is drawn as a still for the item's dwell
+            time, `video` is played. Optional; an item that states none is
+            served as `image` (`relay/1` REL-061a's stated default for an absent
+            content_type), so every playlist authored before this field existed
+            behaves exactly as it did. Only meaningful on `source: "asset"` — a
+            `cast` item's content type is decided by its source — and stating it
+            on any other source is refused, rather than stored as an intent
+            nothing will honour.
         pack_id:
           type: string
         content_id:

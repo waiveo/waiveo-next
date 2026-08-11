@@ -186,13 +186,15 @@ const displayContent = "content"
 // as seconds*1000 when present and non-zero (REL-061a); an item with no override
 // carries no `duration_ms` key at all, per that field's `omitempty`.
 //
-// For an `asset` item `content_type` is deliberately left UNSET: REL-061a
-// defines an absent content_type as meaning `image` — this codebase's own
-// historical implicit value, applied by internal/relay/playerserver.
-// SetServedProgram — and a data-model/1 asset playlist item carries no
-// content-type column to source a better answer from. A `slide` item, by
-// contrast, is a distinct item KIND, so it states `content_type: "slide"`
-// explicitly — a fact its authored `source` field does contain.
+// For an `asset` item `content_type` is the item's OWN authored value
+// (datamodel.PlaylistItem.ContentType), carried through unchanged — which is
+// what makes an uploaded video playable rather than a still frame. An item that
+// states none carries none, and REL-061a defines an absent content_type as
+// meaning `image` (this codebase's own historical implicit value, applied by
+// internal/relay/playerserver.SetServedProgram), so every playlist authored
+// before that field existed projects byte-identically to before. A `slide`
+// item, by contrast, is a distinct item KIND, so it states `content_type:
+// "slide"` explicitly — a fact its authored `source` field does contain.
 //
 // The `url` grammar (`<base>/content/<hex>`) and the empty-origin degrade are the
 // same ones every content-serving path in this codebase uses (REL-061/140): with
@@ -240,10 +242,20 @@ func playlistContent(rowStore datamodel.RowStore, playlistID string, contentBase
 				continue // a pack `playable` has no direct content reference.
 			}
 			content = append(content, wire.ContentRef{
-				AssetRef:   item.AssetRef,
-				URL:        contentURL(contentBaseURL, item.AssetRef),
-				ExpiresAt:  contentURLExpiresAt,
-				DurationMS: durationMS,
+				AssetRef: item.AssetRef,
+				URL:      contentURL(contentBaseURL, item.AssetRef),
+				// The item's own authored `content_type` (DAT-041), carried
+				// VERBATIM — including the empty string an item that states none
+				// leaves, which REL-061a defines as `image`. Carrying it rather
+				// than normalizing keeps this projection a pure function of the
+				// authored row: every playlist written before the field existed
+				// still marshals with no `content_type` key and therefore still
+				// hashes to the same snapshot, while a `video` item reaches the
+				// relay as a video and the player plays it instead of trying to
+				// draw an MP4 as a Poster.
+				ContentType: item.ContentType,
+				ExpiresAt:   contentURLExpiresAt,
+				DurationMS:  durationMS,
 			})
 		}
 		return content
@@ -345,12 +357,20 @@ func resolveSlideLayers(slide *datamodel.Slide, contentBaseURL string) ([]wire.L
 func resolveLayers(authored []wire.Layer, contentBaseURL string) ([]wire.Layer, bool) {
 	layers := make([]wire.Layer, len(authored))
 	for i, l := range authored {
-		if l.Kind == wire.LayerKindImage {
-			// An image layer's URL is derived from the content origin, never
-			// authored — the same content-URL grammar and empty-origin degrade a
-			// plain asset item uses (contentURL). An empty origin leaves the URL
-			// empty, which ValidateSlideLayers then rejects, so a slide that could
-			// not fetch its image is dropped rather than served with a dead URL.
+		if wire.LayerFetchesContent(l.Kind) {
+			// A content-bearing layer's URL — an image's or a video's,
+			// wire.LayerFetchesContent naming the pair once — is derived from the
+			// content origin, never authored: the same content-URL grammar and
+			// empty-origin degrade a plain asset item uses (contentURL). An empty
+			// origin leaves the URL empty, which ValidateSlideLayers then rejects,
+			// so a slide that could not fetch its bytes is dropped rather than
+			// served with a dead URL.
+			//
+			// Asking the shared predicate rather than testing for `image` inline
+			// is what makes adding a content-bearing kind a one-line change in
+			// wire instead of a change that has to be remembered here AND in
+			// internal/relay/schedulehost — the two projections a screen must
+			// never see disagree.
 			l.URL = contentURL(contentBaseURL, l.AssetRef)
 		}
 		layers[i] = l

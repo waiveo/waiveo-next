@@ -60,6 +60,21 @@
                 },
                 {
                   "type": "select",
+                  "bind": "item.content_type",
+                  "visibleIf": { "compute": "eq", "args": ["item.source", { "lit": "asset" }] },
+                  "props": {
+                    "labelMsg": "msg:pl.item.kind",
+                    "options": {
+                      "kind": "literal",
+                      "items": [
+                        { "value": "image", "labelMsg": "msg:pl.item.kind.image" },
+                        { "value": "video", "labelMsg": "msg:pl.item.kind.video" }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "select",
                   "bind": "item.cast_id",
                   "visibleIf": { "compute": "eq", "args": ["item.source", { "lit": "cast" }] },
                   "props": {
@@ -111,7 +126,7 @@
             "press": {
               "verb": "repeat-add",
               "target": "items",
-              "itemDefault": { "source": "asset", "asset_ref": "", "duration_seconds": 10 }
+              "itemDefault": { "source": "asset", "asset_ref": "", "content_type": "image", "duration_seconds": 10 }
             }
           }
         },

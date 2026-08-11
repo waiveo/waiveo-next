@@ -1419,19 +1419,19 @@ export interface components {
         /** @description One positioned native element of a slide (`data-model/1` DAT-043). Layers are drawn in ARRAY ORDER — the index IS the z-order — inside a fixed 1920x1080 top-left-origin canvas a player scales to its panel, so geometry is authored against those bounds whatever the real resolution is. Every member beyond `kind` and the geometry is kind-specific. */
         SlideLayer: {
             /**
-             * @description The closed layer-kind set, and it MUST stay equal to `internal/shared/wire`'s own (`slideLayerKinds`). The four LIVE kinds beyond the static three plus `clock` are the widgets: `date` and `countdown` are computed by the player from its own clock, `weather` and `entity` are resolved by the box at Lease issuance (`internal/slidelive`) and drawn verbatim. They are listed here because this enum is the AUTHORING gate: a kind the player renders and this enum omits is a widget nothing can ever create — the shape of defect this repo keeps producing, and the one that shipped in wave 1 (the four kinds landed on the wire and the player, and `POST /casts` answered 422 for every one of them).
+             * @description The closed layer-kind set, and it MUST stay equal to `internal/shared/wire`'s own (`slideLayerKinds`) — same members, same order. The four LIVE kinds beyond the static three plus `clock` are the widgets: `date` and `countdown` are computed by the player from its own clock, `weather` and `entity` are resolved by the box at Lease issuance (`internal/slidelive`) and drawn verbatim. `video` is image's twin — the second kind whose substance is bytes in the content origin, authored as an `asset_ref` and fetched + content-address-verified by the player before it is presented — and the only moving element a slide can carry; a player draws it as a positioned Video node looped for the slide's dwell time. They are all listed here because this enum is the AUTHORING gate: a kind the player renders and this enum omits is a widget nothing can ever create — the shape of defect this repo keeps producing, and the one that shipped in wave 1 (the four widget kinds landed on the wire and the player, and `POST /casts` answered 422 for every one of them).
              * @enum {string}
              */
-            kind: "text" | "rect" | "image" | "clock" | "date" | "countdown" | "weather" | "entity";
+            kind: "text" | "rect" | "image" | "clock" | "date" | "countdown" | "weather" | "entity" | "video";
             x: number;
             y: number;
             w: number;
             h: number;
             /** @description The literal string for a `text` layer, and a FORMAT for every kind whose content is generated rather than authored. For `clock` and `date` it is the Go reference-time layout (`15:04:05`, `3:04 PM`, `Monday, January 2`) the player renders the current LOCAL time or date through — not a strftime string. For `countdown` it is an OPTIONAL remaining-time layout in that kind's own tiny grammar (`DD`/`D` days, `HH`/`H` hours, `MM`/`M` minutes, `SS`/`S` seconds; an empty text means the player's `HH:MM:SS`) — deliberately not a reference-time layout, because a duration has no hour-of-day. For `weather` it is the required display template the BOX substitutes into (`{temp}` °F, `{tempc}` °C, `{cond}`), and for `entity` the optional one (`{state}`, the whole template when omitted). Required for `text`, `clock`, `date` and `weather`; unused by `rect`/`image`. */
             text?: string;
-            /** @description An `image` layer's content-addressed `sha256:` reference — the only half of an image layer that is AUTHORED. Its fetch `url` is derived from the content origin at projection time. */
+            /** @description An `image` or `video` layer's content-addressed `sha256:` reference — the only half of a content-bearing layer that is AUTHORED. Its fetch `url` is derived from the content origin at projection time. */
             asset_ref?: string;
-            /** @description An `image` layer's direct content-origin fetch target, derived at projection time and present on a SERVED slide. A create/update need not supply it. */
+            /** @description An `image` or `video` layer's direct content-origin fetch target, derived at projection time and present on a SERVED slide. A create/update need not supply it. */
             url?: string;
             /** @description A `countdown` layer's target instant, in Unix epoch MILLISECONDS (UTC) — the same absolute-instant unit every other time on this wire uses, never a local wall time and never seconds. Absolute is what lets the player count down without knowing the authoring timezone. Required and strictly positive for `countdown`, unused elsewhere; a target already past renders as all zeroes rather than as a negative, so it is deliberately NOT rejected here. */
             target_ms?: number;
@@ -1504,6 +1504,11 @@ export interface components {
             /** @enum {string} */
             source: "asset" | "playable" | "cast";
             asset_ref?: string;
+            /**
+             * @description What this `asset` item's bytes ARE, and therefore how a screen presents them: `image` is drawn as a still for the item's dwell time, `video` is played. Optional; an item that states none is served as `image` (`relay/1` REL-061a's stated default for an absent content_type), so every playlist authored before this field existed behaves exactly as it did. Only meaningful on `source: "asset"` — a `cast` item's content type is decided by its source — and stating it on any other source is refused, rather than stored as an intent nothing will honour.
+             * @enum {string}
+             */
+            content_type?: "image" | "video";
             pack_id?: string;
             content_id?: string;
             /** @description The cast this entry plays, required when `source` is `cast`. It MUST name an existing cast row, and that cast cannot be deleted while this reference stands (DAT-043). */

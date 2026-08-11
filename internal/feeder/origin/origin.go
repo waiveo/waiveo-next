@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -426,6 +427,40 @@ const contentPathPrefix = "/content/"
 // hash. Mount it on the feeder's HTTPS listener (crypto/tls, using the
 // feeder's own signing.Identity TLS cert/key) so screens can fetch content
 // directly, never through the relay (REL-140).
+//
+// # Cache validators, and why they are unconditional here
+//
+// Every 200 carries a STRONG ETag and a year-long `immutable` freshness
+// lifetime, so a client that already holds an asset can revalidate it for the
+// price of a 304 with no body, or skip the request entirely.
+//
+// Both are trivially TRUE rather than optimistic, and that is the whole
+// argument: the request path IS the sha256 of the response body. Bytes cannot
+// change under their own hash, so there is no version of this resource that
+// differs from the one a client cached, ever — the usual worry with `immutable`
+// (a deploy quietly replacing a URL's content) is not merely unlikely here, it
+// is unrepresentable. The ETag is the digest itself for the same reason: it is
+// already the strongest validator such a resource can have, and computing a
+// second one would be inventing a weaker name for the same fact.
+//
+// This matters most for the fleet's largest assets. A screen re-polls its
+// program every ~10s (player-v3's wvProgramPollIntervalMs); before these
+// headers, a signage box's own LAN carried a full re-download of every
+// scheduled item on every poll, which for a video is the difference between an
+// idle link and a saturated one. The player's own content cache
+// (player-v3/source/Program.brs) is the primary fix — it skips the request
+// altogether — and these headers are what make the SAME saving available to
+// every other client of this origin (a browser preview, a proxy, curl) without
+// each having to reimplement content-addressed caching.
+//
+// `public` versus `private` follows the signing posture, and is the one part
+// that is not purely about immutability. Unsigned, the bytes are served to
+// anyone who knows the digest, so a shared cache holding them grants nothing
+// the origin does not. Signed (WithSigningKey), the URL carries an `exp` a
+// shared cache does NOT enforce — it would keep serving a stored response for
+// an expired signed URL — so the response is marked `private` and only the
+// requesting client may store it. The freshness lifetime is identical either
+// way: what expires is permission to fetch, never the validity of the bytes.
 func (s *Store) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(contentPathPrefix, func(w http.ResponseWriter, r *http.Request) {
@@ -446,7 +481,34 @@ func (s *Store) Handler() http.Handler {
 			apihttp.WriteProblem(w, r, apihttp.TraceID(r), http.StatusNotFound, "NOT_FOUND", "Not Found")
 			return
 		}
+		// Set BEFORE ServeContent: it reads the ETag header we set here to
+		// answer a conditional request (If-None-Match) with a bodyless 304, and
+		// a header written afterwards would be too late for that and for the
+		// 304's own header set. See this method's doc for why both values are
+		// unconditionally true of a content-addressed asset.
+		w.Header().Set("ETag", `"`+hexDigest+`"`)
+		w.Header().Set("Cache-Control", s.cacheControl())
 		http.ServeContent(w, r, hexDigest, time.Time{}, bytes.NewReader(b))
 	})
 	return mux
+}
+
+// contentMaxAgeSeconds is the freshness lifetime every content response
+// declares: one year, HTTP's conventional "effectively forever" (RFC 9111 caps
+// a meaningful value there). It is not a guess about how long an asset stays
+// interesting — a content-addressed body is valid for as long as the URL exists
+// — and it rides alongside `immutable`, which tells a client not to revalidate
+// even on a user-initiated reload.
+const contentMaxAgeSeconds = 31536000
+
+// cacheControl is the Cache-Control value for a content response: shareable
+// when this origin serves by address alone, per-client when it requires a
+// signed URL whose `exp` a shared cache would not enforce. Handler's doc has
+// the full argument.
+func (s *Store) cacheControl() string {
+	shareability := "public"
+	if len(s.signingKey) > 0 {
+		shareability = "private"
+	}
+	return shareability + ", max-age=" + strconv.Itoa(contentMaxAgeSeconds) + ", immutable"
 }

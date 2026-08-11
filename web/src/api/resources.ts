@@ -65,11 +65,25 @@ export type PairingCodeResult = components["schemas"]["PairingCodeResult"];
 export const PLAYLIST_ITEM_SOURCES = ["asset", "playable", "cast"] as const;
 export type PlaylistItemSource = (typeof PLAYLIST_ITEM_SOURCES)[number];
 
-/** A playlist item (DAT-041): `asset` (asset_ref), `playable` (pack_id +
- * content_id) or `cast` (cast_id). */
+/** What an `asset` item's bytes ARE, and therefore how a screen presents them
+ * (DAT-041 `content_type`): an `image` is drawn as a still for the item's dwell
+ * time, a `video` is played full-screen.
+ *
+ * It is the field that makes an uploaded video schedulable at all. Without it
+ * the projections had no authored answer to read, so every asset item was served
+ * as the wire's default `image` (REL-061a) and a scheduled MP4 reached the TV as
+ * a Poster showing nothing. It is optional on the wire — an item that omits it
+ * is still served as `image` — and only meaningful on `source: "asset"`; the
+ * server refuses it on any other source rather than storing an intent nothing
+ * honours, which is why it is listed under `asset` alone below. */
+export type PlaylistContentType = "image" | "video";
+
+/** A playlist item (DAT-041): `asset` (asset_ref + content_type), `playable`
+ * (pack_id + content_id) or `cast` (cast_id). */
 export interface PlaylistItem {
   source: PlaylistItemSource;
   asset_ref?: string;
+  content_type?: PlaylistContentType;
   pack_id?: string;
   content_id?: string;
   cast_id?: string;
@@ -78,7 +92,7 @@ export interface PlaylistItem {
 
 /** The members that belong to each `source`, and nothing else. */
 const ITEM_FIELDS_BY_SOURCE: Record<PlaylistItemSource, readonly (keyof PlaylistItem)[]> = {
-  asset: ["asset_ref"],
+  asset: ["asset_ref", "content_type"],
   playable: ["pack_id", "content_id"],
   cast: ["cast_id"],
 };

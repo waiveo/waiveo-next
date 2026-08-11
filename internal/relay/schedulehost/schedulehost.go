@@ -46,10 +46,13 @@ const (
 	// re-map display_power itself (data-model/1 line 391).
 	leaseDisplayContent = "content"
 
-	// leaseContentTypeImage is the single player/1 content `type` (PLY-083)
-	// the first-photon carries, matching playerserver.SetServedProgram's own
-	// constant `image` annotation. A real per-item content-type lookup is a
-	// later concern.
+	// leaseContentTypeImage is the player/1 content `type` (PLY-083) an asset
+	// item that states NO content_type of its own is served as — REL-061a's
+	// stated default and this codebase's own historical implicit value, exactly
+	// the default playerserver.SetServedProgram applies to the app-signed
+	// baseline. An item that DOES state one is served as that type
+	// (leaseContentTypeFor), which is how a scheduled video plays instead of
+	// being drawn as a still.
 	leaseContentTypeImage = "image"
 
 	// leaseContentTypeSlide is the player/1 content `type` (PLY-083) of a native
@@ -318,7 +321,7 @@ func playlistContent(store datamodel.RowStore, playlistID string, sign contentSi
 				continue // a pack `playable` has no direct Lease content ref.
 			}
 			content = append(content, wire.LeaseContent{
-				Type:       leaseContentTypeImage,
+				Type:       leaseContentTypeFor(item.ContentType),
 				AssetRef:   item.AssetRef,
 				URL:        sign.urlFor(item.AssetRef),
 				DurationMS: durationMS,
@@ -330,6 +333,27 @@ func playlistContent(store datamodel.RowStore, playlistID string, sign contentSi
 		return content
 	}
 	return nil
+}
+
+// leaseContentTypeFor resolves an asset playlist item's authored `content_type`
+// (datamodel.PlaylistItem.ContentType) to the player/1 Lease content `type`
+// (PLY-083) this projection stamps on it: the stated value when there is one,
+// `image` when there is not.
+//
+// A Lease content item's `type` is REQUIRED on the wire, so unlike the app-side
+// projection — which carries the authored value verbatim, empty string
+// included, because a REL-061 ContentRef's own content_type is optional — this
+// side must substitute the default itself. That asymmetry is deliberate and it
+// is the reason this is a named function on both sides of one rule rather than
+// an inline expression: playerserver.SetServedProgram applies the IDENTICAL
+// default when converting the app-signed baseline, so a screen sees the same
+// `type` whether it is playing the signed program or the relay's own
+// re-resolution of a daypart boundary.
+func leaseContentTypeFor(authored string) string {
+	if authored == "" {
+		return leaseContentTypeImage
+	}
+	return authored
 }
 
 // resolveSlideLayers projects an authored slide item's layer stack into the
@@ -355,7 +379,12 @@ func resolveSlideLayers(slide *datamodel.Slide, sign contentSigner) ([]wire.Laye
 func resolveLayers(authored []wire.Layer, sign contentSigner) ([]wire.Layer, bool) {
 	layers := make([]wire.Layer, len(authored))
 	for i, l := range authored {
-		if l.Kind == wire.LayerKindImage {
+		// wire.LayerFetchesContent, not an inline `== LayerKindImage`: it names
+		// the content-bearing kinds (image and video) in ONE place, shared with
+		// the validator and with snapshot.resolveLayers, so a kind cannot be
+		// admitted by validation on one side and left url-less by a projection
+		// on the other — which would drop the whole slide at serve time.
+		if wire.LayerFetchesContent(l.Kind) {
 			l.URL = sign.urlFor(l.AssetRef)
 		}
 		layers[i] = l
