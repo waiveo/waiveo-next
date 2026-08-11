@@ -243,6 +243,11 @@ export interface OffRailRoute {
 
 export const OFF_RAIL_ROUTES: OffRailRoute[] = [
   {
+    to: "/*",
+    reachedVia:
+      "The catch-all. Reached by an address that matches no route above — a stale link or a typo — and by definition never by navigation, so it is the one entry here whose absence from the rail is not a decision but a tautology. It renders INSIDE the shell so a dead URL still leaves the operator every route they could go to instead.",
+  },
+  {
     to: "/login",
     reachedVia:
       "The SessionGate redirects here when no session exists. It sits OUTSIDE the shell — a rail entry to the sign-in page would only ever be visible to someone already signed in.",
