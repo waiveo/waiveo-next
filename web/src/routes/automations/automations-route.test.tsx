@@ -1419,3 +1419,36 @@ describe("Automations list — whether a rule is even ON", () => {
     expect(within(off).queryByText("false")).not.toBeInTheDocument();
   });
 });
+
+describe("Automations builder — a clock-based trigger says it will not fire (HV-20)", () => {
+  // The platform accepts a `time`/`time_pattern`/`sun` trigger, stores it, ships
+  // it to the relay and loads it as an edge rule — and it then never fires.
+  // Engine.dispatchSchedule refuses to read the wall clock while the clock is
+  // untrusted (correct, RUL-370); a relay boots untrusted and never persists the
+  // state (REL-131); and clocktrust.Controller.ApplyVerifiedTime — documented as
+  // the ONLY path to trusted — has no production caller. Driven on hardware: a
+  // time rule authored twice at two future site-local times, generation applies
+  // confirmed both times, zero dispatches.
+  //
+  // Until a verified-time source exists, saying so where the choice is made is
+  // the honest minimum. The guard below is what keeps this from turning into a
+  // stale warning once it does.
+  async function chooseTriggerKind(kind: string) {
+    const user = userEvent.setup();
+    server.use(...liveLists([automation({ id: ULID_A, name: "Open the doors" })], HQ));
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+    await user.selectOptions(screen.getAllByLabelText("Trigger type")[0], kind);
+    return user;
+  }
+
+  it.each(["time", "time_pattern", "sun"])("warns for a %s trigger", async (kind) => {
+    await chooseTriggerKind(kind);
+    expect(await screen.findByText(/will not fire yet/i)).toBeInTheDocument();
+  });
+
+  it("does NOT warn for a state trigger, which works", async () => {
+    await chooseTriggerKind("state");
+    expect(screen.queryByText(/will not fire yet/i)).not.toBeInTheDocument();
+  });
+});

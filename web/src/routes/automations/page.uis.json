@@ -722,6 +722,50 @@
                       }
                     },
                     {
+                      "type": "text",
+                      "props": {
+                        "value": {
+                          "compute": "msg",
+                          "args": [
+                            "msg:auto.t.wallClockDead"
+                          ]
+                        },
+                        "announce": "polite"
+                      },
+                      "visibleIf": {
+                        "compute": "or",
+                        "args": [
+                          {
+                            "compute": "eq",
+                            "args": [
+                              "item.type",
+                              {
+                                "lit": "time"
+                              }
+                            ]
+                          },
+                          {
+                            "compute": "eq",
+                            "args": [
+                              "item.type",
+                              {
+                                "lit": "time_pattern"
+                              }
+                            ]
+                          },
+                          {
+                            "compute": "eq",
+                            "args": [
+                              "item.type",
+                              {
+                                "lit": "sun"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    {
                       "type": "switch",
                       "id": "trigger-kind-switch",
                       "props": {

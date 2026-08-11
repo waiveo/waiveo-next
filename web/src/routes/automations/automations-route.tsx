@@ -103,6 +103,11 @@ const messages: Record<string, string> = {
   "msg:auto.col.triggers": "Triggers",
   "msg:auto.col.actions": "Actions",
   "msg:auto.col.enabled": "Status",
+  // Stated where the choice is made, because the platform accepts this trigger,
+  // stores it, ships it to the relay and loads it — and it then never fires. See
+  // the guard in automations-route.test.tsx that fails when that stops being true.
+  "msg:auto.t.wallClockDead":
+    "Heads up — a clock-based trigger will not fire yet. A relay only runs these once its clock is verified, and this build has no verified-time source, so a relay stays unverified for its whole life. The rule saves and loads normally; nothing will run it. State, numeric and event triggers are unaffected.",
   "msg:auto.detail.title": "Automation",
   "msg:auto.detail.empty": "Select an automation to edit it, or add a new one.",
   "msg:auto.detail.name": "Name",
