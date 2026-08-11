@@ -291,6 +291,25 @@ func (srv *server) auditRouteOf(r *http.Request) (auditRoute, bool) {
 	case family == "workspace" && len(segs) == 2 && r.Method == http.MethodPost:
 		return auditRoute{action: "workspace." + segs[1], resourceType: "workspace"}, true
 
+	// DELETE /workspace/archives/{name} — reclaiming ONE backup container
+	// (workspacearchives.go).
+	//
+	// Enumerated here for exactly the reason the arm above gives, and it is not a
+	// hypothetical: the generic reading of a three-segment DELETE is
+	// `<family>.<method verb>`, which spells this `workspace.delete` — the same
+	// action name the arm above gives to the data-subject operation that ERASES
+	// THE ENTIRE DEPLOYMENT. Two acts a thousand times apart in consequence would
+	// have been indistinguishable in the one record that is supposed to tell them
+	// apart, and the fallback would have been confidently wrong rather than
+	// merely coarse.
+	//
+	// The subject is the container, so its name is the id. There is no scope-node
+	// placement to file at: a container is the whole workspace in one file, which
+	// is why the operation is owner-only in the first place, so the record files
+	// at the deployment fallback like its two siblings.
+	case family == "workspace" && len(segs) == 3 && segs[1] == "archives" && r.Method == http.MethodDelete:
+		return auditRoute{action: "workspace.archive-delete", resourceType: "workspace", id: segs[2]}, true
+
 	// POST /entities/{id}/commands — a command dispatched at a physical device.
 	case family == "entities" && len(segs) == 3 && segs[2] == "commands":
 		return auditRoute{
