@@ -200,6 +200,21 @@ func (h *Host) EntityState(entityID string) (string, bool) {
 // from store (a silently-empty durable buffer would be indistinguishable from
 // durable loss, REL-090).
 func New(store *identity.Store, dc deviceclass.Registry, controller deviceplane.DeviceController, resolveEntity deviceplane.EntityResolver, relayID string) (*Host, error) {
+	return newWithClock(store, dc, controller, resolveEntity, relayID, sysClock{})
+}
+
+// newWithClock is New with the engine's time source as a parameter. It exists so
+// this package's own tests can drive the TIME-driven mechanisms — `delay`
+// resumption, `for`-holds, the stabilization release, schedule triggers — against
+// a clock.FakeClock they step exactly, rather than against wall-clock sleeps. The
+// rules/1 corpus's conformance notes require precisely that ("an injectable/fake
+// clock in the driver harness, not wall-clock sleeps"), and it is the only way a
+// test of a 30-second delay does not take 30 seconds.
+//
+// It is unexported and New is the only production entry point, so the running
+// binary can only ever get sysClock: there is no seam here for a caller to hand
+// the relay a clock that does not tick.
+func newWithClock(store *identity.Store, dc deviceclass.Registry, controller deviceplane.DeviceController, resolveEntity deviceplane.EntityResolver, relayID string, clk clock.Clock) (*Host, error) {
 	buf, err := telemetry.NewDurableBuffer(store, telemetryCapacity)
 	if err != nil {
 		return nil, fmt.Errorf("automationhost: resume durable telemetry buffer: %w", err)
@@ -214,7 +229,6 @@ func New(store *identity.Store, dc deviceclass.Registry, controller deviceplane.
 	surface := deviceplane.NewCommandSurface(controller, dc, resolveEntity,
 		deviceplane.WithCommandSource("automation"))
 	sink := automation.NewCommandSink(surface, relayID)
-	clk := sysClock{}
 	reg := registry.FromDeviceClass(dc, registry.Overlay{})
 	eng := engine.New(reg, clk, sink, nil)
 

@@ -957,12 +957,17 @@ func main() {
 	installInventory(applied.DeviceInventory)
 
 	go poller.Run(rootCtx)
-	go func() {
-		if err := host.Run(rootCtx, poller); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("waiveo-relay: device-state drive loop ended: %v", err)
-		}
-	}()
-	log.Printf("waiveo-relay device polling live (every %s; targets follow the adopted set)", cfg.pollInterval)
+
+	// Start the edge engine's TWO drive loops — the observation loop over the
+	// poller's stream and the time loop that advances `delay` resumption,
+	// `for`-holds, the stabilization release and every wall-clock trigger. They
+	// start together, from one named call, because an engine driven by only one
+	// of them is silently broken rather than merely reduced; see
+	// startAutomationDriveLoops' own doc for what shipped dead when the time
+	// half was missing.
+	startAutomationDriveLoops(rootCtx, host, poller, automationTickInterval)
+	log.Printf("waiveo-relay device polling live (every %s; targets follow the adopted set); edge engine time drive live (every %s)",
+		cfg.pollInterval, automationTickInterval)
 
 	// Screen keep-alive (internal/relay/keepalive, player/1 PLY-150-157): a
 	// second, independent ECP poller over the adopted set that re-launches a
@@ -1644,10 +1649,15 @@ func bootAutomationStack(store *identity.Store, relayID identity.RelayIdentity, 
 	if err := host.SetLocation(site.TZ, site.Lat, site.Long); err != nil {
 		return nil, fmt.Errorf("adopt site_binding tz %q into engine: %w", site.TZ, err)
 	}
+	scheduleFloorMs := seedScheduleFloor(host, store, time.Now().UnixMilli())
 	if err := host.ApplyEdgeRules(applied.EdgeRules, int(applied.Generation)); err != nil {
 		return nil, err
 	}
-	log.Printf("waiveo-relay automation engine loaded: %d edge rule(s); device plane + durable telemetry ready", host.EdgeRuleCount())
+	// The schedule floor is logged because it is the one input to the first tick
+	// an operator cannot otherwise see, and it decides how far back that tick
+	// catches missed schedule occurrences up (RUL-350/370).
+	log.Printf("waiveo-relay automation engine loaded: %d edge rule(s); schedule resume cursor at %s; device plane + durable telemetry ready",
+		host.EdgeRuleCount(), time.UnixMilli(scheduleFloorMs).Format(time.RFC3339))
 	return host, nil
 }
 

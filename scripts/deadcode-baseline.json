@@ -207,15 +207,9 @@
     },
     {
       "package": "internal/rules/engine",
-      "reason": "The rules engine's TICK LOOP \u2014 seed the schedule floor, tick, dispatch schedules, step trigger ticks, resume a delay, and the stabilization window around it \u2014 is driven by rules/1's corpus driver, which lives in this module as internal/rules/eval_corpus_test.go rather than under conformance/drivers, and by nothing in either binary. So the engine is measured against the contract without being run in production. Wiring it into the relay is what closes this group; it must not be deleted. Load/SeedEntityState/seedTriggerBaseline joined them when POST /automations/{id}/run stopped synthesizing a device observation through a throwaway engine: a MANUAL run has no trigger history to seed and no generation to load \u2014 it evaluates the rule's conditions and runs its actions directly (internal/app/api/automations_exec.go, which explains why). The relay loads rules through ApplyGeneration, never Load, so the single-rule entry point now has no production caller at all. It is kept rather than deleted because it is the engine's own documented unit-level entry point and its corpus and unit drivers use it.",
+      "reason": "What is LEFT of the rules engine's unwired surface, now that the tick loop is driven. The engine's TIME drive \u2014 Tick, and the schedule dispatch, trigger-tick, delay resumption, stabilization release and schedule-floor seed under it \u2014 used to sit here, measured against the contract by rules/1's corpus driver (internal/rules/eval_corpus_test.go) and called by neither binary; cmd/waiveo-relay now drives all of it through automationhost.Host.TickLoop, so those entries are gone from this group rather than explained in it. SetStabilizationWindow remains DELIBERATELY un-opted-in: the RUL-301 gate is off unless a caller sets a window, the contract fixes no binding duration (its own draft-note defers concrete defaults to review), and turning it on delays every newly-eligible trigger's first dispatch \u2014 an owner decision, not a wiring gap. releaseStabilized runs on every tick and simply has nothing armed to release until that decision is made. Load/SeedEntityState/seedTriggerBaseline joined this group when POST /automations/{id}/run stopped synthesizing a device observation through a throwaway engine: a MANUAL run has no trigger history to seed and no generation to load \u2014 it evaluates the rule's conditions and runs its actions directly (internal/app/api/automations_exec.go, which explains why). The relay loads rules through ApplyGeneration, never Load, so the single-rule entry point has no production caller at all, and the relay's ECP poller seeds an entity through its own first self-transition observation rather than through SeedEntityState (internal/relay/ecppoll's own doc says so). They are kept rather than deleted because they are the engine's documented unit-level entry points and its corpus and unit drivers use them.",
       "funcs": [
-        "Engine.SeedScheduleFloor",
-        "Engine.Tick",
-        "Engine.dispatchSchedule",
-        "Engine.stepTriggerTick",
-        "Engine.resumeDelay",
         "Engine.SetStabilizationWindow",
-        "Engine.releaseStabilized",
         "Engine.Load",
         "Engine.SeedEntityState",
         "Engine.seedTriggerBaseline"
