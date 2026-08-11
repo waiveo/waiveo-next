@@ -72,9 +72,16 @@ const REFRESH_MS = 10_000;
  * as a content transfer in progress — never-wipe means the PREVIOUS program is
  * still on the wall throughout, so this is not a fault and must not wear the
  * warning colour. It is not `ok` either: nothing has been heard back. */
+/** `rejected` is the one that DOES get the error colour, and it is the only
+ * reachability that earns it. The others are all statements about what has or
+ * has not been heard; this one is a screen telling us, or showing us, that it
+ * will not take what the platform is sending. Something is broken, it is
+ * broken now, and an operator can act on it — which is the whole test for
+ * spending the error colour. */
 const REACHABILITY_STATUS: Record<string, Status> = {
   live: "ok",
   fetching: "pending",
+  rejected: "error",
   stale: "warn",
   never_seen: "pending",
 };
@@ -82,6 +89,7 @@ const REACHABILITY_STATUS: Record<string, Status> = {
 const REACHABILITY_LABEL: Record<string, string> = {
   live: "Live",
   fetching: "Collecting content",
+  rejected: "Refusing its program",
   stale: "Not heard from",
   never_seen: "Never seen",
 };
@@ -99,6 +107,22 @@ export function formatAge(ms: number): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
+}
+
+/** What a row's Status cell says UNDER the chip when a screen is refusing its
+ * program: the player's own reason, which is the actionable half of the state.
+ *
+ * The relay carries PLY-091's `reason` verbatim (truncated, never reworded)
+ * because "content fetch failed: HTTP 403" and "signature invalid" send an
+ * operator to completely different places, and a console that substituted its
+ * own phrasing for the player's would be inventing the diagnosis it is meant to
+ * be relaying. When the refusal was inferred from repeated unacknowledged pulls
+ * rather than stated, there IS no reason and this says what was actually
+ * observed instead — never a guess at why. */
+export function rejectionDetail(row: ScreenStatus): string | null {
+  if (row.reachability !== "rejected") return null;
+  if (row.reject_reason) return `The screen refused it: ${row.reject_reason}`;
+  return `Handed ${row.unacked_pulls} program${row.unacked_pulls === 1 ? "" : "s"} it never confirmed`;
 }
 
 /** ScreenStatus fields NO SHIPPED PRODUCER POPULATES, and therefore fields this
@@ -125,51 +149,64 @@ export const SCREEN_STATUS_FIELDS_WITH_NO_SHIPPED_PRODUCER = [
   "render_asset_ref",
 ] as const;
 
-/** What a row's "Now playing" cell should say, from the facts the server gives:
- * what the relay last handed the screen, and whether it is currently collecting
- * new content.
+/** What a row's "Now playing" cell should say, from the facts the server gives
+ * about what the screen ACCEPTED — never from what it was handed.
  *
  * Exported and pure so it is testable on its own: the phrasing IS the feature
  * here, and a cell that says "Showing content" for a screen showing nothing is
  * the failure mode.
  *
- * The clause ORDER is load-bearing and was wrong. `fetching` came first and
- * therefore pre-empted `display === "blank"`, so a screen scheduled off was
- * described as downloading content.
+ * # It reads acked_*, and that is the correction this cell most needed
  *
- * # Why the fetching clause says nothing about the wall, in EITHER direction
+ * It used to read `display` and `content_count` — the program the relay HANDED
+ * the screen. Those are the platform's intent, and a screen that refuses a
+ * program leaves them describing the program it refused. On The Hanger on
+ * 2026-08-11 this cell reported a two-item program on a wall that was rejecting
+ * exactly that program and drawing an hour-old slide, for a whole session; and
+ * earlier the same day it reported "Blank (scheduled off)" about a TV visibly
+ * showing content, because a blank program had been sent and never taken.
  *
- * It used to claim "still showing the last" unconditionally, which was wrong for
- * a screen collecting its first-ever program. The obvious repair — split on
- * whether the screen has ever reported a render — was worse, because that
- * evidence never arrives: see SCREEN_STATUS_FIELDS_WITH_NO_SHIPPED_PRODUCER. On
- * real hardware the split always took the never-rendered side, so a screen that
- * had been showing the same program all week and was picking up an update read
- * "Collecting its first content (nothing on screen yet)" — a positive false claim
- * about a physical wall, on EVERY update rather than once per screen.
+ * `acked_*` is what the screen confirmed (PLY-091). The shipped player fetches
+ * and verifies every asset BEFORE it acknowledges, and never-wipe keeps an
+ * accepted program on the wall until another is accepted — so an acceptance is
+ * the strongest evidence about the glass this platform has short of PLY-110,
+ * which nothing ships (see SCREEN_STATUS_FIELDS_WITH_NO_SHIPPED_PRODUCER).
  *
- * So this states only what the box actually knows: a transfer is in progress.
- * What is on the wall meanwhile is a question the relay has no answer to, and the
- * honest cell is the one that does not pretend otherwise. (What never-wipe
- * guarantees is that the outgoing program stays up — so "downloading" already
- * implies the operator should wait rather than drive out, without asserting
- * anything about which frame is on the glass.) When the player implements
- * PLY-110, this clause can grow the distinction back, with evidence behind it. */
+ * # The clause ORDER is load-bearing and has been wrong twice
+ *
+ * `fetching` used to come before the blank check, so a screen scheduled off was
+ * described as downloading content. It is now not a clause here at all: whether
+ * a transfer is in progress is what the Status column says, and this column
+ * answers a different question — what the screen last took — which a transfer
+ * does not change. A screen mid-update therefore keeps reporting its previous
+ * program here, which is precisely what never-wipe guarantees is on the wall.
+ *
+ * # What it will not claim
+ *
+ * "Nothing confirmed yet" for a screen that has never acknowledged anything is a
+ * statement about this platform's evidence, not about the wall — deliberately,
+ * because the earlier attempt at that distinction ("Collecting its first content
+ * (nothing on screen yet)") made a positive claim about a physical screen from a
+ * field no player sends, and got it wrong on every update. */
 export function nowPlayingLabel(row: ScreenStatus): string {
   if (row.reachability === "never_seen") {
     return row.program_revision ? "Waiting to collect its program" : "Nothing assigned";
   }
-  // Scheduled off is a fact about the program the screen was HANDED, and it
-  // outranks the transfer state: a blank program has nothing to fetch, so
-  // "downloading new content" about one is describing work that is not
-  // happening, and "Blank (scheduled off)" is the answer to the question the
-  // operator is actually asking.
-  if (row.display === "blank") return "Blank (scheduled off)";
-  if (row.reachability === "fetching") return "Downloading new content";
+  // Nothing has ever been acknowledged, so nothing is confirmed. `-1` is the
+  // never sentinel and is what separates this from an accepted BLANK program,
+  // which is legitimately empty in every acked_* field.
+  if (row.last_ack_age_ms < 0) return "Nothing confirmed yet";
+  // Scheduled off, as the screen itself confirmed it. This outranks the item
+  // count for the same reason it always did: a blank program has nothing to
+  // show, and "Blank (scheduled off)" is the answer to the question the operator
+  // is actually asking.
+  if (row.acked_display === "blank") return "Blank (scheduled off)";
   if (row.render_asset_ref) {
-    return `Rendering ${row.content_count} item${row.content_count === 1 ? "" : "s"}`;
+    return `Rendering ${row.acked_content_count} item${row.acked_content_count === 1 ? "" : "s"}`;
   }
-  if (row.content_count > 0) return `Sent ${row.content_count} item${row.content_count === 1 ? "" : "s"}`;
+  if (row.acked_content_count > 0) {
+    return `Accepted ${row.acked_content_count} item${row.acked_content_count === 1 ? "" : "s"}`;
+  }
   return "Nothing to show";
 }
 
@@ -320,6 +357,13 @@ export function LiveScreensPanel({ api, autoRefresh = true }: LiveScreensPanelPr
               <span className="text-xs text-muted-foreground">
                 Last check-in {formatAge(r.last_pull_age_ms)}
               </span>
+              {/* Why it is refusing, in the player's own words. A chip that said
+                  only "Refusing its program" would move the operator from "no
+                  idea what is wrong" to "no idea why", which is most of the same
+                  trip. */}
+              {rejectionDetail(r) ? (
+                <span className="text-xs text-[color:var(--wv-err)]">{rejectionDetail(r)}</span>
+              ) : null}
             </div>
           );
         },

@@ -896,7 +896,9 @@ export interface paths {
          * List live screen status
          * @description Returns one entry per authored screen row, joining what the row says with what the site's relays have observed of it and whether an operator currently has a push-now override on it.
          *
-         *     Every age is milliseconds before this response, and `-1` means the contact has NEVER been observed — a distinct state from a large age, and the one a screen that was never switched on is in. `reachability` is derived from three observations (`last_pull_age_ms`, `last_ack_age_ms`, `unacked_pulls`) against three published thresholds (`live_window_ms`, `content_transfer_window_ms`, `fetching_max_unacked_pulls`); every input and every line is on the row so a consumer can draw its own.
+         *     Every age is milliseconds before this response, and `-1` means the contact has NEVER been observed — a distinct state from a large age, and the one a screen that was never switched on is in. `reachability` is derived from four observations (`last_pull_age_ms`, `last_ack_age_ms`, `unacked_pulls`, `rejected`) against three published thresholds (`live_window_ms`, `content_transfer_window_ms`, `fetching_max_unacked_pulls`); every input and every line is on the row so a consumer can draw its own.
+         *
+         *     Two families of program fields, and the difference between them is the whole point of this operation. `program_revision`/`priority`/`display`/ `content_count` are what the relay HANDED the screen — the platform's intent. `acked_*` are what the screen ACCEPTED, and `rejected` / `reject_reason` are what it refused. A console that renders the first family as "now playing" reports what was sent as though it were what is showing, which on real hardware said a wall was playing a two-item program while the player was refusing it and drawing an hour-old slide.
          *
          *     The third of each pair is the one that separates a screen downloading a large video from a screen that answers every program pull, fails every content fetch and never acknowledges anything. Both look identical in the ages — a pull with no ack after it — and the second one keeps producing new ones, which is what `unacked_pulls` counts.
          *
@@ -2001,10 +2003,10 @@ export interface components {
             /** @description The relay whose report this status came from; absent when no relay has reported this screen. */
             relay_id?: string;
             /**
-             * @description `live` — the screen contacted its relay within `live_window_ms` (a program pull, or the acknowledgement that answers one). `fetching` — the relay handed this screen a Lease it has not acknowledged, the pull is within `content_transfer_window_ms`, and no more than `fetching_max_unacked_pulls` pulls are outstanding: the shipped player would still be downloading and verifying the content, during which the PREVIOUS program stays on the wall. Not a fault, and not a confirmation either — nothing has been heard back. `stale` — contact was made at some point, but not recently, or the screen is asking again and again and confirming nothing. `never_seen` — no relay has ever observed this screen pull a program.
+             * @description `live` — the screen contacted its relay within `live_window_ms` (a program pull, or the acknowledgement that answers one) and is not refusing what it was handed. `fetching` — the relay handed this screen a Lease it has not acknowledged, the pull is within `content_transfer_window_ms`, and no more than `fetching_max_unacked_pulls` pulls are outstanding: the shipped player would still be downloading and verifying the content, during which the PREVIOUS program stays on the wall. Not a fault, and not a confirmation either — nothing has been heard back. `rejected` — the screen is in contact and is NOT taking the program it was handed: it either said so (`player/1` PLY-091's `accepted: false`, and `reject_reason` carries its words) or it has re-pulled past `fetching_max_unacked_pulls` while confirming nothing. What is on the wall is `acked_*`, not the program `program_revision` names. Judged before `live`, because a screen polling on cadence has a fresh contact whatever it does with the answer — this state is unreachable as a case ordered after it. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
              * @enum {string}
              */
-            reachability: "live" | "fetching" | "stale" | "never_seen";
+            reachability: "live" | "fetching" | "rejected" | "stale" | "never_seen";
             /** @description How far past `live_window_ms` an unacknowledged pull is still reported `fetching` rather than `stale` — one whole content-fetch timeout, the player's own limit on a single transfer. Published for the same reason as `live_window_ms`: a consumer that wants to treat `fetching` as `stale` needs to know which line it is disagreeing with. */
             content_transfer_window_ms: number;
             /** @description The most outstanding pulls a screen may have and still be reported `fetching` rather than `stale`. A screen genuinely materialising content has exactly one (the transfer is serialised inside the player's poll loop); the allowance on top absorbs a single failed iteration. Past it the screen has abandoned more Leases than a transient failure explains, which no age threshold can express — such a screen answers every pull, so its `last_pull_age_ms` resets before any window can expire it. */
@@ -2023,7 +2025,7 @@ export interface components {
             unacked_pulls: number;
             /** @description Milliseconds since the relay report this status came from arrived, or `-1` when no report has. It is what distinguishes a screen that stopped talking to its relay from a relay that stopped talking to this app peer. */
             report_age_ms: number;
-            /** @description The `program_revision` this screen was last handed (or, if it has never pulled, the one waiting for it). */
+            /** @description The `program_revision` this screen was last handed (or, if it has never pulled, the one waiting for it). This and the three fields below it are the platform's INTENT for the screen: they say what was sent, never what became of it. A screen refusing its program leaves them describing the program it refused. */
             program_revision?: string;
             /**
              * @description That program's `player/1` PLY-108 priority — `preempt` is an operator's push-now takeover.
@@ -2034,6 +2036,21 @@ export interface components {
             display?: "content" | "blank";
             /** @description How many content items that program carried. */
             content_count: number;
+            /** @description The `program_revision` this screen last ACCEPTED (`player/1` PLY-091). This and the two fields below are the only program facts on this row the screen itself has confirmed, and are what a console renders as what the wall is showing: the shipped player materialises every asset before acknowledging, and never-wipe keeps an accepted program up until another is accepted. Absent when the screen has accepted nothing, which `last_ack_age_ms: -1` distinguishes from an accepted `blank` program. */
+            acked_program_revision?: string;
+            /**
+             * @description The `display` of that accepted program.
+             * @enum {string}
+             */
+            acked_display?: "content" | "blank";
+            /** @description How many content items that accepted program carried. */
+            acked_content_count: number;
+            /** @description Whether this screen refused a Lease (`player/1` PLY-091's `accepted: false`) and has accepted nothing since. A refusal is cleared by an acceptance and by nothing else, so `true` is a standing fact rather than a historical one. `false` is also what a relay too old to report acceptance produces, which is the reading that claims the least. */
+            rejected: boolean;
+            /** @description The `program_revision` that refusal named. */
+            rejected_program_revision?: string;
+            /** @description The player's own words for why it refused — PLY-091 requires a `reason` with `accepted: false`, and it is the actionable content of the `rejected` state ("content fetch failed: HTTP 403" and "signature invalid" send an operator to different places). Truncated by the relay before reporting. */
+            reject_reason?: string;
             /** @description The asset this screen last reported actually putting on screen. */
             render_asset_ref?: string;
             /** @description The operator's active push-now override, absent when the screen is following its schedule. */
@@ -2151,6 +2168,8 @@ export interface components {
             live: number;
             /** @description How many screens were handed a Lease they have not yet acknowledged, recently enough that the player would still be transferring its content AND without having abandoned more Leases than a single transient failure explains. Counted apart from both neighbours: such a screen is still showing its previous program, so it is neither confirmed healthy nor a screen to go and look at. Both conditions matter to the grade this roll-up carries — a screen that answers every pull and never acknowledges is `stale`, and a whole site of them is `down`, which is what a count bounded on age alone could never reach. */
             fetching: number;
+            /** @description How many screens are IN CONTACT and not taking what they are handed (`ScreenStatus.reachability`). Counted apart from `stale` because the two send an operator to different places — one screen has gone quiet, the other is answering every poll and refusing every program — and apart from `live` because folding it there is the roll-up that reported a healthy fleet while nothing on it had accepted anything for an hour. Like `stale`, it does NOT keep the fleet out of the `down` grade: a wall nothing reaches is dark whether it is silent or argumentative. */
+            rejected: number;
             stale: number;
             never_seen: number;
             paired: number;

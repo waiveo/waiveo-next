@@ -9,9 +9,11 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"log"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1244,5 +1246,76 @@ func TestAdoptCarriedStateIsIgnoredOnceTheResolverHasResolved(t *testing.T) {
 	r.Tick(demoLocalInstant(t, 15, 0), sink)
 	if calls := ctrl.calls(); len(calls) != 1 {
 		t.Fatalf("a tick after a late AdoptCarriedState dispatched %v, want still exactly 1 — the baseline was clobbered and the edge re-manufactured", calls)
+	}
+}
+
+// TestAFiredPresetIsVisibleWhetherOrNotItReachedADevice is the observability
+// half of DAT-092, and the case that cost a hardware session.
+//
+// A preset batch bound to the effective daypart was forced through three full
+// applies. Each one logged that the schedule resolved and served, none logged a
+// dispatch, and the conclusion drawn from that silence — that the preset had not
+// fired — was wrong: it fired every time, at an entity the relay could not
+// resolve. The batch outcome that would have said so was computed on every fire
+// and thrown away by Tick and TickBoot, and the resolve→refuse path returns
+// before the controller wrapper that logs dispatches.
+//
+// Both halves are asserted here because either alone leaves the same ambiguity:
+// a line only on failure cannot answer "did it fire", and a line only on success
+// cannot answer "did anything happen".
+func TestAFiredPresetIsVisibleWhetherOrNotItReachedADevice(t *testing.T) {
+	for _, tc := range []struct {
+		why      string
+		resolve  deviceplane.EntityResolver
+		wantSays []string
+	}{
+		{
+			why:      "every command reached a device",
+			resolve:  func(id string) (string, string, bool) { return id + "-device", "media-player", true },
+			wantSays: []string{"preset batch", "fired 1 command(s)", "complete"},
+		},
+		{
+			why:     "the relay could not resolve the target entity",
+			resolve: func(string) (string, string, bool) { return "", "", false },
+			wantSays: []string{
+				// The fire itself, which is the question that was answered wrongly.
+				"preset batch", "fired 1 command(s)", "failed",
+				// And what became of it, from the surface's own refusal.
+				"NOT DISPATCHED", "resolves to no adopted device class",
+			},
+		},
+	} {
+		t.Run(tc.why, func(t *testing.T) {
+			var logged bytes.Buffer
+			prevOut, prevFlags := log.Writer(), log.Flags()
+			log.SetOutput(&logged)
+			log.SetFlags(0)
+			t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
+
+			store, errs := BuildStore(buildDemoSection(t))
+			if len(errs) != 0 {
+				t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
+			}
+			srv, _ := newTestPlayerServer(t)
+			r := NewResolver(store, demoScreenScopeNodeID, testServedScreenID, srv, 1, "", nil)
+			surface := deviceplane.NewCommandSurface(&recordController{}, registry.FixtureRegistry{}, tc.resolve,
+				deviceplane.WithCommandSource("preset"))
+			sink := automation.NewCommandSink(surface, "01J8ZFAKESINKRELAYID000001")
+
+			// Overnight (the blank daypart, which binds no preset), then across
+			// the boundary: exactly the rising edge a real daypart transition is.
+			r.Tick(demoLocalInstant(t, 2, 0), sink)
+			r.Tick(demoLocalInstant(t, 12, 0), sink)
+
+			got := logged.String()
+			if got == "" {
+				t.Fatalf("a preset batch fired and left NO trace at all — which is what made three forced applies look like a preset that never fired")
+			}
+			for _, want := range tc.wantSays {
+				if !strings.Contains(got, want) {
+					t.Errorf("the log does not say %q, so an operator cannot tell what happened:\n%s", want, got)
+				}
+			}
+		})
 	}
 }

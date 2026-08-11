@@ -62,9 +62,9 @@ type screenStatusRow struct {
 	ScopeNode string `json:"scope_node,omitempty"`
 	RelayID   string `json:"relay_id,omitempty"`
 
-	// Reachability is `live` | `fetching` | `stale` | `never_seen` — never
-	// "offline". This surface cannot tell a screen that is switched off from one
-	// whose network dropped from one whose player crashed, and each sends an
+	// Reachability is `live` | `fetching` | `rejected` | `stale` | `never_seen` —
+	// never "offline". This surface cannot tell a screen that is switched off from
+	// one whose network dropped from one whose player crashed, and each sends an
 	// operator somewhere different (internal/app/screens' package doc).
 	Reachability string `json:"reachability"`
 	// LiveWindowMs is the threshold `reachability` was decided by, published
@@ -99,11 +99,35 @@ type screenStatusRow struct {
 	UnackedPulls int   `json:"unacked_pulls"`
 	ReportAgeMs  int64 `json:"report_age_ms"`
 
+	// ProgramRevision/Priority/Display/ContentCount are what the relay last
+	// HANDED this screen — the platform's INTENT for it. A screen that refuses a
+	// program leaves these describing the program it refused, which is what this
+	// row reported for a whole session on 2026-08-11 while the wall drew an
+	// hour-old slide.
 	ProgramRevision string `json:"program_revision,omitempty"`
 	Priority        string `json:"priority,omitempty"`
 	Display         string `json:"display,omitempty"`
 	ContentCount    int    `json:"content_count"`
-	RenderAssetRef  string `json:"render_asset_ref,omitempty"`
+
+	// AckedProgramRevision/AckedDisplay/AckedContentCount are what the screen
+	// last ACCEPTED (PLY-091) — the only program facts on this row the screen
+	// itself has confirmed, and the ones a console must render as "now playing".
+	// Empty for a screen that has accepted nothing, which `last_ack_age_ms`'s own
+	// never sentinel distinguishes from an accepted blank program.
+	AckedProgramRevision string `json:"acked_program_revision,omitempty"`
+	AckedDisplay         string `json:"acked_display,omitempty"`
+	AckedContentCount    int    `json:"acked_content_count"`
+
+	// Rejected/RejectedProgramRevision/RejectReason: the screen refused a Lease
+	// (PLY-091 `accepted: false`) and has accepted nothing since, which program it
+	// refused, and the player's own words for why. The reason is the whole
+	// actionable content of the state — "content fetch failed: HTTP 403" is a
+	// different call-out from "signature invalid".
+	Rejected                bool   `json:"rejected"`
+	RejectedProgramRevision string `json:"rejected_program_revision,omitempty"`
+	RejectReason            string `json:"reject_reason,omitempty"`
+
+	RenderAssetRef string `json:"render_asset_ref,omitempty"`
 
 	// Now is the operator's active push-now override for this screen, or absent
 	// when the screen is following its schedule. It rides THIS list rather than
@@ -224,6 +248,12 @@ func screenStatusRowOf(row store.Resource, st screens.Status, nowMs int64) scree
 		out.Priority = st.Priority
 		out.Display = st.Display
 		out.ContentCount = st.ContentCount
+		out.AckedProgramRevision = st.AckedProgramRevision
+		out.AckedDisplay = st.AckedDisplay
+		out.AckedContentCount = st.AckedContentCount
+		out.Rejected = st.Rejected
+		out.RejectedProgramRevision = st.RejectedProgramRevision
+		out.RejectReason = st.RejectReason
 		out.RenderAssetRef = st.RenderAssetRef
 	}
 	// The override is read off the SCREEN ROW (DAT-004c) — the one place it

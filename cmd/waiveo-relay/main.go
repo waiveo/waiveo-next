@@ -894,7 +894,14 @@ func main() {
 	// actually serializes one against the other when both target the same
 	// physical device (internal/relay/keepalive's own package doc, "Dispatch
 	// is serialized").
-	commandSurface := deviceplane.NewCommandSurface(devController, deviceRegistry, devResolver)
+	commandSurface := deviceplane.NewCommandSurface(devController, deviceRegistry, devResolver,
+		// The label an unresolved command's log line carries. A preset batch
+		// firing at an entity this relay cannot resolve — a renamed or
+		// unadopted device, which is the ordinary shape of the failure — is
+		// refused inside the surface, ahead of the loggingController wrapper
+		// below, so this is the only thing that names it (deviceplane's
+		// logUnresolved).
+		deviceplane.WithCommandSource("preset"))
 
 	// Boot the schedule resolver (internal/relay/schedulehost, REL-065/DAT-113-118)
 	// from the SAME verified Applied value bootAutomationStack read above: it
@@ -1035,7 +1042,12 @@ func main() {
 			Controller: automation.NewCommandSink(
 				deviceplane.NewCommandSurface(
 					loggingController{inner: baseController, source: "keep-alive"},
-					deviceRegistry, devResolver),
+					deviceRegistry, devResolver,
+					// The same label the wrapper above stamps on a DISPATCHED
+					// command, so a keep-alive recovery that never reached a
+					// device reads as one line in the same grammar rather than
+					// as an unattributed refusal.
+					deviceplane.WithCommandSource("keep-alive")),
 				relayID.RelayID),
 			// PLY-155 gates on "the TARGET screen's own currently active
 			// Lease", and keepalive polls DEVICE ENTITIES: answering needs an
@@ -2262,17 +2274,23 @@ func screenStatusEntries(srv *playerserver.Server) []wire.ScreenStatusEntry {
 	entries := make([]wire.ScreenStatusEntry, 0, len(statuses))
 	for _, st := range statuses {
 		entries = append(entries, wire.ScreenStatusEntry{
-			ScreenID:             st.ScreenID,
-			Paired:               st.Paired,
-			LastPullAgeMs:        st.LastPullAgeMs,
-			LastAckAgeMs:         st.LastAckAgeMs,
-			LastRenderStartAgeMs: st.LastRenderStartAgeMs,
-			UnackedPulls:         st.UnackedPulls,
-			ProgramRevision:      st.ProgramRevision,
-			Priority:             st.Priority,
-			Display:              st.Display,
-			ContentCount:         st.ContentCount,
-			RenderAssetRef:       st.RenderAssetRef,
+			ScreenID:                st.ScreenID,
+			Paired:                  st.Paired,
+			LastPullAgeMs:           st.LastPullAgeMs,
+			LastAckAgeMs:            st.LastAckAgeMs,
+			LastRenderStartAgeMs:    st.LastRenderStartAgeMs,
+			UnackedPulls:            st.UnackedPulls,
+			ProgramRevision:         st.ProgramRevision,
+			Priority:                st.Priority,
+			Display:                 st.Display,
+			ContentCount:            st.ContentCount,
+			AckedProgramRevision:    st.AckedProgramRevision,
+			AckedDisplay:            st.AckedDisplay,
+			AckedContentCount:       st.AckedContentCount,
+			Rejected:                st.Rejected,
+			RejectedProgramRevision: st.RejectedProgramRevision,
+			RejectReason:            st.RejectReason,
+			RenderAssetRef:          st.RenderAssetRef,
 		})
 	}
 	return entries

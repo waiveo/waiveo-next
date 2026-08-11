@@ -97,10 +97,45 @@ type ScreenStatusEntry struct {
 	// screen was last HANDED (or, for a screen that has never pulled, the one
 	// currently waiting for it). Priority is PLY-108's own enumeration, so a
 	// console can tell a scheduled program from an operator's push-now takeover.
+	//
+	// They are the platform's INTENT for the screen. Read alone they say nothing
+	// about what the screen is doing: a player that refuses a program leaves
+	// these describing the program it refused, which is what a console reported
+	// for a whole session while the wall drew something else.
 	ProgramRevision string `json:"program_revision,omitempty"`
 	Priority        string `json:"priority,omitempty"`
 	Display         string `json:"display,omitempty"`
 	ContentCount    int    `json:"content_count"`
+
+	// AckedProgramRevision/AckedDisplay/AckedContentCount describe the Lease the
+	// screen last ACCEPTED (PLY-091 `accepted: true`) — the only program facts on
+	// this entry the screen itself has confirmed, and therefore the ones a
+	// console must render as "what is on that wall".
+	//
+	// Absent (empty, and a zero count) for a screen that has never accepted a
+	// Lease; LastAckAgeMs's never sentinel is the unambiguous marker of that,
+	// since an accepted BLANK program is legitimately empty here too.
+	AckedProgramRevision string `json:"acked_program_revision,omitempty"`
+	AckedDisplay         string `json:"acked_display,omitempty"`
+	AckedContentCount    int    `json:"acked_content_count"`
+
+	// Rejected/RejectedProgramRevision/RejectReason report a Lease the screen
+	// REFUSED (PLY-091 `accepted: false`, whose `reason` that clause requires):
+	// that it did, which program, and the player's own words for why. A refusal is
+	// cleared by the screen accepting something, and by nothing else, so `true`
+	// here is a STANDING fact rather than a historical one.
+	//
+	// A boolean rather than an age, deliberately, and the reason is a deployment
+	// property rather than a modelling preference: this is a relay→app frame, and
+	// a relay is expected to be upgraded at or before its app peer, so an app
+	// reading reports from an OLDER relay is the ordinary case. An absent numeric
+	// field decodes to 0, and 0 as an age would mean "refused just now" — every
+	// screen behind a pre-upgrade relay would read as refusing its program. An
+	// absent boolean decodes to false, which is exactly the right thing for a
+	// relay that cannot report this: no claim.
+	Rejected                bool   `json:"rejected"`
+	RejectedProgramRevision string `json:"rejected_program_revision,omitempty"`
+	RejectReason            string `json:"reject_reason,omitempty"`
 
 	// RenderAssetRef is the asset the player last reported actually putting on
 	// screen (PLY-110) — the only field here that is evidence of playback rather

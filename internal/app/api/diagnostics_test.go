@@ -566,8 +566,19 @@ func TestAFleetFailingEveryContentFetchIsDown(t *testing.T) {
 	if got := int(sc["fetching"].(float64)); got != 0 {
 		t.Fatalf("fetching = %d, want 0: a screen that has abandoned 31 Leases is not collecting content, and while it counted as fetching this fleet could never be graded down", got)
 	}
-	if got := int(sc["stale"].(float64)); got != 1 {
-		t.Fatalf("stale = %d, want 1", got)
+	// It is counted as REJECTED, not stale. Both keep the fleet out of `live` and
+	// therefore keep the alarm below armed, which is what this test is for — but
+	// `stale` means "has not been heard from", and this screen is answering every
+	// poll. Reading that word off the roll-up is what made a wall that was talking
+	// constantly look like a network problem for a whole round.
+	if got := int(sc["stale"].(float64)); got != 0 {
+		t.Fatalf("stale = %d, want 0: this screen is in contact on every poll, so nothing about it is stale", got)
+	}
+	if got := int(sc["rejected"].(float64)); got != 1 {
+		t.Fatalf("rejected = %d, want 1: a screen that has abandoned 31 Leases while answering every poll is refusing what it is handed, and that is the count an operator can act on", got)
+	}
+	if got := int(sc["live"].(float64)); got != 0 {
+		t.Fatalf("live = %d, want 0 — the fleet-dark grade below is `live == 0 && fetching == 0`, and this is the half that reported a wall showing nothing as healthy", got)
 	}
 	svc := serviceNamed(t, h, "screens")
 	if svc["status"] != "down" {

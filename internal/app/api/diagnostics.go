@@ -291,7 +291,15 @@ type screenHealth struct {
 	// previous program is still on the wall) but unconfirmed, so folding it into
 	// `live` would overstate the fleet and folding it into `stale` would send an
 	// operator to look at a screen that is doing exactly what it should.
-	Fetching   int `json:"fetching"`
+	Fetching int `json:"fetching"`
+	// Rejected counts screens that are IN CONTACT and not taking what they are
+	// handed. It is counted apart from `stale` because the two send an operator
+	// to different places — one screen has gone quiet, the other is talking to
+	// its relay constantly and refusing every program — and apart from `live`
+	// because folding it there is exactly the roll-up that reported a healthy
+	// fleet on 2026-08-11 while no screen on it had accepted anything for an
+	// hour.
+	Rejected   int `json:"rejected"`
 	Stale      int `json:"stale"`
 	NeverSeen  int `json:"never_seen"`
 	Paired     int `json:"paired"`
@@ -520,9 +528,19 @@ func (srv *server) screenRollup(r *http.Request) (screenHealth, serviceHealth) {
 			out.Live++
 		case string(screens.ReachabilityFetching):
 			out.Fetching++
+		case string(screens.ReachabilityRejected):
+			out.Rejected++
 		case string(screens.ReachabilityStale):
 			out.Stale++
+		case string(screens.ReachabilityNeverSeen):
+			out.NeverSeen++
 		default:
+			// A grade this roll-up does not know. Counted as never-seen because
+			// that is the bucket that claims the least: an unrecognised judgement
+			// is not evidence of contact, and the grading below treats never-seen
+			// as "waiting", never as "working". A new reachability value must be
+			// given its own case here — reaching this line means the fleet page
+			// is silently describing those screens as ones nobody has heard from.
 			out.NeverSeen++
 		}
 		if st.Paired {
@@ -547,8 +565,14 @@ func (srv *server) screenRollup(r *http.Request) (screenHealth, serviceHealth) {
 	case out.Live == out.Total:
 		return out, serviceHealth{Name: "screens", Status: healthOK,
 			Detail: "All " + strconv.Itoa(out.Total) + " screen(s) are live."}
-	case out.Live == 0 && out.Stale == 0 && out.Fetching == 0:
+	case out.Live == 0 && out.Stale == 0 && out.Fetching == 0 && out.Rejected == 0:
 		// Every screen is never-seen: authored and waiting, not broken.
+		//
+		// `rejected` has to be excluded here or it lands in this clause by
+		// omission — a fleet of screens ALL refusing their programs would be
+		// described to their owner as never having been switched on, which is
+		// both false and the opposite of actionable. Every state that means "we
+		// have heard from this screen" belongs on this line.
 		return out, serviceHealth{Name: "screens", Status: healthDegraded,
 			Detail: "None of the " + strconv.Itoa(out.Total) + " authored screen(s) has ever been seen — pair them and switch them on."}
 	case out.Live == 0 && out.Fetching == 0:
@@ -568,13 +592,22 @@ func (srv *server) screenRollup(r *http.Request) (screenHealth, serviceHealth) {
 		// it exists for. Anything that widens `fetching` again has to come back
 		// here first: this grade is only honest while a fetching screen is one
 		// that is genuinely getting somewhere.
+		//
+		// A REJECTING screen keeps the fleet in this grade rather than out of it,
+		// which is the opposite of what a fetching one does and is deliberate: it
+		// is talking to its relay, so it is not "quiet", but nothing the platform
+		// sends it is being accepted, so the wall is as unreachable as a dark one.
+		// The detail names both populations, because "have gone quiet" about a
+		// fleet that is answering every poll sends an operator to the network when
+		// the problem is the content.
 		return out, serviceHealth{Name: "screens", Status: healthDown,
-			Detail: strconv.Itoa(out.Stale) + " screen(s) were being seen and have gone quiet; none of the " +
+			Detail: strconv.Itoa(out.Stale) + " screen(s) were being seen and have gone quiet, " +
+				strconv.Itoa(out.Rejected) + " are refusing the program they are handed; none of the " +
 				strconv.Itoa(out.Total) + " authored screen(s) is live."}
 	default:
 		return out, serviceHealth{Name: "screens", Status: healthDegraded,
 			Detail: strconv.Itoa(out.Total-out.Live) + " of " + strconv.Itoa(out.Total) +
-				" screen(s) are not live (stale, fetching new content, or never seen)."}
+				" screen(s) are not live (stale, fetching new content, refusing their program, or never seen)."}
 	}
 }
 

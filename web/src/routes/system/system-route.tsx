@@ -216,7 +216,12 @@ function HealthPanel({ state }: { state: Load<SystemHealth> }) {
           hint={
             h.screens.total === 0
               ? "No screens are authored yet."
-              : `${h.screens.fetching} collecting content · ${h.screens.stale} not heard from · ${h.screens.never_seen} never seen · ${h.screens.overridden} overridden`
+              : // `refusing` sits first among the not-live counts because it is the
+                // only one that is a fault the operator can act on right now: those
+                // screens are talking to their relays and not taking what is sent.
+                // A roll-up that omitted it would fold them into the arithmetic gap
+                // between `live` and `total` with no word for what they are.
+                `${h.screens.rejected} refusing their program · ${h.screens.fetching} collecting content · ${h.screens.stale} not heard from · ${h.screens.never_seen} never seen · ${h.screens.overridden} overridden`
           }
         />
       </div>

@@ -803,9 +803,11 @@ func (s *Server) handleLeaseAck(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 
-	// The strongest liveness evidence short of a render report: the screen
-	// received, parsed and accepted what it was handed (screenstatus.go).
-	s.noteLeaseAck(screenID)
+	// The strongest liveness evidence short of a render report — but only when
+	// the answer is yes. `accepted` and the Lease it names are both carried into
+	// the status record, so a refusal is reported as a refusal rather than as the
+	// screen having taken the program (screenstatus.go).
+	s.noteLeaseAck(screenID, req.LeaseID, req.Accepted, req.Reason)
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

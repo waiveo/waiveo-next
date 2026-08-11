@@ -3,6 +3,7 @@ package deviceplane
 import (
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 )
 
@@ -135,6 +136,34 @@ type CommandRecord struct {
 	Command   string
 	OK        bool
 	ErrorCode string // the taxonomy code when OK is false; empty otherwise
+
+	// Dispatched reports whether the DeviceController was reached at all —
+	// false for a command this surface refused on its own (REL-113: an unknown
+	// entity, or a command the resolved device class does not declare).
+	//
+	// It is the field that distinguishes the two ways a command can fail, which
+	// look identical in ErrorCode: a controller may legitimately answer
+	// COMMAND_UNRESOLVED itself (the loopback adapter does, for "this relay has
+	// no device adapter"), so a reader keying on the code alone cannot tell a
+	// command that reached hardware from one that never left this function.
+	//
+	// A consumer needs that distinction because everything downstream of the
+	// controller — every wrapper that logs a dispatch, every adapter-side trace —
+	// exists only on the dispatched path. An undispatched command is invisible
+	// everywhere else by construction.
+	Dispatched bool
+
+	// Detail is this SURFACE's own words for why an undispatched command was
+	// refused ("entity X resolves to no adopted device class", "launch is not a
+	// command media-player declares"), empty on every dispatched one.
+	//
+	// It is built here from the entity id, the command name and the resolved
+	// device class, and never from params and never from the controller — which
+	// is what keeps REL-114 intact while making the refusal actionable. The two
+	// refusals carry the same taxonomy code and want completely different
+	// remedies (adopt/rename the device; fix the command), so a record without
+	// this says only "something did not resolve".
+	Detail string
 }
 
 // CommandLog is the surface's log sink: it receives a redacted CommandRecord for
@@ -171,6 +200,18 @@ func WithCommandJournal(journal CommandJournal) CommandOption {
 	return func(s *CommandSurface) { s.journal = journal }
 }
 
+// WithCommandSource names the subsystem this surface serves — "automation",
+// "preset", "keep-alive" — for the operator-visible line an unresolved command
+// leaves (logUnresolved).
+//
+// It is a label, never behaviour: two surfaces with different sources resolve,
+// serialize and dispatch identically. It exists because several subsystems drive
+// the same devices through identically shaped surfaces, and a refusal that
+// cannot say which one issued it makes an operator check all of them.
+func WithCommandSource(source string) CommandOption {
+	return func(s *CommandSurface) { s.source = source }
+}
+
 // CommandSurface resolves and executes app-dispatched device.commands against
 // physical devices (REL-112/113). It resolves each command's entity to a
 // device class, checks the command against that class's vocabulary, and only
@@ -185,6 +226,7 @@ type CommandSurface struct {
 
 	log     CommandLog
 	journal CommandJournal
+	source  string
 
 	// locksMu guards locks; each entry is the per-device dispatch lock keyed by
 	// device_id (REL-115) — every command to any entity of that one physical
@@ -224,17 +266,29 @@ func NewCommandSurface(controller DeviceController, vocab CommandVocab, resolveE
 // relay_id, and trace_id (REL-006). cmd.Body.Params is passed straight to the
 // controller and never logged or persisted here (REL-114).
 func (s *CommandSurface) Execute(cmd DeviceCommand) DeviceCommandResult {
-	res := s.execute(cmd)
+	res, dispatched := s.execute(cmd)
 	// Observability/persistence carry only a redacted, credential-free record —
 	// the command's params (which MAY be credential material) never reach the
 	// log or the durable store (REL-114).
 	rec := CommandRecord{
-		EntityID: cmd.Body.EntityID,
-		Command:  cmd.Body.Command,
-		OK:       res.Body.OK,
+		EntityID:   cmd.Body.EntityID,
+		Command:    cmd.Body.Command,
+		OK:         res.Body.OK,
+		Dispatched: dispatched,
 	}
 	if res.Body.Error != nil {
 		rec.ErrorCode = res.Body.Error.Code
+		if !dispatched {
+			// Surface-authored (see CommandRecord.Detail). A DISPATCHED failure's
+			// message comes from the controller and is deliberately not copied
+			// here: this record goes to a durable journal, and a message this
+			// package did not compose is a message it cannot promise is
+			// credential-free.
+			rec.Detail = res.Body.Error.Message
+		}
+	}
+	if !dispatched {
+		s.logUnresolved(rec)
 	}
 	if s.log != nil {
 		s.log.LogCommand(rec)
@@ -245,21 +299,71 @@ func (s *CommandSurface) Execute(cmd DeviceCommand) DeviceCommandResult {
 	return res
 }
 
+// logUnresolved writes the one operator-visible line for a command that never
+// reached a device.
+//
+// # Why this is not an optional sink
+//
+// It is unconditional, and it is inside the surface rather than beside it,
+// because the alternative is what shipped: WithCommandLog/WithCommandJournal
+// existed, were correct, and were wired by NOTHING in the relay binary. A preset
+// batch fired at an entity this relay could not resolve therefore produced no
+// log line, no journal entry and no event anywhere — and the resolve happens
+// before the DeviceController is called, so the dispatch-logging wrapper the
+// binary DOES install (cmd/waiveo-relay's loggingController) is never reached
+// either. An operator watching a schedule fire correctly and a screen do nothing
+// had no signal of any kind; the finding that produced this line was reached by
+// reading the source, having first concluded from the silence that the schedule
+// had not fired at all.
+//
+// An observability half that a caller must remember to connect is the same
+// half-built pair this defect is an instance of. This one has no wiring step.
+//
+// A DISPATCHED command is deliberately NOT logged here: the binary's own
+// controller wrapper already logs those, with the source that issued it and the
+// parameter keys, and duplicating them would double the volume of the ordinary
+// case to catch the exceptional one.
+//
+// REL-114: entity id, command name and this package's own refusal text only.
+// Never params, never a value.
+func (s *CommandSurface) logUnresolved(rec CommandRecord) {
+	log.Printf("waiveo-relay dispatch [%s]: %s %s NOT DISPATCHED (%s): %s",
+		s.sourceOrDefault(), rec.EntityID, rec.Command, rec.ErrorCode, rec.Detail)
+}
+
+// sourceOrDefault names the subsystem whose command this was, for the line
+// above. Unset is spelled out rather than left blank: with several subsystems
+// (edge rules, schedule preset batches, keep-alive, the app peer) dispatching
+// through identically shaped surfaces, a line that cannot say which one it came
+// from sends an operator looking through all four.
+func (s *CommandSurface) sourceOrDefault() string {
+	if s.source == "" {
+		return "device-plane"
+	}
+	return s.source
+}
+
 // execute performs the resolve→serialized-dispatch→result path for a single
 // command (REL-112/113/115); Execute wraps it to emit the redacted record.
-func (s *CommandSurface) execute(cmd DeviceCommand) DeviceCommandResult {
+//
+// The second return is whether the DeviceController was reached. It is reported
+// out rather than re-derived from the result, because the result cannot answer
+// it: a controller may return the same COMMAND_UNRESOLVED code this function
+// rejects with, so the only place that knows which side of the dispatch a
+// failure came from is this function. See CommandRecord.Dispatched.
+func (s *CommandSurface) execute(cmd DeviceCommand) (DeviceCommandResult, bool) {
 	deviceID, deviceClass, ok := s.resolveEntity(cmd.Body.EntityID)
 	if !ok {
 		// No adopted entity for this id → nothing to resolve the command
 		// against → unresolved, and the device is never touched (REL-113).
 		return s.reject(cmd, codeCommandUnresolved,
-			fmt.Sprintf("entity %q resolves to no adopted device class", cmd.Body.EntityID))
+			fmt.Sprintf("entity %q resolves to no adopted device class", cmd.Body.EntityID)), false
 	}
 
 	if !s.vocab.CommandExists(deviceClass, cmd.Body.Command) {
 		// REL-113: reject without attempting the command physically.
 		return s.reject(cmd, codeCommandUnresolved,
-			fmt.Sprintf("%q is not a command %s declares", cmd.Body.Command, deviceClass))
+			fmt.Sprintf("%q is not a command %s declares", cmd.Body.Command, deviceClass)), false
 	}
 
 	// REL-115: serialize per target device_id — NOT per entity_id. A device
@@ -277,9 +381,9 @@ func (s *CommandSurface) execute(cmd DeviceCommand) DeviceCommandResult {
 	if err := s.controller.Dispatch(cmd.Body.EntityID, cmd.Body.Command, cmd.Body.Params); err != nil {
 		var ce *ControllerError
 		if errors.As(err, &ce) {
-			return s.reject(cmd, ce.Code, ce.Message)
+			return s.reject(cmd, ce.Code, ce.Message), true
 		}
-		return s.reject(cmd, codeInternal, err.Error())
+		return s.reject(cmd, codeInternal, err.Error()), true
 	}
 
 	return DeviceCommandResult{
@@ -288,7 +392,7 @@ func (s *CommandSurface) execute(cmd DeviceCommand) DeviceCommandResult {
 		RelayID: cmd.RelayID,
 		TraceID: cmd.TraceID,
 		Body:    CommandResultBody{OK: true},
-	}
+	}, true
 }
 
 // deviceLock returns the per-device dispatch mutex for deviceID, creating it on

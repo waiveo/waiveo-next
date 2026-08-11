@@ -161,8 +161,10 @@ func (s *Server) handleInteraction(w http.ResponseWriter, r *http.Request) {
 
 	// A press is liveness evidence of the strongest kind available: the screen
 	// is not merely reachable, a human is standing in front of it interacting
-	// with what it is showing.
-	s.noteLeaseAck(screenID)
+	// with what it is showing. It is NOT an acknowledgement — nothing about a
+	// press says the screen accepted the program it was last handed — so it
+	// records contact only (screenstatus.go's noteScreenContact).
+	s.noteScreenContact(screenID)
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

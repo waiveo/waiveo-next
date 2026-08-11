@@ -730,6 +730,24 @@ func (e ScreenOverrideMode) Valid() bool {
 	}
 }
 
+// Defines values for ScreenStatusAckedDisplay.
+const (
+	ScreenStatusAckedDisplayBlank   ScreenStatusAckedDisplay = "blank"
+	ScreenStatusAckedDisplayContent ScreenStatusAckedDisplay = "content"
+)
+
+// Valid indicates whether the value is a known member of the ScreenStatusAckedDisplay enum.
+func (e ScreenStatusAckedDisplay) Valid() bool {
+	switch e {
+	case ScreenStatusAckedDisplayBlank:
+		return true
+	case ScreenStatusAckedDisplayContent:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ScreenStatusDisplay.
 const (
 	ScreenStatusDisplayBlank   ScreenStatusDisplay = "blank"
@@ -771,6 +789,7 @@ const (
 	ScreenStatusReachabilityFetching  ScreenStatusReachability = "fetching"
 	ScreenStatusReachabilityLive      ScreenStatusReachability = "live"
 	ScreenStatusReachabilityNeverSeen ScreenStatusReachability = "never_seen"
+	ScreenStatusReachabilityRejected  ScreenStatusReachability = "rejected"
 	ScreenStatusReachabilityStale     ScreenStatusReachability = "stale"
 )
 
@@ -782,6 +801,8 @@ func (e ScreenStatusReachability) Valid() bool {
 	case ScreenStatusReachabilityLive:
 		return true
 	case ScreenStatusReachabilityNeverSeen:
+		return true
+	case ScreenStatusReachabilityRejected:
 		return true
 	case ScreenStatusReachabilityStale:
 		return true
@@ -2237,8 +2258,11 @@ type ScreenHealth struct {
 	// Overridden How many screens currently carry an operator's push-now override.
 	Overridden int `json:"overridden"`
 	Paired     int `json:"paired"`
-	Stale      int `json:"stale"`
-	Total      int `json:"total"`
+
+	// Rejected How many screens are IN CONTACT and not taking what they are handed (`ScreenStatus.reachability`). Counted apart from `stale` because the two send an operator to different places — one screen has gone quiet, the other is answering every poll and refusing every program — and apart from `live` because folding it there is the roll-up that reported a healthy fleet while nothing on it had accepted anything for an hour. Like `stale`, it does NOT keep the fleet out of the `down` grade: a wall nothing reaches is dark whether it is silent or argumentative.
+	Rejected int `json:"rejected"`
+	Stale    int `json:"stale"`
+	Total    int `json:"total"`
 }
 
 // ScreenListResponse defines model for ScreenListResponse.
@@ -2314,6 +2338,15 @@ type ScreenOverrideMode string
 
 // ScreenStatus One screen's authored identity joined to what the relays have observed of it. See `listScreenStatus` for how the ages are to be read and why `reachability` never says "offline".
 type ScreenStatus struct {
+	// AckedContentCount How many content items that accepted program carried.
+	AckedContentCount int `json:"acked_content_count"`
+
+	// AckedDisplay The `display` of that accepted program.
+	AckedDisplay *ScreenStatusAckedDisplay `json:"acked_display,omitempty"`
+
+	// AckedProgramRevision The `program_revision` this screen last ACCEPTED (`player/1` PLY-091). This and the two fields below are the only program facts on this row the screen itself has confirmed, and are what a console renders as what the wall is showing: the shipped player materialises every asset before acknowledging, and never-wipe keeps an accepted program up until another is accepted. Absent when the screen has accepted nothing, which `last_ack_age_ms: -1` distinguishes from an accepted `blank` program.
+	AckedProgramRevision *string `json:"acked_program_revision,omitempty"`
+
 	// ContentCount How many content items that program carried.
 	ContentCount int `json:"content_count"`
 
@@ -2348,11 +2381,20 @@ type ScreenStatus struct {
 	// Priority That program's `player/1` PLY-108 priority — `preempt` is an operator's push-now takeover.
 	Priority *ScreenStatusPriority `json:"priority,omitempty"`
 
-	// ProgramRevision The `program_revision` this screen was last handed (or, if it has never pulled, the one waiting for it).
+	// ProgramRevision The `program_revision` this screen was last handed (or, if it has never pulled, the one waiting for it). This and the three fields below it are the platform's INTENT for the screen: they say what was sent, never what became of it. A screen refusing its program leaves them describing the program it refused.
 	ProgramRevision *string `json:"program_revision,omitempty"`
 
-	// Reachability `live` — the screen contacted its relay within `live_window_ms` (a program pull, or the acknowledgement that answers one). `fetching` — the relay handed this screen a Lease it has not acknowledged, the pull is within `content_transfer_window_ms`, and no more than `fetching_max_unacked_pulls` pulls are outstanding: the shipped player would still be downloading and verifying the content, during which the PREVIOUS program stays on the wall. Not a fault, and not a confirmation either — nothing has been heard back. `stale` — contact was made at some point, but not recently, or the screen is asking again and again and confirming nothing. `never_seen` — no relay has ever observed this screen pull a program.
+	// Reachability `live` — the screen contacted its relay within `live_window_ms` (a program pull, or the acknowledgement that answers one) and is not refusing what it was handed. `fetching` — the relay handed this screen a Lease it has not acknowledged, the pull is within `content_transfer_window_ms`, and no more than `fetching_max_unacked_pulls` pulls are outstanding: the shipped player would still be downloading and verifying the content, during which the PREVIOUS program stays on the wall. Not a fault, and not a confirmation either — nothing has been heard back. `rejected` — the screen is in contact and is NOT taking the program it was handed: it either said so (`player/1` PLY-091's `accepted: false`, and `reject_reason` carries its words) or it has re-pulled past `fetching_max_unacked_pulls` while confirming nothing. What is on the wall is `acked_*`, not the program `program_revision` names. Judged before `live`, because a screen polling on cadence has a fresh contact whatever it does with the answer — this state is unreachable as a case ordered after it. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
 	Reachability ScreenStatusReachability `json:"reachability"`
+
+	// RejectReason The player's own words for why it refused — PLY-091 requires a `reason` with `accepted: false`, and it is the actionable content of the `rejected` state ("content fetch failed: HTTP 403" and "signature invalid" send an operator to different places). Truncated by the relay before reporting.
+	RejectReason *string `json:"reject_reason,omitempty"`
+
+	// Rejected Whether this screen refused a Lease (`player/1` PLY-091's `accepted: false`) and has accepted nothing since. A refusal is cleared by an acceptance and by nothing else, so `true` is a standing fact rather than a historical one. `false` is also what a relay too old to report acceptance produces, which is the reading that claims the least.
+	Rejected bool `json:"rejected"`
+
+	// RejectedProgramRevision The `program_revision` that refusal named.
+	RejectedProgramRevision *string `json:"rejected_program_revision,omitempty"`
 
 	// RelayId The relay whose report this status came from; absent when no relay has reported this screen.
 	RelayId *string `json:"relay_id,omitempty"`
@@ -2373,13 +2415,16 @@ type ScreenStatus struct {
 	UnackedPulls int `json:"unacked_pulls"`
 }
 
+// ScreenStatusAckedDisplay The `display` of that accepted program.
+type ScreenStatusAckedDisplay string
+
 // ScreenStatusDisplay defines model for ScreenStatus.Display.
 type ScreenStatusDisplay string
 
 // ScreenStatusPriority That program's `player/1` PLY-108 priority — `preempt` is an operator's push-now takeover.
 type ScreenStatusPriority string
 
-// ScreenStatusReachability `live` — the screen contacted its relay within `live_window_ms` (a program pull, or the acknowledgement that answers one). `fetching` — the relay handed this screen a Lease it has not acknowledged, the pull is within `content_transfer_window_ms`, and no more than `fetching_max_unacked_pulls` pulls are outstanding: the shipped player would still be downloading and verifying the content, during which the PREVIOUS program stays on the wall. Not a fault, and not a confirmation either — nothing has been heard back. `stale` — contact was made at some point, but not recently, or the screen is asking again and again and confirming nothing. `never_seen` — no relay has ever observed this screen pull a program.
+// ScreenStatusReachability `live` — the screen contacted its relay within `live_window_ms` (a program pull, or the acknowledgement that answers one) and is not refusing what it was handed. `fetching` — the relay handed this screen a Lease it has not acknowledged, the pull is within `content_transfer_window_ms`, and no more than `fetching_max_unacked_pulls` pulls are outstanding: the shipped player would still be downloading and verifying the content, during which the PREVIOUS program stays on the wall. Not a fault, and not a confirmation either — nothing has been heard back. `rejected` — the screen is in contact and is NOT taking the program it was handed: it either said so (`player/1` PLY-091's `accepted: false`, and `reject_reason` carries its words) or it has re-pulled past `fetching_max_unacked_pulls` while confirming nothing. What is on the wall is `acked_*`, not the program `program_revision` names. Judged before `live`, because a screen polling on cadence has a fresh contact whatever it does with the answer — this state is unreachable as a case ordered after it. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
 type ScreenStatusReachability string
 
 // ScreenStatusListResponse defines model for ScreenStatusListResponse.
