@@ -78,6 +78,62 @@ func TestTheSceneDrawsAVideoLayerAndLoopsIt(t *testing.T) {
 	}
 }
 
+// TestASlideVideoLayerReportsItsPlaybackState is HV-5: the slide video path was
+// fire-and-forget.
+//
+// renderSlideVideo created the Video node and set control = "play" and never
+// observed its `state` — while the ITEM video path did exactly that one line
+// away (init's `m.video.observeField("state", "onVideoStateChange")`) and the
+// COMPOSED layer path did it too. So a slide video that failed on codec, network
+// stall or malformed container reported NOTHING: the region was black, no log
+// line existed anywhere, and there was no diagnosis.
+//
+// It is not a nicety, it is the only instrument there is. Roku's own
+// /plugin_inspect screenshot captures the GRAPHICS plane only, so a black video
+// region is what a capture shows whether playback is perfect or dead — with no
+// state log there is no way to tell the two apart from outside the device, and
+// slide-video playback cannot honestly be called verified.
+//
+// The guard asserts the observer AND that the handler prints, because an
+// observer wired to a handler that says nothing is the same defect with more
+// code: this player's standing shape is a mechanism that works beside a
+// reporting half that does not exist.
+func TestASlideVideoLayerReportsItsPlaybackState(t *testing.T) {
+	src := readBrs(t, photonScenePath)
+	node := routineBody(t, src, "renderSlideVideo")
+
+	if !contains(node, `v.observeField("state", "onSlideVideoStateChange")`) {
+		t.Fatal("renderSlideVideo does not observe its Video node's `state`: a slide video that fails produces no log line anywhere, the region is simply black, and there is no way to tell a codec failure from correct playback (a Roku screenshot captures the graphics plane only)")
+	}
+
+	handler := routineBody(t, src, "onSlideVideoStateChange")
+	// A positive signal, not only a failure one. "Did it play?" is the question
+	// row 2.5 has to answer, and only a `playing` line answers it — an
+	// error-only handler is silent in exactly the case that matters.
+	prints := 0
+	for _, l := range handler {
+		if strings.HasPrefix(l.text, "print ") {
+			prints++
+		}
+	}
+	if prints < 2 {
+		t.Errorf("onSlideVideoStateChange prints on %d path(s): it must report ordinary transitions as well as errors, because a `playing` line is the only positive evidence that a slide video is running", prints)
+	}
+	if !contains(handler, `state = "error"`) {
+		t.Error("onSlideVideoStateChange does not single out the error state, so a codec failure reads like any other transition")
+	}
+	// Both values are read off the event/node at runtime and must be coerced
+	// before they reach a concatenation: `"string" + invalid` is a type mismatch
+	// that terminates the thread it runs on. A single slide once killed this
+	// whole player from inside a log line (PlayerTask.brs's own note), so a
+	// diagnostic must never be the thing that takes the player down.
+	for _, want := range []string{"wvSlideStr(", "wvSlideInt("} {
+		if !contains(handler, want) {
+			t.Errorf("onSlideVideoStateChange concatenates a field without coercing it through %s — an invalid errorCode/errorMsg would crash the render thread from inside a log line", want)
+		}
+	}
+}
+
 // TestClearSlideStopsVideoChildrenBeforeRemovingThem is the teardown guard, and
 // it is the one this player has the most history with.
 //

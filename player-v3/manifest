@@ -4,7 +4,16 @@
 title=Waiveo Player v3
 major_version=3
 minor_version=0
-build_version=0
+# build_version identifies THIS build to a device, and it is the only field that
+# can. major/minor and the `player_version` this player declares on the wire
+# both stay 3.0.0 across every change, so a screen running a months-old
+# sideload is indistinguishable from a current one — which is exactly what
+# happened on 2026-08-11, when a stale device logged "slide layer with
+# unsupported kind 'video' skipped" against a player whose shipped source
+# implements video, and the log was read at face value. Bump this whenever the
+# player source changes, so `/query/device-info` can tell two builds apart.
+# 1: HV-2 per-layer degrading, HV-4 display:blank, HV-5 slide-video state.
+build_version=1
 ui_resolutions=fhd
 bs_const=DEBUG=true
 # screensaver_private describes a screensaver a channel SHIPS (this one ships

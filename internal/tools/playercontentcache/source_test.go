@@ -22,6 +22,7 @@ import (
 // drifted copy passes while the shipped player regresses.
 var (
 	programPath     = filepath.Join("..", "..", "..", "player-v3", "source", "Program.brs")
+	pairingPath     = filepath.Join("..", "..", "..", "player-v3", "source", "Pairing.brs")
 	photonScenePath = filepath.Join("..", "..", "..", "player-v3", "components", "PhotonScene.brs")
 	photonSceneXML  = filepath.Join("..", "..", "..", "player-v3", "components", "PhotonScene.xml")
 )

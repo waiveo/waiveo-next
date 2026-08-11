@@ -83,10 +83,11 @@
 ' PLY-158's obligation is currently in force. A player is "actively assigned
 ' non-blank content" exactly when it holds a cast with at least one item to
 ' present. Everything else leaves the obligation off: a failed or not-yet-made
-' program pull, a program that produced no items, and — once this player
-' renders PLY-093's `display: "blank"`, which it does not yet — an intentional
-' blank, which PLY-158 excludes by its own wording and PLY-155 treats the same
-' way relay-side.
+' program pull, a program that produced no items, and an intentional blank —
+' PLY-093's `display: "blank"`, which this player now renders (Program.brs
+' returns contentType "blank" for it, which the `contentType <> "cast"` test
+' below already excludes) and which PLY-158 excludes by its own wording, exactly
+' as PLY-155 has a relay treat it.
 function wvIdleDefeatShouldEngage(contentType as Dynamic, items as Dynamic) as Boolean
     if contentType = invalid then return false
     if contentType <> "cast" then return false

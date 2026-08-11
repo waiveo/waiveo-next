@@ -6,17 +6,25 @@
 ' verifying each newly fetched item's (and each composed/slide layer's) bytes
 ' against its own asset_ref (content-addressed integrity) BEFORE returning
 ' anything to render — and returns a single ordered `items` array (PLY-083a) for
-' PhotonScene to present — one entry per `content` array element, IN THAT
-' ARRAY'S OWN ORDER, with NO type-based carve-out: a plain `image`/`video`
-' item becomes a plain cast entry, and a `composed` item (PLY-015) becomes a
-' cast entry of its own carrying its fetched+verified `layers`, cycled
-' exactly like any other entry. PLY-083a governs sequencing for "every
-' content item a Lease carries" (PLY-083) — it draws no distinction between a
-' composed item and a plain one, so this player draws none either: a Lease
-' mixing composed and plain items presents ALL of them, in order, never
-' silently dropping whichever ones don't match a special-cased first-item
-' type. A one-item Lease (of either kind) is simply the degenerate
-' one-entry case of this same path.
+' PhotonScene to present — one entry per PRESENTABLE `content` array element,
+' IN THAT ARRAY'S OWN ORDER, with NO type-based carve-out: a plain
+' `image`/`video` item becomes a plain cast entry, and a `composed` item
+' (PLY-015) becomes a cast entry of its own carrying its fetched+verified
+' `layers`, cycled exactly like any other entry. PLY-083a governs sequencing
+' for "every content item a Lease carries" (PLY-083) — it draws no distinction
+' between a composed item and a plain one, so this player draws none either: a
+' Lease mixing composed and plain items presents ALL of them, in order, never
+' dropping whichever ones don't match a special-cased first-item type. A
+' one-item Lease (of either kind) is simply the degenerate one-entry case of
+' this same path.
+'
+' "Presentable" is doing real work in that sentence and the Degrading note
+' below is where it is defined: an item this device genuinely cannot render
+' (its bytes will not fetch, its type is unknown) is dropped from the cast with
+' a console line naming it, rather than taken as grounds to discard the items
+' around it. A `display: "blank"` Lease (PLY-093) is a different thing again —
+' not an empty cast but an instruction — and is returned as contentType
+' "blank"; see wvDoProgram's own display block.
 '
 ' Integrity note (video, PLY-084/PLY-014): this player fetches the WHOLE asset
 ' to a local file and hashes it before ever handing a URI back for playback —
@@ -61,10 +69,45 @@
 ' progressively on top) — the only ordering the wire shape itself gives a
 ' player to honor. A layer whose `type` is anything other than image/video
 ' MUST NOT reach a player at all (a relay rejects it at compile time,
-' PLY-015) — if one arrives anyway this player rejects the whole composed
-' item (and, per the no-silent-drop rule above, the whole Lease — a
-' half-presented cast is exactly the silent content loss PLY-083a exists to
-' prevent) rather than guess how to render an unsupported layer.
+' PLY-015); if one arrives anyway this player drops THAT LAYER rather than
+' guess how to render an unsupported type — see the degrading rule below for
+' why it does not take the item, or the Lease, down with it.
+'
+' Degrading (PLY-087, and the hardware defect it was written for): a Lease is
+' resolved item by item and, within a slide or composed item, layer by layer.
+' A failure NEVER escalates past the smallest thing it actually broke:
+'
+'   - a slide layer whose bytes will not fetch is DEGRADED — the layer is left
+'     with no contentUri and PhotonScene draws a visible "unavailable"
+'     placeholder in its geometry (createDegradedLayer), exactly as a weather
+'     or entity layer whose source could not answer is drawn as slidelive's
+'     Unavailable "—". The rest of the slide — its title, its clock, its other
+'     images — draws normally;
+'   - an item that resolves to nothing at all (an unfetchable plain
+'     image/video, a slide/composed carrying no layers, a type this player
+'     does not know) is DROPPED, loudly, and every other item in the same
+'     Lease still presents;
+'   - only when the whole Lease resolves to NO presentable item does this poll
+'     fail, which is the one case never-wipe is actually for.
+'
+' This reverses an earlier rule that read PLY-083a's "present every item" as
+' "present every item or none", and it was wrong in the most expensive
+' direction. Observed on The Hanger 2026-08-11: one layer of one slide 403'd,
+' the whole program was rejected, a second slide with NO assets at all was
+' discarded with it, and the screen sat on an hour-old test slide for a whole
+' session — never-wipe faithfully preserving the wrong thing. PLY-087 is
+' explicit that a player which cannot reach a content origin "MUST continue
+' rendering whatever content it already holds locally that remains valid under
+' that Lease, rather than treat the fetch failure as a reason to stop
+' rendering entirely", and wire.Layer.Value already argues the identical case
+' one level down: requiring a live widget's value "would mean a forecast
+' service being unreachable BLANKS THE WHOLE SLIDE — losing the title, the
+' image and the clock to fix nothing."
+'
+' The half that keeps this from becoming silent content loss is the LOG: every
+' degrade and every drop prints, with the item/layer index and the underlying
+' error, so a shortened rotation is a diagnosable event rather than a screen
+' that quietly shows less than it was assigned.
 '
 ' Scope note (first photon): the Lease's ed25519 signature (PLY-090) is NOT
 ' verified on-device — Roku exposes no ed25519 primitive, and first-photon's
@@ -73,10 +116,15 @@
 ' (or a Roku-supported signature scheme).
 '
 ' wvDoProgram(state) where state = { channelToken, relayHost, relayPort, trustPem }
-' returns { ok, contentType ("cast"), items (ordered array of cast entries —
-' {contentType: "image"|"video", contentUri, streamFormat, durationMs} or
-' {contentType: "composed", layers: [{contentUri, contentType, streamFormat}],
-' durationMs}), leaseId, error, needsRepair }.
+' returns { ok, contentType ("cast" or "blank"), items (ordered array of cast
+' entries — {contentType: "image"|"video", contentUri, streamFormat,
+' durationMs}, {contentType: "composed", layers: [{contentUri, contentType,
+' streamFormat}], durationMs}, or {contentType: "slide", layers, durationMs,
+' slideId}; EMPTY for contentType "blank"), leaseId, error, needsRepair }.
+'
+' contentType "blank" is a SUCCESS (ok = true), not a failure: see the
+' display-handling block in wvDoProgram for why the difference is the whole
+' point of this return shape.
 
 function wvDoProgram(state as Object) as Object
     r = { ok: false, contentType: "", items: invalid, leaseId: "", error: "", needsRepair: false }
@@ -190,173 +238,274 @@ function wvDoProgram(state as Object) as Object
     end if
     r.leaseId = wvStr(lease.lease_id)
 
+    ' --- display (PLY-093): an INSTRUCTION, not a content count ---
+    '
+    ' `display` is exactly one of "content" or "blank". A "blank" Lease is a
+    ' SUCCESSFUL pull that says show nothing — PLY-093's on-but-showing-nothing
+    ' state a compiled program can assign, which is how a daypart's
+    ' display_power reaches a screen (data-model/1 DAT-114/115), how a screen
+    ' scheduled dark overnight goes dark, and how an expiring alert override
+    ' returns a wall to nothing (DAT-004d). PLY-093 is explicit that a blank
+    ' Lease's own `content` array MAY be empty, so an empty array under
+    ' display:blank is the NORMAL shape, not a malformed one.
+    '
+    ' Conflating that with a failed pull is the defect this block exists to
+    ' close. Never-wipe is a fallback for UNREACHABILITY — "I could not get a
+    ' program, so keep showing what I already have" — and applying it to a
+    ' valid, signed instruction the player merely dislikes is not conservatism,
+    ' it is ignoring the instruction. Observed on The Hanger 2026-08-11: a
+    ' 120s-TTL "EVACUATE - THIS IS A DRILL" override lapsed correctly
+    ' server-side, the relay served a valid Lease carrying
+    ' `"display":"blank"`/`"content":[]`, and this player logged it as
+    ' `program poll failed (keeping current content, never-wipe): lease carried
+    ' an empty or missing content array` — screenshots before and after the
+    ' lapse were byte-identical and the evacuation notice never left the wall.
+    '
+    ' internal/virtualplayer (preempt.go's AdoptionOf) has always honored
+    ' `display`, and the conformance corpus drives THAT double — which is
+    ' precisely why every gate was green while the device ignored the contract.
+    '
+    ' The comparison is deliberately positive ("blank"), never a negation of
+    ' "content": an absent, empty or unrecognized `display` from an older or
+    ' non-conformant relay must keep the CONTENT path, because blanking a wall
+    ' on a value this player does not understand is the mirror defect, and it
+    ' is worse than the bug — never-wipe at least preserves what an operator
+    ' last chose.
+    display = wvStr(lease.display)
+    blank = (display = "blank")
+
     content = lease.content
-    if content = invalid or content.Count() = 0
-        r.error = "lease carried an empty or missing content array"
-        return r
+    if not blank
+        if content = invalid or content.Count() = 0
+            r.error = "lease carried an empty or missing content array"
+            return r
+        end if
     end if
 
     ' --- ordered cast: materialize + verify EVERY content item, IN ARRAY ORDER
     ' (PLY-083a) --- PLY-083a governs "every content item a Lease carries"
     ' with no type-based exception, so this loop makes exactly one pass over
-    ' `content` and produces exactly one cast entry per item, in order —
+    ' `content` and produces at most one cast entry per item, in order —
     ' never a special first-item branch that can silently discard the rest
     ' of the array. A plain `image`/`video` item goes through the same
     ' cache-or-fetch-then-verify pipeline every other content-bearing thing does
     ' (wvEnsureContent; see the integrity note at the top of this file for why
     ' video pays a full pre-fetch instead of streaming); a `composed` item
-    ' (PLY-015) resolves every one of its own layers with the IDENTICAL
-    ' per-item integrity guarantee and becomes a cast entry of its own, cycled
-    ' by PhotonScene exactly like any plain entry (see PhotonScene.brs's
-    ' renderCastItem). Any item whose type is none of the three is skipped —
-    ' forward-compatible with a future content-type vocabulary this player has
-    ' not adopted (mirroring PLY-016's server-side rule, applied defensively
-    ' here too) — but a malformed `composed` item (no layers, or a layer
-    ' outside image/video) fails the WHOLE Lease rather than silently dropping
-    ' just that one entry: a half-presented cast is exactly the silent content
-    ' loss PLY-083a exists to prevent.
+    ' (PLY-015) resolves its own layers with the IDENTICAL per-layer integrity
+    ' guarantee and becomes a cast entry of its own, cycled by PhotonScene
+    ' exactly like any plain entry (see PhotonScene.brs's renderCastItem).
+    '
+    ' Failure is contained at the SMALLEST scope it broke — see the degrading
+    ' note at the top of this file, and PLY-087, for why. An item this player
+    ' cannot present at all is dropped (loudly) and the rest of the Lease still
+    ' presents; a slide layer whose bytes will not fetch degrades to a visible
+    ' placeholder and the rest of its slide still draws; an item whose type is
+    ' none of the three is dropped the same way, which keeps this
+    ' forward-compatible with a content-type vocabulary this player has not
+    ' adopted (mirroring PLY-016's server-side rule, applied defensively here).
+    ' NOTHING in this loop returns early: the only Lease-level failure is the
+    ' one decided after it, when the Lease resolved to no presentable item at
+    ' all.
     '
     ' `keep` accumulates the cache key of every asset this Lease references, so
     ' the trim at the bottom knows what is in use. It is built HERE, from the
     ' same pass that resolves them, rather than by re-walking the Lease
     ' afterwards: two walks that could disagree about what is referenced is how
     ' a cache evicts something a screen is playing.
+    '
+    ' A display:blank Lease skips the loop entirely: PLY-093 says its `content`
+    ' array shows none of itself, so resolving it would fetch bytes nothing can
+    ' put on screen.
     castOut = []
     keep = {}
     fetched = 0
     reused = 0
-    for i = 0 to content.Count() - 1
-        item = content[i]
-        itemType = wvStr(item.type)
+    degraded = 0
+    dropped = 0
+    if not blank
+        for i = 0 to content.Count() - 1
+            item = content[i]
+            itemType = wvStr(item.type)
+            ' `entry` is this item's cast entry, or invalid if it could not be
+            ' built; `why` says why not. One drop decision per item, taken at
+            ' the bottom of the loop, so there is exactly one place an item can
+            ' leave the cast and exactly one place that gets logged.
+            entry = invalid
+            why = ""
 
-        if itemType = "composed"
-            layers = item.layers
-            if layers = invalid or layers.Count() = 0
-                r.error = "cast item " + i.toStr() + " (composed) carried no layers"
-                return r
-            end if
+            if itemType = "composed"
+                layers = item.layers
+                if layers = invalid or layers.Count() = 0
+                    why = "(composed) carried no layers"
+                else
+                    outLayers = []
+                    for j = 0 to layers.Count() - 1
+                        layer = layers[j]
+                        layerType = wvStr(layer.type)
+                        if layerType <> "image" and layerType <> "video"
+                            ' Defensive only: PLY-015 requires a relay to reject
+                            ' any non-image/video (or nested composed) layer at
+                            ' compile time and never deliver it. If one reaches
+                            ' this player anyway (a non-conformant relay, or a
+                            ' future contract revision this player has not
+                            ' adopted), the LAYER is dropped — this player will
+                            ' not guess how to render an unsupported type — and
+                            ' the rest of the stack still composes.
+                            degraded = degraded + 1
+                            print "[player-v3] cast item " + i.toStr() + " composed layer " + j.toStr() + " DROPPED: unsupported type '" + layerType + "' (PLY-015 restricts layers to image/video)"
+                        else
+                            fv = wvEnsureContent(layer, layerType)
+                            if fv.ok
+                                keep[layerType + ":" + wvAssetRefKey(wvStr(layer.asset_ref))] = true
+                                if fv.cached then reused = reused + 1 else fetched = fetched + 1
+                                lr = { contentUri: fv.path, contentType: layerType, streamFormat: "" }
+                                if layerType = "video" then lr.streamFormat = wvVideoStreamFormat()
+                                outLayers.Push(lr)
+                            else
+                                degraded = degraded + 1
+                                print "[player-v3] cast item " + i.toStr() + " composed layer " + j.toStr() + " (" + layerType + ") DROPPED: " + fv.error
+                            end if
+                        end if
+                    end for
 
-            outLayers = []
-            for j = 0 to layers.Count() - 1
-                layer = layers[j]
-                layerType = wvStr(layer.type)
-                if layerType <> "image" and layerType <> "video"
-                    ' Defensive only: PLY-015 requires a relay to reject any
-                    ' non-image/video (or nested composed) layer at compile
-                    ' time and never deliver it. If one reaches this player
-                    ' anyway (a non-conformant relay, or a future contract
-                    ' revision this player has not adopted), the whole
-                    ' composed item — and thus the whole Lease — is rejected
-                    ' rather than silently dropping a layer or guessing how
-                    ' to render an unsupported type.
-                    r.error = "cast item " + i.toStr() + " composed layer " + j.toStr() + " has unsupported type '" + layerType + "' (PLY-015 restricts layers to image/video)"
-                    return r
-                end if
-
-                fv = wvEnsureContent(layer, layerType)
-                if not fv.ok
-                    r.error = "cast item " + i.toStr() + " composed layer " + j.toStr() + ": " + fv.error
-                    return r
-                end if
-                keep[layerType + ":" + wvAssetRefKey(wvStr(layer.asset_ref))] = true
-                if fv.cached then reused = reused + 1 else fetched = fetched + 1
-
-                lr = { contentUri: fv.path, contentType: layerType, streamFormat: "" }
-                if layerType = "video" then lr.streamFormat = wvVideoStreamFormat()
-                outLayers.Push(lr)
-            end for
-
-            ' A composed item carries no `duration_ms` of its own in this
-            ' contract's wire shape (PLY-083's `{type: "composed", layers}}`
-            ' — no duration field) and PLY-083a's "own natural end" is
-            ' undefined for composed (per-layer timing is reserved to a
-            ' future contract, Scope). Absent any signal, this player uses
-            ' the same own-default dwell time an image item with no
-            ' duration_ms falls back to (PhotonScene's
-            ' wvDefaultImageDurationMs) as its advance signal — a documented
-            ' implementation choice, not a contract requirement.
-            castOut.Push({ contentType: "composed", layers: outLayers, durationMs: 0 })
-
-        else if itemType = "slide"
-            ' A "slide" content item (PLY-012's "slide" type; native slide
-            ' rendering, parity milestone 2) carries an ordered `layers` array
-            ' of positioned native elements in a fixed 1920x1080 canvas. Exactly
-            ' two of its kinds reference external bytes — `image` and `video`
-            ' (wvLayerFetchesContent, mirroring wire.LayerFetchesContent, which
-            ' is the producer side of the same pair) — and both pay the IDENTICAL
-            ' asset_ref-verified-before-presented guarantee (wvEnsureContent) a
-            ' plain image/video item or a composed layer pays: the verified local
-            ' path is attached to the layer as `contentUri` before the layer is
-            ' handed to PhotonScene. Every other kind is pure declarative draw
-            ' data (no external bytes) and is passed through untouched. The relay
-            ' has already validated the whole layer stack (wire.ValidateSlide
-            ' Layers — closed kind set, geometry within canvas, per-kind required
-            ' fields) and drops a slide it cannot validate, so this player does
-            ' not re-validate kinds here; a content layer missing url/asset_ref
-            ' still fails the fetch below rather than presenting unverified
-            ' bytes. Layers ride through in array order (z-order = index).
-            layers = item.layers
-            if layers = invalid or layers.Count() = 0
-                r.error = "cast item " + i.toStr() + " (slide) carried no layers"
-                return r
-            end if
-
-            for j = 0 to layers.Count() - 1
-                layer = layers[j]
-                layerKind = wvStr(layer.kind)
-                if wvLayerFetchesContent(layerKind)
-                    fv = wvEnsureContent(layer, layerKind)
-                    if not fv.ok
-                        r.error = "cast item " + i.toStr() + " slide layer " + j.toStr() + " (" + layerKind + "): " + fv.error
-                        return r
+                    if outLayers.Count() = 0
+                        why = "(composed) resolved none of its layers"
+                    else
+                        ' A composed item carries no `duration_ms` of its own in
+                        ' this contract's wire shape (PLY-083's `{type:
+                        ' "composed", layers}` — no duration field) and
+                        ' PLY-083a's "own natural end" is undefined for composed
+                        ' (per-layer timing is reserved to a future contract,
+                        ' Scope). Absent any signal, this player uses the same
+                        ' own-default dwell time an image item with no
+                        ' duration_ms falls back to (PhotonScene's
+                        ' wvDefaultImageDurationMs) as its advance signal — a
+                        ' documented implementation choice, not a contract
+                        ' requirement.
+                        entry = { contentType: "composed", layers: outLayers, durationMs: 0 }
                     end if
-                    keep[layerKind + ":" + wvAssetRefKey(wvStr(layer.asset_ref))] = true
-                    if fv.cached then reused = reused + 1 else fetched = fetched + 1
-                    layer.contentUri = fv.path
-                    ' A video layer additionally carries the ContentNode
-                    ' streamFormat its Video node needs, decided HERE for the same
-                    ' reason a composed video layer's is (this file owns the
-                    ' fetch strategy, and the format follows from it — see
-                    ' wvVideoStreamFormat). PhotonScene then never has to know
-                    ' anything about how the bytes arrived.
-                    if layerKind = "video" then layer.streamFormat = wvVideoStreamFormat()
                 end if
-            end for
 
-            ' A slide has no natural end (a clock ticks forever), so it advances
-            ' on its own dwell time exactly like an image item: its own
-            ' duration_ms when it carries one (PLY-083b), else this player's
-            ' default dwell. A single-slide Lease simply re-renders itself each
-            ' cycle (the clock timer is torn down and restarted cleanly).
-            ' slideId is the item's CAST-LOCAL slide id (LeaseContent.slide_id),
-            ' carried through untouched. It is what a `nav` layer's items resolve
-            ' their jump target against, and what a press reports so the platform
-            ' can attribute an interaction to the slide that solicited it. An item
-            ' that carries none (an inline slide item, a generated alert slide)
-            ' yields "" and simply never matches a nav target.
-            castOut.Push({ contentType: "slide", layers: layers, durationMs: wvItemDurationMs(item), slideId: wvStr(item.slide_id) })
+            else if itemType = "slide"
+                ' A "slide" content item (PLY-012's "slide" type; native slide
+                ' rendering, parity milestone 2) carries an ordered `layers`
+                ' array of positioned native elements in a fixed 1920x1080
+                ' canvas. Exactly two of its kinds reference external bytes —
+                ' `image` and `video` (wvLayerFetchesContent, mirroring
+                ' wire.LayerFetchesContent, which is the producer side of the
+                ' same pair) — and both pay the IDENTICAL
+                ' asset_ref-verified-before-presented guarantee
+                ' (wvEnsureContent) a plain image/video item or a composed layer
+                ' pays: the verified local path is attached to the layer as
+                ' `contentUri` before the layer is handed to PhotonScene. Every
+                ' other kind is pure declarative draw data (no external bytes)
+                ' and is passed through untouched. The relay has already
+                ' validated the whole layer stack (wire.ValidateSlideLayers —
+                ' closed kind set, geometry within canvas, per-kind required
+                ' fields) and drops a slide it cannot validate, so this player
+                ' does not re-validate kinds here. Layers ride through in array
+                ' order (z-order = index).
+                layers = item.layers
+                if layers = invalid or layers.Count() = 0
+                    why = "(slide) carried no layers"
+                else
+                    for j = 0 to layers.Count() - 1
+                        layer = layers[j]
+                        layerKind = wvStr(layer.kind)
+                        if wvLayerFetchesContent(layerKind)
+                            fv = wvEnsureContent(layer, layerKind)
+                            if fv.ok
+                                keep[layerKind + ":" + wvAssetRefKey(wvStr(layer.asset_ref))] = true
+                                if fv.cached then reused = reused + 1 else fetched = fetched + 1
+                                layer.contentUri = fv.path
+                                ' A video layer additionally carries the
+                                ' ContentNode streamFormat its Video node needs,
+                                ' decided HERE for the same reason a composed
+                                ' video layer's is (this file owns the fetch
+                                ' strategy, and the format follows from it — see
+                                ' wvVideoStreamFormat). PhotonScene then never
+                                ' has to know anything about how the bytes
+                                ' arrived.
+                                if layerKind = "video" then layer.streamFormat = wvVideoStreamFormat()
+                            else
+                                ' DEGRADE this layer, keep the slide. An empty
+                                ' contentUri is the single signal PhotonScene's
+                                ' renderSlide draws its "unavailable"
+                                ' placeholder from (createDegradedLayer), so
+                                ' this is set explicitly rather than left absent
+                                ' — the same fact, said out loud, and it also
+                                ' covers the case wvLayerFetchesContent's own
+                                ' doc warns about (a content layer that reached
+                                ' the scene with no uri and drew a silent hole).
+                                degraded = degraded + 1
+                                layer.contentUri = ""
+                                print "[player-v3] cast item " + i.toStr() + " slide layer " + j.toStr() + " (" + layerKind + ") DEGRADED — the slide still draws, with an unavailable placeholder in this layer's place: " + fv.error
+                            end if
+                        end if
+                    end for
 
-        else if itemType = "image" or itemType = "video"
-            fv = wvEnsureContent(item, itemType)
-            if not fv.ok
-                r.error = "cast item " + i.toStr() + ": " + fv.error
-                return r
+                    ' A slide has no natural end (a clock ticks forever), so it
+                    ' advances on its own dwell time exactly like an image item:
+                    ' its own duration_ms when it carries one (PLY-083b), else
+                    ' this player's default dwell. A single-slide Lease simply
+                    ' re-renders itself each cycle (the clock timer is torn down
+                    ' and restarted cleanly). slideId is the item's CAST-LOCAL
+                    ' slide id (LeaseContent.slide_id), carried through
+                    ' untouched. It is what a `nav` layer's items resolve their
+                    ' jump target against, and what a press reports so the
+                    ' platform can attribute an interaction to the slide that
+                    ' solicited it. An item that carries none (an inline slide
+                    ' item, a generated alert slide) yields "" and simply never
+                    ' matches a nav target.
+                    entry = { contentType: "slide", layers: layers, durationMs: wvItemDurationMs(item), slideId: wvStr(item.slide_id) }
+                end if
+
+            else if itemType = "image" or itemType = "video"
+                fv = wvEnsureContent(item, itemType)
+                if fv.ok
+                    keep[itemType + ":" + wvAssetRefKey(wvStr(item.asset_ref))] = true
+                    if fv.cached then reused = reused + 1 else fetched = fetched + 1
+                    ci = { contentType: itemType, contentUri: fv.path, streamFormat: "", durationMs: wvItemDurationMs(item) }
+                    if itemType = "video" then ci.streamFormat = wvVideoStreamFormat()
+                    entry = ci
+                else
+                    ' A plain item IS its asset: there is no partial version of
+                    ' it to draw, so it is dropped rather than degraded. The
+                    ' items around it are untouched.
+                    why = fv.error
+                end if
+
+            else
+                why = "unsupported content type '" + itemType + "'"
             end if
-            keep[itemType + ":" + wvAssetRefKey(wvStr(item.asset_ref))] = true
-            if fv.cached then reused = reused + 1 else fetched = fetched + 1
 
-            ci = { contentType: itemType, contentUri: fv.path, streamFormat: "", durationMs: wvItemDurationMs(item) }
-            if itemType = "video" then ci.streamFormat = wvVideoStreamFormat()
-            castOut.Push(ci)
-        end if
-    end for
-
-    if castOut.Count() = 0
-        r.error = "lease carried no image/video/composed content item (content-type gate or empty program)"
-        return r
+            if entry <> invalid
+                castOut.Push(entry)
+            else
+                dropped = dropped + 1
+                print "[player-v3] cast item " + i.toStr() + " DROPPED — every other item in this Lease still presents: " + why
+            end if
+        end for
     end if
 
-    ' The whole Lease resolved, so the cache now knows exactly what is in use and
+    if blank
+        ' PLY-093: a successful pull whose instruction is "show nothing".
+        r.contentType = "blank"
+    else
+        if castOut.Count() = 0
+            ' NOT a display instruction — this Lease asked for content and this
+            ' player could not present ONE item of it. That is unreachability
+            ' (or an empty program), which is exactly the case never-wipe is
+            ' for: report the failure and let PlayerTask keep whatever is on
+            ' screen. Reaching this branch when even one item resolved would be
+            ' the whole defect back again.
+            r.error = "lease carried " + content.Count().toStr() + " content item(s) and this player could not present any of them (see the per-item DROPPED lines above)"
+            return r
+        end if
+        r.contentType = "cast"
+    end if
+
+    ' The Lease resolved, so the cache now knows exactly what is in use and
     ' can drop what is not. Trimming HERE — after the last item, before anything
     ' is published — is deliberate: trimming per item could evict an asset a
     ' later item in the SAME Lease is about to reuse, and trimming after
@@ -364,14 +513,23 @@ function wvDoProgram(state as Object) as Object
     ' On a failed Lease this is never reached, so a poll that errors out leaves
     ' the cache exactly as it was and the screen keeps whatever it is showing
     ' (the same never-wipe discipline PlayerTask applies to the program itself).
+    ' A blank Lease DOES reach it, with an empty keep-set: nothing is on screen,
+    ' so nothing but the one generation of grace protects anything.
     wvTrimContentCache(keep)
-    print "[player-v3] content: " + fetched.toStr() + " fetched, " + reused.toStr() + " reused from cache"
+    ' `degraded` counts LAYER-level losses of both kinds — a slide layer
+    ' replaced by a placeholder and a composed layer removed from its stack —
+    ' because from an operator's seat they are one fact: this program is not
+    ' being shown in full. The per-layer lines above say which, and why.
+    print "[player-v3] content: " + fetched.toStr() + " fetched, " + reused.toStr() + " reused from cache, " + degraded.toStr() + " layer(s) degraded or dropped, " + dropped.toStr() + " item(s) dropped"
 
     ' --- best-effort lease ack (PLY-091), over the pinned connection ---
+    ' Reached on both adopted outcomes — a cast (possibly a degraded one) and a
+    ' blank. PLY-104 is explicit that a blank Lease is still accepted and
+    ' persisted, so an unacknowledged blank would be a screen that went dark
+    ' without ever telling the platform it had.
     wvAckLease(base, state.channelToken, pinFile, r.leaseId)
 
     r.items = castOut
-    r.contentType = "cast"
     r.ok = true
     return r
 end function
