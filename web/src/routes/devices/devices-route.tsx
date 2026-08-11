@@ -248,13 +248,30 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
     }
   }, [busy, client, dialog, load]);
 
+  /* Finding one device in a fleet used to have no mechanism on this page: a
+     plain sortable table and nothing else. The four identifying columns are
+     marked searchable, and the three closed-vocabulary ones carry their own
+     filter — whose options are faceted from the rows actually present, so a new
+     device class or a second relay appears in the filter without anyone editing
+     a list. Adoption state is a `StatusBadge` cell, so it needs an ACCESSOR too:
+     the badge is the presentation, the word is the value a filter reads. */
   const deviceColumns = useMemo<ColumnDef<DeviceRow>[]>(
     () => [
-      { id: "name", header: "Device", accessorFn: (r) => r.device.name },
-      { id: "address", header: "Address", accessorFn: (r) => r.address ?? "—" },
-      { id: "model", header: "Model", accessorFn: (r) => r.model ?? "—" },
-      { id: "class", header: "Class", accessorFn: (r) => r.device.device_class },
-      { id: "relay", header: "Reported by", accessorFn: (r) => r.device.relay_id },
+      { id: "name", header: "Device", accessorFn: (r) => r.device.name, meta: { searchable: true } },
+      { id: "address", header: "Address", accessorFn: (r) => r.address ?? "—", meta: { searchable: true } },
+      { id: "model", header: "Model", accessorFn: (r) => r.model ?? "—", meta: { searchable: true } },
+      {
+        id: "class",
+        header: "Class",
+        accessorFn: (r) => r.device.device_class,
+        meta: { searchable: true, filter: "enum", filterLabel: "Device class" },
+      },
+      {
+        id: "relay",
+        header: "Reported by",
+        accessorFn: (r) => r.device.relay_id,
+        meta: { filter: "enum", filterLabel: "Reported by" },
+      },
       {
         id: "entities",
         header: "Entities",
@@ -264,6 +281,8 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
       {
         id: "status",
         header: "Status",
+        accessorFn: (r) => (r.adopted ? "Adopted" : "Discovered"),
+        meta: { filter: "enum", filterLabel: "Adoption" },
         cell: ({ row }) =>
           row.original.adopted ? (
             <StatusBadge status="ok">Adopted</StatusBadge>
@@ -277,16 +296,26 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
 
   const entityColumns = useMemo<ColumnDef<Entity>[]>(
     () => [
-      { id: "name", header: "Entity", accessorFn: (e) => e.name },
+      { id: "name", header: "Entity", accessorFn: (e) => e.name, meta: { searchable: true } },
       {
         id: "device",
         header: "Device",
         accessorFn: (e) => deviceNames.get(e.device_id) ?? e.device_id,
+        meta: { searchable: true },
       },
-      { id: "class", header: "Class", accessorFn: (e) => e.device_class },
+      {
+        id: "class",
+        header: "Class",
+        accessorFn: (e) => e.device_class,
+        meta: { searchable: true, filter: "enum", filterLabel: "Entity class" },
+      },
       {
         id: "state",
         header: "State",
+        // "unreported" is a real, distinct state and must be filterable as one —
+        // an absent `state` is not the same fact as a device reporting "off".
+        accessorFn: (e) => e.state ?? "unreported",
+        meta: { filter: "enum", filterLabel: "State" },
         cell: ({ row }) =>
           row.original.state ? (
             <StatusBadge status={row.original.state === "off" ? "off" : "ok"}>
@@ -356,6 +385,9 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
             data={rows}
             label="Discovered devices"
             loading={devices === null}
+            search={{ label: "Search devices", placeholder: "Name, address, model or class" }}
+            filters
+            pagination
             onRowPress={(row) =>
               setSelectedDeviceId((current) =>
                 current === row.device.id ? null : row.device.id,
@@ -401,6 +433,9 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
             data={shownEntities}
             label="Entities"
             loading={devices === null}
+            search={{ label: "Search entities", placeholder: "Entity, device or class" }}
+            filters
+            pagination
             emptyState={
               <EmptyState
                 title="No entities"

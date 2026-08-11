@@ -33,8 +33,16 @@ export type { ModalProps, ModalSize, ConfirmModalProps } from "./modal";
 export { NavDrawer } from "./nav-drawer";
 export type { NavDrawerProps } from "./nav-drawer";
 
+export { Checkbox } from "./checkbox";
+export type { CheckboxProps } from "./checkbox";
+
 export { DataTable } from "./data-table";
-export type { DataTableProps } from "./data-table";
+export type {
+  DataTableProps,
+  DataTableSearch,
+  DataTablePagination,
+  DataTableSelection,
+} from "./data-table";
 
 export { EmptyState } from "./empty-state";
 export type { EmptyStateProps } from "./empty-state";

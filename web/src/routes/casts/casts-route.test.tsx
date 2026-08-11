@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
@@ -75,6 +75,30 @@ describe("Casts library", () => {
     expect(screen.getByText("Broken loop")).toBeInTheDocument();
     expect(screen.getByText("Ready")).toBeInTheDocument();
     expect(screen.getByText("1 slide needs attention")).toBeInTheDocument();
+  });
+
+  it("finds one cast by NAME in a library too long to scan", async () => {
+    const user = userEvent.setup();
+    server.use(
+      ...listing([
+        cast(),
+        cast({ id: ULID_B, name: "Broken loop", slides: [{ id: "s1", layers: [] }] }),
+      ]),
+    );
+    renderCasts();
+    await screen.findByText("Lobby loop");
+
+    await user.type(screen.getByLabelText("Search casts"), "Broken");
+    await waitFor(() => expect(screen.queryByText("Lobby loop")).not.toBeInTheDocument());
+    expect(screen.getByText("Broken loop")).toBeInTheDocument();
+
+    // …and the health filter narrows by the two states the rows actually carry,
+    // rather than by anything this page enumerates.
+    await user.clear(screen.getByLabelText("Search casts"));
+    await waitFor(() => expect(screen.getByText("Lobby loop")).toBeInTheDocument());
+    await user.selectOptions(screen.getByLabelText("Status"), "Needs attention");
+    expect(screen.queryByText("Lobby loop")).not.toBeInTheDocument();
+    expect(screen.getByText("Broken loop")).toBeInTheDocument();
   });
 
   it("shows an empty state on a box with no casts yet", async () => {

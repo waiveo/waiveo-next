@@ -27,6 +27,7 @@ import {
   EmptyState,
   FormField,
   KitIcon,
+  Checkbox,
   Modal,
   ConfirmModal,
   PageHeader,
@@ -371,16 +372,22 @@ function StatsSection() {
 }
 
 // ── Data tables ─────────────────────────────────────────────────────────────
+// `meta.searchable` and `meta.filter` are how a column opts INTO the toolbar —
+// declared on the column, so the searched set and the filter's options are always
+// derived from the columns and rows that exist rather than from a second list.
 const screenColumns: ColumnDef<ScreenRow>[] = [
-  { accessorKey: "name", header: "Screen" },
-  { accessorKey: "site", header: "Site" },
-  { accessorKey: "address", header: "Address", meta: { numeric: true, align: "left" } },
+  { accessorKey: "name", header: "Screen", meta: { searchable: true } },
+  { accessorKey: "site", header: "Site", meta: { searchable: true } },
+  { accessorKey: "address", header: "Address", meta: { numeric: true, align: "left", searchable: true } },
   { accessorKey: "devices", header: "Devices", meta: { numeric: true } },
-  { accessorKey: "daypart", header: "Daypart" },
+  { accessorKey: "daypart", header: "Daypart", meta: { filter: "enum" } },
   {
     id: "status",
     header: "Status",
-    enableSorting: false,
+    // An accessor as well as a cell: the badge is the PRESENTATION, the label is
+    // the value — a filter (or a sort) with nothing to read cannot work.
+    accessorFn: (row) => row.statusLabel,
+    meta: { filter: "enum", filterLabel: "Status" },
     cell: ({ row }) => (
       <StatusBadge status={row.original.status}>{row.original.statusLabel}</StatusBadge>
     ),
@@ -407,7 +414,7 @@ function DataSection() {
     <SectionShell
       id="data"
       title="Data tables"
-      intro="One table idiom over @tanstack/react-table: sortable header buttons with aria-sort, mono-tabular numerics, a loading skeleton, an empty state, and per-row actions. A gradient never touches it."
+      intro="One table idiom over @tanstack/react-table: sortable header buttons with aria-sort, mono-tabular numerics, a loading skeleton, an empty state, per-row actions — and, opt-in per call site, a debounced search, per-column filters faceted from the data, paging with an announced range, and row selection whose select-all means the page and says so. A gradient never touches it."
     >
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-3">
@@ -415,11 +422,31 @@ function DataSection() {
             {loading ? "Show data" : "Show loading"}
           </Button>
         </div>
+        {/* The gallery turns everything on at once — it is the reference for what
+            each affordance looks like. A real page opts in to what its list is
+            long enough to need; the Automations table below has none of it.
+            `pageSize` is 3 against 5 fixture rows so the pager is actually
+            exercised rather than sitting inert. */}
         <DataTable
           columns={screenColumns}
           data={screens}
           label="Screens"
           loading={loading}
+          search={{ label: "Search screens", placeholder: "Name, site or address" }}
+          filters
+          pagination={{ pageSize: 3, pageSizeOptions: [3, 5, 10] }}
+          selection={{
+            rowId: (row) => row.id,
+            rowLabel: (row) => `Select ${row.name}`,
+            bulkActions: (chosen) => (
+              <Button
+                variant="outline"
+                onClick={() => toast(`Published to ${chosen.length} screen${chosen.length === 1 ? "" : "s"}`)}
+              >
+                Publish to selected
+              </Button>
+            ),
+          }}
           rowActions={(row) => (
             <button
               type="button"
@@ -491,6 +518,21 @@ function FormsSection() {
             <textarea {...field} rows={3} className={cn(fieldClass, "h-auto py-2")} placeholder="Add a note" />
           )}
         </FormField>
+
+        {/* The kit's Checkbox, which is also what a DataTable's row-selection
+            column ticks. It is a kit wrapper rather than a raw shadcn import
+            because a route may not reach `@/components/ui` at all — and it
+            demands an accessible name at the TYPE level, so a bare box in a
+            table cell is never nameless. */}
+        <div className="flex items-center gap-2">
+          {/* Named by the visible text via aria-labelledby rather than a
+              duplicate aria-label — a Radix checkbox renders as a <button>, which
+              a `<label for>` does not associate with at all. */}
+          <Checkbox aria-labelledby="design-watchdog-label" />
+          <span id="design-watchdog-label" className="text-[13px] text-foreground">
+            Restart the player if it stops reporting
+          </span>
+        </div>
 
         <div className="flex gap-3">
           <Button variant="default" type="submit">

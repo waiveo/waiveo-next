@@ -368,16 +368,25 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
 
   const columns: ColumnDef<Cast>[] = useMemo(
     () => [
-      { accessorKey: "name", header: "Name" },
+      { accessorKey: "name", header: "Name", meta: { searchable: true } },
       {
         id: "slides",
         header: "Slides",
+        // An accessor returning the NUMBER, so the column sorts 2 < 9 < 10 rather
+        // than by the rendered string.
+        accessorFn: (cast) => castHealth(cast.slides).slides,
         meta: { numeric: true },
-        cell: ({ row }) => String(castHealth(row.original.slides).slides),
+        cell: ({ getValue }) => String(getValue()),
       },
       {
         id: "health",
         header: "Status",
+        // The cell says HOW MANY slides need attention; the filter needs the two
+        // states an operator actually browses by, so the accessor is the coarse
+        // one. Ready/Needs attention are the only two values, faceted from data.
+        accessorFn: (cast) =>
+          castHealth(cast.slides).problems === 0 ? "Ready" : "Needs attention",
+        meta: { filter: "enum", filterLabel: "Status" },
         cell: ({ row }) => {
           const { problems } = castHealth(row.original.slides);
           return problems === 0 ? (
@@ -433,6 +442,9 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
           columns={columns}
           data={schedulable}
           loading={casts === null}
+          search={{ label: "Search casts", placeholder: "Cast name" }}
+          filters
+          pagination
           onRowPress={(cast) => openStudio(cast)}
           emptyState={
             <EmptyState

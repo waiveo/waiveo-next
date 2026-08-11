@@ -330,6 +330,53 @@ export function LiveScreensPanel({ api, autoRefresh = true }: LiveScreensPanelPr
     [api, busy, load],
   );
 
+  /** Clear the override on every selected screen that HAS one, and report the
+   * result per screen rather than as one cheerful summary.
+   *
+   * The loop is sequential and deliberately so: this is a handful of screens, and
+   * a burst of parallel writes against the same relay set buys nothing but a
+   * harder failure to describe. Screens with no override are skipped rather than
+   * "cleared" — claiming to have cleared what was never set is the same class of
+   * dishonesty as legacy's fire-and-forget bulk assign, which swallowed every
+   * failure into `console.error`. */
+  const clearPushMany = useCallback(
+    async (chosen: ScreenStatus[]) => {
+      if (busy) return;
+      const targets = chosen.filter((row) => row.now);
+      if (targets.length === 0) {
+        toast.error("None of the selected screens has an override to clear.");
+        return;
+      }
+      setBusy(true);
+      const failed: string[] = [];
+      try {
+        for (const row of targets) {
+          try {
+            await api.screens.clearNow(row.screen_id);
+          } catch (err) {
+            failed.push(`${row.name ?? row.screen_id} (${problemMessage(err)})`);
+          }
+        }
+        const cleared = targets.length - failed.length;
+        if (failed.length === 0) {
+          toast.success(
+            cleared === 1
+              ? "1 screen returns to its schedule on its next check-in."
+              : `${cleared} screens return to their schedules on their next check-in.`,
+          );
+        } else {
+          toast.error(
+            `Cleared ${cleared} of ${targets.length}. Still overridden: ${failed.join("; ")}`,
+          );
+        }
+        await load();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [api, busy, load],
+  );
+
   const castName = useMemo(() => {
     const byID = new Map(casts.map((c) => [c.id, c.name]));
     return (id: string | undefined) => (id ? (byID.get(id) ?? id) : "");
@@ -338,8 +385,13 @@ export function LiveScreensPanel({ api, autoRefresh = true }: LiveScreensPanelPr
   const columns = useMemo<ColumnDef<ScreenStatus>[]>(
     () => [
       {
+        // Accessors as well as cells throughout: the cell is a stack of chips and
+        // sub-lines, but a fleet page has to be searchable and sortable, and a
+        // render-only column offers a table no value to work from.
         id: "screen",
         header: "Screen",
+        accessorFn: (r) => r.name ?? r.screen_id,
+        meta: { searchable: true },
         cell: ({ row }) => (
           <span className="font-medium">{row.original.name ?? row.original.screen_id}</span>
         ),
@@ -347,6 +399,12 @@ export function LiveScreensPanel({ api, autoRefresh = true }: LiveScreensPanelPr
       {
         id: "reachability",
         header: "Status",
+        // The LABEL, not the wire word: the filter's options are what the column
+        // shows, so "Not heard from" is what an operator picks — and the option
+        // set is faceted from the rows, so a reachability the server starts
+        // reporting appears in the filter with no list to update.
+        accessorFn: (r) => REACHABILITY_LABEL[r.reachability] ?? r.reachability,
+        meta: { filter: "enum", filterLabel: "Reachability" },
         cell: ({ row }) => {
           const r = row.original;
           return (
@@ -371,6 +429,8 @@ export function LiveScreensPanel({ api, autoRefresh = true }: LiveScreensPanelPr
       {
         id: "now",
         header: "Now playing",
+        accessorFn: (r) => nowPlayingLabel(r),
+        meta: { searchable: true },
         cell: ({ row }) => {
           const r = row.original;
           return (
@@ -423,6 +483,30 @@ export function LiveScreensPanel({ api, autoRefresh = true }: LiveScreensPanelPr
         data={rows ?? []}
         label="Live screens"
         loading={rows === null}
+        search={{ label: "Search screens", placeholder: "Screen name or what it is showing" }}
+        filters
+        pagination
+        selection={{
+          rowId: (row) => row.screen_id,
+          rowLabel: (row) => `Select ${row.name ?? row.screen_id}`,
+          // Only the non-destructive fleet gesture is offered in bulk. "Show now"
+          // is not: it needs a cast chosen per push and reports intent, not
+          // delivery, so a bulk version would be a second, differently-shaped
+          // dialog rather than the same act repeated.
+          bulkActions: (chosen) => (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={() => void clearPushMany(chosen)}
+            >
+              {/* Not "Back to schedule": that is the per-ROW button's name, and
+                  two identically-named buttons on one page is an ambiguity a
+                  screen-reader user cannot resolve. */}
+              Return selected to schedule
+            </Button>
+          ),
+        }}
         emptyState={
           <EmptyState
             title="No screens yet"

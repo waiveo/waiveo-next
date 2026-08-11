@@ -569,6 +569,70 @@ describe("Devices — entities and the remote", () => {
   });
 });
 
+describe("Devices — finding one device in a fleet", () => {
+  /** Enough devices that the fleet is not readable at a glance, spread across
+   * two classes and two adoption states so the filters have something to
+   * separate. */
+  function fleet(): Device[] {
+    return [
+      device({ id: DEVICE_ID, name: "Hanger TV", address: "192.0.2.40" }),
+      device({ id: OTHER_DEVICE_ID, name: "Cafe TV", address: "192.0.2.41", adopted: true }),
+      device({
+        id: "01J8ZDEV1CE00000000000000C",
+        name: "Stock room light",
+        address: "192.0.2.42",
+        device_class: "light",
+        model: "Hue A19",
+      }),
+    ];
+  }
+
+  it("narrows the table to what was TYPED in the search box", async () => {
+    seed({ devices: fleet(), entities: [] });
+    const user = renderRoute();
+    const table = await screen.findByRole("table", { name: "Discovered devices" });
+    expect(within(table).getByText("Cafe TV")).toBeInTheDocument();
+
+    const box = screen.getByLabelText("Search devices");
+    await user.type(box, "Stock");
+    await waitFor(() => expect(screen.queryByText("Cafe TV")).not.toBeInTheDocument());
+    expect(screen.getByText("Stock room light")).toBeInTheDocument();
+
+    // Matching on ADDRESS too — the column an operator has in front of them on a
+    // router page, and one of the seven fields legacy's free-text search covered.
+    await user.clear(box);
+    await user.type(box, "192.0.2.41");
+    await waitFor(() => expect(screen.getByText("Cafe TV")).toBeInTheDocument());
+    expect(screen.queryByText("Stock room light")).not.toBeInTheDocument();
+  });
+
+  it("filters by a device class the ROWS declare, not by a hardcoded list", async () => {
+    seed({ devices: fleet(), entities: [] });
+    const user = renderRoute();
+    await screen.findByRole("table", { name: "Discovered devices" });
+
+    const classFilter = screen.getByLabelText("Device class");
+    // "light" is only ever offered because a row has it — nothing in the console
+    // enumerates device classes, and the registry is server-authoritative.
+    expect(within(classFilter).getByRole("option", { name: "light (1)" })).toBeInTheDocument();
+    expect(within(classFilter).getByRole("option", { name: "media-player (2)" })).toBeInTheDocument();
+
+    await user.selectOptions(classFilter, "light");
+    await waitFor(() => expect(screen.queryByText("Hanger TV")).not.toBeInTheDocument());
+    expect(screen.getByText("Stock room light")).toBeInTheDocument();
+  });
+
+  it("filters by adoption state, which is a BADGE cell and still filterable", async () => {
+    seed({ devices: fleet(), entities: [] });
+    const user = renderRoute();
+    await screen.findByRole("table", { name: "Discovered devices" });
+
+    await user.selectOptions(screen.getByLabelText("Adoption"), "Adopted");
+    await waitFor(() => expect(screen.queryByText("Hanger TV")).not.toBeInTheDocument());
+    expect(screen.getByText("Cafe TV")).toBeInTheDocument();
+  });
+});
+
 describe("Devices — when the device plane cannot be read", () => {
   it("surfaces the Problem rather than an empty fleet with no explanation", async () => {
     seed();
