@@ -146,27 +146,49 @@ func declaredSchema(name string) (*openapi3.Schema, error) {
 // in front of a client, which is the exact defect a `code` registry exists to
 // prevent (API-011).
 func (rs *resource) schemaRejected(w http.ResponseWriter, r *http.Request, name string, raw []byte) bool {
+	return rs.srv.schemaRejected(w, r, name, raw)
+}
+
+// schemaRejected on the server is the same whole-schema gate for an ACTION-style
+// body that is not a resource family's — today, the push-now surface's
+// ScreenNowRequest.
+//
+// One implementation, two entry points, for the reason undeclaredMemberRejected
+// gives below: a second copy is how two checks drift into disagreeing about what
+// the same document says. It matters more here than for the member-name half,
+// because this one reads VALUES: a hand-written restatement of a schema's
+// `enum`/`minimum`/`maxLength` is a restatement that can be incomplete, and the
+// push-now body's was — the document declared `ttl_seconds: minimum: 1` and the
+// handler checked only `< 0`, so a `ttl_seconds: 0` the schema forbids was
+// accepted and stored. Whatever the document declares for this body — including
+// `additionalProperties: false` at EVERY nesting depth, which a top-level
+// DisallowUnknownFields decode does not reach into a member the struct types as
+// a map or a raw message — is now enforced from the document itself.
+func (srv *server) schemaRejected(w http.ResponseWriter, r *http.Request, name string, raw []byte) bool {
 	if name == "" {
 		return false
 	}
+	problem := func(detail string) {
+		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
+			"VALIDATION_FAILED", "Unprocessable Content", detail, nil)
+	}
 	schema, err := declaredSchema(name)
 	if err != nil {
-		rs.internal(w, r, err)
+		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusInternalServerError,
+			"INTERNAL", "Internal Server Error", "An unexpected server error occurred.", nil)
 		return true
 	}
 	var body any
 	if err := json.Unmarshal(raw, &body); err != nil {
-		rs.problem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Unprocessable Content",
-			"The request body is not valid JSON.")
+		problem("The request body is not valid JSON.")
 		return true
 	}
 	if err := schema.VisitJSON(body); err != nil {
-		rs.problem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Unprocessable Content",
-			schemaViolationDetail(err))
+		problem(schemaViolationDetail(err))
 		return true
 	}
 	if detail := propertyNamesViolation(schema, body); detail != "" {
-		rs.problem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Unprocessable Content", detail)
+		problem(detail)
 		return true
 	}
 	return false

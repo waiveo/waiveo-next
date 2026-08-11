@@ -1926,6 +1926,8 @@ export interface components {
             /** @description One of `complete`, `partial`, `failed` — `rules/1` RUL-172's own three-value outcome, reused by RUL-236. A plain string for the reason `action` above gives. */
             outcome: string;
             screens: components["schemas"]["AutomationRunScreen"][];
+            /** @description Present only when the ACTION failed as a whole and no screen was attempted — its required members are not declared (`rules/1` RUL-234/RUL-235) or its ScreenRef resolved to nothing. Such a failure belongs to no screen, so it is reported here with an empty `screens` list rather than as a fabricated per-screen result: an entry invented for it would have to carry an empty `screen_id`, which is not a `Ulid` and would hand a generated client an invalid id on the one path it exists to describe. */
+            error?: string;
         };
         /** @description What the run actually did. `disposition` is the mode-evaluation outcome; the three effect arrays are the report the operator needs to tell "it ran" from "it ran and changed something". */
         AutomationRunResult: {

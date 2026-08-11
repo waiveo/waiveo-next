@@ -91,6 +91,18 @@ type screenStatusRow struct {
 	// told to show, what it is observed showing, and whether a human overrode it
 	// — from one request, and so those three can never be a refresh apart.
 	Now *screenNow `json:"now,omitempty"`
+
+	// labels is the AUTHORED screen row's label map, carried so the standard
+	// `selector` parameter this operation declares actually filters on it
+	// (API-032's label selector; listRegistryPage calls labelsOf per row).
+	//
+	// Unexported, so it is not serialized: the openapi ScreenStatus schema does
+	// not publish labels, and a filter input does not have to be an output. What
+	// it must not be is absent — a labels function returning nil makes EVERY
+	// label selector match nothing, which is a filter that answers "no screens"
+	// instead of "these screens", and an operator reads an empty fleet page as an
+	// outage rather than as a typo.
+	labels map[string]string
 }
 
 // ScreenStatusSource is the seam this operation reads relay-observed status
@@ -146,7 +158,7 @@ func (srv *server) listScreenStatus(w http.ResponseWriter, r *http.Request) {
 	// before the page is cut so page sizes stay honest.
 	listRegistryPage(srv, w, r, screenStatusResourceType, out,
 		func(s screenStatusRow) string { return s.ScreenID },
-		func(s screenStatusRow) map[string]string { return nil },
+		func(s screenStatusRow) map[string]string { return s.labels },
 		func(s screenStatusRow) string { return s.ScopeNode },
 	)
 }
@@ -165,6 +177,7 @@ func screenStatusRowOf(row store.Resource, st screens.Status, nowMs int64) scree
 		ScreenID:     row.ID,
 		Name:         screenNameOf(row.Body),
 		ScopeNode:    f.ScopeNode,
+		labels:       f.Labels,
 		Reachability: string(screens.ReachabilityNeverSeen),
 		LiveWindowMs: screens.LiveWindowMs,
 		// Never observed, on every axis, until a report says otherwise. Spelled

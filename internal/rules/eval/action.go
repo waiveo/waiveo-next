@@ -98,6 +98,37 @@ type SignageOutcome struct {
 	Action  string         `json:"action"`
 	Outcome string         `json:"outcome"`
 	Screens []ScreenResult `json:"screens"`
+
+	// Error is the ACTION-level reason, present only when the action failed as a
+	// whole rather than at any particular screen: its own required members are
+	// not declared (RUL-234/235), or its ScreenRef could not be resolved at all.
+	//
+	// It exists because those failures have no screen to hang off, and the two
+	// answers available without it are both wrong. Returning silently reports a
+	// run as `ran` with an empty effect report and an unchanged screen, which is
+	// the "accepts work it never performs" shape this codebase keeps removing.
+	// Fabricating a ScreenResult with an empty ScreenID instead puts a value that
+	// is not a ULID into a field the schema declares as one, so a generated typed
+	// client is handed an invalid id on the error path — the response is only
+	// schema-conformant while nothing goes wrong.
+	Error string `json:"error,omitempty"`
+}
+
+// FailedSignageOutcome reports a signage action that failed AS AN ACTION: no
+// screen was attempted, because the action itself could not be carried out.
+//
+// Screens is an empty list rather than nil so the required `screens` member is
+// served as `[]` and not `null`, and it deliberately carries no synthetic entry:
+// there is no screen this failure belongs to, and inventing one would either
+// name a screen that was never touched or carry an empty id (see
+// SignageOutcome.Error).
+func FailedSignageOutcome(action, reason string) SignageOutcome {
+	return SignageOutcome{
+		Action:  action,
+		Outcome: "failed",
+		Screens: []ScreenResult{},
+		Error:   reason,
+	}
 }
 
 // SignageSink performs the three RUL-234/235 signage actions against the app
@@ -436,16 +467,29 @@ func runSignage(ctx ActionContext, m model.Member) {
 	case vocab.ActionPlayCast:
 		if spec.CastID == "" {
 			// RUL-234 requires cast_id. A play_cast with none names no content,
-			// so there is nothing to put on a screen; skipping is the fail-closed
-			// answer, and the compile gate is where an author is told.
-			return
+			// so there is nothing to put on a screen — but it is REPORTED as a
+			// failed action rather than skipped. compile.Validate refuses this
+			// shape at authoring (SIGNAGE_CONTENT_AMBIGUOUS), so reaching here at
+			// all means a rule got in some other way (a row written before that
+			// gate existed, a hand-edited store); answering an operator's Run with
+			// `ran`, an empty effect report and an unchanged screen is the one
+			// answer that tells them nothing at all.
+			out = FailedSignageOutcome(m.Type,
+				"a play_cast action MUST declare cast_id (rules/1 RUL-234); this action declares none")
+			break
 		}
 		out = ctx.Signage.PlayCast(ref, spec.CastID)
 	case vocab.ActionShowAlert:
 		if (spec.CastID == "") == (spec.Message == "") {
 			// RUL-235: exactly one of cast_id/message. Neither is nothing to show;
 			// both is two different things to show with no rule ranking them.
-			return
+			// Reported, not skipped, for the reason play_cast gives above.
+			reason := "a show_alert action MUST declare exactly one of cast_id or message (rules/1 RUL-235); this action declares neither"
+			if spec.CastID != "" {
+				reason = "a show_alert action MUST declare exactly one of cast_id or message (rules/1 RUL-235); this action declares both"
+			}
+			out = FailedSignageOutcome(m.Type, reason)
+			break
 		}
 		out = ctx.Signage.ShowAlert(ref, spec.CastID, spec.Message, spec.TTLSeconds)
 	case vocab.ActionDismissAlert:

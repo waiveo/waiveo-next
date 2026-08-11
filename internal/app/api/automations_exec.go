@@ -447,7 +447,14 @@ func (s *screenOverrideSink) DismissAlert(ref eval.ScreenRef) eval.SignageOutcom
 func (s *screenOverrideSink) apply(action string, ref eval.ScreenRef, build func() (*datamodel.ScreenOverride, error)) eval.SignageOutcome {
 	targets, err := s.targets(ref)
 	if err != nil {
-		return eval.SignageOutcomeFor(action, []eval.ScreenResult{{OK: false, Error: err.Error()}})
+		// An unresolvable ScreenRef is a failure of the ACTION, not of any
+		// screen, and it is reported on the action's own error channel. The
+		// alternative this used to do — one ScreenResult with an empty ScreenID —
+		// serves an empty string in a member the document declares as a ULID
+		// (AutomationRunScreen.screen_id, required, `$ref: Ulid`), so a generated
+		// typed client is handed an invalid id on exactly the path it most needs
+		// to read.
+		return eval.FailedSignageOutcome(action, err.Error())
 	}
 	if len(targets) == 0 {
 		// RUL-233: a selector matching no screen is a legal no-op, not a failure.

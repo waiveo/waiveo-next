@@ -95,6 +95,9 @@ func validateMember(m model.Member, kind vocab.Kind, path string) *CompileError 
 		if e := validateScreenRef(m, path); e != nil {
 			return e
 		}
+		if e := validateSignageContent(m, path); e != nil {
+			return e
+		}
 	}
 
 	// A schedule trigger (time/time_pattern/sun) may carry a `misfire` policy; a
@@ -161,6 +164,61 @@ func validateScreenRef(m model.Member, path string) *CompileError {
 		Field:   path,
 		Message: "a signage action's ScreenRef MUST declare exactly one of screen_id/selector (RUL-233)",
 	}
+}
+
+// validateSignageContent enforces SIGNAGE_CONTENT_AMBIGUOUS: RUL-234's "a
+// play_cast MUST declare cast_id" and RUL-235's "a show_alert MUST declare
+// exactly one of cast_id or message".
+//
+// The ScreenRef check above answers WHERE the action acts; this answers WHAT it
+// shows, and until this existed the second half was enforced nowhere. An author
+// could store a `play_cast` naming no cast, or a `show_alert` naming both a cast
+// and a message, and be told 201 — then press Run and be told the rule `ran`,
+// with an empty effect report and an unchanged screen. The executor's own guard
+// (eval.runSignage) had a comment claiming "the compile gate is where an author
+// is told", and it was not: nothing on the authoring path looked at these
+// members at all.
+//
+// Like validateScreenRef, it reads the action's raw JSON: `cast_id` and
+// `message` are per-action-type members that the shared model.Member decode does
+// not carry, so there is nothing else to check them from.
+//
+// `dismiss_alert` declares neither member (it clears whatever is there), so it
+// is deliberately not checked here — the switch names the two types the
+// contract's requirements name, rather than treating "signage action" as one
+// shape.
+func validateSignageContent(m model.Member, path string) *CompileError {
+	var probe struct {
+		CastID  string `json:"cast_id"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(m.Raw, &probe); err != nil {
+		return nil // malformed JSON is not this check's concern (parse handled it)
+	}
+	switch m.Type {
+	case vocab.ActionPlayCast:
+		if probe.CastID == "" {
+			return &CompileError{
+				Code:    codeSignageContentAmbiguous,
+				Field:   path + ".cast_id",
+				Message: "a play_cast action MUST declare cast_id (RUL-234)",
+			}
+		}
+	case vocab.ActionShowAlert:
+		if (probe.CastID == "") == (probe.Message == "") {
+			field := path + ".cast_id"
+			detail := "neither is declared"
+			if probe.CastID != "" {
+				detail = "both are declared"
+			}
+			return &CompileError{
+				Code:    codeSignageContentAmbiguous,
+				Field:   field,
+				Message: "a show_alert action MUST declare exactly one of cast_id or message (RUL-235); " + detail,
+			}
+		}
+	}
+	return nil
 }
 
 // validateMisfire enforces MISFIRE_INVALID (RUL-350): a schedule trigger's

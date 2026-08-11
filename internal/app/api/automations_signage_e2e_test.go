@@ -73,6 +73,9 @@ type signageRunResult struct {
 			OK       bool   `json:"ok"`
 			Error    string `json:"error"`
 		} `json:"screens"`
+		// Error is the ACTION-level reason (openapi AutomationRunSignage.error),
+		// present when the action failed as a whole and no screen was attempted.
+		Error string `json:"error"`
 	} `json:"signage"`
 }
 
@@ -485,5 +488,119 @@ func TestRunNowReportsACommandItCouldNotDispatch(t *testing.T) {
 	}
 	if out.Commands[0].OK || out.Commands[0].Error == "" || out.Commands[0].EntityID != autoScreenEntity {
 		t.Fatalf("undispatchable command reported as %+v, want a named failure", out.Commands[0])
+	}
+}
+
+// TestSignageActionDeclaringNoContentIsRefusedAtAuthoring is RUL-234/235's
+// required-member half at the API surface, mirroring the RUL-233 test above.
+//
+// Both shapes used to answer 201 and then, on Run, 200 `ran` with an empty
+// `signage` array and an unchanged screen — a surface that accepted work it
+// never performed, with no diagnostic at either end. The refusal has to be at
+// AUTHORING: that is the moment the person who made the mistake is still looking
+// at it, and it is what the executor's own comment already claimed happened.
+func TestSignageActionDeclaringNoContentIsRefusedAtAuthoring(t *testing.T) {
+	e := newEnv(t)
+	node := e.placementNode(t)
+	screenID := mintSignageScreen(t, e, node, "Lobby A")
+	castID := mintSignageCast(t, e, node, "Lunch Menu")
+
+	cases := []struct {
+		name   string
+		action map[string]any
+		field  string
+	}{
+		{
+			"play_cast declaring no cast_id (RUL-234)",
+			map[string]any{"type": "play_cast", "screen_id": screenID},
+			"actions[0].cast_id",
+		},
+		{
+			"show_alert declaring both cast_id and message (RUL-235)",
+			map[string]any{"type": "show_alert", "screen_id": screenID, "cast_id": castID, "message": "evacuate"},
+			"actions[0].cast_id",
+		},
+		{
+			"show_alert declaring neither (RUL-235)",
+			map[string]any{"type": "show_alert", "screen_id": screenID},
+			"actions[0].cast_id",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", mustJSON(t, map[string]any{
+				"name": "Contentless Signage", "scope_node": node, "enabled": true, "mode": "single",
+				"triggers": []any{map[string]any{"type": "state", "entity_id": autoScreenEntity, "to": []string{"on"}}},
+				"actions":  []any{tc.action},
+			}), nil)
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want 422 (body %s)", resp.StatusCode, raw)
+			}
+			var p map[string]any
+			if err := json.Unmarshal(raw, &p); err != nil {
+				t.Fatalf("decode problem: %v", err)
+			}
+			errsAny, _ := p["errors"].([]any)
+			if len(errsAny) != 1 {
+				t.Fatalf("problem carries %d field error(s), want 1: %s", len(errsAny), raw)
+			}
+			fe, _ := errsAny[0].(map[string]any)
+			if fe["code"] != "SIGNAGE_CONTENT_AMBIGUOUS" {
+				t.Errorf("field error code = %v, want SIGNAGE_CONTENT_AMBIGUOUS (body %s)", fe["code"], raw)
+			}
+			if fe["field"] != tc.field {
+				t.Errorf("field error field = %v, want %q — a refusal that does not name the member makes the author hunt for it", fe["field"], tc.field)
+			}
+		})
+	}
+}
+
+// TestAnUnresolvableScreenRefIsReportedWithoutFakingAScreenId drives the run
+// report's ERROR path and validates the whole response against the schema the
+// document declares for it — pattern included.
+//
+// The happy path was the only path the response-schema probe drove, and the
+// error path violated the schema: a ScreenRef resolving nothing produced
+// `screens: [{"screen_id": "", ok: false, ...}]`, and
+// AutomationRunScreen.screen_id is required and `$ref: Ulid`
+// (`^[0-9A-HJKMNP-TV-Z]{26}$`). A generated typed client is handed an invalid
+// ULID on exactly the path it exists to describe. The failure belongs to the
+// ACTION — no screen was attempted — so it is reported on the action's own
+// error member with an empty screens list.
+func TestAnUnresolvableScreenRefIsReportedWithoutFakingAScreenId(t *testing.T) {
+	e := newEnv(t)
+	node := e.placementNode(t)
+	castID := mintSignageCast(t, e, node, "Lunch Menu")
+
+	automationID := mintSignageAutomation(t, e, node, map[string]any{
+		// A syntactically valid ULID that names no screen row.
+		"type": "play_cast", "screen_id": "01J8ZN0SUCHSCREENR0W000001", "cast_id": castID,
+	})
+
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations/"+automationID+"/run", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("run: %d %s", resp.StatusCode, raw)
+	}
+	// The whole body, against the whole declared schema. This is what catches a
+	// member that is present but not of the declared SHAPE — the presence-only
+	// reading responseschema_test.go performs cannot see an empty ULID.
+	assertMatchesDeclaredSchema(t, "AutomationRunResult", raw)
+
+	var out signageRunResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Signage) != 1 {
+		t.Fatalf("signage report = %+v, want the one action the rule declared", out.Signage)
+	}
+	got := out.Signage[0]
+	if got.Outcome != "failed" {
+		t.Errorf("outcome = %q, want failed — the action named a screen that is not there", got.Outcome)
+	}
+	if got.Error == "" {
+		t.Errorf("no action-level error; the operator is told the run failed and not why")
+	}
+	if len(got.Screens) != 0 {
+		t.Errorf("screens = %+v, want none — no screen was attempted, and an invented entry has no id to carry", got.Screens)
 	}
 }

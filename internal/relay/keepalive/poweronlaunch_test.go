@@ -6,7 +6,28 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
+	"github.com/maaxton/waiveo-next/internal/rules/state"
 )
+
+// unavailableObsFor is a FAILED poll, in the exact shape ecppoll produces one:
+// its unavailableEntity nils every attribute (REG-061/062/064) on any fetch or
+// parse failure. Written by hand rather than by passing "" to obsFor so the
+// tests below drive the real wire shape a dropped packet produces, nil
+// attributes and all, rather than a convenient stand-in for it.
+func unavailableObsFor(entityID string) state.Observation {
+	return state.Observation{Entity: state.Entity{
+		ID:    entityID,
+		State: "unavailable",
+		Attributes: map[string]any{
+			"active_app":     nil,
+			"active_app_id":  nil,
+			"app_type":       nil,
+			"power_mode":     nil,
+			"is_screensaver": false,
+			"app_version":    nil,
+		},
+	}}
+}
 
 // poweronlaunch_test.go covers rule 1b — POWER-ON AUTO-LAUNCH (parity row 5.6,
 // the legacy stack's power-on auto-launch automation) — as a capability
@@ -73,6 +94,112 @@ func TestPowerOnLaunchFiresAfterTheSettleDelayWhateverTheScreenResumedInto(t *te
 	}
 	if got := fc.callCount(); got != 1 {
 		t.Fatalf("launch calls after the edge was consumed = %d, want still exactly 1 (%+v)", got, fc.calls)
+	}
+}
+
+// TestARelayRestartOverAnAlreadyOnScreenIsNotAPowerOn is the first of rule 1b's
+// two false-positive guards: this screen's FIRST-EVER observation must not fire.
+//
+// A relay restart, a deploy, or a newly adopted screen all present the same way
+// to keepalive — a fresh screenState whose first reading is "PowerOn" — and none
+// of them is a power cycle of the television. The screen here is sitting on a
+// foreign app the whole time (someone is watching it), which is exactly the
+// state rule 1b would foreground the channel over. Rule 2 cannot be the thing
+// under test: it refuses a foreign app outright.
+func TestARelayRestartOverAnAlreadyOnScreenIsNotAPowerOn(t *testing.T) {
+	fc := &fakeController{}
+	k := New(Config{Adopted: adoptEverything, LaunchDelay: time.Millisecond, Controller: fc, PowerOnLaunch: true})
+	t0 := time.Unix(1700000000, 0)
+
+	// No prior observation of ANY kind — this is the process's first sight of
+	// scr1, and it is already on and in use.
+	for _, d := range []time.Duration{0, time.Second, 2 * time.Second, time.Minute, time.Hour} {
+		k.recordObservation(obsFor("scr1", "PowerOn", "app"), t0.Add(d))
+	}
+	if got := fc.callCount(); got != 0 {
+		t.Fatalf("launches after a relay restart over an already-on screen = %d, want 0 — no prior observation is not \"was off\" (%+v)", got, fc.calls)
+	}
+
+	// The screen is genuinely power-cycled: NOW it fires, exactly once. Without
+	// this leg the test above could pass by rule 1b being dead rather than by it
+	// being correctly armed.
+	k.recordObservation(obsFor("scr1", "Ready", ""), t0.Add(2*time.Hour))
+	k.recordObservation(obsFor("scr1", "PowerOn", "app"), t0.Add(2*time.Hour+time.Second))
+	k.recordObservation(obsFor("scr1", "PowerOn", "app"), t0.Add(2*time.Hour+2*time.Second))
+	if got := fc.callCount(); got != 1 {
+		t.Fatalf("launches after a REAL power cycle = %d, want exactly 1 (%+v)", got, fc.calls)
+	}
+}
+
+// TestOneFailedPollIsNotAPowerCycle is rule 1b's second false-positive guard,
+// and the one the field will hit constantly.
+//
+// ecppoll's unavailableEntity nils every attribute on ANY fetch or parse
+// failure — one dropped packet, one slow device, one moment of LAN congestion —
+// so the next poll reads power_mode "". If that counts as "off", the poll after
+// it counts as a power-on and the channel is foregrounded over whatever a person
+// is watching. It must not: an unavailable poll is unknown state, and the last
+// CONFIRMED reading (on) stands.
+//
+// The screen stays on the same foreign app throughout, so rule 2 can never be
+// the rule that fires, and the counts are asserted around the ONE legitimate
+// launch so a dead rule 1b cannot pass this test either.
+func TestOneFailedPollIsNotAPowerCycle(t *testing.T) {
+	fc := &fakeController{}
+	k := New(Config{Adopted: adoptEverything, LaunchDelay: time.Millisecond, Controller: fc, PowerOnLaunch: true})
+	t0 := time.Unix(1700000000, 0)
+
+	// A real power-on: off, then on. This one launch is legitimate.
+	k.recordObservation(obsFor("scr1", "Ready", ""), t0)
+	k.recordObservation(obsFor("scr1", "PowerOn", "app"), t0.Add(time.Second))
+	k.recordObservation(obsFor("scr1", "PowerOn", "app"), t0.Add(2*time.Second))
+	if got := fc.callCount(); got != 1 {
+		t.Fatalf("launches after the real power-on = %d, want 1 (%+v)", got, fc.calls)
+	}
+
+	// One failed poll, then recovery. No power cycle happened; the TV never went
+	// anywhere. Nothing further may be dispatched, ever.
+	k.recordObservation(unavailableObsFor("scr1"), t0.Add(3*time.Second))
+	for _, d := range []time.Duration{4 * time.Second, 5 * time.Second, 30 * time.Second, time.Hour} {
+		k.recordObservation(obsFor("scr1", "PowerOn", "app"), t0.Add(d))
+	}
+	if got := fc.callCount(); got != 1 {
+		t.Fatalf("launches after ONE failed poll + recovery = %d, want still 1 — a failed poll is unknown state, not off (%+v)", got, fc.calls)
+	}
+
+	// A run of failed polls is no different from one, however long it lasts.
+	for i := 0; i < 5; i++ {
+		k.recordObservation(unavailableObsFor("scr1"), t0.Add(2*time.Hour+time.Duration(i)*time.Second))
+	}
+	k.recordObservation(obsFor("scr1", "PowerOn", "app"), t0.Add(3*time.Hour))
+	k.recordObservation(obsFor("scr1", "PowerOn", "app"), t0.Add(3*time.Hour+time.Second))
+	if got := fc.callCount(); got != 1 {
+		t.Fatalf("launches after a RUN of failed polls + recovery = %d, want still 1 (%+v)", got, fc.calls)
+	}
+}
+
+// TestAFailedPollDoesNotDISARMARealPowerOnEdge is the other side of the
+// unavailable rule, and the reason it is "leave it alone" rather than "treat
+// unavailable as on".
+//
+// A screen that is genuinely switched off frequently stops answering ECP
+// altogether, so the honest sequence for a real power cycle is: confirmed off,
+// then a stretch of unavailable, then on. That must still auto-launch — the edge
+// was observed, and a subsequent absence of information cannot un-observe it.
+func TestAFailedPollDoesNotDISARMARealPowerOnEdge(t *testing.T) {
+	fc := &fakeController{}
+	k := New(Config{Adopted: adoptEverything, LaunchDelay: time.Millisecond, Controller: fc, PowerOnLaunch: true})
+	t0 := time.Unix(1700000000, 0)
+
+	k.recordObservation(obsFor("scr1", "DisplayOff", ""), t0)
+	// The device drops off the network entirely while it is off.
+	for i := 1; i <= 4; i++ {
+		k.recordObservation(unavailableObsFor("scr1"), t0.Add(time.Duration(i)*time.Second))
+	}
+	k.recordObservation(obsFor("scr1", "PowerOn", "app"), t0.Add(10*time.Second))
+	k.recordObservation(obsFor("scr1", "PowerOn", "app"), t0.Add(11*time.Second))
+	if got := fc.callCount(); got != 1 {
+		t.Fatalf("launches after off -> unavailable -> on = %d, want exactly 1 (%+v)", got, fc.calls)
 	}
 }
 

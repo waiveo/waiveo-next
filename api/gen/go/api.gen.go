@@ -1024,6 +1024,9 @@ type AutomationRunSignage struct {
 	// Action The signage action type — one of `play_cast`, `show_alert`, `dismiss_alert` (`rules/1` RUL-234/RUL-235). Left as a plain string rather than an `enum` deliberately: an `enum` here mints package-level Go constants named after its VALUES, and two of them (`failed` on `outcome` below) collide with an existing enum's, which silently renames that other enum's constants across the whole generated package. The closed set is stated here and enforced by the one place that can produce it.
 	Action string `json:"action"`
 
+	// Error Present only when the ACTION failed as a whole and no screen was attempted — its required members are not declared (`rules/1` RUL-234/RUL-235) or its ScreenRef resolved to nothing. Such a failure belongs to no screen, so it is reported here with an empty `screens` list rather than as a fabricated per-screen result: an entry invented for it would have to carry an empty `screen_id`, which is not a `Ulid` and would hand a generated client an invalid id on the one path it exists to describe.
+	Error *string `json:"error,omitempty"`
+
 	// Outcome One of `complete`, `partial`, `failed` — `rules/1` RUL-172's own three-value outcome, reused by RUL-236. A plain string for the reason `action` above gives.
 	Outcome string                `json:"outcome"`
 	Screens []AutomationRunScreen `json:"screens"`

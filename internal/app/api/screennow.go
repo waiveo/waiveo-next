@@ -139,17 +139,25 @@ func (srv *server) setScreenNow(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The body is checked against the schema `api/openapi.yaml` DECLARES for it,
+	// through the SAME gate the resource families run — not against a
+	// hand-written restatement of that schema. A restatement is a second copy of
+	// one rule and it was already incomplete: the document declares
+	// `ttl_seconds: minimum: 1`, the hand check tested only `< 0`, and a
+	// `ttl_seconds: 0` the document forbids was accepted and stored. It also
+	// reaches `additionalProperties: false` at every nesting depth, which the
+	// strict decode below reaches only for members this Go struct happens to
+	// type — so a member nested inside a future object member cannot ride in
+	// behind a flat struct's field list.
+	if srv.schemaRejected(w, r, "ScreenNowRequest", raw) {
+		return
+	}
 	var req screenNowRequest
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		writeProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed",
 			"The request body must be a JSON object carrying `mode` and exactly one of `cast_id` or `message`.")
-		return
-	}
-	if req.TTLSeconds < 0 {
-		writeProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed",
-			"`ttl_seconds` must be a positive number of seconds — omit it for an override that lasts until it is cleared.")
 		return
 	}
 
