@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
+	"github.com/maaxton/waiveo-next/internal/datamodel"
 )
 
 // overrideexpiry.go publishes a screen override's LAPSE.
@@ -74,20 +75,66 @@ const overrideExpiryPoll = time.Minute
 // wake is signalled (non-blockingly, by armOverrideExpiry) whenever the store
 // commits, so a freshly-imposed sixty-second alert re-arms the wait immediately
 // instead of being noticed at the next poll.
+//
+// # Publishing each lapse exactly once
+//
+// `published` is the set of lapses this loop has already announced, as
+// screen_id -> the `expires_at` that lapsed. It is the whole guard against a
+// nudge storm, and it is a SET rather than a high-water mark because the state
+// it is guarding against is not monotonic: a lapsed override stays on its row
+// until an operator clears it, so "is anything lapsed?" answers yes forever
+// after the first alert and would advance the generation on every poll for the
+// rest of the process's life — nudging every relay in the site, once a minute,
+// for a change that already happened. (That is not hypothetical: the first cut
+// of this loop asked exactly that question and did exactly that, observed on a
+// running stack.)
+//
+// Comparing the PAIR (screen, expires_at) rather than a watermark also gets the
+// two neighbouring cases right without a special case for either: an operator
+// clearing a lapsed override shrinks the set and announces nothing (their own
+// clearing write already advanced the generation), and a fresh TTL'd override on
+// the same screen lapses at a different instant and so is a new pair, announced
+// once.
+//
+// It is in-memory and does not survive a restart, deliberately: a feeder that
+// comes back up re-announces the current lapses once, which is a single extra
+// nudge and is the more conservative answer anyway — it has no way to know what
+// the relays applied while it was gone.
 func overrideExpiryLoop(ctx context.Context, st *store.Store, nowMs func() int64, wake <-chan struct{}) {
+	published := map[string]int64{}
 	timer := time.NewTimer(overrideExpiryPoll)
 	defer timer.Stop()
 	for {
-		wait := overrideExpiryPoll
-		if next, err := nextPendingOverrideExpiry(ctx, st, nowMs()); err != nil {
+		screens, err := overrideScreens(ctx, st)
+		if err != nil {
 			log.Printf("waiveo-feeder: override expiry: read desired state: %v", err)
-		} else if next > 0 {
-			// +1ms so the wake lands strictly AFTER the expiry instant: Applies
-			// is `ExpiresAt > tMs`, so re-deriving exactly at it would still
-			// find the override applying and the loop would arm the same
-			// deadline again.
-			if d := time.Duration(next-nowMs()+1) * time.Millisecond; d < wait {
-				wait = max(d, 0)
+		} else {
+			now := nowMs()
+			// Announce anything that has lapsed and has not been announced,
+			// BEFORE arming the next wait — so a lapse that happened while this
+			// loop was asleep (or before it started) is published on the first
+			// pass rather than waiting for another deadline.
+			lapsed := lapsedOverrides(screens, now)
+			if hasUnpublishedLapse(lapsed, published) {
+				if aerr := st.AdvanceGeneration(ctx); aerr != nil {
+					log.Printf("waiveo-feeder: override expiry: advance generation: %v", aerr)
+				} else {
+					log.Printf("waiveo-feeder: %d screen override(s) lapsed; desired-state generation advanced so the fleet re-resolves", len(lapsed))
+				}
+			}
+			published = lapsed
+		}
+
+		wait := overrideExpiryPoll
+		if screens != nil {
+			if next := nextOverrideExpiry(screens, nowMs()); next > 0 {
+				// +1ms so the wake lands strictly AFTER the expiry instant:
+				// Applies is `ExpiresAt > tMs`, so waking exactly at it would
+				// find the override still applying and arm the same deadline
+				// again.
+				if d := time.Duration(next-nowMs()+1) * time.Millisecond; d < wait {
+					wait = max(d, 0)
+				}
 			}
 		}
 
@@ -103,64 +150,55 @@ func overrideExpiryLoop(ctx context.Context, st *store.Store, nowMs func() int64
 		case <-ctx.Done():
 			return
 		case <-wake:
-			continue // a commit changed the rows; recompute the deadline
 		case <-timer.C:
 		}
-
-		// Re-read rather than trusting the deadline we armed on: between arming
-		// and firing an operator may have cleared the override by hand, in which
-		// case the clearing write already advanced the generation and a second
-		// bump here would nudge every relay in the site for nothing.
-		next, err := nextPendingOverrideExpiry(ctx, st, nowMs())
-		if err != nil {
-			log.Printf("waiveo-feeder: override expiry: read desired state: %v", err)
-			continue
-		}
-		if next > 0 {
-			continue // woke early (the poll bound); nothing has lapsed yet
-		}
-		if !anyOverrideSet(ctx, st) {
-			continue // nothing with a TTL is set at all; nothing to publish
-		}
-		if err := st.AdvanceGeneration(ctx); err != nil {
-			log.Printf("waiveo-feeder: override expiry: advance generation: %v", err)
-			continue
-		}
-		log.Printf("waiveo-feeder: a screen override's TTL lapsed; desired-state generation advanced so the fleet re-resolves")
 	}
 }
 
-// nextPendingOverrideExpiry reads the screen rows and returns the earliest
-// override expiry still in the future, or zero when none is.
-func nextPendingOverrideExpiry(ctx context.Context, st *store.Store, nowMs int64) (int64, error) {
+// overrideScreens reads the screen rows the two decisions below are made over.
+func overrideScreens(ctx context.Context, st *store.Store) ([]datamodel.Screen, error) {
 	ds, err := st.DesiredState(ctx)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return nextOverrideExpiry(ds.Screens, nowMs), nil
+	if ds.Screens == nil {
+		// Distinguish "read fine, no screens" from "did not read": the caller
+		// arms its wait only on a successful read, and a nil slice from a
+		// screen-less store must not read as a failure.
+		return []datamodel.Screen{}, nil
+	}
+	return ds.Screens, nil
 }
 
-// anyOverrideSet reports whether ANY screen row still carries an override with
-// an expiry on it.
+// lapsedOverrides returns screen_id -> `expires_at` for every override that HAS
+// lapsed at nowMs: it states an expiry and that expiry is at or before now.
 //
-// It is what keeps the loop from bumping the generation forever once a TTL'd
-// alert has lapsed: after the lapse, nextPendingOverrideExpiry is zero — the
-// same answer it gives for a store that never had an override at all — so
-// without this second question the loop would advance the generation on every
-// poll for the rest of the process's life, nudging every relay in the site once
-// a minute for no change.
-//
-// It stays true while the LAPSED override is still on the row, which is
-// deliberate: one more bump when the operator finally clears it is one nudge for
-// a real change, and the alternative (remembering which expiry was last
-// published) is state that has to survive a restart to be correct.
-func anyOverrideSet(ctx context.Context, st *store.Store) bool {
-	ds, err := st.DesiredState(ctx)
-	if err != nil {
-		return false
+// At-or-before, matching ScreenOverride.Applies' strict `ExpiresAt > tMs`: an
+// override whose expiry equals the instant being judged has already stopped
+// applying, so it is a lapse to publish and not one still pending.
+func lapsedOverrides(screens []datamodel.Screen, nowMs int64) map[string]int64 {
+	out := map[string]int64{}
+	for _, s := range screens {
+		o := s.Override
+		if o == nil || o.ExpiresAt <= 0 || o.ExpiresAt > nowMs {
+			continue
+		}
+		out[s.ID] = o.ExpiresAt
 	}
-	for _, s := range ds.Screens {
-		if s.Override != nil && s.Override.ExpiresAt > 0 {
+	return out
+}
+
+// hasUnpublishedLapse reports whether lapsed contains a (screen, expires_at)
+// pair published does not — i.e. whether anything has lapsed that the fleet has
+// not already been told about.
+//
+// It deliberately does NOT fire when lapsed is a strict SUBSET of published: an
+// override disappearing from the set means an operator cleared it, and their
+// clearing write advanced the generation itself. Announcing it again would be a
+// second nudge for one change.
+func hasUnpublishedLapse(lapsed, published map[string]int64) bool {
+	for screenID, expiresAt := range lapsed {
+		if published[screenID] != expiresAt {
 			return true
 		}
 	}

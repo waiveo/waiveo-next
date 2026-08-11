@@ -294,3 +294,99 @@ func mustCurrent(t *testing.T, src *desiredStateSource) wire.StateSnapshotBody {
 	}
 	return snap
 }
+
+// --- The publishing loop's own decision -------------------------------------
+//
+// The first cut of overrideExpiryLoop asked "is any override with an expiry
+// set?" to decide whether a lapse still needed announcing. That is true forever
+// after the first alert — a lapsed override stays on its row until an operator
+// clears it — so the loop advanced the generation on EVERY poll for the rest of
+// the process's life, nudging every relay in the site once a minute for a change
+// that had already happened. It was caught on a running stack, not here, because
+// the loop had no test at all. It has one now.
+
+// TestALapseIsPublishedExactlyOnce walks the whole sequence a real alert goes
+// through — imposed, lapsed, announced, sitting there lapsed, cleared, replaced
+// — and asserts the generation is advanced only at the one step that is news.
+func TestALapseIsPublishedExactlyOnce(t *testing.T) {
+	const (
+		screenA = "01J8Z0SCREEN0000000000000A"
+		screenB = "01J8Z0SCREEN0000000000000B"
+		t0      = int64(1_000_000)
+	)
+	alert := func(id string, expiresAt int64) datamodel.Screen {
+		return datamodel.Screen{ID: id, Override: &datamodel.ScreenOverride{
+			Mode: datamodel.ScreenOverrideModeAlert, Message: "x", ExpiresAt: expiresAt,
+		}}
+	}
+
+	// published is carried across the steps exactly as the loop carries it.
+	published := map[string]int64{}
+	step := func(t *testing.T, screens []datamodel.Screen, now int64, wantAdvance bool, why string) {
+		t.Helper()
+		lapsed := lapsedOverrides(screens, now)
+		got := hasUnpublishedLapse(lapsed, published)
+		published = lapsed
+		if got != wantAdvance {
+			t.Fatalf("advance=%v, want %v — %s", got, wantAdvance, why)
+		}
+	}
+
+	a := []datamodel.Screen{alert(screenA, t0+100)}
+	step(t, a, t0, false, "the alert is still in force; nothing has lapsed")
+	step(t, a, t0+99, false, "one millisecond before expiry it is still in force")
+	step(t, a, t0+100, true, "AT expires_at the override has stopped applying (Applies is strictly greater) and the fleet has not been told")
+
+	// The row still carries the lapsed override, because DAT-004d retires it by
+	// time rather than by deleting it. This is the step the first cut got wrong.
+	step(t, a, t0+101, false, "the same lapse a millisecond later must not be announced twice")
+	step(t, a, t0+60_000, false, "a minute later — the poll bound — it must STILL not be announced again; this is the nudge storm")
+	step(t, a, t0+86_400_000, false, "a day later, still nothing new")
+
+	// A second screen's alert lapses: news, and only that one.
+	b := []datamodel.Screen{alert(screenA, t0+100), alert(screenB, t0+200)}
+	step(t, b, t0+150, false, "screen B's alert has not lapsed yet, and screen A's is already published")
+	step(t, b, t0+200, true, "screen B's alert lapsed")
+	step(t, b, t0+201, false, "and is not re-announced")
+
+	// The operator clears screen A's lapsed override. That write advanced the
+	// generation itself, so this loop must stay quiet.
+	cleared := []datamodel.Screen{{ID: screenA}, alert(screenB, t0+200)}
+	step(t, cleared, t0+300, false, "clearing a lapsed override is the operator's own write; announcing it again is a second nudge for one change")
+
+	// A fresh alert on screen A, with a different expiry: a new pair, so news
+	// once when it lapses.
+	fresh := []datamodel.Screen{alert(screenA, t0+400), alert(screenB, t0+200)}
+	step(t, fresh, t0+350, false, "the fresh alert is in force")
+	step(t, fresh, t0+400, true, "the fresh alert lapsed — a different expires_at is a different lapse")
+	step(t, fresh, t0+500, false, "and is not re-announced either")
+}
+
+// TestLapsedOverridesSelectsExactlyTheLapsedOnes pins the classification the
+// loop and the nudge both stand on.
+func TestLapsedOverridesSelectsExactlyTheLapsedOnes(t *testing.T) {
+	const now = int64(5_000)
+	screens := []datamodel.Screen{
+		{ID: "no-override"},
+		{ID: "no-expiry", Override: &datamodel.ScreenOverride{Mode: "play", CastID: "c", ExpiresAt: 0}},
+		{ID: "pending", Override: &datamodel.ScreenOverride{Mode: "alert", Message: "x", ExpiresAt: now + 1}},
+		{ID: "exactly-now", Override: &datamodel.ScreenOverride{Mode: "alert", Message: "x", ExpiresAt: now}},
+		{ID: "lapsed", Override: &datamodel.ScreenOverride{Mode: "alert", Message: "x", ExpiresAt: now - 1}},
+	}
+	got := lapsedOverrides(screens, now)
+	want := map[string]int64{"exactly-now": now, "lapsed": now - 1}
+	if len(got) != len(want) {
+		t.Fatalf("lapsedOverrides = %v, want %v", got, want)
+	}
+	for id, exp := range want {
+		if got[id] != exp {
+			t.Errorf("lapsedOverrides[%q] = %d, want %d", id, got[id], exp)
+		}
+	}
+	// An override with NO expiry never lapses — it stands until it is cleared,
+	// and treating it as lapsed would advance the generation forever for the one
+	// override kind that is meant to be permanent.
+	if _, has := got["no-expiry"]; has {
+		t.Error("an override with no expires_at was reported as lapsed")
+	}
+}
