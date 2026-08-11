@@ -1,0 +1,42 @@
+{
+  "case_id": "UIS-165-invalid-confirm-unknown-field-rejected",
+  "contract": "ui-schema/1",
+  "req_ids": ["UIS-165"],
+  "description": "A ConfirmSpec's field set is closed, so a misspelled optional field (`bodyMessage` for `bodyMsg`) fails validation as ACTION_FIELDS_INVALID at that key's own path rather than being silently dropped — an ignored body is a dialog that warns the operator about less than its author wrote.",
+  "input": {
+    "pageType": "settings-form",
+    "source": "site",
+    "sections": [
+      {
+        "fields": [
+          { "type": "text-input", "bind": "displayName", "props": { "labelMsg": "msg:settings.general.displayName" } }
+        ]
+      }
+    ],
+    "actions": [
+      {
+        "type": "button",
+        "props": { "labelMsg": "msg:settings.save" },
+        "on": {
+          "press": {
+            "verb": "submit",
+            "confirm": {
+              "titleMsg": "msg:settings.save.confirmTitle",
+              "bodyMessage": "msg:settings.save.confirmBody"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      {
+        "code": "ACTION_FIELDS_INVALID",
+        "field": "actions[0].on.press.confirm.bodyMessage",
+        "message": "a ConfirmSpec has no field \"bodyMessage\" (UIS-165)"
+      }
+    ]
+  }
+}

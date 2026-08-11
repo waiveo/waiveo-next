@@ -8,5 +8,13 @@
 
 export { PageRenderer, isCreateDraftUi, type PageRendererProps } from "./PageRenderer";
 export { validatePage, isValidBindingPath } from "./validate";
-export type { ActionHandler, WidgetNode, ActionRef, WizardController } from "./types";
+export type {
+  ActionHandler,
+  ActionOutcome,
+  ActionRef,
+  ConfirmSpec,
+  OutcomeReporter,
+  WidgetNode,
+  WizardController,
+} from "./types";
 export type { ValidationError, ValidationResult, ErrorCode } from "./schema";

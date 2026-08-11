@@ -139,6 +139,52 @@ func Reject(kind string) string { return "" }
   );
 });
 
+test("a code named only in a TypeScript /** */ doc comment does not count as implemented either", () => {
+  // The `//` case above held for Go and silently did NOT hold for TypeScript,
+  // whose doc comments are `/** … */` — and ui-schema/1's entire taxonomy is
+  // implemented in TypeScript. Both JSDoc spellings slipped through: a BACKTICKED
+  // mention matched the quoted-token scan and counted as a use outright, and a
+  // BARE mention satisfied the "the constant is referenced elsewhere" rule.
+  // Caught by mutation — deleting a renderer refusal's only emit site left this
+  // gate green because two paragraphs of prose still named it.
+  const jsdocOnly = (mention) => `/**
+ * Reject one day returns ${mention} here.
+ */
+export function reject(kind: string): string {
+  return kind === "" ? "SOMETHING_ELSE" : "";
+}
+`;
+  for (const mention of ["THING_INVALID", "`THING_INVALID`"]) {
+    withFixture(
+      (w) => {
+        writeGoodTree(w, { impl: "package example\n\nfunc Reject() string { return \"\" }\n" });
+        w("web/src/example.ts", jsdocOnly(mention));
+      },
+      (r) => {
+        assert.equal(r.status, 1, `a JSDoc mention (${mention}) is prose, not wiring`);
+        assert.match(r.stderr, /THING_INVALID is published .* but no implementation source emits it/);
+      }
+    );
+  }
+
+  // …and the same file with a real emit site beside the prose passes, so the
+  // block-comment stripping cannot be over-eager and blank out live code.
+  withFixture(
+    (w) => {
+      writeGoodTree(w, { impl: "package example\n\nfunc Reject() string { return \"\" }\n" });
+      w(
+        "web/src/example.ts",
+        `${jsdocOnly("`THING_INVALID`")}
+export function reallyReject(): string {
+  return "THING_INVALID";
+}
+`
+      );
+    },
+    (r) => assert.equal(r.status, 0, r.stderr)
+  );
+});
+
 test("a Go constant counts only when the identifier is referenced elsewhere", () => {
   const declOnly = `package example
 
@@ -158,6 +204,40 @@ const CodeThingInvalid = "THING_INVALID"
 func Reject() string { return CodeThingInvalid }
 `,
       }),
+    (r) => assert.equal(r.status, 0, r.stderr)
+  );
+});
+
+test("a constant ENUMERATED in a taxonomy mirror is not a constant anything reads", () => {
+  // The identifier spelling of the mirror rule. ui-schema/1 declares the two
+  // codes its RENDERER raises (rather than its validator) as named constants and
+  // lists them in ERROR_CODES — so before this, declaring a code and adding it to
+  // that array satisfied the "referenced somewhere else" rule with no emit site
+  // anywhere in the tree. Found by mutation on a real refusal.
+  const mirrorOnly = `export const THING_INVALID = "THING_INVALID";
+
+export const ERROR_CODES = [
+  THING_INVALID,
+  "THING_MISSING",
+] as const;
+`;
+  withFixture(
+    (w) => {
+      writeGoodTree(w, { impl: "package example\n\nfunc Reject() string { return \"\" }\n" });
+      w("web/src/codes.ts", mirrorOnly);
+    },
+    (r) => {
+      assert.equal(r.status, 1, "an enumerated constant is a declaration, not an implementation");
+      assert.match(r.stderr, /THING_INVALID is published .* but no implementation source emits it/);
+    }
+  );
+
+  // One real read of the same constant, outside the mirror, and it counts.
+  withFixture(
+    (w) => {
+      writeGoodTree(w, { impl: "package example\n\nfunc Reject() string { return \"\" }\n" });
+      w("web/src/codes.ts", `${mirrorOnly}\nexport function reject(): string {\n  return THING_INVALID;\n}\n`);
+    },
     (r) => assert.equal(r.status, 0, r.stderr)
   );
 });

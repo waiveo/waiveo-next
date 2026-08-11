@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { PageRenderer } from "./PageRenderer";
 import { validatePage } from "./validate";
@@ -20,9 +21,15 @@ import type { ActionHandler } from "./types";
 //     field's own path — never partially painted (UIS-200);
 //   • a binding-resolution case (UIS-101) evaluates through the binding engine to
 //     the record the contract fixes.
-// An accounting test asserts all nine cases are driven (none pending — the Go
+// An accounting test asserts all sixteen cases are driven (none pending — the Go
 // drivers' driven/pending discipline), and a teeth block proves the oracle bites:
 // a mutated expectation must fail.
+//
+// The v1.1 cases are DRIVEN, not rendered-and-eyeballed: a confirm is clicked
+// through its dialog to the seam call (and dismissed, to prove the dismissal
+// dispatches nothing), and an outcome case is pressed, observed pending, then
+// settled — because a control that paints correctly and does nothing has shipped
+// here before.
 
 interface ExpectedError {
   code: string;
@@ -84,6 +91,16 @@ const messages: Record<string, string> = {
   "msg:mode.restart": "Restart",
   "msg:mode.queued": "Queued",
   "msg:mode.parallel": "Parallel",
+  // v1.1 — confirm (UIS-165), outcome (UIS-166), disabledIf/announce (UIS-076/077)
+  "msg:settings.delete": "Delete site",
+  "msg:settings.delete.confirmTitle": "Delete this site?",
+  "msg:settings.delete.confirmBody": "Everything authored under it goes with it.",
+  "msg:settings.delete.confirmOk": "Delete it",
+  "msg:settings.delete.confirmCancel": "Keep it",
+  "msg:system.restart.button": "Restart this box",
+  "msg:system.restart.pending": "Restarting — asking this box to stop and start again.",
+  "msg:system.restart.blocked": "Not now: this box is busy with work a restart would break rather than resume. {0}",
+  "msg:system.restart.back": "Back up — {0} started it again.",
 };
 
 // ── The valid page-document render oracle ───────────────────────────────────
@@ -94,8 +111,30 @@ interface RenderFixture {
   data?: Record<string, unknown>;
   slots?: Record<string, ReactNode>;
   handler?: ActionHandler;
-  assert: () => void;
+  /** May be async: the v1.1 cases DRIVE the page (click, dismiss, settle) rather
+   * than assert its first paint. */
+  assert: () => void | Promise<void>;
 }
+
+/** A promise a test settles by hand, so the PENDING half of an ActionOutcome
+ * (UIS-166) is observable rather than raced past. */
+function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+// The confirm case's own seam, hoisted so the fixture's assert can read what the
+// dialog did and did not dispatch.
+const confirmSeam: ActionHandler = { submit: vi.fn(), remove: vi.fn() };
+
+// The outcome case's own seam: one deferred invocation the assert settles.
+const restartCall = deferred<unknown>();
+const outcomeSeam: ActionHandler = { callAction: vi.fn(() => restartCall.promise) };
 
 const RENDER_FIXTURES: Record<string, RenderFixture> = {
   // list-detail (UIS-020): the presets list renders as a table with both rows;
@@ -166,6 +205,73 @@ const RENDER_FIXTURES: Record<string, RenderFixture> = {
       }
     },
   },
+  // confirm (UIS-165): the press alone dispatches NOTHING. The dialog appears with
+  // the ConfirmSpec's own copy; a dismissal leaves the seam untouched; only the
+  // acknowledgement runs that same `delete` against the host.
+  "UIS-165-valid-confirm-gated-destructive-action": {
+    data: { site: { displayName: "The Hangar" } },
+    handler: confirmSeam,
+    assert: async () => {
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Delete site" }));
+      // The ConfirmSpec's own title/body/labels, resolved through the catalog.
+      expect(await screen.findByRole("dialog", { name: "Delete this site?" })).toBeInTheDocument();
+      expect(screen.getByText("Everything authored under it goes with it.")).toBeInTheDocument();
+      expect(confirmSeam.remove).not.toHaveBeenCalled();
+
+      // A dismissal dispatches nothing at all (UIS-165).
+      await user.click(screen.getByRole("button", { name: "Keep it" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      expect(confirmSeam.remove).not.toHaveBeenCalled();
+
+      // The acknowledgement runs the SAME ActionRef, in the same Scope.
+      await user.click(screen.getByRole("button", { name: "Delete site" }));
+      await user.click(await screen.findByRole("button", { name: "Delete it" }));
+      expect(confirmSeam.remove).toHaveBeenCalledWith("$root", { displayName: "The Hangar" });
+      // The unconfirmed sibling action was never touched by any of this.
+      expect(confirmSeam.submit).not.toHaveBeenCalled();
+    },
+  },
+  // outcome (UIS-166) + disabledIf (UIS-076) + announce (UIS-077): press → pending
+  // (control disabled, polite live region) → refused, with the published code
+  // rendered as its own assertive sentence and the control handed back.
+  "UIS-166-valid-outcome-renders-refusal-code": {
+    handler: outcomeSeam,
+    assert: async () => {
+      const user = userEvent.setup();
+      const button = screen.getByRole("button", { name: "Restart this box" });
+      expect(button).toBeEnabled();
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+      await user.click(button);
+      // PENDING is observable: the outcome landed in $ui before the seam settled.
+      expect(await screen.findByRole("status")).toHaveTextContent(/asking this box to stop/i);
+      expect(screen.getByRole("button", { name: "Restart this box" })).toBeDisabled();
+
+      restartCall.reject({ code: "RESTART_BLOCKED", detail: "a backup is running", traceId: "t-1" });
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(/busy with work a restart would break/i);
+      // The server's own detail rides through the outcome into the sentence.
+      expect(alert).toHaveTextContent(/a backup is running/);
+      // A refusal returns the control to the operator; the pending line is gone.
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Restart this box" })).toBeEnabled(),
+      );
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    },
+  },
+  // an unwired seam the page ASKED about settles as ACTION_DISPATCH_UNWIRED
+  // (UIS-167) — no handler is supplied at all here.
+  "UIS-167-valid-unwired-dispatch-settles-error": {
+    assert: async () => {
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Restart this box" }));
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent("ACTION_DISPATCH_UNWIRED");
+      // Settled, not stuck: the control is pressable again rather than pending.
+      expect(screen.getByRole("button", { name: "Restart this box" })).toBeEnabled();
+    },
+  },
 };
 
 // ── Pure assertion helpers (throwable, so the teeth block can wrap them) ──────
@@ -210,8 +316,8 @@ function assertResolved(binding: string, data: Record<string, unknown>, expected
 // ── The driver ──────────────────────────────────────────────────────────────
 
 describe("ui-schema/1 corpus — the render + reject driver", () => {
-  it("drives every one of the nine frozen corpus cases (no copies, none pending)", () => {
-    expect(cases.length).toBe(9);
+  it("drives every one of the sixteen frozen corpus cases (no copies, none pending)", () => {
+    expect(cases.length).toBe(16);
     // Each case is driven by exactly one arm — page-document or binding — so the
     // partition covers all nine with nothing left over (the Go driver discipline).
     expect(validPageCases.length + invalidPageCases.length + bindingCases.length).toBe(
@@ -233,6 +339,13 @@ describe("ui-schema/1 corpus — the render + reject driver", () => {
         "UIS-101-valid-predicate-index-binding",
         "UIS-132-invalid-incomplete-vocab-labels-rejected",
         "UIS-132-valid-vocab-option-source",
+        "UIS-165-invalid-confirm-missing-title-rejected",
+        "UIS-165-invalid-confirm-unknown-field-rejected",
+        "UIS-165-valid-confirm-gated-destructive-action",
+        "UIS-166-invalid-outcome-to-outside-ui-rejected",
+        "UIS-166-valid-outcome-renders-refusal-code",
+        "UIS-167-invalid-outcome-to-on-local-verb-rejected",
+        "UIS-167-valid-unwired-dispatch-settles-error",
       ]),
     );
     // The four page types are each covered by a valid case.
@@ -267,7 +380,7 @@ describe("ui-schema/1 corpus — the render + reject driver", () => {
 
   describe("valid page documents validate clean and render their expected structure", () => {
     for (const c of validPageCases) {
-      it(`${c.case_id}`, () => {
+      it(`${c.case_id}`, async () => {
         expect(validatePage(c.input).ok).toBe(true);
         const fx = RENDER_FIXTURES[c.case_id];
         render(
@@ -281,7 +394,7 @@ describe("ui-schema/1 corpus — the render + reject driver", () => {
         );
         // A conformant document paints — the rejection panel is never present.
         expect(document.querySelector('[data-slot="renderer-invalid"]')).toBeNull();
-        fx.assert();
+        await fx.assert();
       });
     }
   });

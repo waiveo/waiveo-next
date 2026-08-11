@@ -22,7 +22,7 @@ import {
 import { validatePage } from "./validate";
 import { LiveProvider, type EventSourceFactory } from "./live";
 import { RendererProvider, useRenderer } from "./state";
-import { runAction } from "./actions";
+import { confirmSpecOf, runAction } from "./actions";
 import type { ActionRef, ActionHandler, WidgetNode, WizardController } from "./types";
 import { isTruthy } from "./widgets/common";
 import { WidgetNodeView } from "./widgets/widget-node";
@@ -315,11 +315,24 @@ function ListDetailLayout({ page, base }: { page: PageDoc; base: RenderScope }) 
       runAction(newAction, base, ctx);
       return;
     }
+    // A `confirm` (UIS-165) gates an ActionRef of ANY verb — and this is the one
+    // ActionRef the draft idiom intercepts before `runAction` can gate it, so the
+    // gate is applied here rather than left as the single unguarded verb.
+    const spec = confirmSpecOf(newAction);
+    if (spec) {
+      ctx.requestConfirm(spec, beginDraft);
+      return;
+    }
+    beginDraft();
+  };
+
+  function beginDraft(): void {
+    if (!newAction) return;
     // New while an item is selected clears the selection FIRST, then seeds the
     // draft — the detail switches from the old row to the blank create form.
     ctx.store.write({ tree: "ui", loc: ["selected"] }, null);
     ctx.store.write({ tree: "ui", loc: [CREATE_DRAFT_KEY] }, buildCreateDraft(newAction, base));
-  };
+  }
 
   const detailSource = String(detail.source);
   const resolved = resolvePathWithLoc(detailSource, base);

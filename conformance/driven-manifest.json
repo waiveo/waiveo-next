@@ -235,7 +235,14 @@
       "UIS-100-invalid-malformed-binding-rejected",
       "UIS-101-valid-predicate-index-binding",
       "UIS-132-invalid-incomplete-vocab-labels-rejected",
-      "UIS-132-valid-vocab-option-source"
+      "UIS-132-valid-vocab-option-source",
+      "UIS-165-invalid-confirm-missing-title-rejected",
+      "UIS-165-invalid-confirm-unknown-field-rejected",
+      "UIS-165-valid-confirm-gated-destructive-action",
+      "UIS-166-invalid-outcome-to-outside-ui-rejected",
+      "UIS-166-valid-outcome-renders-refusal-code",
+      "UIS-167-invalid-outcome-to-on-local-verb-rejected",
+      "UIS-167-valid-unwired-dispatch-settles-error"
     ],
     "pending": []
   }

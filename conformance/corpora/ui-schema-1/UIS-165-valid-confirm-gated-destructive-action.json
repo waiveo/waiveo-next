@@ -1,0 +1,45 @@
+{
+  "case_id": "UIS-165-valid-confirm-gated-destructive-action",
+  "contract": "ui-schema/1",
+  "req_ids": ["UIS-165"],
+  "description": "A destructive `delete` ActionRef declaring a `confirm` ConfirmSpec validates clean, and the renderer does not dispatch the verb on the press alone: the ConfirmSpec is presented, a dismissal dispatches nothing at all, and only the operator's acknowledgement runs that same ActionRef against the host's delete seam.",
+  "input": {
+    "pageType": "settings-form",
+    "source": "site",
+    "sections": [
+      {
+        "titleMsg": "msg:settings.general.title",
+        "fields": [
+          { "type": "text-input", "bind": "displayName", "props": { "labelMsg": "msg:settings.general.displayName" } }
+        ]
+      }
+    ],
+    "actions": [
+      {
+        "type": "button",
+        "props": { "labelMsg": "msg:settings.save" },
+        "on": { "press": { "verb": "submit" } }
+      },
+      {
+        "type": "button",
+        "props": { "labelMsg": "msg:settings.delete", "style": "destructive" },
+        "on": {
+          "press": {
+            "verb": "delete",
+            "target": "$root",
+            "confirm": {
+              "titleMsg": "msg:settings.delete.confirmTitle",
+              "bodyMsg": "msg:settings.delete.confirmBody",
+              "confirmLabelMsg": "msg:settings.delete.confirmOk",
+              "cancelLabelMsg": "msg:settings.delete.confirmCancel",
+              "destructive": true
+            }
+          }
+        }
+      }
+    ]
+  },
+  "expected": {
+    "valid": true
+  }
+}

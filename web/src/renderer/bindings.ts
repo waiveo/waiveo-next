@@ -285,6 +285,29 @@ export function resolveWriteLocation(
   return { tree: r.tree, loc: r.loc };
 }
 
+/** Parse an ActionRef's `outcomeTo` (UIS-166) into the `$ui`-tree location its
+ * ActionOutcome is written at, or null when the path is not a legal destination.
+ *
+ * A legal destination is `$ui` followed by one or more PLAIN name segments: an
+ * outcome is published to a named slot, never into an array position or behind a
+ * predicate. That restriction is what lets the location be computed from the path
+ * alone — `resolveWriteLocation` walks the CURRENT tree and gives up (loc: null)
+ * the moment an intermediate container is missing, which is the normal state of a
+ * fresh `$ui` at the instant the very first outcome is written. Routing the write
+ * through it would have made the first dispatch of every page a silent no-op.
+ *
+ * Shared with validate.ts so the check and the parse can never disagree about
+ * which paths are legal (UIS-166's BINDING_PATH_INVALID). */
+export function parseOutcomeTarget(path: unknown): string[] | null {
+  if (typeof path !== "string") return null;
+  const segs = path.split(".");
+  if (segs.length < 2 || segs[0] !== "$ui") return null;
+  for (const seg of segs.slice(1)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(seg)) return null;
+  }
+  return segs.slice(1);
+}
+
 // ── Environment (msg resolution, locale, vocab labels) ──────────────────────
 
 /** Resolves a `msg:` reference (MAN-003/111) to display text, optionally with

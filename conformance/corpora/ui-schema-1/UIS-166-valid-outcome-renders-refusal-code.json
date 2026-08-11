@@ -1,0 +1,67 @@
+{
+  "case_id": "UIS-166-valid-outcome-renders-refusal-code",
+  "contract": "ui-schema/1",
+  "req_ids": ["UIS-076", "UIS-077", "UIS-166"],
+  "description": "A `call-action` publishing its ActionOutcome into $ui makes the whole asynchronous lifecycle bindable with the grammar already defined: the control disables itself while `status` reads pending (UIS-076, so a second press cannot dispatch a second invocation), a live-region text announces that it is working (UIS-077), and on refusal a `switch` over the outcome's own `code` renders that published code as its own sentence — the case the renderer could not express at all before, because the seam's result was discarded.",
+  "input": {
+    "pageType": "dashboard",
+    "tiles": [
+      {
+        "size": "large",
+        "widget": {
+          "type": "section",
+          "children": [
+            {
+              "type": "button",
+              "props": {
+                "labelMsg": "msg:system.restart.button",
+                "style": "destructive",
+                "disabledIf": { "compute": "eq", "args": ["$ui.restart.status", { "lit": "pending" }] }
+              },
+              "on": { "press": { "verb": "call-action", "action": "system.restart", "outcomeTo": "$ui.restart" } }
+            },
+            {
+              "type": "text",
+              "visibleIf": { "compute": "eq", "args": ["$ui.restart.status", { "lit": "pending" }] },
+              "props": { "announce": "polite", "value": { "compute": "msg", "args": ["msg:system.restart.pending"] } }
+            },
+            {
+              "type": "switch",
+              "visibleIf": { "compute": "eq", "args": ["$ui.restart.status", { "lit": "error" }] },
+              "props": {
+                "discriminant": "$ui.restart.code",
+                "cases": [
+                  {
+                    "when": "RESTART_BLOCKED",
+                    "render": {
+                      "type": "text",
+                      "props": {
+                        "announce": "assertive",
+                        "value": { "compute": "msg", "args": ["msg:system.restart.blocked", "$ui.restart.detail"] }
+                      }
+                    }
+                  }
+                ],
+                "default": {
+                  "type": "text",
+                  "props": { "announce": "assertive", "value": "$ui.restart.detail" }
+                }
+              }
+            },
+            {
+              "type": "text",
+              "visibleIf": { "compute": "eq", "args": ["$ui.restart.status", { "lit": "ok" }] },
+              "props": {
+                "announce": "polite",
+                "value": { "compute": "msg", "args": ["msg:system.restart.back", "$ui.restart.result.supervisor"] }
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "expected": {
+    "valid": true
+  }
+}

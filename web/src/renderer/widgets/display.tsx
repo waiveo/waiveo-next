@@ -15,13 +15,30 @@ import type { ActionRef } from "../types";
 import { narrowToItem, resolveArray, type WidgetProps } from "./common";
 import { useWizard } from "./wizard-context";
 
+/** `announce` (UIS-077) → the ARIA live-region role of that politeness.
+ *
+ * An UNRECOGNIZED politeness resolves to `polite`, never to a non-live node. The
+ * prop exists because an ActionOutcome's sentence lands after the page has been
+ * read, and a typo that silently produced a plain span would be invisible to
+ * everyone who can see the screen while removing the announcement entirely for
+ * everyone who cannot — so the typo costs an over-announcement instead. */
+function announceRole(announce: unknown): "status" | "alert" | undefined {
+  if (announce === undefined) return undefined;
+  return announce === "assertive" ? "alert" : "status";
+}
+
 export function TextWidget({ node, scope }: WidgetProps) {
   const { env } = useRenderer();
   const value = node.props?.value;
   const live = asLiveBinding(value);
   const staticValue = evalBindingExpr(value, scope, env);
   const resolved = useLive(live ? live.path : null, staticValue);
-  return <span data-slot="widget-text" className="text-sm text-foreground">{toDisplay(resolved)}</span>;
+  const role = announceRole(node.props?.announce);
+  return (
+    <span data-slot="widget-text" className="text-sm text-foreground" {...(role ? { role } : {})}>
+      {toDisplay(resolved)}
+    </span>
+  );
 }
 
 const BADGE_TONE: Record<string, Status> = {

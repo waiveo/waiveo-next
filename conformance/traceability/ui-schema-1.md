@@ -35,6 +35,8 @@ One row per requirement ID `contracts/ui-schema-1.md` defines. Format: `conforma
 | UIS-073a | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
 | UIS-074 | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
 | UIS-075 | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
+| UIS-076 | `contracts/ui-schema-1.md#widget-catalog` | `UIS-166-valid-outcome-renders-refusal-code` | covered |
+| UIS-077 | `contracts/ui-schema-1.md#widget-catalog` | `UIS-166-valid-outcome-renders-refusal-code` | covered |
 | UIS-100 | `contracts/ui-schema-1.md#binding-grammar-data-paths` | `UIS-100-invalid-malformed-binding-rejected` | covered |
 | UIS-101 | `contracts/ui-schema-1.md#binding-grammar-data-paths` | `UIS-101-valid-predicate-index-binding` | covered |
 | UIS-102 | `contracts/ui-schema-1.md#binding-grammar-data-paths` | - | TBD-wave1 |
@@ -68,6 +70,9 @@ One row per requirement ID `contracts/ui-schema-1.md` defines. Format: `conforma
 | UIS-162 | `contracts/ui-schema-1.md#actions` | - | TBD-wave1 |
 | UIS-163 | `contracts/ui-schema-1.md#actions` | - | TBD-wave1 |
 | UIS-164 | `contracts/ui-schema-1.md#actions` | - | TBD-wave1 |
+| UIS-165 | `contracts/ui-schema-1.md#actions` | `UIS-165-valid-confirm-gated-destructive-action`, `UIS-165-invalid-confirm-missing-title-rejected`, `UIS-165-invalid-confirm-unknown-field-rejected` | covered |
+| UIS-166 | `contracts/ui-schema-1.md#actions` | `UIS-166-valid-outcome-renders-refusal-code`, `UIS-166-invalid-outcome-to-outside-ui-rejected` | covered |
+| UIS-167 | `contracts/ui-schema-1.md#actions` | `UIS-167-valid-unwired-dispatch-settles-error`, `UIS-167-invalid-outcome-to-on-local-verb-rejected` | covered |
 | UIS-180 | `contracts/ui-schema-1.md#fragments--slots` | - | TBD-wave1 |
 | UIS-181 | `contracts/ui-schema-1.md#fragments--slots` | - | TBD-wave1 |
 | UIS-182 | `contracts/ui-schema-1.md#fragments--slots` | - | TBD-wave1 |
