@@ -73,9 +73,29 @@ const runHeaders: NonNullable<operations["runAutomation"]["parameters"]["header"
   "Idempotency-Key": "client-chosen-replay-key-1",
 };
 
+// A run's response is an EFFECT REPORT, not just a disposition: `dry_run` says
+// whether anything was actually dispatched, and the three arrays say what the
+// run did to devices, to screens, and what it logged. They are required
+// precisely so a caller cannot read "ran" and assume "worked" — a run whose
+// every command was refused is still `disposition: "ran"`. This fixture
+// therefore constructs the whole shape; when it did not, the omission compiled
+// here while the console was busy painting exactly that false success.
 const runResult: operations["runAutomation"]["responses"][200]["content"]["application/json"] = {
   run_id: "01J8Z3K4N5P6Q7R8S9T0V1W2Z9",
   disposition: "ran",
+  dry_run: false,
+  commands: [
+    { entity_id: "01J8Z3K4N5P6Q7R8S9T0V1ENT1", command: "power", ok: true },
+    { entity_id: "01J8Z3K4N5P6Q7R8S9T0V1ENT2", command: "launch", ok: false, error: "COMMAND_TARGET_UNREACHABLE" },
+  ],
+  signage: [
+    {
+      action: "play_cast",
+      outcome: "applied",
+      screens: [{ screen_id: "01J8Z9DEM0SCREENR0WF1RSTPH", ok: true }],
+    },
+  ],
+  logs: [{ level: "info", message: "1 of 2 commands dispatched" }],
 };
 
 // --- operations: the shared Problem responses a caller actually branches on ---
