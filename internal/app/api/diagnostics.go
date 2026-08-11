@@ -427,7 +427,7 @@ func (srv *server) contentHealth() serviceHealth {
 		total += int64(e.SizeBytes)
 	}
 	return serviceHealth{Name: "content-origin", Status: healthOK,
-		Detail: strconv.Itoa(len(entries)) + " asset(s), " + strconv.FormatInt(total>>10, 10) + " KiB."}
+		Detail: strconv.Itoa(len(entries)) + " asset(s), " + humanBytes(total) + "."}
 }
 
 // relayHealth lists the connected relays and grades the relay plane.
@@ -504,21 +504,54 @@ func (srv *server) screenRollup(r *http.Request) (screenHealth, serviceHealth) {
 		}
 	}
 
+	// The grading keeps NEVER-SEEN separate from STALE, which is the same
+	// distinction the read model itself is built around (internal/app/screens):
+	// a screen nobody has ever heard from is one that has not been switched on
+	// yet, not one that broke. Collapsing them makes a freshly authored fleet —
+	// the state every deployment passes through — greet its owner with a red
+	// banner about screens that are merely waiting to be plugged in.
 	switch {
 	case out.Total == 0:
 		// Nothing authored is not a fault. A fresh box has no screens and must
-		// not greet its owner with a red banner.
+		// not greet its owner with a red banner either.
 		return out, serviceHealth{Name: "screens", Status: healthOK, Detail: "No screens are authored yet."}
-	case out.Live == 0:
-		return out, serviceHealth{Name: "screens", Status: healthDown,
-			Detail: "None of the " + strconv.Itoa(out.Total) + " authored screen(s) has been heard from recently."}
-	case out.Live < out.Total:
-		return out, serviceHealth{Name: "screens", Status: healthDegraded,
-			Detail: strconv.Itoa(out.Total-out.Live) + " of " + strconv.Itoa(out.Total) + " screen(s) are stale or have never been seen."}
-	default:
+	case out.Live == out.Total:
 		return out, serviceHealth{Name: "screens", Status: healthOK,
 			Detail: "All " + strconv.Itoa(out.Total) + " screen(s) are live."}
+	case out.Live == 0 && out.Stale == 0:
+		// Every screen is never-seen: authored and waiting, not broken.
+		return out, serviceHealth{Name: "screens", Status: healthDegraded,
+			Detail: "None of the " + strconv.Itoa(out.Total) + " authored screen(s) has ever been seen — pair them and switch them on."}
+	case out.Live == 0:
+		// At least one screen HAS been seen and none is live now. That is a
+		// fleet that went dark, which is the case `down` exists for.
+		return out, serviceHealth{Name: "screens", Status: healthDown,
+			Detail: strconv.Itoa(out.Stale) + " screen(s) were being seen and have gone quiet; none of the " +
+				strconv.Itoa(out.Total) + " authored screen(s) is live."}
+	default:
+		return out, serviceHealth{Name: "screens", Status: healthDegraded,
+			Detail: strconv.Itoa(out.Total-out.Live) + " of " + strconv.Itoa(out.Total) + " screen(s) are stale or have never been seen."}
 	}
+}
+
+// humanBytes renders a byte count in the largest unit that keeps it readable.
+//
+// A `detail` string is rendered verbatim by the console, so "0 KiB" for two
+// small assets and "39584301056 bytes" for a disk are both answers an operator
+// has to decode rather than read.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return strconv.FormatInt(n, 10) + " B"
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit && exp < 3; m /= unit {
+		div *= unit
+		exp++
+	}
+	whole := n / div
+	tenths := (n % div) * 10 / div
+	return strconv.FormatInt(whole, 10) + "." + strconv.FormatInt(tenths, 10) + " " + [...]string{"KiB", "MiB", "GiB", "TiB"}[exp]
 }
 
 // storageHealth measures the filesystem the workspace's own data lives on.
@@ -536,7 +569,7 @@ func (srv *server) storageHealth() storageHealth {
 	total, free := u.TotalBytes, u.AvailBytes
 	pct := u.UsedPercent()
 	grade := u.Classify()
-	detail := strconv.FormatInt(free>>20, 10) + " MiB available of " + strconv.FormatInt(total>>20, 10) + " MiB."
+	detail := humanBytes(free) + " available of " + humanBytes(total) + "."
 	switch grade {
 	case diskspace.StatusCritical:
 		detail += " Ordinary operation (an upload, a snapshot, an export) can now fail."

@@ -25,6 +25,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/app/api"
@@ -536,4 +537,47 @@ func (e *testEnv) createScreenRow(t *testing.T, node, name string) string {
 		t.Fatalf("create screen %q: %d %s", name, resp.StatusCode, raw)
 	}
 	return decodeID(t, raw)
+}
+
+// TestAFleetThatHasNEVERBeenSeenIsDegradedNotDown — the distinction the read
+// model itself is built around, carried into the roll-up's grade.
+//
+// A screen nobody has ever heard from has not been switched on yet; one that WAS
+// being seen and went quiet is a fleet going dark. Collapsing them makes every
+// deployment's first hour — screens authored, TVs not yet plugged in — a red
+// banner about a failure that has not happened, which is how a health page stops
+// being read.
+func TestAFleetThatHasNeverBeenSeenIsDegradedNotDown(t *testing.T) {
+	e := newDiagEnv(t)
+	org := e.orgRoot(t)
+	seen := e.createScreenRow(t, org, "Lobby")
+	e.createScreenRow(t, org, "Not plugged in yet")
+
+	// Nothing reported at all: two authored screens, both never seen.
+	h := e.health(t)
+	svc := serviceNamed(t, h, "screens")
+	if svc["status"] != "degraded" {
+		t.Errorf("a fleet that has never been seen = %v, want degraded (never-seen is waiting, not broken): %v", svc["status"], svc["detail"])
+	}
+	if detail, _ := svc["detail"].(string); !strings.Contains(detail, "has ever been seen") {
+		t.Errorf("detail = %q, want it to say none has ever been seen", detail)
+	}
+
+	// Now one of them HAS been seen, and has gone quiet. That is a fleet going
+	// dark, and it is `down`.
+	if err := e.screens.ApplyScreenStatus(diagRelayA, fixedNowMs-screens.LiveWindowMs-60_000, []wire.ScreenStatusEntry{{
+		ScreenID: seen, Paired: true, LastPullAgeMs: 1_000,
+		LastAckAgeMs: screens.NeverObserved, LastRenderStartAgeMs: screens.NeverObserved,
+	}}); err != nil {
+		t.Fatalf("ApplyScreenStatus: %v", err)
+	}
+	h = e.health(t)
+	sc, _ := h["screens"].(map[string]any)
+	if int(sc["stale"].(float64)) != 1 {
+		t.Fatalf("fixture: stale = %v, want 1 (the report must have aged past the live window)", sc["stale"])
+	}
+	svc = serviceNamed(t, h, "screens")
+	if svc["status"] != "down" {
+		t.Errorf("a fleet with a screen that WAS seen and went quiet = %v, want down: %v", svc["status"], svc["detail"])
+	}
 }

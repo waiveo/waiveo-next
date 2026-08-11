@@ -34,8 +34,13 @@ func TestSplitSource(t *testing.T) {
 		wantMsg    string
 	}{
 		{"waiveo-feeder: listening on :7420", "waiveo-feeder", "listening on :7420"},
-		{"waiveo-relay discovery: reported 3 device candidate(s)", "waiveo-relay discovery", "reported 3 device candidate(s)"},
 		{"http: TLS handshake error from 127.0.0.1:49951", "http", "TLS handshake error from 127.0.0.1:49951"},
+		// A component-plus-detail prefix: only the COMPONENT becomes the source,
+		// so one binary is one entry in a filter control rather than four. The
+		// detail is not discarded — it stays at the front of the message.
+		{"waiveo-relay discovery: reported 3 device candidate(s)", "waiveo-relay", "discovery: reported 3 device candidate(s)"},
+		{"waiveo-feeder starting: version=dev channel=dev", "waiveo-feeder", "starting: version=dev channel=dev"},
+		{"waiveo-relay dispatch [01ABC]: sent", "waiveo-relay", "dispatch [01ABC]: sent"},
 		// A sentence that merely contains a colon is not a component name, and
 		// splitting on it would drop the first clause of the message.
 		{"the relay said: no", DefaultSource, "the relay said: no"},
@@ -108,7 +113,7 @@ func TestIsComponentName(t *testing.T) {
 		"http", "store", "enroll", "keepalive", "playerserver", "automationhost",
 		// Every multi-word one: the first token carries a separator.
 		"waiveo-feeder", "waiveo-relay discovery", "waiveo-relay automation engine loaded",
-		"waiveo-relay telemetry push", "app/store", "a.b_c-d",
+		"waiveo-relay telemetry push", "waiveo-relay dispatch [01ABC]", "app/store", "a.b_c-d",
 	}
 	bad := []string{
 		"", " leading", "trailing ", "double  space", "has,comma", "has:colon", "has(paren)",

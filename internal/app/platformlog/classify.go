@@ -69,12 +69,16 @@ const maxSourceLen = 40
 // splitSource takes the component prefix off a line, returning the source and
 // the remaining message.
 //
-// The prefix is accepted only when it looks like a component name: at most
-// maxSourceLen bytes, made of lowercase letters, digits, and the few separators
-// this tree's prefixes use, with single spaces allowed between words
-// ("waiveo-relay discovery"). Anything else leaves the line intact under
-// DefaultSource, which is the failure mode to prefer — a mis-split line loses
-// text off the front of the message, and the front is where the subject is.
+// The WHOLE prefix must look like a component name (see isComponentName) — that
+// is what stops an ordinary sentence containing a colon from being split, and a
+// mis-split loses text off the front of the message, where the subject lives.
+//
+// But only the FIRST TOKEN becomes the source. This tree's prefixes are
+// component-plus-detail — "waiveo-relay discovery", "waiveo-relay telemetry
+// push", "waiveo-feeder starting" — and taking the whole prefix produced a
+// source list with four entries for one binary, which is a filter control an
+// operator cannot use to mean "show me the relay". The detail is not discarded:
+// it stays at the front of the message, where it reads as what it is.
 func splitSource(line string) (source, message string) {
 	i := strings.Index(line, ": ")
 	if i <= 0 || i > maxSourceLen {
@@ -84,7 +88,13 @@ func splitSource(line string) (source, message string) {
 	if !isComponentName(candidate) {
 		return DefaultSource, line
 	}
-	return candidate, strings.TrimSpace(line[i+2:])
+	rest := strings.TrimSpace(line[i+2:])
+	if sp := strings.IndexByte(candidate, ' '); sp > 0 {
+		// The detail rejoins the message with its colon, so the line reads back
+		// as it was written rather than as two fragments.
+		return candidate[:sp], strings.TrimSpace(candidate[sp+1:]) + ": " + rest
+	}
+	return candidate, rest
 }
 
 // maxSourceWords bounds a multi-word prefix. This tree's longest real one is
@@ -121,7 +131,7 @@ func isComponentName(s string) bool {
 		switch {
 		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
 			prevSpace = false
-		case c == '-', c == '_', c == '.', c == '/':
+		case c == '-', c == '_', c == '.', c == '/', c == '[', c == ']':
 			if inFirstToken {
 				firstTokenSeparated = true
 			}
