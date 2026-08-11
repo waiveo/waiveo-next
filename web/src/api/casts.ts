@@ -23,7 +23,7 @@
 // If-Match precondition (no unconditional overwrite, API-022), the create-time
 // Idempotency-Key, and cursor pagination without re-deriving one of them.
 
-import { ApiClient } from "./client";
+import { ApiClient, API_BASE } from "./client";
 import { crud } from "./crud";
 import type { ResourceModule } from "./resources";
 
@@ -397,14 +397,49 @@ export interface CastUpdate {
   labels?: Record<string, string>;
 }
 
-/** The cast family's api/1 surface — the uniform CRUD module, nothing bespoke.
- * Duplicate is a client-side read-then-create rather than a server verb, so it
- * needs no operation of its own. */
-export type CastsModule = ResourceModule<Cast, CastCreate, CastUpdate>;
+/** The cast family's api/1 surface: the uniform CRUD module, plus the two
+ * PORTABILITY operations (parity row 1.9).
+ *
+ * Duplicate is still a client-side read-then-create rather than a server verb,
+ * so it needs no operation of its own. Export and import DO, because a bundle
+ * carries the image BYTES as well as the design — something a console cannot
+ * assemble from what a read returns, since a read gives it `asset_ref`s and not
+ * content. */
+export interface CastsModule extends ResourceModule<Cast, CastCreate, CastUpdate> {
+  /** The URL this cast's `.cast` bundle is served from — for an anchor, not a
+   * fetch. A bundle carries every image the design draws, so pulling it through
+   * `fetch` into a Blob to hand to a link would hold the whole thing in the tab
+   * for no benefit when the browser can stream it straight to disk. */
+  exportUrl(castId: string): string;
+  /** Import a `.cast` bundle as a NEW cast at `scopeNode`, optionally renamed.
+   *
+   * The placement is required and comes from the console, never from the file:
+   * a bundle deliberately carries no scope node, because a scope node names a
+   * tree the box it came from had and this one does not.
+   *
+   * The response is the ordinary create's — the server routes an import through
+   * the same path `create` uses, so an imported cast is held to exactly the
+   * rules an authored one is. A malformed or altered bundle is a 422 whose
+   * `detail` says which kind of wrong it is. */
+  importBundle(bundle: BodyInit, scopeNode: string, name?: string): Promise<Cast>;
+}
 
 /** Build the cast module over an ApiClient. The ONE place `/casts` is named. */
 export function createCastsModule(client: ApiClient): CastsModule {
-  return crud<Cast, CastCreate, CastUpdate>(client, "/casts");
+  return {
+    ...crud<Cast, CastCreate, CastUpdate>(client, "/casts"),
+    exportUrl(castId) {
+      return `${API_BASE}/casts/${encodeURIComponent(castId)}/export`;
+    },
+    async importBundle(bundle, scopeNode, name) {
+      const q = new URLSearchParams({ scope_node: scopeNode });
+      if (name) q.set("name", name);
+      // `upload` carries the Idempotency-Key every mutating POST on this surface
+      // carries — so a retry-on-timeout replays the original 201 rather than
+      // importing a second copy of the same design.
+      return client.upload<Cast>(`/casts/import?${q.toString()}`, bundle, "application/octet-stream");
+    },
+  };
 }
 
 // ── Client-side slide validation ─────────────────────────────────────────────

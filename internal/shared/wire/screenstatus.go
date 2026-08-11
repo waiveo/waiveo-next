@@ -80,6 +80,19 @@ type ScreenStatusEntry struct {
 	LastAckAgeMs         int64 `json:"last_ack_age_ms"`
 	LastRenderStartAgeMs int64 `json:"last_render_start_age_ms"`
 
+	// UnackedPulls is how many program pulls this relay has served the screen
+	// since the last acknowledgement it saw from it — 0 for a screen that is up
+	// to date, 1 for one materialising the Lease it was just handed, and
+	// climbing for one that keeps asking and never confirms.
+	//
+	// It is a COUNT and not a duration because the thing it has to distinguish
+	// cannot be told apart by duration. A screen downloading a 60 MB video and a
+	// screen failing every content fetch on a 403 both present an
+	// unacknowledged pull of the same age; only the second one keeps making new
+	// ones. See wire.ScreenFetchingMaxUnackedPulls for the whole argument and
+	// for what an ack does and does not correlate with.
+	UnackedPulls int `json:"unacked_pulls"`
+
 	// ProgramRevision/Priority/Display/ContentCount describe the program the
 	// screen was last HANDED (or, for a screen that has never pulled, the one
 	// currently waiting for it). Priority is PLY-108's own enumeration, so a

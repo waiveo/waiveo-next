@@ -129,6 +129,7 @@ func (s *ssStack) sendStatus(t *testing.T) {
 			LastPullAgeMs:        st.LastPullAgeMs,
 			LastAckAgeMs:         st.LastAckAgeMs,
 			LastRenderStartAgeMs: st.LastRenderStartAgeMs,
+			UnackedPulls:         st.UnackedPulls,
 			ProgramRevision:      st.ProgramRevision,
 			Priority:             st.Priority,
 			Display:              st.Display,
@@ -154,7 +155,7 @@ func TestAScreenObservedAtTheRelayBecomesAStatusRowOnTheAppPeer(t *testing.T) {
 		{Type: "image", AssetRef: "sha256:aa", URL: "https://origin.example/content/aa"},
 	})
 	s.setNow(1_700_000_004_000)
-	ssPull(t, s.playerTS, token)
+	ssAck(t, s.playerTS, token, ssPull(t, s.playerTS, token))
 
 	// The relay reports upward on its own cadence.
 	s.setNow(1_700_000_006_000)
@@ -210,7 +211,12 @@ func TestTheAppPeersViewOfAScreenAgesWhileTheRelayIsSilent(t *testing.T) {
 
 	token, screenID := ssPair(t, s.playerTS)
 	s.player.SetProgram(1, screenID, "rev-live", "scheduled", "content", nil)
-	ssPull(t, s.playerTS, token)
+	// Pull AND acknowledge, which is one whole iteration of the shipped player.
+	// The ack matters to what this case asserts: an unacknowledged pull is how
+	// the read model recognises a screen that is still transferring content, and
+	// a fixture that never acks would be asserting `stale` about a screen this
+	// model correctly calls `fetching`.
+	ssAck(t, s.playerTS, token, ssPull(t, s.playerTS, token))
 	s.sendStatus(t)
 	waitFor(t, 5*time.Second, func() bool { return len(s.registry.Statuses()) == 1 },
 		"the app peer never held a screen status")
@@ -219,15 +225,168 @@ func TestTheAppPeersViewOfAScreenAgesWhileTheRelayIsSilent(t *testing.T) {
 		t.Fatalf("fixture: reachability right after a report = %q, want live", got)
 	}
 
-	// Two minutes pass with no further report — a disconnected relay, a wedged
-	// reporter, a dead box. The app has stopped learning anything, and says so.
-	s.setNow(1_700_000_000_000 + 120_000)
+	// A silence longer than the live window passes with no further report — a
+	// disconnected relay, a wedged reporter, a dead box. The app has stopped
+	// learning anything, and says so.
+	//
+	// The silence is expressed relative to screens.LiveWindowMs, not as a
+	// literal two minutes: the window is DERIVED from the player's measured pull
+	// cadence (internal/shared/wire/screencadence.go), so a literal here would
+	// silently become an assertion that a screen inside the window is stale the
+	// next time that cadence is re-measured.
+	const silence = screens.LiveWindowMs + 60_000
+	s.setNow(1_700_000_000_000 + silence)
 	got := s.registry.Statuses()[0]
 	if got.Reachability != screens.ReachabilityStale {
-		t.Errorf("reachability two minutes after the last report = %q, want stale — a view that never ages reports a dead fleet as healthy forever", got.Reachability)
+		t.Errorf("reachability %dms after the last report = %q, want stale — a view that never ages reports a dead fleet as healthy forever", silence, got.Reachability)
 	}
-	if got.ReportAgeMs < 120_000 {
-		t.Errorf("report_age = %d, want at least 120000 — the field that tells an operator the RELAY went quiet rather than the screen", got.ReportAgeMs)
+	if got.ReportAgeMs < silence {
+		t.Errorf("report_age = %d, want at least %d — the field that tells an operator the RELAY went quiet rather than the screen", got.ReportAgeMs, silence)
+	}
+}
+
+// TestAScreenThatPullsAndNeverAcksReachesANonFetchingState is the 2026-08 wall,
+// driven through the WHOLE pipeline — real player/1 pulls at a real relay, a
+// real `screen.status` frame over a real connection, the app peer's real read
+// model — because that is where the finding lived and every layer of it had to
+// be wrong at once for the console to say what it said.
+//
+// The screen answers its program pull (so the relay stamps a fresh `lastPullMs`
+// on every retry) and never acknowledges (the shipped player returns before
+// `wvAckLease` when a content fetch fails). Bounded on pull AGE alone, that
+// screen read `fetching` on every sample forever: its age reset before it could
+// expire, and its pull was permanently unacknowledged.
+//
+// Three pulls with no ack is past the tolerance, which is the point of the count
+// — a duration cannot express "and it keeps doing it".
+func TestAScreenThatPullsAndNeverAcksReachesANonFetchingState(t *testing.T) {
+	s := newSSStack(t)
+
+	token, screenID := ssPair(t, s.playerTS)
+	s.player.SetProgram(1, screenID, "rev-new", "scheduled", "content", []wire.LeaseContent{
+		{Type: "image", AssetRef: "sha256:aa", URL: "https://origin.example/content/aa"},
+	})
+
+	// One pull, unacknowledged, reported while it is still young: this is a
+	// screen that could genuinely be materialising the Lease it was just handed,
+	// and it must NOT be called stale.
+	s.setNow(1_700_000_004_000)
+	ssPull(t, s.playerTS, token)
+	s.setNow(1_700_000_004_000 + screens.LiveWindowMs + 1_000)
+	s.sendStatus(t)
+	waitFor(t, 5*time.Second, func() bool { return len(s.registry.Statuses()) == 1 },
+		"the app peer never held a screen status")
+	if got := s.registry.Statuses()[0]; got.Reachability != screens.ReachabilityFetching {
+		t.Fatalf("one outstanding pull past the live window reads %q, want fetching (unacked_pulls %d) — a screen downloading a video must not be reported as a screen to go and look at",
+			got.Reachability, got.UnackedPulls)
+	}
+
+	// It keeps pulling and keeps not acknowledging. Each pull re-stamps the
+	// relay's clock, so the AGE bound is never reached — only the count moves.
+	for i := 0; i < int(screens.MaxFetchingUnackedPulls); i++ {
+		s.setNow(1_700_000_010_000 + int64(i)*60_000)
+		ssPull(t, s.playerTS, token)
+	}
+	// Reported at the top of the screen's own backoff sawtooth, which is where a
+	// broken wall spends most of its samples and the only place the fleet-dark
+	// grade can be reached from.
+	s.setNow(1_700_000_010_000 + int64(screens.MaxFetchingUnackedPulls)*60_000 + screens.LiveWindowMs + 1_000)
+	s.sendStatus(t)
+
+	var got screens.Status
+	waitFor(t, 5*time.Second, func() bool {
+		st := s.registry.Statuses()
+		if len(st) != 1 {
+			return false
+		}
+		got = st[0]
+		return got.UnackedPulls > int(screens.MaxFetchingUnackedPulls)
+	}, "the app peer never saw the unacknowledged-pull count climb past the tolerance")
+
+	if got.Reachability == screens.ReachabilityFetching {
+		t.Fatalf("after %d pulls with no acknowledgement the screen still reads `fetching` (pull age %d, transfer window %d).\n"+
+			"Nothing is being fetched. This is the 2026-08 wall: 200 on every program pull, a failed content fetch, no ack, retry "+
+			"forever — and while `fetching` captured it the console said 'Collecting content' about a dead screen and the fleet "+
+			"roll-up could never grade a whole site of them `down`.", got.UnackedPulls, got.LastPullAgeMs, screens.ContentTransferWindowMs)
+	}
+	if got.Reachability != screens.ReachabilityStale {
+		t.Fatalf("reachability = %q, want stale: the pull is %dms old, past the %dms live window, with %d pulls outstanding",
+			got.Reachability, got.LastPullAgeMs, screens.LiveWindowMs, got.UnackedPulls)
+	}
+	if got.LastPullAgeMs > screens.ContentTransferWindowMs {
+		t.Fatalf("fixture no longer proves the finding: the pull age (%d) is outside the transfer window (%d), so the AGE bound would have expired `fetching` on its own and the count is not what this test is measuring",
+			got.LastPullAgeMs, screens.ContentTransferWindowMs)
+	}
+}
+
+// TestAFirstEverTransferAfterBlankLeasesIsNotStale is the OTHER end of the same
+// count, driven through the same whole stack, and it is the case the bound broke
+// when it was added.
+//
+// A freshly paired screen has no program, so the relay answers every pull with
+// terminalDefault: `display: blank`, empty content (DAT-118). The shipped player
+// refuses an empty content array and returns before `wvAckLease`, exactly as it
+// does on a failed fetch — so those pulls are never acknowledged. While they
+// counted, a box six seconds past pairing (two pulls, at the player's 2 s/4 s
+// backoff) was already at the tolerance, and the very FIRST program an operator
+// assigned — one Lease, one genuine 90-second video download — pushed it over.
+//
+//	PROBE: reachability="stale" last_pull_age_ms=90000 unacked_pulls=3
+//	       live_window=52000 transfer_window=172000 max_unacked=2
+//
+// A one-screen site then graded `down` (internal/app/api/diagnostics.go) on a box
+// that was working perfectly, and the console cell said the opposite of what was
+// happening. Nothing about the screen was wrong; the counter was counting pulls
+// with nothing outstanding to fetch.
+func TestAFirstEverTransferAfterBlankLeasesIsNotStale(t *testing.T) {
+	s := newSSStack(t)
+
+	token, screenID := ssPair(t, s.playerTS)
+
+	// No program assigned yet. The player pulls on its startup backoff and gets
+	// the terminal default each time — nothing to fetch, nothing to acknowledge.
+	s.setNow(1_700_000_002_000)
+	ssPull(t, s.playerTS, token)
+	s.setNow(1_700_000_006_000)
+	ssPull(t, s.playerTS, token)
+
+	// The operator assigns the screen its first program: one video. The screen
+	// collects it, and the download takes 90 seconds — one Lease in flight, well
+	// inside the transfer window, which is precisely `fetching`.
+	s.player.SetProgram(1, screenID, "rev-first", "scheduled", "content", []wire.LeaseContent{
+		{Type: "image", AssetRef: "sha256:aa", URL: "https://origin.example/content/aa"},
+	})
+	s.setNow(1_700_000_010_000)
+	ssPull(t, s.playerTS, token)
+	s.setNow(1_700_000_010_000 + 90_000)
+	s.sendStatus(t)
+
+	var got screens.Status
+	waitFor(t, 5*time.Second, func() bool {
+		st := s.registry.Statuses()
+		if len(st) != 1 {
+			return false
+		}
+		got = st[0]
+		return got.LastPullAgeMs > 0
+	}, "the app peer never held a screen status for the transferring screen")
+
+	if got.UnackedPulls != 1 {
+		t.Fatalf("unacked_pulls = %d during a first-ever transfer, want 1: the two blank Leases served before it are being counted as outstanding pulls, and nothing in them can ever be acknowledged",
+			got.UnackedPulls)
+	}
+	if got.Reachability != screens.ReachabilityFetching {
+		t.Fatalf("a screen 90s into its FIRST content download reads %q, want fetching (unacked_pulls %d, pull age %d, transfer window %d).\n"+
+			"This is a working box on its first program. Reading `stale` here sends an operator to a site with nothing wrong with it, and the "+
+			"fleet roll-up grades a one-screen deployment `down`.",
+			got.Reachability, got.UnackedPulls, got.LastPullAgeMs, screens.ContentTransferWindowMs)
+	}
+	// The fixture has to still be measuring the COUNT, not the age: if the pull
+	// had aged out of the transfer window this case would pass for the wrong
+	// reason and stop proving anything about blank Leases.
+	if got.LastPullAgeMs > screens.ContentTransferWindowMs {
+		t.Fatalf("fixture no longer proves the finding: the pull age (%d) is outside the transfer window (%d), so the age bound decides this case and the blank-Lease count is not what is being measured",
+			got.LastPullAgeMs, screens.ContentTransferWindowMs)
 	}
 }
 
@@ -239,7 +398,7 @@ func TestAReportReplacesTheRelaysWholeView(t *testing.T) {
 
 	token, screenID := ssPair(t, s.playerTS)
 	s.player.SetProgram(1, screenID, "rev-live", "scheduled", "content", nil)
-	ssPull(t, s.playerTS, token)
+	ssAck(t, s.playerTS, token, ssPull(t, s.playerTS, token))
 	s.sendStatus(t)
 	waitFor(t, 5*time.Second, func() bool { return len(s.registry.Statuses()) == 1 },
 		"the app peer never held a screen status")
@@ -295,7 +454,9 @@ func ssPair(t *testing.T, ts *httptest.Server) (token, screenID string) {
 }
 
 // ssPull performs one real program pull with token.
-func ssPull(t *testing.T, ts *httptest.Server, token string) {
+// ssPull pulls a program and returns the Lease's own id, so a case can go on to
+// acknowledge it the way the shipped player does.
+func ssPull(t *testing.T, ts *httptest.Server, token string) string {
 	t.Helper()
 	body, err := json.Marshal(playerserver.ProgramPullRequest{
 		Capabilities: playerserver.Capabilities{ContentTypes: []string{"image"}, PlayerVersion: "1.0.0"},
@@ -315,6 +476,44 @@ func ssPull(t *testing.T, ts *httptest.Server, token string) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("program pull status = %d, want 200", resp.StatusCode)
+	}
+	var lease struct {
+		LeaseID string `json:"lease_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&lease); err != nil {
+		t.Fatalf("decode the Lease: %v", err)
+	}
+	if lease.LeaseID == "" {
+		t.Fatal("the Lease carried no lease_id; nothing can be acknowledged")
+	}
+	return lease.LeaseID
+}
+
+// ssAck acknowledges a Lease (PLY-091), which the shipped player does at the end
+// of every successful iteration (player-v3/source/Program.brs, wvAckLease).
+//
+// Fixtures that pull without acking are not modelling this player, and after the
+// screen-status model learned to tell "pulled, not yet acknowledged" from
+// "quiet" they are not modelling a healthy screen either — an unacknowledged
+// pull is precisely what `fetching` means.
+func ssAck(t *testing.T, ts *httptest.Server, token, leaseID string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"lease_id": leaseID, "accepted": true})
+	if err != nil {
+		t.Fatalf("marshal the ack: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/player/v1/lease/ack", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("build the ack request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /player/v1/lease/ack: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		t.Fatalf("lease ack status = %d, want 200 or 204", resp.StatusCode)
 	}
 }
 

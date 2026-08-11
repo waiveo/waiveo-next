@@ -34,9 +34,13 @@ import {
  * It never says OFFLINE. The platform genuinely cannot tell a screen that is
  * switched off from one whose network dropped, from one whose player crashed,
  * from one that was never switched on — and an operator told "offline" goes and
- * checks the wrong thing. The server reports `live | stale | never_seen` plus
- * raw ages, and this panel renders exactly that, with the age always visible
- * beside the word so the judgement can always be second-guessed.
+ * checks the wrong thing. The server reports `live | fetching | stale |
+ * never_seen` plus raw ages, and this panel renders exactly that, with the age
+ * always visible beside the word so the judgement can always be second-guessed.
+ * `fetching` is the one that saves a wasted trip: a screen downloading a newly
+ * assigned video is silent for as long as the transfer takes while the previous
+ * program keeps playing, and calling that "not heard from" sends somebody to
+ * look at a wall that is working.
  *
  * It distinguishes "this screen went quiet" from "this RELAY went quiet". Those
  * are different failures with different remedies and every other column renders
@@ -61,15 +65,23 @@ const REFRESH_MS = 10_000;
 /** Which chip a reachability reads as. `stale` is `warn`, never `error`: the
  * platform has not established that anything is broken, only that it has not
  * heard recently, and spending the error colour on an uncertainty is how a
- * status column stops being believed. */
+ * status column stops being believed.
+ *
+ * `fetching` is `pending` for the same discipline pointed the other way. The
+ * screen was handed a program and has not confirmed it, which the server reads
+ * as a content transfer in progress — never-wipe means the PREVIOUS program is
+ * still on the wall throughout, so this is not a fault and must not wear the
+ * warning colour. It is not `ok` either: nothing has been heard back. */
 const REACHABILITY_STATUS: Record<string, Status> = {
   live: "ok",
+  fetching: "pending",
   stale: "warn",
   never_seen: "pending",
 };
 
 const REACHABILITY_LABEL: Record<string, string> = {
   live: "Live",
+  fetching: "Collecting content",
   stale: "Not heard from",
   never_seen: "Never seen",
 };
@@ -89,18 +101,71 @@ export function formatAge(ms: number): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-/** What a row's "Now playing" cell should say, from the three facts the server
- * gives: whether an operator has overridden the screen, what the relay last
- * handed it, and whether the screen reported actually rendering something.
+/** ScreenStatus fields NO SHIPPED PRODUCER POPULATES, and therefore fields this
+ * panel must not draw a conclusion from.
+ *
+ * Both have exactly one producer in the whole system: the relay's `noteRenderStart`,
+ * reached only from `POST /player/v1/render/start`. player-v3 never calls it. Its
+ * only three HTTP calls are `/player/v1/pair`, `/player/v1/program` and
+ * `/player/v1/lease/ack` (Pairing.brs, Program.brs). PLY-110 is a MUST the shipped
+ * player does not implement, and until it does these arrive as the never sentinel
+ * (-1) and an absent string on every row from real hardware.
+ *
+ * That is not a reason to delete the fields — the contract requires them and
+ * another track owns the player — but it IS the reason a branch keyed on them
+ * cannot be treated as reachable. A guard that reads "has this screen ever
+ * rendered?" off a field nobody sends does not answer "no, never"; it answers
+ * "nobody said", and phrasing the second as the first is how the cell ended up
+ * telling an operator a week-old wall was blank.
+ *
+ * live-screens-panel.test.tsx pins the consequence and is where this list is
+ * re-armed if the player ever ships PLY-110. */
+export const SCREEN_STATUS_FIELDS_WITH_NO_SHIPPED_PRODUCER = [
+  "last_render_start_age_ms",
+  "render_asset_ref",
+] as const;
+
+/** What a row's "Now playing" cell should say, from the facts the server gives:
+ * what the relay last handed the screen, and whether it is currently collecting
+ * new content.
  *
  * Exported and pure so it is testable on its own: the phrasing IS the feature
  * here, and a cell that says "Showing content" for a screen showing nothing is
- * the failure mode. */
+ * the failure mode.
+ *
+ * The clause ORDER is load-bearing and was wrong. `fetching` came first and
+ * therefore pre-empted `display === "blank"`, so a screen scheduled off was
+ * described as downloading content.
+ *
+ * # Why the fetching clause says nothing about the wall, in EITHER direction
+ *
+ * It used to claim "still showing the last" unconditionally, which was wrong for
+ * a screen collecting its first-ever program. The obvious repair — split on
+ * whether the screen has ever reported a render — was worse, because that
+ * evidence never arrives: see SCREEN_STATUS_FIELDS_WITH_NO_SHIPPED_PRODUCER. On
+ * real hardware the split always took the never-rendered side, so a screen that
+ * had been showing the same program all week and was picking up an update read
+ * "Collecting its first content (nothing on screen yet)" — a positive false claim
+ * about a physical wall, on EVERY update rather than once per screen.
+ *
+ * So this states only what the box actually knows: a transfer is in progress.
+ * What is on the wall meanwhile is a question the relay has no answer to, and the
+ * honest cell is the one that does not pretend otherwise. (What never-wipe
+ * guarantees is that the outgoing program stays up — so "downloading" already
+ * implies the operator should wait rather than drive out, without asserting
+ * anything about which frame is on the glass.) When the player implements
+ * PLY-110, this clause can grow the distinction back, with evidence behind it. */
 export function nowPlayingLabel(row: ScreenStatus): string {
   if (row.reachability === "never_seen") {
     return row.program_revision ? "Waiting to collect its program" : "Nothing assigned";
   }
+  // Scheduled off is a fact about the program the screen was HANDED, and it
+  // outranks the transfer state: a blank program has nothing to fetch, so
+  // "downloading new content" about one is describing work that is not
+  // happening, and "Blank (scheduled off)" is the answer to the question the
+  // operator is actually asking.
   if (row.display === "blank") return "Blank (scheduled off)";
+  if (row.reachability === "fetching") return "Downloading new content";
   if (row.render_asset_ref) {
     return `Rendering ${row.content_count} item${row.content_count === 1 ? "" : "s"}`;
   }

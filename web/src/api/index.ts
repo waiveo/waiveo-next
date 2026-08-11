@@ -151,6 +151,34 @@ export {
 } from "./casts";
 
 export {
+  createBackupModule,
+  createJobsModule,
+  jobIsTerminal,
+  jobFailureDetail,
+  TERMINAL_JOB_STATES,
+  type BackupModule,
+  type JobsModule,
+  type Job,
+  type WorkspaceArchive,
+  type WorkspaceArchiveList,
+} from "./backup";
+
+export {
+  createDiagnosticsModule,
+  LOG_LEVELS,
+  type DiagnosticsModule,
+  type PlatformLogRecord,
+  type PlatformLogPage,
+  type PlatformLogQuery,
+  type LogLevel,
+  type SystemHealth,
+  type ServiceHealth,
+  type StorageHealth,
+  type RelayHealth,
+  type ScreenHealth,
+} from "./diagnostics";
+
+export {
   createPacksModule,
   packData,
   encodePackPagePath,

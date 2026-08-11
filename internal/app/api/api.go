@@ -168,6 +168,17 @@ type server struct {
 	// mints and delivers the grant either way, and answers with an honest
 	// code_unavailable_reason when unwired.
 	pairingRelays PairingRelayDirectory
+	// platformLog is the running process's captured log the diagnostics read
+	// serves (diagnostics.go, parity row 7.4). Optional (WithPlatformLog): the
+	// route mounts either way and answers an empty page with capacity 0, which
+	// is distinguishable from a wired-but-quiet box.
+	platformLog PlatformLogSource
+	// health carries the deployment facts the health summary cannot derive from
+	// its own state — process start, build version, and the data directory whose
+	// filesystem headroom is measured. Optional (WithSystemHealth): without it
+	// the summary still reports services, relays and screens, with uptime and
+	// disk `unknown` rather than zero.
+	health *SystemHealthConfig
 }
 
 // authExemptPaths are the api/1 operations that declare their own
@@ -328,6 +339,12 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// scheduling-content row like the three above, but the one an operator
 	// actually authors in, and it declares its full request/response schema.
 	srv.mount(rt, castsConfig())
+	// The cast family's two PORTABILITY operations (parity row 1.9,
+	// castbundles.go): one authored design, plus the images it draws, out of one
+	// box and into another. Mounted beside the family rather than inside the
+	// generic machinery — a cast is the only kind with a portable single-row
+	// bundle, because it is the only kind an operator hands to another operator.
+	srv.mountCastBundles(rt)
 	srv.mount(rt, automationsConfig())
 	// The two data-model/1 identity kinds (identityrows.go). They are ordinary
 	// resourceConfig mounts on purpose: a screen and an adopted device are
@@ -378,6 +395,11 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// revision to condition a write on, and no collection to list (workspace.go).
 	rt.HandleFunc("POST "+apiPrefix+"/workspace/export", srv.exportWorkspace)
 	rt.HandleFunc("POST "+apiPrefix+"/workspace/restore", srv.restoreWorkspace)
+	// The two reads that make the backup loop usable by an operator rather than
+	// by someone with a shell: which containers exist, and their bytes (parity
+	// row 7.5, workspacearchives.go). A backup that cannot be discovered cannot
+	// be restored, and one that cannot leave the box is not a backup.
+	srv.mountWorkspaceArchives(rt)
 	rt.HandleFunc("POST "+apiPrefix+"/revocations", srv.revokeSubject)
 	rt.HandleFunc("POST "+apiPrefix+"/workspace/delete", srv.deleteWorkspace)
 	// The device plane's two read families and its one mutating operation. They
@@ -385,6 +407,12 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// relay's own discovery and adoption plane, with no revision to condition a
 	// write on (devices.go).
 	srv.mountDevicePlane(rt)
+	// The two operator diagnostics reads (parity row 7.4, diagnostics.go): the
+	// running process's own captured log, and the health summary that names the
+	// disk, the relays and the fleet. Not resourceConfig mounts — neither has an
+	// id, a revision or a collection; both are a read of what IS rather than of
+	// what was authored.
+	srv.mountDiagnostics(rt)
 
 	// The session-management half of the auth family rides the AUTHENTICATED
 	// mux: both operations act on the caller's own live session, so neither has

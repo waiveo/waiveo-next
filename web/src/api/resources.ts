@@ -33,6 +33,8 @@ import {
   type PacksModule,
 } from "./packs";
 import { createCastsModule, type CastsModule, type SlideLayer } from "./casts";
+import { createDiagnosticsModule, type DiagnosticsModule } from "./diagnostics";
+import { createBackupModule, createJobsModule, type BackupModule, type JobsModule } from "./backup";
 
 // ── Generated (contract-canonical) types ────────────────────────────────────
 
@@ -407,9 +409,13 @@ export interface ScreenStatusModule {
    *
    * Read the ages, not the words: each `*_age_ms` is milliseconds before the
    * response and `-1` means NEVER observed, which is a different state from a
-   * large age. `reachability` is `live | stale | never_seen` and deliberately
-   * never "offline" — the platform cannot tell a screen that is switched off
-   * from one whose network dropped from one whose player crashed. */
+   * large age. `reachability` is `live | fetching | stale | never_seen` and
+   * deliberately never "offline" — the platform cannot tell a screen that is
+   * switched off from one whose network dropped from one whose player crashed.
+   * `fetching` is a screen that was handed a program and has not acknowledged
+   * it inside `content_transfer_window_ms`: it is downloading content while the
+   * previous program stays on the wall, so it is neither healthy-confirmed nor
+   * a screen to go and look at. */
   list(params?: ListParams): Promise<Page<ScreenStatus>>;
 }
 
@@ -501,6 +507,19 @@ export interface WaiveoApi {
    * (MAN-051/052) — the SAME ResourceModule shape every core family uses, so a
    * pack's data is a first-class citizen (If-Match, Idempotency-Key, cursor). */
   packData(packId: string, collection: string): ResourceModule<PackRow, PackRowWrite, PackRowWrite>;
+  /** The operator diagnostics reads (parity row 7.4): this box's own captured
+   * log and its health summary. Both are `owner`-only and neither is authored
+   * state, so this is not a ResourceModule — see api/diagnostics.ts. */
+  diagnostics: DiagnosticsModule;
+  /** Workspace backup (parity row 7.5): export, the containers that exist,
+   * their download URLs, and restore. Not a ResourceModule — no id, no
+   * revision, and the subject of all four is the workspace itself. */
+  backup: BackupModule;
+  /** Job polling (API-112). It ships now because a screen finally drives an
+   * async operation: the backup page polls an export and a restore to a
+   * terminal state. Deliberately its own module rather than a member of
+   * `automations`, whose bulk-enable Job remains deferred with no UI. */
+  jobs: JobsModule;
 }
 
 /** Build the whole console API surface over one ApiClient (one shared ETag map,
@@ -522,6 +541,9 @@ export function createApi(opts?: ApiClientOptions): WaiveoApi {
     casts: createCastsModule(client),
     packs: createPacksModule(client),
     packData: (packId, collection) => packData(client, packId, collection),
+    diagnostics: createDiagnosticsModule(client),
+    backup: createBackupModule(client),
+    jobs: createJobsModule(client),
   };
 }
 

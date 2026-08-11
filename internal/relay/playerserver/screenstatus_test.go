@@ -285,6 +285,130 @@ func TestScreenStatusFiltersByWhatThePlayerCanDraw(t *testing.T) {
 	if got.ContentCount != 0 {
 		t.Errorf("content_count = %d for a player that can draw none of the served items, want 0 — the status must describe the Lease that was handed over, not the program behind it", got.ContentCount)
 	}
+	// …and it owes no acknowledgement for it. The same reasoning the count rests
+	// on applies here: a player handed nothing it can draw fetches nothing, acks
+	// nothing, and must not be accumulating outstanding pulls for it.
+	if got.UnackedPulls != 0 {
+		t.Errorf("unacked_pulls = %d after a pull the capability filter emptied, want 0 — there is nothing in that Lease to confirm, so counting it makes the screen look like it is failing to fetch content it was never sent", got.UnackedPulls)
+	}
+}
+
+// TestABlankLeaseIsNotAnOutstandingPull is the first-ever-transfer defect, at the
+// place the count is kept.
+//
+// A Lease with no content gets no acknowledgement — the shipped player returns
+// from wvDoProgram before wvAckLease when the content array is empty
+// (Program.brs), exactly as it does when a fetch fails — so every blank Lease
+// this counted was an outstanding pull that could never be discharged. And blank
+// Leases are the ORDINARY case twice over: terminalDefault is what a paired
+// screen pulls until an operator assigns it a program, and a scheduled `blank`
+// is the same empty array every night.
+//
+// The consequence is at the far end of the pipeline: past the tolerance the app
+// peer's read model calls the screen `stale` (internal/app/screens) and the fleet
+// roll-up grades a one-screen site `down` (internal/app/api/diagnostics.go) —
+// while that screen is downloading its first video perfectly normally. This test
+// is the relay-side half; the whole-stack pin is relayconn's
+// TestAFirstEverTransferAfterBlankLeasesIsNotStale.
+func TestABlankLeaseIsNotAnOutstandingPull(t *testing.T) {
+	clk := &statusClock{}
+	clk.set(1_700_000_000_000)
+	srv, ts, grant := newStatusServer(t, clk)
+	token, screenID := statusPair(t, ts, grant)
+
+	// No program at all: every pull is answered with terminalDefault, the blank
+	// Lease DAT-118 defines for a screen the relay holds nothing for.
+	for i := 0; i < 4; i++ {
+		clk.set(1_700_000_000_000 + int64(i)*2_000)
+		lease := statusPull(t, ts, token)
+		if lease.ProgramRevision != TerminalProgramRevision {
+			t.Fatalf("pull %d was answered with %q, want the terminal default — this test is no longer exercising the blank Lease", i, lease.ProgramRevision)
+		}
+	}
+	if got := statusOf(t, srv, screenID); got.UnackedPulls != 0 {
+		t.Fatalf("unacked_pulls = %d after 4 terminal-default pulls, want 0.\n"+
+			"A blank Lease carries nothing to fetch and gets no ack, so counting one is counting an obligation the screen does not have — "+
+			"and this is what every freshly paired screen pulls until it is given a program.", got.UnackedPulls)
+	}
+
+	// A scheduled `blank` program is the same shape from the other direction: an
+	// authored program, with an empty content array.
+	srv.SetProgram(1, screenID, "rev-overnight", PriorityScheduled, DisplayBlank, nil)
+	clk.set(1_700_000_010_000)
+	statusPull(t, ts, token)
+	if got := statusOf(t, srv, screenID); got.UnackedPulls != 0 {
+		t.Fatalf("unacked_pulls = %d after a scheduled-blank pull, want 0 — this one happens on a schedule, every night, on every screen that is switched off overnight", got.UnackedPulls)
+	}
+
+	// Now the operator assigns the screen its first real program. Exactly ONE
+	// Lease is in flight, and the count has to say so: this is the number the
+	// read model reads as "transferring" rather than "failing".
+	srv.SetProgram(2, screenID, "rev-first", PriorityScheduled, DisplayContent, []wire.LeaseContent{
+		{Type: "image", AssetRef: "sha256:vv", URL: "https://origin.example/content/vv"},
+	})
+	clk.set(1_700_000_020_000)
+	statusPull(t, ts, token)
+	got := statusOf(t, srv, screenID)
+	if got.UnackedPulls != 1 {
+		t.Fatalf("unacked_pulls = %d during the screen's first real transfer, want exactly 1 (wire.OutstandingPullsWhileTransferring).\n"+
+			"Anything above the tolerance reads `stale` at the console for a screen that is doing its job.", got.UnackedPulls)
+	}
+	if int64(got.UnackedPulls) > wire.ScreenFetchingMaxUnackedPulls {
+		t.Fatalf("unacked_pulls = %d is past the %d the read model tolerates: the first content a box ever collects would be reported as a failure",
+			got.UnackedPulls, wire.ScreenFetchingMaxUnackedPulls)
+	}
+}
+
+// TestAnAckClearsTheOutstandingPullCount is the RESET half of the count, which
+// had no coverage at all: deleting `l.unackedPulls = 0` from noteLeaseAck left
+// the whole suite green, and a count that only ever climbs turns every screen
+// stale after two ordinary program changes.
+//
+// Driven over the real /player/v1/lease/ack route rather than by calling the
+// recorder, for the reason the top of this file gives: a reset wired to nothing
+// looks exactly like a reset.
+func TestAnAckClearsTheOutstandingPullCount(t *testing.T) {
+	clk := &statusClock{}
+	clk.set(1_700_000_000_000)
+	srv, ts, grant := newStatusServer(t, clk)
+	token, screenID := statusPair(t, ts, grant)
+
+	srv.SetProgram(1, screenID, "rev-1", PriorityScheduled, DisplayContent, []wire.LeaseContent{
+		{Type: "image", AssetRef: "sha256:aa", URL: "https://origin.example/content/aa"},
+	})
+
+	// Two pulls, neither acknowledged: the count is the only signal that says so,
+	// because the pull AGE resets on every retry.
+	clk.set(1_700_000_002_000)
+	statusPull(t, ts, token)
+	clk.set(1_700_000_006_000)
+	lease := statusPull(t, ts, token)
+	if got := statusOf(t, srv, screenID); got.UnackedPulls != 2 {
+		t.Fatalf("unacked_pulls = %d after two unacknowledged pulls, want 2 — the increment half is what this test's reset is measured against", got.UnackedPulls)
+	}
+
+	// The screen finishes the transfer and acknowledges.
+	clk.set(1_700_000_008_000)
+	statusPost(t, ts, token, "/player/v1/lease/ack", LeaseAckRequest{LeaseID: lease.LeaseID, Accepted: true})
+
+	got := statusOf(t, srv, screenID)
+	if got.UnackedPulls != 0 {
+		t.Fatalf("unacked_pulls = %d after an acknowledgement, want 0.\n"+
+			"The count means 'content-bearing pulls served since the last ack'. If an ack does not clear it, it becomes a lifetime pull "+
+			"counter: every screen crosses the %d-pull tolerance after a couple of ordinary program changes and reads `stale` forever, "+
+			"which is W2-18's symptom with the opposite cause.", got.UnackedPulls, wire.ScreenFetchingMaxUnackedPulls)
+	}
+	if got.LastAckAgeMs != 0 {
+		t.Errorf("last_ack age = %d immediately after the ack, want 0", got.LastAckAgeMs)
+	}
+
+	// And it counts again from there — a reset that also disabled the counter
+	// would satisfy the assertion above and hide the failing screen instead.
+	clk.set(1_700_000_012_000)
+	statusPull(t, ts, token)
+	if again := statusOf(t, srv, screenID); again.UnackedPulls != 1 {
+		t.Fatalf("unacked_pulls = %d for the pull AFTER the ack, want 1 — the reset must clear the count, not switch the counter off", again.UnackedPulls)
+	}
 }
 
 // TestScreenStatusIncludesAConfiguredScreenThatHasNeverPulled is the alarming

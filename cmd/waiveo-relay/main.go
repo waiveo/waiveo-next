@@ -2219,11 +2219,15 @@ func reportCandidates(c *relayconn.Client, store *deviceplane.Store) {
 // screens have been observed doing (parity row 5.8). Every report is a full-set
 // replace, so this is idempotent and a lost one costs at most one interval.
 //
-// Ten seconds, matching the player's own program-poll cadence (PLY-082): a
-// faster report would carry no new observation, since nothing new can have been
-// observed between two polls, and a slower one would make every screen's
-// reported staleness lag its real staleness by the difference.
-const screenStatusReportInterval = 10 * time.Second
+// It is NOT a number chosen here. It is wire.ScreenStatusReportIntervalMs,
+// declared beside the player's measured pull cadence and the console's
+// live/stale window, because the app peer's staleness arithmetic ADDS this
+// interval to every age it reports: a report sits in the app peer until the
+// next one replaces it, so a perfectly healthy screen's worst honest age is one
+// pull cadence plus one of these. Slowing this reporter down without widening
+// that window is exactly how a healthy fleet starts reading `stale` (W2-18),
+// and the shared constant is what makes the two impossible to change apart.
+const screenStatusReportInterval = time.Duration(wire.ScreenStatusReportIntervalMs) * time.Millisecond
 
 // reportScreenStatus sends the player server's full current per-screen
 // observation set upward (parity row 5.8, wire.ScreenStatusBody).
@@ -2263,6 +2267,7 @@ func screenStatusEntries(srv *playerserver.Server) []wire.ScreenStatusEntry {
 			LastPullAgeMs:        st.LastPullAgeMs,
 			LastAckAgeMs:         st.LastAckAgeMs,
 			LastRenderStartAgeMs: st.LastRenderStartAgeMs,
+			UnackedPulls:         st.UnackedPulls,
 			ProgramRevision:      st.ProgramRevision,
 			Priority:             st.Priority,
 			Display:              st.Display,

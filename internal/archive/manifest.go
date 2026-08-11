@@ -286,9 +286,16 @@ func assetEntryName(assetRef string) string {
 	return assetEntryPrefix + assetRef[len("sha256:"):]
 }
 
-// assetRefFromEntryName is assetEntryName's inverse, reporting ok=false for a
+// AssetRefFromEntryName is assetEntryName's inverse, reporting ok=false for a
 // name that is not a well-formed assets/<hex> entry.
-func assetRefFromEntryName(name string) (string, bool) {
+//
+// Exported because a RESTORE has to recognise which of Open's entries are
+// assets in order to put their bytes back into the destination's content
+// origin. That mapping is archive/1's (ARC-061 fixes the `assets/<hex>` form),
+// so a caller re-deriving it from a string prefix would be a second, drifting
+// implementation of the container format in a package that has no business
+// knowing it.
+func AssetRefFromEntryName(name string) (string, bool) {
 	if len(name) <= len(assetEntryPrefix) || name[:len(assetEntryPrefix)] != assetEntryPrefix {
 		return "", false
 	}

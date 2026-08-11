@@ -299,6 +299,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workspace/archives": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the archive containers on this box
+         * @description The containers `POST /workspace/export` has written into this deployment's archive directory, newest first.
+         *
+         *     It exists because `POST /workspace/restore` names an archive by FILE NAME, and before this the only way to learn a name was to know that an export writes `workspace-{job id}.waiveo-archive` and to have kept the job id. An operation whose one required argument cannot be discovered through the API is one no console can offer.
+         *
+         *     Only files carrying the archive suffix are listed: a scratch snapshot or a partial write must never be offered as a restorable backup. A deployment that has never exported answers an empty list, not an error — "no backups yet" is the truth about a fresh box.
+         */
+        get: operations["listWorkspaceArchives"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workspace/archives/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download one archive container
+         * @description The container's bytes, as an attachment, so a backup can leave the box it backs up. A backup that only ever exists on the machine it backs up protects against a bad edit and against nothing else — the one failure an operator buys a backup for is losing the box.
+         *
+         *     The bytes are the `archive/1` container: encrypted under the passphrase supplied at export (ARC-010) and signed by the workspace key, so they are opaque without that passphrase even to this process.
+         *
+         *     `name` must be a BARE file name carrying the archive suffix, never a path. Anything else is `404`, not a traversal.
+         */
+        get: operations["downloadWorkspaceArchive"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/workspace/export": {
         parameters: {
             query?: never;
@@ -656,6 +704,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/casts/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import a cast from a portable `.cast` bundle
+         * @description The request body is a `.cast` bundle — one authored design plus the bytes of every image it draws — as produced by `exportCast`. The destination placement is the `scope_node` query parameter, because the body is a binary file and because a bundle deliberately carries no placement of its own: a scope node names a tree the source deployment had and this one does not.
+         *
+         *     The bundle is UNTRUSTED INPUT. Every asset's bytes are re-hashed and must match the reference they are carried under, the manifest is the sole list of what will be written (an entry it does not declare is a refusal, not a silent extra file), and the slides are then validated by the platform's own authoring rules — because the import writes through the SAME path `createCast` does, not a second one. So an imported cast is held to exactly the bar an authored one is, never a lower one, and the response is `createCast`'s own: `201` with the created cast, its ETag and its Location.
+         *
+         *     The cast's identity is minted here, as it is for any create: a bundle carries no `id`, no `revision` and no `external_id`, all of which describe the box it came from. `name` optionally renames on the way in, which is what importing a second copy of a design onto one box needs.
+         */
+        post: operations["importCast"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/casts/{cast_id}": {
         parameters: {
             query?: never;
@@ -681,6 +753,34 @@ export interface paths {
          * @description Partial update. Requires If-Match against the cast's current ETag/revision. `slides` is replaced wholesale when present — a slide list is an ordered document, and a member-wise merge of one has no meaning — and the POST-MERGE effective row is re-validated in full, so a patch can no more introduce an undrawable slide than a create can.
          */
         patch: operations["updateCast"];
+        trace?: never;
+    };
+    "/casts/{cast_id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cast_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Export a cast as a portable `.cast` bundle
+         * @description One authored design plus the bytes of every image it draws, as one file an operator can email, carry on a stick, and import onto another box (`importCast`).
+         *
+         *     This is deliberately NOT the workspace archive. That moves the whole workspace and REPLACES the destination; this moves one design and adds it. The bundle is unencrypted and unsigned on purpose: its content is a design somebody is choosing to hand over, and the importing box establishes trust by re-deriving every asset's hash from the bytes and re-validating the slides — which answers the question that matters, where a signature would only say who made the file.
+         *
+         *     Carries the name, the slides, the per-slide dwell, the labels and the images. Carries no `id`, `scope_node`, `external_id` or `revision`: each describes THIS deployment and would be wrong on the next one.
+         *
+         *     A cast referencing an image this box no longer holds is refused `409` rather than exported with a hole in it — the hole would surface only on the destination, as a slide that renders blank, long after anyone could connect it to this export.
+         */
+        get: operations["exportCast"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/screens": {
@@ -796,11 +896,63 @@ export interface paths {
          * List live screen status
          * @description Returns one entry per authored screen row, joining what the row says with what the site's relays have observed of it and whether an operator currently has a push-now override on it.
          *
-         *     Every age is milliseconds before this response, and `-1` means the contact has NEVER been observed — a distinct state from a large age, and the one a screen that was never switched on is in. `reachability` applies a single threshold (`live_window_ms`) to `last_pull_age_ms`; the raw ages are published so a consumer can draw its own line.
+         *     Every age is milliseconds before this response, and `-1` means the contact has NEVER been observed — a distinct state from a large age, and the one a screen that was never switched on is in. `reachability` is derived from three observations (`last_pull_age_ms`, `last_ack_age_ms`, `unacked_pulls`) against three published thresholds (`live_window_ms`, `content_transfer_window_ms`, `fetching_max_unacked_pulls`); every input and every line is on the row so a consumer can draw its own.
+         *
+         *     The third of each pair is the one that separates a screen downloading a large video from a screen that answers every program pull, fails every content fetch and never acknowledges anything. Both look identical in the ages — a pull with no ack after it — and the second one keeps producing new ones, which is what `unacked_pulls` counts.
          *
          *     `reachability` is deliberately never "offline". This platform cannot distinguish a screen that is switched off from one whose network dropped, from one whose player crashed, from one that was never paired — and each sends an operator somewhere different. `report_age_ms` is what separates "this screen stopped talking to its relay" from "this relay stopped talking to us": when a relay disconnects, every screen behind it ages together and `report_age_ms` grows with them.
          */
         get: operations["listScreenStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform-logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the running process's captured log
+         * @description Returns the most recent lines this process has written, newest first, optionally narrowed by level, source or substring.
+         *
+         *     `level` and `source` are DERIVED by reading each line, not declared by whoever wrote it: this is a capture of the process's own log output, so that every line the binary already writes is present with nothing to remember at the call site. `raw` always carries the whole line, so a reader is never shown a classification without the text it came from.
+         *
+         *     This is NOT the audit trail. `security-model/1` SEC-150 makes `events/1`'s `audit.event` the platform's sole audit mechanism; it is durable, scoped, and read through the event stream. This buffer is volatile operational chatter and must not be relied on as a record of who did what.
+         *
+         *     It is also NOT journald. In production the feeder runs as a systemd unit and journald holds the same lines PLUS every previous boot's — including the crash that caused the restart an operator is most likely investigating. This buffer starts empty at boot. The response publishes its own limits rather than leaving them to be inferred: `retained_from_ms` is how far back it can see, `dropped` is how many lines have already been overwritten, and `capacity` is its size. A deployment that captures nothing answers an empty page with `capacity: 0`, which is distinguishable from a wired-but-quiet box.
+         */
+        get: operations["listPlatformLogs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/system-health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Summarize this deployment's health
+         * @description Answers the question `/healthz` cannot: not "is this process listening" — if it were not, this request would not have arrived — but "which part of this box is not working".
+         *
+         *     `status` is DERIVED as the WORST grade any component carries, so a summary can never read `ok` while a component reads `down`. `unknown` ranks above `ok` and below `degraded`: a check that could not run is not a passing check and is not an outage.
+         *
+         *     Disk headroom is graded on ABSOLUTE free bytes rather than a percentage, because what matters is whether the next image deploy fits and that is a number of gigabytes on any size of disk. When the filesystem cannot be measured the byte members are OMITTED rather than zeroed — a `free_bytes` of 0 on a page whose job is to warn about a full disk would manufacture the emergency it exists to detect.
+         */
+        get: operations["getSystemHealth"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1849,10 +2001,14 @@ export interface components {
             /** @description The relay whose report this status came from; absent when no relay has reported this screen. */
             relay_id?: string;
             /**
-             * @description `live` — the relay heard from this screen within `live_window_ms`. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
+             * @description `live` — the screen contacted its relay within `live_window_ms` (a program pull, or the acknowledgement that answers one). `fetching` — the relay handed this screen a Lease it has not acknowledged, the pull is within `content_transfer_window_ms`, and no more than `fetching_max_unacked_pulls` pulls are outstanding: the shipped player would still be downloading and verifying the content, during which the PREVIOUS program stays on the wall. Not a fault, and not a confirmation either — nothing has been heard back. `stale` — contact was made at some point, but not recently, or the screen is asking again and again and confirming nothing. `never_seen` — no relay has ever observed this screen pull a program.
              * @enum {string}
              */
-            reachability: "live" | "stale" | "never_seen";
+            reachability: "live" | "fetching" | "stale" | "never_seen";
+            /** @description How far past `live_window_ms` an unacknowledged pull is still reported `fetching` rather than `stale` — one whole content-fetch timeout, the player's own limit on a single transfer. Published for the same reason as `live_window_ms`: a consumer that wants to treat `fetching` as `stale` needs to know which line it is disagreeing with. */
+            content_transfer_window_ms: number;
+            /** @description The most outstanding pulls a screen may have and still be reported `fetching` rather than `stale`. A screen genuinely materialising content has exactly one (the transfer is serialised inside the player's poll loop); the allowance on top absorbs a single failed iteration. Past it the screen has abandoned more Leases than a transient failure explains, which no age threshold can express — such a screen answers every pull, so its `last_pull_age_ms` resets before any window can expire it. */
+            fetching_max_unacked_pulls: number;
             /** @description The staleness threshold `reachability` was decided by, published so a consumer that wants a different line can draw it from the raw ages. */
             live_window_ms: number;
             /** @description Whether a relay currently holds a live channel-token session for this screen. */
@@ -1863,6 +2019,8 @@ export interface components {
             last_ack_age_ms: number;
             /** @description Milliseconds since this screen last reported beginning to present a content item (`player/1` PLY-110) — the only field here that is evidence of playback rather than of intent — or `-1` if it never has. */
             last_render_start_age_ms: number;
+            /** @description How many program pulls the relay has served this screen since the last acknowledgement it saw: `0` up to date, `1` materialising the Lease it holds, climbing for one that keeps asking and never confirms. It is a COUNT, not an age, and it has no `-1` sentinel — zero is the ordinary healthy answer. For a screen that is not `live` it is the most actionable number on the row: "this wall has failed twenty pulls in a row" and "this wall is downloading a video" are different call-outs and the ages cannot tell them apart. Read it exactly: the relay does not correlate an acknowledgement with the Lease it acknowledges, so this is "pulls served since the last ack of any kind". */
+            unacked_pulls: number;
             /** @description Milliseconds since the relay report this status came from arrived, or `-1` when no report has. It is what distinguishes a screen that stopped talking to its relay from a relay that stopped talking to this app peer. */
             report_age_ms: number;
             /** @description The `program_revision` this screen was last handed (or, if it has never pulled, the one waiting for it). */
@@ -1884,6 +2042,155 @@ export interface components {
         ScreenStatusListResponse: {
             items: components["schemas"]["ScreenStatus"][];
             cursor: components["schemas"]["Cursor"];
+        };
+        /** @description One archive/1 container present in this deployment's archive directory. */
+        WorkspaceArchive: {
+            /** @description The file name — and the exact value `POST /workspace/restore` takes as its `archive`. */
+            name: string;
+            /** Format: int64 */
+            size_bytes: number;
+            /** Format: int64 */
+            created_at_ms: number;
+            /** @description Where this container's bytes are served from, published rather than left for a client to compose: a client building the URL itself would be re-encoding a file name into a path, which is the one part of this family with a traversal question attached. */
+            download_path: string;
+        };
+        WorkspaceArchiveList: {
+            items: components["schemas"]["WorkspaceArchive"][];
+            /** @description Where the containers live on the box. Published because the real disaster-recovery path is an operator copying a container BACK from off-box storage and then restoring it by name, which requires knowing where to put it. */
+            directory: string;
+        };
+        /** @description One captured log line. `level` and `source` are DERIVED by reading the text — the process's log output is lines, not structured events — so `raw` always carries the whole line and a reader can judge the classification against what was actually written. */
+        PlatformLogRecord: {
+            /**
+             * Format: int64
+             * @description A monotonic per-process counter assigned at capture. It exists so two identical lines are distinguishable and so ordering survives a clock that steps backwards mid-boot, which an appliance's does before NTP settles — `ts_ms` alone can do neither.
+             */
+            seq: number;
+            /**
+             * Format: int64
+             * @description The app clock at capture, epoch milliseconds UTC. NOT read out of the line's own prefix, which the standard logger writes in local time with no zone.
+             */
+            ts_ms: number;
+            /**
+             * @description The derived severity. Three values, because that is as much as can be read out of a line honestly. A line carrying both an error and a warning marker is classified at the higher severity: a warning shown among the errors costs a glance, an error hidden among the warnings costs the investigation.
+             * @enum {string}
+             */
+            level: "error" | "warn" | "info";
+            /** @description The derived component prefix, or `platform` for a line that carries none. */
+            source: string;
+            /** @description The line with the parts that became `source` (and the logger's own timestamp) removed. */
+            message: string;
+            /** @description The whole line as written, minus only the standard logger's date/time prefix. */
+            raw: string;
+        };
+        /** @description A bounded window over the newest matching lines, PLUS the facts a reader needs to interpret a short or empty list honestly. Deliberately not the standard `{items, cursor}` page: this buffer's oldest end is overwritten while a client reads it, so a keyset cursor into it would name a record that no longer exists. */
+        PlatformLogPage: {
+            /** @description The matching lines, NEWEST FIRST, capped at `limit`. */
+            items: components["schemas"]["PlatformLogRecord"][];
+            /** @description How many lines matched the filter before `limit` cut the window, so a page showing 200 of 4000 can say so. */
+            matched: number;
+            /** @description How many lines the buffer currently holds, at any level, regardless of the filter. */
+            retained: number;
+            /** @description The buffer's size. `0` means this deployment captures nothing — distinguishable from a wired-but-quiet box, which reports a capacity with nothing yet retained. */
+            capacity: number;
+            /**
+             * Format: int64
+             * @description How many lines have been overwritten since this process started. Non-zero means the oldest lines of this boot are already gone, which is exactly when an operator should be reading journald instead.
+             */
+            dropped: number;
+            /**
+             * Format: int64
+             * @description The oldest retained line's instant, or `0` when nothing is retained. How far back this page can see — never "since boot".
+             */
+            retained_from_ms: number;
+            /** @description Every distinct source currently retained, sorted. The WHOLE set, not the filtered one: a source control built from filtered results can only ever offer the option already chosen. */
+            sources: string[];
+            /** @description Retained line count per level, unfiltered, so a header can say "3 errors" while the page shows an info-only view. */
+            level_counts: {
+                [key: string]: number;
+            };
+        };
+        /** @description One named component's grade. `detail` is always populated, including for `ok` — "readable, 12 rows" is what distinguishes a check that ran from one that was skipped. */
+        ServiceHealth: {
+            name: string;
+            /** @enum {string} */
+            status: "ok" | "degraded" | "down" | "unknown";
+            detail: string;
+        };
+        /**
+         * @description Disk headroom on the filesystem holding this workspace's data. Graded on ABSOLUTE free bytes, not a percentage: 10% of a 39 GB appliance disk and 10% of a 2 TB disk are completely different operational situations, and what matters is whether the next image deploy fits.
+         *
+         *     The three byte members are OMITTED, never zeroed, when the filesystem could not be measured — a `free_bytes` of 0 would render as a full disk and manufacture the emergency this check exists to detect.
+         */
+        StorageHealth: {
+            /** @description The directory measured, or `""` when this deployment publishes none. */
+            path: string;
+            /** @enum {string} */
+            status: "ok" | "low" | "critical" | "unknown";
+            /** Format: int64 */
+            total_bytes?: number;
+            /**
+             * Format: int64
+             * @description Bytes available to THIS process — not the raw free count, which on a unix filesystem includes blocks reserved for root that the feeder may not use.
+             */
+            free_bytes?: number;
+            used_percent?: number;
+            detail: string;
+        };
+        /** @description One connected relay. A relay that is not connected does not appear — the relays are the only path to every screen and device, so an empty list is the whole fleet being unreachable and is graded `down`. */
+        RelayHealth: {
+            relay_id: string;
+            /** @description The canonical address this relay declared at hello (`relay/1` REL-037) — what a player is told to dial. */
+            address: string;
+            /** @description How many screens this relay is currently reporting on. A connected relay reporting zero is a real failure, and a distinct one from a relay that is not connected. */
+            screen_count: number;
+        };
+        /** @description The fleet roll-up, built from the SAME join `/screen-status` serves — authored rows filled in by relay reports — rather than from the reports alone. A screen no relay has ever mentioned is the most alarming row there is, and a count built from reports is silent about exactly it. */
+        ScreenHealth: {
+            total: number;
+            live: number;
+            /** @description How many screens were handed a Lease they have not yet acknowledged, recently enough that the player would still be transferring its content AND without having abandoned more Leases than a single transient failure explains. Counted apart from both neighbours: such a screen is still showing its previous program, so it is neither confirmed healthy nor a screen to go and look at. Both conditions matter to the grade this roll-up carries — a screen that answers every pull and never acknowledges is `stale`, and a whole site of them is `down`, which is what a count bounded on age alone could never reach. */
+            fetching: number;
+            stale: number;
+            never_seen: number;
+            paired: number;
+            /** @description How many screens currently carry an operator's push-now override. */
+            overridden: number;
+            /**
+             * Format: int64
+             * @description The threshold live/stale was decided by, republished so the roll-up can be checked against the line it was drawn at.
+             */
+            live_window_ms: number;
+            /**
+             * Format: int64
+             * @description The AGE threshold fetching/stale was decided by, republished for the same reason. It was missing: this roll-up published a `fetching` COUNT and no way to redraw the line it was counted at, so a consumer that wanted to treat those screens as stale — a defensible reading, since nothing has been heard back from them — had a number it could not reinterpret.
+             */
+            content_transfer_window_ms: number;
+            /**
+             * Format: int64
+             * @description The PROGRESS threshold fetching/stale was decided by — the most outstanding pulls a screen may have and still be counted `fetching`. `fetching` rests on both bounds, and this is the one that does what the age bound cannot: a screen that answers every pull and never acknowledges re-stamps its own age forever and no window can expire it. Left out while the age line was published, which restates the same defect one line along — a consumer holding two of three thresholds believes it has the whole rule and reproduces a different one. All three lines, or none. `/screen-status` publishes the same three per row.
+             */
+            fetching_max_unacked_pulls: number;
+        };
+        SystemHealth: {
+            /**
+             * @description The WORST grade any component carries. Derived, never asserted — a summary that could read `ok` while a component reads `down` would be the one line an operator trusts and the one line that is wrong.
+             * @enum {string}
+             */
+            status: "ok" | "degraded" | "down" | "unknown";
+            /** Format: int64 */
+            checked_at_ms: number;
+            /**
+             * Format: int64
+             * @description How long this process has been serving, or `-1` when the deployment publishes no start time — the same never-observed sentinel `/screen-status` uses. When a screen went dark five minutes ago, "this box restarted four minutes ago" is the single most useful number on the page.
+             */
+            uptime_ms: number;
+            /** @description The running build, or `unknown`. */
+            version: string;
+            services: components["schemas"]["ServiceHealth"][];
+            storage: components["schemas"]["StorageHealth"];
+            relays: components["schemas"]["RelayHealth"][];
+            screens: components["schemas"]["ScreenHealth"];
         };
         /** @description A freshly minted pairing grant, bound to this screen row (`relay/1` REL-121a) and to the one relay that may redeem it (REL-121b), plus the human-enterable pairing code (`player/1` PLY-024) an operator reads onto the screen. Exactly one of `pairing_code` and `code_unavailable_reason` is present: the grant is minted, bound, and delivered either way, and the reason describes only why the code itself could not be formed for the relay it is bound to. A request with no relay to bind to at all is refused before anything is minted (`503`). */
         PairingCodeResult: {
@@ -3135,6 +3442,67 @@ export interface operations {
             503: components["responses"]["ServiceUnavailable"];
         };
     };
+    listWorkspaceArchives: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The containers present, newest first. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceArchiveList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    downloadWorkspaceArchive: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                /** @description The container's file name, exactly as `listWorkspaceArchives` published it. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The container's bytes, as an attachment. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
     exportWorkspace: {
         parameters: {
             query?: never;
@@ -4001,6 +4369,48 @@ export interface operations {
             422: components["responses"]["UnprocessableContent"];
         };
     };
+    importCast: {
+        parameters: {
+            query: {
+                /** @description The node in THIS deployment's tree the imported cast is placed at. */
+                scope_node: components["schemas"]["Ulid"];
+                /** @description Rename the cast on the way in. Absent, the bundle's own name is used. */
+                name?: string;
+            };
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description The imported cast, as created. */
+            201: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Cast"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
     getCast: {
         parameters: {
             query?: never;
@@ -4100,6 +4510,37 @@ export interface operations {
             412: components["responses"]["PreconditionFailed"];
             422: components["responses"]["UnprocessableContent"];
             428: components["responses"]["PreconditionRequired"];
+        };
+    };
+    exportCast: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                cast_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The bundle, as an attachment. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/zip": string;
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     listScreens: {
@@ -4398,6 +4839,72 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    listPlatformLogs: {
+        parameters: {
+            query?: {
+                /** @description Keep only lines at exactly this derived level — not "at or above". An operator filtering to `warn` means the warnings; a threshold would quietly re-show the errors they just filtered away from. A value outside the enum is refused 400 rather than silently matching nothing, because an empty diagnostics page reads as a quiet box. */
+                level?: "error" | "warn" | "info";
+                /** @description Keep only lines whose derived source is exactly this. The full set of retained sources rides every response. */
+                source?: string;
+                /** @description Keep only lines whose raw text contains this, case-insensitively. */
+                contains?: string;
+                /** @description How many of the NEWEST matching lines to return. There is no cursor: a keyset cursor names a position in a stable ordering, and this buffer's oldest end is overwritten while a client reads it, so a cursor into it would name a record that no longer exists. */
+                limit?: number;
+            };
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A window over the newest matching lines, plus what the buffer is not showing. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformLogPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    getSystemHealth: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The health summary. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemHealth"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
         };
     };

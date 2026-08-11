@@ -407,7 +407,7 @@ func TestCreateOpenRoundTrip(t *testing.T) {
 			len(entries[1].Body), len(f.snapshot))
 	}
 	for _, e := range entries[2:] {
-		ref, ok := assetRefFromEntryName(e.Name)
+		ref, ok := AssetRefFromEntryName(e.Name)
 		if !ok {
 			t.Fatalf("entry %q is not an asset entry", e.Name)
 		}

@@ -40,6 +40,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/eventingest"
 	"github.com/maaxton/waiveo-next/internal/app/eventsse"
 	"github.com/maaxton/waiveo-next/internal/app/packs"
+	"github.com/maaxton/waiveo-next/internal/app/platformlog"
 	"github.com/maaxton/waiveo-next/internal/app/screens"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/app/webhookdeliver"
@@ -392,6 +393,22 @@ func sortedClasses(byClass map[string]int) []string {
 	return out
 }
 
+// buildVersion/buildChannel are this binary's channel-index/1 identity, in the
+// same shape and with the same defaults the relay's are (see
+// cmd/waiveo-relay/main.go): "dev" for an ordinary `go build`, overridden via
+// -ldflags for a released build. The health summary publishes buildVersion, so
+// "which build is this box running" is answerable from the console rather than
+// only from a shell.
+var (
+	buildVersion = "dev"
+	buildChannel = "dev"
+)
+
+// platformLogCapacity is how many of this process's own log lines the
+// diagnostics buffer retains (parity row 7.4). See internal/app/platformlog for
+// why this is bounded and why the bound is published on every response.
+const platformLogCapacity = 4000
+
 func main() {
 	// The one flag the feeder takes, checked before any state is opened, the
 	// same shape the relay's -version uses. Everything else stays env-only.
@@ -400,6 +417,26 @@ func main() {
 	flag.Parse()
 
 	cfg := loadConfig(os.Getenv)
+
+	// The diagnostics capture, installed as the VERY FIRST thing after the
+	// config is read and before any other subsystem exists, so that every line
+	// this process writes from here on is readable from the console without an
+	// SSH session (parity row 7.4).
+	//
+	// It is a TEE, never a redirect: os.Stderr keeps receiving everything, which
+	// is what journald reads in production. A buffer that captured the log INSTEAD
+	// of stderr would trade a durable, cross-boot record for a volatile in-process
+	// one — strictly worse than having no console log page at all.
+	platformLogs := platformlog.New(platformLogCapacity, func() int64 { return time.Now().UnixMilli() })
+	log.SetOutput(io.MultiWriter(os.Stderr, platformLogs))
+
+	// Stamped here, at the top of main, rather than where the api handler is
+	// built several hundred lines below: uptime is meant to answer "when did
+	// this box restart", and a start time taken after the store has been
+	// opened, migrated and seeded would under-report a slow boot by exactly the
+	// interval an operator is trying to account for.
+	startedAtMs := time.Now().UnixMilli()
+	log.Printf("waiveo-feeder starting: version=%s channel=%s", buildVersion, buildChannel)
 
 	if *storeCheck {
 		os.Exit(reportStoreIDs(cfg.storePath, os.Stdout))
@@ -1159,6 +1196,17 @@ func main() {
 		// SPKI from the SAME enrollment registry that issued its certificate
 		// — so the commitment an app-formed pairing code carries is computed
 		// over the very key the relay's player/1 listener presents (PLY-052).
+		// The two operator diagnostics reads (parity row 7.4). The log buffer is
+		// the same one the standard logger was teed into at the top of main, and
+		// the health summary measures headroom on the filesystem the STORE lives
+		// on — the one that fills up, and the one whose exhaustion took the
+		// legacy box down with no diagnosis pointing at it.
+		api.WithPlatformLog(platformLogs),
+		api.WithSystemHealth(api.SystemHealthConfig{
+			StartedAtMs: startedAtMs,
+			Version:     buildVersion + " (" + buildChannel + ")",
+			DataDir:     filepath.Dir(cfg.storePath),
+		}),
 		api.WithPairing(api.PairingRelayDirectory{
 			ConnectedRelays: func() []api.PairingRelay {
 				conns := relayConnSrv.ConnectedRelays()

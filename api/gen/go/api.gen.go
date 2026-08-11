@@ -472,6 +472,27 @@ func (e PairingCodeResultRedemptionMode) Valid() bool {
 	}
 }
 
+// Defines values for PlatformLogRecordLevel.
+const (
+	PlatformLogRecordLevelError PlatformLogRecordLevel = "error"
+	PlatformLogRecordLevelInfo  PlatformLogRecordLevel = "info"
+	PlatformLogRecordLevelWarn  PlatformLogRecordLevel = "warn"
+)
+
+// Valid indicates whether the value is a known member of the PlatformLogRecordLevel enum.
+func (e PlatformLogRecordLevel) Valid() bool {
+	switch e {
+	case PlatformLogRecordLevelError:
+		return true
+	case PlatformLogRecordLevelInfo:
+		return true
+	case PlatformLogRecordLevelWarn:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PlaylistItemContentType.
 const (
 	PlaylistItemContentTypeImage PlaylistItemContentType = "image"
@@ -747,6 +768,7 @@ func (e ScreenStatusPriority) Valid() bool {
 
 // Defines values for ScreenStatusReachability.
 const (
+	ScreenStatusReachabilityFetching  ScreenStatusReachability = "fetching"
 	ScreenStatusReachabilityLive      ScreenStatusReachability = "live"
 	ScreenStatusReachabilityNeverSeen ScreenStatusReachability = "never_seen"
 	ScreenStatusReachabilityStale     ScreenStatusReachability = "stale"
@@ -755,11 +777,37 @@ const (
 // Valid indicates whether the value is a known member of the ScreenStatusReachability enum.
 func (e ScreenStatusReachability) Valid() bool {
 	switch e {
+	case ScreenStatusReachabilityFetching:
+		return true
 	case ScreenStatusReachabilityLive:
 		return true
 	case ScreenStatusReachabilityNeverSeen:
 		return true
 	case ScreenStatusReachabilityStale:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ServiceHealthStatus.
+const (
+	ServiceHealthStatusDegraded ServiceHealthStatus = "degraded"
+	ServiceHealthStatusDown     ServiceHealthStatus = "down"
+	ServiceHealthStatusOk       ServiceHealthStatus = "ok"
+	ServiceHealthStatusUnknown  ServiceHealthStatus = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the ServiceHealthStatus enum.
+func (e ServiceHealthStatus) Valid() bool {
+	switch e {
+	case ServiceHealthStatusDegraded:
+		return true
+	case ServiceHealthStatusDown:
+		return true
+	case ServiceHealthStatusOk:
+		return true
+	case ServiceHealthStatusUnknown:
 		return true
 	default:
 		return false
@@ -907,6 +955,54 @@ func (e SlideLayerKind) Valid() bool {
 	}
 }
 
+// Defines values for StorageHealthStatus.
+const (
+	StorageHealthStatusCritical StorageHealthStatus = "critical"
+	StorageHealthStatusLow      StorageHealthStatus = "low"
+	StorageHealthStatusOk       StorageHealthStatus = "ok"
+	StorageHealthStatusUnknown  StorageHealthStatus = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the StorageHealthStatus enum.
+func (e StorageHealthStatus) Valid() bool {
+	switch e {
+	case StorageHealthStatusCritical:
+		return true
+	case StorageHealthStatusLow:
+		return true
+	case StorageHealthStatusOk:
+		return true
+	case StorageHealthStatusUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SystemHealthStatus.
+const (
+	SystemHealthStatusDegraded SystemHealthStatus = "degraded"
+	SystemHealthStatusDown     SystemHealthStatus = "down"
+	SystemHealthStatusOk       SystemHealthStatus = "ok"
+	SystemHealthStatusUnknown  SystemHealthStatus = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the SystemHealthStatus enum.
+func (e SystemHealthStatus) Valid() bool {
+	switch e {
+	case SystemHealthStatusDegraded:
+		return true
+	case SystemHealthStatusDown:
+		return true
+	case SystemHealthStatusOk:
+		return true
+	case SystemHealthStatusUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for TotpCredentialKind.
 const (
 	TotpCredentialKindTotp TotpCredentialKind = "totp"
@@ -934,6 +1030,27 @@ func (e WebhookDeliveryStateStatus) Valid() bool {
 	case WebhookDeliveryStateStatusActive:
 		return true
 	case WebhookDeliveryStateStatusDisabled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListPlatformLogsParamsLevel.
+const (
+	ListPlatformLogsParamsLevelError ListPlatformLogsParamsLevel = "error"
+	ListPlatformLogsParamsLevelInfo  ListPlatformLogsParamsLevel = "info"
+	ListPlatformLogsParamsLevelWarn  ListPlatformLogsParamsLevel = "warn"
+)
+
+// Valid indicates whether the value is a known member of the ListPlatformLogsParamsLevel enum.
+func (e ListPlatformLogsParamsLevel) Valid() bool {
+	switch e {
+	case ListPlatformLogsParamsLevelError:
+		return true
+	case ListPlatformLogsParamsLevelInfo:
+		return true
+	case ListPlatformLogsParamsLevelWarn:
 		return true
 	default:
 		return false
@@ -1745,6 +1862,57 @@ type PairingCodeResult struct {
 // PairingCodeResultRedemptionMode defines model for PairingCodeResult.RedemptionMode.
 type PairingCodeResultRedemptionMode string
 
+// PlatformLogPage A bounded window over the newest matching lines, PLUS the facts a reader needs to interpret a short or empty list honestly. Deliberately not the standard `{items, cursor}` page: this buffer's oldest end is overwritten while a client reads it, so a keyset cursor into it would name a record that no longer exists.
+type PlatformLogPage struct {
+	// Capacity The buffer's size. `0` means this deployment captures nothing — distinguishable from a wired-but-quiet box, which reports a capacity with nothing yet retained.
+	Capacity int `json:"capacity"`
+
+	// Dropped How many lines have been overwritten since this process started. Non-zero means the oldest lines of this boot are already gone, which is exactly when an operator should be reading journald instead.
+	Dropped int64 `json:"dropped"`
+
+	// Items The matching lines, NEWEST FIRST, capped at `limit`.
+	Items []PlatformLogRecord `json:"items"`
+
+	// LevelCounts Retained line count per level, unfiltered, so a header can say "3 errors" while the page shows an info-only view.
+	LevelCounts map[string]int `json:"level_counts"`
+
+	// Matched How many lines matched the filter before `limit` cut the window, so a page showing 200 of 4000 can say so.
+	Matched int `json:"matched"`
+
+	// Retained How many lines the buffer currently holds, at any level, regardless of the filter.
+	Retained int `json:"retained"`
+
+	// RetainedFromMs The oldest retained line's instant, or `0` when nothing is retained. How far back this page can see — never "since boot".
+	RetainedFromMs int64 `json:"retained_from_ms"`
+
+	// Sources Every distinct source currently retained, sorted. The WHOLE set, not the filtered one: a source control built from filtered results can only ever offer the option already chosen.
+	Sources []string `json:"sources"`
+}
+
+// PlatformLogRecord One captured log line. `level` and `source` are DERIVED by reading the text — the process's log output is lines, not structured events — so `raw` always carries the whole line and a reader can judge the classification against what was actually written.
+type PlatformLogRecord struct {
+	// Level The derived severity. Three values, because that is as much as can be read out of a line honestly. A line carrying both an error and a warning marker is classified at the higher severity: a warning shown among the errors costs a glance, an error hidden among the warnings costs the investigation.
+	Level PlatformLogRecordLevel `json:"level"`
+
+	// Message The line with the parts that became `source` (and the logger's own timestamp) removed.
+	Message string `json:"message"`
+
+	// Raw The whole line as written, minus only the standard logger's date/time prefix.
+	Raw string `json:"raw"`
+
+	// Seq A monotonic per-process counter assigned at capture. It exists so two identical lines are distinguishable and so ordering survives a clock that steps backwards mid-boot, which an appliance's does before NTP settles — `ts_ms` alone can do neither.
+	Seq int64 `json:"seq"`
+
+	// Source The derived component prefix, or `platform` for a line that carries none.
+	Source string `json:"source"`
+
+	// TsMs The app clock at capture, epoch milliseconds UTC. NOT read out of the line's own prefix, which the standard logger writes in local time with no zone.
+	TsMs int64 `json:"ts_ms"`
+}
+
+// PlatformLogRecordLevel The derived severity. Three values, because that is as much as can be read out of a line honestly. A line carrying both an error and a warning marker is classified at the higher severity: a warning shown among the errors costs a glance, an error hidden among the warnings costs the investigation.
+type PlatformLogRecordLevel string
+
 // PlaylistCreate defines model for PlaylistCreate.
 type PlaylistCreate struct {
 	ExternalId **string       `json:"external_id,omitempty"`
@@ -1837,6 +2005,16 @@ type Problem struct {
 
 // ProblemSecondFactor Present only on a 401 UNAUTHENTICATED from `login` where the presented password was accepted but the principal holds a second-factor credential the request did not satisfy (`security-model.md` SEC-004). It names the factor to collect and re-submit on the same operation. Deliberately ABSENT from every other refusal — including a wrong password, a wrong code, and a replayed code — so its absence discloses nothing about which of them occurred.
 type ProblemSecondFactor string
+
+// RelayHealth One connected relay. A relay that is not connected does not appear — the relays are the only path to every screen and device, so an empty list is the whole fleet being unreachable and is graded `down`.
+type RelayHealth struct {
+	// Address The canonical address this relay declared at hello (`relay/1` REL-037) — what a player is told to dial.
+	Address string `json:"address"`
+	RelayId string `json:"relay_id"`
+
+	// ScreenCount How many screens this relay is currently reporting on. A connected relay reporting zero is a real failure, and a distinct one from a relay that is not connected.
+	ScreenCount int `json:"screen_count"`
+}
 
 // RelayId A relay's permanent identity, assigned to it by enrollment and unchanged across every later certificate renewal or re-enrollment (`relay/1` REL-012/014). Deliberately NOT typed as a ULID: unlike a resource this API mints, a relay id is issued by the enrollment path and is opaque here — this API reads it, routes a command by it, and never constructs or parses one.
 type RelayId = string
@@ -2040,6 +2218,29 @@ type ScreenCreate struct {
 	ScopeNode Ulid `json:"scope_node"`
 }
 
+// ScreenHealth The fleet roll-up, built from the SAME join `/screen-status` serves — authored rows filled in by relay reports — rather than from the reports alone. A screen no relay has ever mentioned is the most alarming row there is, and a count built from reports is silent about exactly it.
+type ScreenHealth struct {
+	// ContentTransferWindowMs The AGE threshold fetching/stale was decided by, republished for the same reason. It was missing: this roll-up published a `fetching` COUNT and no way to redraw the line it was counted at, so a consumer that wanted to treat those screens as stale — a defensible reading, since nothing has been heard back from them — had a number it could not reinterpret.
+	ContentTransferWindowMs int64 `json:"content_transfer_window_ms"`
+
+	// Fetching How many screens were handed a Lease they have not yet acknowledged, recently enough that the player would still be transferring its content AND without having abandoned more Leases than a single transient failure explains. Counted apart from both neighbours: such a screen is still showing its previous program, so it is neither confirmed healthy nor a screen to go and look at. Both conditions matter to the grade this roll-up carries — a screen that answers every pull and never acknowledges is `stale`, and a whole site of them is `down`, which is what a count bounded on age alone could never reach.
+	Fetching int `json:"fetching"`
+
+	// FetchingMaxUnackedPulls The PROGRESS threshold fetching/stale was decided by — the most outstanding pulls a screen may have and still be counted `fetching`. `fetching` rests on both bounds, and this is the one that does what the age bound cannot: a screen that answers every pull and never acknowledges re-stamps its own age forever and no window can expire it. Left out while the age line was published, which restates the same defect one line along — a consumer holding two of three thresholds believes it has the whole rule and reproduces a different one. All three lines, or none. `/screen-status` publishes the same three per row.
+	FetchingMaxUnackedPulls int64 `json:"fetching_max_unacked_pulls"`
+	Live                    int   `json:"live"`
+
+	// LiveWindowMs The threshold live/stale was decided by, republished so the roll-up can be checked against the line it was drawn at.
+	LiveWindowMs int64 `json:"live_window_ms"`
+	NeverSeen    int   `json:"never_seen"`
+
+	// Overridden How many screens currently carry an operator's push-now override.
+	Overridden int `json:"overridden"`
+	Paired     int `json:"paired"`
+	Stale      int `json:"stale"`
+	Total      int `json:"total"`
+}
+
 // ScreenListResponse defines model for ScreenListResponse.
 type ScreenListResponse struct {
 	// Cursor An opaque, URL-safe continuation token. `null` signals no further rows. Never constructed, parsed, or compared for meaning by a client.
@@ -2114,8 +2315,14 @@ type ScreenOverrideMode string
 // ScreenStatus One screen's authored identity joined to what the relays have observed of it. See `listScreenStatus` for how the ages are to be read and why `reachability` never says "offline".
 type ScreenStatus struct {
 	// ContentCount How many content items that program carried.
-	ContentCount int                  `json:"content_count"`
-	Display      *ScreenStatusDisplay `json:"display,omitempty"`
+	ContentCount int `json:"content_count"`
+
+	// ContentTransferWindowMs How far past `live_window_ms` an unacknowledged pull is still reported `fetching` rather than `stale` — one whole content-fetch timeout, the player's own limit on a single transfer. Published for the same reason as `live_window_ms`: a consumer that wants to treat `fetching` as `stale` needs to know which line it is disagreeing with.
+	ContentTransferWindowMs int                  `json:"content_transfer_window_ms"`
+	Display                 *ScreenStatusDisplay `json:"display,omitempty"`
+
+	// FetchingMaxUnackedPulls The most outstanding pulls a screen may have and still be reported `fetching` rather than `stale`. A screen genuinely materialising content has exactly one (the transfer is serialised inside the player's poll loop); the allowance on top absorbs a single failed iteration. Past it the screen has abandoned more Leases than a transient failure explains, which no age threshold can express — such a screen answers every pull, so its `last_pull_age_ms` resets before any window can expire it.
+	FetchingMaxUnackedPulls int `json:"fetching_max_unacked_pulls"`
 
 	// LastAckAgeMs Milliseconds since this screen last acknowledged a Lease, or `-1` if it never has.
 	LastAckAgeMs int `json:"last_ack_age_ms"`
@@ -2144,7 +2351,7 @@ type ScreenStatus struct {
 	// ProgramRevision The `program_revision` this screen was last handed (or, if it has never pulled, the one waiting for it).
 	ProgramRevision *string `json:"program_revision,omitempty"`
 
-	// Reachability `live` — the relay heard from this screen within `live_window_ms`. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
+	// Reachability `live` — the screen contacted its relay within `live_window_ms` (a program pull, or the acknowledgement that answers one). `fetching` — the relay handed this screen a Lease it has not acknowledged, the pull is within `content_transfer_window_ms`, and no more than `fetching_max_unacked_pulls` pulls are outstanding: the shipped player would still be downloading and verifying the content, during which the PREVIOUS program stays on the wall. Not a fault, and not a confirmation either — nothing has been heard back. `stale` — contact was made at some point, but not recently, or the screen is asking again and again and confirming nothing. `never_seen` — no relay has ever observed this screen pull a program.
 	Reachability ScreenStatusReachability `json:"reachability"`
 
 	// RelayId The relay whose report this status came from; absent when no relay has reported this screen.
@@ -2161,6 +2368,9 @@ type ScreenStatus struct {
 
 	// ScreenId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	ScreenId Ulid `json:"screen_id"`
+
+	// UnackedPulls How many program pulls the relay has served this screen since the last acknowledgement it saw: `0` up to date, `1` materialising the Lease it holds, climbing for one that keeps asking and never confirms. It is a COUNT, not an age, and it has no `-1` sentinel — zero is the ordinary healthy answer. For a screen that is not `live` it is the most actionable number on the row: "this wall has failed twenty pulls in a row" and "this wall is downloading a video" are different call-outs and the ages cannot tell them apart. Read it exactly: the relay does not correlate an acknowledgement with the Lease it acknowledges, so this is "pulls served since the last ack of any kind".
+	UnackedPulls int `json:"unacked_pulls"`
 }
 
 // ScreenStatusDisplay defines model for ScreenStatus.Display.
@@ -2169,7 +2379,7 @@ type ScreenStatusDisplay string
 // ScreenStatusPriority That program's `player/1` PLY-108 priority — `preempt` is an operator's push-now takeover.
 type ScreenStatusPriority string
 
-// ScreenStatusReachability `live` — the relay heard from this screen within `live_window_ms`. `stale` — contact was made at some point, but not recently. `never_seen` — no relay has ever observed this screen pull a program.
+// ScreenStatusReachability `live` — the screen contacted its relay within `live_window_ms` (a program pull, or the acknowledgement that answers one). `fetching` — the relay handed this screen a Lease it has not acknowledged, the pull is within `content_transfer_window_ms`, and no more than `fetching_max_unacked_pulls` pulls are outstanding: the shipped player would still be downloading and verifying the content, during which the PREVIOUS program stays on the wall. Not a fault, and not a confirmation either — nothing has been heard back. `stale` — contact was made at some point, but not recently, or the screen is asking again and again and confirming nothing. `never_seen` — no relay has ever observed this screen pull a program.
 type ScreenStatusReachability string
 
 // ScreenStatusListResponse defines model for ScreenStatusListResponse.
@@ -2191,6 +2401,16 @@ type ScreenUpdate struct {
 	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	ScopeNode *Ulid `json:"scope_node,omitempty"`
 }
+
+// ServiceHealth One named component's grade. `detail` is always populated, including for `ok` — "readable, 12 rows" is what distinguishes a check that ran from one that was skipped.
+type ServiceHealth struct {
+	Detail string              `json:"detail"`
+	Name   string              `json:"name"`
+	Status ServiceHealthStatus `json:"status"`
+}
+
+// ServiceHealthStatus defines model for ServiceHealth.Status.
+type ServiceHealthStatus string
 
 // SessionSummary The caller's own session. It deliberately carries NO session token: that value rides the HttpOnly cookie and is never readable by the page. `csrf_token` is present only on the responses that MINT a session (login, claim), since it is the double-submit value the client must then echo (SEC-024).
 type SessionSummary struct {
@@ -2281,6 +2501,52 @@ type SlideNavItem struct {
 	Label         string `json:"label"`
 	TargetSlideId string `json:"target_slide_id"`
 }
+
+// StorageHealth Disk headroom on the filesystem holding this workspace's data. Graded on ABSOLUTE free bytes, not a percentage: 10% of a 39 GB appliance disk and 10% of a 2 TB disk are completely different operational situations, and what matters is whether the next image deploy fits.
+//
+// The three byte members are OMITTED, never zeroed, when the filesystem could not be measured — a `free_bytes` of 0 would render as a full disk and manufacture the emergency this check exists to detect.
+type StorageHealth struct {
+	Detail string `json:"detail"`
+
+	// FreeBytes Bytes available to THIS process — not the raw free count, which on a unix filesystem includes blocks reserved for root that the feeder may not use.
+	FreeBytes *int64 `json:"free_bytes,omitempty"`
+
+	// Path The directory measured, or `""` when this deployment publishes none.
+	Path        string              `json:"path"`
+	Status      StorageHealthStatus `json:"status"`
+	TotalBytes  *int64              `json:"total_bytes,omitempty"`
+	UsedPercent *float32            `json:"used_percent,omitempty"`
+}
+
+// StorageHealthStatus defines model for StorageHealth.Status.
+type StorageHealthStatus string
+
+// SystemHealth defines model for SystemHealth.
+type SystemHealth struct {
+	CheckedAtMs int64         `json:"checked_at_ms"`
+	Relays      []RelayHealth `json:"relays"`
+
+	// Screens The fleet roll-up, built from the SAME join `/screen-status` serves — authored rows filled in by relay reports — rather than from the reports alone. A screen no relay has ever mentioned is the most alarming row there is, and a count built from reports is silent about exactly it.
+	Screens  ScreenHealth    `json:"screens"`
+	Services []ServiceHealth `json:"services"`
+
+	// Status The WORST grade any component carries. Derived, never asserted — a summary that could read `ok` while a component reads `down` would be the one line an operator trusts and the one line that is wrong.
+	Status SystemHealthStatus `json:"status"`
+
+	// Storage Disk headroom on the filesystem holding this workspace's data. Graded on ABSOLUTE free bytes, not a percentage: 10% of a 39 GB appliance disk and 10% of a 2 TB disk are completely different operational situations, and what matters is whether the next image deploy fits.
+	//
+	// The three byte members are OMITTED, never zeroed, when the filesystem could not be measured — a `free_bytes` of 0 would render as a full disk and manufacture the emergency this check exists to detect.
+	Storage StorageHealth `json:"storage"`
+
+	// UptimeMs How long this process has been serving, or `-1` when the deployment publishes no start time — the same never-observed sentinel `/screen-status` uses. When a screen went dark five minutes ago, "this box restarted four minutes ago" is the single most useful number on the page.
+	UptimeMs int64 `json:"uptime_ms"`
+
+	// Version The running build, or `unknown`.
+	Version string `json:"version"`
+}
+
+// SystemHealthStatus The WORST grade any component carries. Derived, never asserted — a summary that could read `ok` while a component reads `down` would be the one line an operator trusts and the one line that is wrong.
+type SystemHealthStatus string
 
 // Timestamp A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
 // The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
@@ -2436,6 +2702,25 @@ type WebhookSigningSecretRotation struct {
 	// RotatedAtMs A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
 	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
 	RotatedAtMs Timestamp `json:"rotated_at_ms"`
+}
+
+// WorkspaceArchive One archive/1 container present in this deployment's archive directory.
+type WorkspaceArchive struct {
+	CreatedAtMs int64 `json:"created_at_ms"`
+
+	// DownloadPath Where this container's bytes are served from, published rather than left for a client to compose: a client building the URL itself would be re-encoding a file name into a path, which is the one part of this family with a traversal question attached.
+	DownloadPath string `json:"download_path"`
+
+	// Name The file name — and the exact value `POST /workspace/restore` takes as its `archive`.
+	Name      string `json:"name"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
+// WorkspaceArchiveList defines model for WorkspaceArchiveList.
+type WorkspaceArchiveList struct {
+	// Directory Where the containers live on the box. Published because the real disaster-recovery path is an operator copying a container BACK from off-box storage and then restoring it by name, which requires knowing where to put it.
+	Directory string             `json:"directory"`
+	Items     []WorkspaceArchive `json:"items"`
 }
 
 // WorkspaceDeleteRequest The request body for the data-subject delete operation (API-120/122). The confirmation is the only member: the operation's target is the workspace itself, implicit in the path (API-123).
@@ -2706,6 +2991,21 @@ type CreateCastParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// ImportCastParams defines parameters for ImportCast.
+type ImportCastParams struct {
+	// ScopeNode The node in THIS deployment's tree the imported cast is placed at.
+	ScopeNode Ulid `form:"scope_node" json:"scope_node"`
+
+	// Name Rename the cast on the way in. Absent, the bundle's own name is used.
+	Name *string `form:"name,omitempty" json:"name,omitempty"`
+
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // DeleteCastParams defines parameters for DeleteCast.
 type DeleteCastParams struct {
 	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
@@ -2726,6 +3026,12 @@ type UpdateCastParams struct {
 	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
 	IfMatch IfMatchParam `json:"If-Match"`
 
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// ExportCastParams defines parameters for ExportCast.
+type ExportCastParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
@@ -2967,6 +3273,27 @@ type UpdatePackParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// ListPlatformLogsParams defines parameters for ListPlatformLogs.
+type ListPlatformLogsParams struct {
+	// Level Keep only lines at exactly this derived level — not "at or above". An operator filtering to `warn` means the warnings; a threshold would quietly re-show the errors they just filtered away from. A value outside the enum is refused 400 rather than silently matching nothing, because an empty diagnostics page reads as a quiet box.
+	Level *ListPlatformLogsParamsLevel `form:"level,omitempty" json:"level,omitempty"`
+
+	// Source Keep only lines whose derived source is exactly this. The full set of retained sources rides every response.
+	Source *string `form:"source,omitempty" json:"source,omitempty"`
+
+	// Contains Keep only lines whose raw text contains this, case-insensitively.
+	Contains *string `form:"contains,omitempty" json:"contains,omitempty"`
+
+	// Limit How many of the NEWEST matching lines to return. There is no cursor: a keyset cursor names a position in a stable ordering, and this buffer's oldest end is overwritten while a client reads it, so a cursor into it would name a record that no longer exists.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// ListPlatformLogsParamsLevel defines parameters for ListPlatformLogs.
+type ListPlatformLogsParamsLevel string
+
 // ListPlaylistsParams defines parameters for ListPlaylists.
 type ListPlaylistsParams struct {
 	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
@@ -3204,6 +3531,12 @@ type IssueScreenPairingCodeParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// GetSystemHealthParams defines parameters for GetSystemHealth.
+type GetSystemHealthParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // ListWebhookEndpointsParams defines parameters for ListWebhookEndpoints.
 type ListWebhookEndpointsParams struct {
 	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
@@ -3272,6 +3605,18 @@ type RotateWebhookSigningSecretParams struct {
 	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
 	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
 
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// ListWorkspaceArchivesParams defines parameters for ListWorkspaceArchives.
+type ListWorkspaceArchivesParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// DownloadWorkspaceArchiveParams defines parameters for DownloadWorkspaceArchive.
+type DownloadWorkspaceArchiveParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
@@ -3565,6 +3910,9 @@ type ClientInterface interface {
 
 	CreateCast(ctx context.Context, params *CreateCastParams, body CreateCastJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ImportCastWithBody request with any body
+	ImportCastWithBody(ctx context.Context, params *ImportCastParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// DeleteCast request
 	DeleteCast(ctx context.Context, castId Ulid, params *DeleteCastParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -3575,6 +3923,9 @@ type ClientInterface interface {
 	UpdateCastWithBody(ctx context.Context, castId Ulid, params *UpdateCastParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	UpdateCast(ctx context.Context, castId Ulid, params *UpdateCastParams, body UpdateCastJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ExportCast request
+	ExportCast(ctx context.Context, castId Ulid, params *ExportCastParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListContent request
 	ListContent(ctx context.Context, params *ListContentParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3661,6 +4012,9 @@ type ClientInterface interface {
 
 	// UpdatePack request
 	UpdatePack(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UpdatePackParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListPlatformLogs request
+	ListPlatformLogs(ctx context.Context, params *ListPlatformLogsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListPlaylists request
 	ListPlaylists(ctx context.Context, params *ListPlaylistsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3757,6 +4111,9 @@ type ClientInterface interface {
 	// IssueScreenPairingCode request
 	IssueScreenPairingCode(ctx context.Context, screenId Ulid, params *IssueScreenPairingCodeParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetSystemHealth request
+	GetSystemHealth(ctx context.Context, params *GetSystemHealthParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListWebhookEndpoints request
 	ListWebhookEndpoints(ctx context.Context, params *ListWebhookEndpointsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -3786,6 +4143,12 @@ type ClientInterface interface {
 	RotateWebhookSigningSecretWithBody(ctx context.Context, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	RotateWebhookSigningSecret(ctx context.Context, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, body RotateWebhookSigningSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListWorkspaceArchives request
+	ListWorkspaceArchives(ctx context.Context, params *ListWorkspaceArchivesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DownloadWorkspaceArchive request
+	DownloadWorkspaceArchive(ctx context.Context, name string, params *DownloadWorkspaceArchiveParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// DeleteWorkspaceWithBody request with any body
 	DeleteWorkspaceWithBody(ctx context.Context, params *DeleteWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4211,6 +4574,18 @@ func (c *Client) CreateCast(ctx context.Context, params *CreateCastParams, body 
 	return c.Client.Do(req)
 }
 
+func (c *Client) ImportCastWithBody(ctx context.Context, params *ImportCastParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewImportCastRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) DeleteCast(ctx context.Context, castId Ulid, params *DeleteCastParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewDeleteCastRequest(c.Server, castId, params)
 	if err != nil {
@@ -4249,6 +4624,18 @@ func (c *Client) UpdateCastWithBody(ctx context.Context, castId Ulid, params *Up
 
 func (c *Client) UpdateCast(ctx context.Context, castId Ulid, params *UpdateCastParams, body UpdateCastJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewUpdateCastRequest(c.Server, castId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ExportCast(ctx context.Context, castId Ulid, params *ExportCastParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewExportCastRequest(c.Server, castId, params)
 	if err != nil {
 		return nil, err
 	}
@@ -4609,6 +4996,18 @@ func (c *Client) GetPackPage(ctx context.Context, publisher PackPublisherParam, 
 
 func (c *Client) UpdatePack(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UpdatePackParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewUpdatePackRequest(c.Server, publisher, name, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListPlatformLogs(ctx context.Context, params *ListPlatformLogsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListPlatformLogsRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -5039,6 +5438,18 @@ func (c *Client) IssueScreenPairingCode(ctx context.Context, screenId Ulid, para
 	return c.Client.Do(req)
 }
 
+func (c *Client) GetSystemHealth(ctx context.Context, params *GetSystemHealthParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetSystemHealthRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) ListWebhookEndpoints(ctx context.Context, params *ListWebhookEndpointsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListWebhookEndpointsRequest(c.Server, params)
 	if err != nil {
@@ -5161,6 +5572,30 @@ func (c *Client) RotateWebhookSigningSecretWithBody(ctx context.Context, webhook
 
 func (c *Client) RotateWebhookSigningSecret(ctx context.Context, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, body RotateWebhookSigningSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewRotateWebhookSigningSecretRequest(c.Server, webhookEndpointId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListWorkspaceArchives(ctx context.Context, params *ListWorkspaceArchivesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListWorkspaceArchivesRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DownloadWorkspaceArchive(ctx context.Context, name string, params *DownloadWorkspaceArchiveParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDownloadWorkspaceArchiveRequest(c.Server, name, params)
 	if err != nil {
 		return nil, err
 	}
@@ -6616,6 +7051,96 @@ func NewCreateCastRequestWithBody(server string, params *CreateCastParams, conte
 	return req, nil
 }
 
+// NewImportCastRequestWithBody generates requests for ImportCast with any type of body
+func NewImportCastRequestWithBody(server string, params *ImportCastParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/casts/import")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "scope_node", params.ScopeNode, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+			return nil, err
+		} else {
+			for _, qp := range strings.Split(queryFrag, "&") {
+				rawQueryFragments = append(rawQueryFragments, qp)
+			}
+		}
+
+		if params.Name != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "name", *params.Name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewDeleteCastRequest generates requests for DeleteCast
 func NewDeleteCastRequest(server string, castId Ulid, params *DeleteCastParams) (*http.Request, error) {
 	var err error
@@ -6787,6 +7312,55 @@ func NewUpdateCastRequestWithBody(server string, castId Ulid, params *UpdateCast
 			}
 
 			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewExportCastRequest generates requests for ExportCast
+func NewExportCastRequest(server string, castId Ulid, params *ExportCastParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "cast_id", castId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/casts/%s/export", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
 		}
 
 	}
@@ -8598,6 +9172,111 @@ func NewUpdatePackRequest(server string, publisher PackPublisherParam, name Pack
 	return req, nil
 }
 
+// NewListPlatformLogsRequest generates requests for ListPlatformLogs
+func NewListPlatformLogsRequest(server string, params *ListPlatformLogsParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/platform-logs")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Level != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "level", *params.Level, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Source != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "source", *params.Source, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Contains != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "contains", *params.Contains, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewListPlaylistsRequest generates requests for ListPlaylists
 func NewListPlaylistsRequest(server string, params *ListPlaylistsParams) (*http.Request, error) {
 	var err error
@@ -10276,6 +10955,48 @@ func NewIssueScreenPairingCodeRequest(server string, screenId Ulid, params *Issu
 	return req, nil
 }
 
+// NewGetSystemHealthRequest generates requests for GetSystemHealth
+func NewGetSystemHealthRequest(server string, params *GetSystemHealthParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/system-health")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewListWebhookEndpointsRequest generates requests for ListWebhookEndpoints
 func NewListWebhookEndpointsRequest(server string, params *ListWebhookEndpointsParams) (*http.Request, error) {
 	var err error
@@ -10795,6 +11516,97 @@ func NewRotateWebhookSigningSecretRequestWithBody(server string, webhookEndpoint
 	return req, nil
 }
 
+// NewListWorkspaceArchivesRequest generates requests for ListWorkspaceArchives
+func NewListWorkspaceArchivesRequest(server string, params *ListWorkspaceArchivesParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/workspace/archives")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewDownloadWorkspaceArchiveRequest generates requests for DownloadWorkspaceArchive
+func NewDownloadWorkspaceArchiveRequest(server string, name string, params *DownloadWorkspaceArchiveParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/workspace/archives/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewDeleteWorkspaceRequest calls the generic DeleteWorkspace builder with application/json body
 func NewDeleteWorkspaceRequest(server string, params *DeleteWorkspaceParams, body DeleteWorkspaceJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -11126,6 +11938,9 @@ type ClientWithResponsesInterface interface {
 
 	CreateCastWithResponse(ctx context.Context, params *CreateCastParams, body CreateCastJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateCastResponse, error)
 
+	// ImportCastWithBodyWithResponse request with any body
+	ImportCastWithBodyWithResponse(ctx context.Context, params *ImportCastParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ImportCastResponse, error)
+
 	// DeleteCastWithResponse request
 	DeleteCastWithResponse(ctx context.Context, castId Ulid, params *DeleteCastParams, reqEditors ...RequestEditorFn) (*DeleteCastResponse, error)
 
@@ -11136,6 +11951,9 @@ type ClientWithResponsesInterface interface {
 	UpdateCastWithBodyWithResponse(ctx context.Context, castId Ulid, params *UpdateCastParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateCastResponse, error)
 
 	UpdateCastWithResponse(ctx context.Context, castId Ulid, params *UpdateCastParams, body UpdateCastJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateCastResponse, error)
+
+	// ExportCastWithResponse request
+	ExportCastWithResponse(ctx context.Context, castId Ulid, params *ExportCastParams, reqEditors ...RequestEditorFn) (*ExportCastResponse, error)
 
 	// ListContentWithResponse request
 	ListContentWithResponse(ctx context.Context, params *ListContentParams, reqEditors ...RequestEditorFn) (*ListContentResponse, error)
@@ -11222,6 +12040,9 @@ type ClientWithResponsesInterface interface {
 
 	// UpdatePackWithResponse request
 	UpdatePackWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UpdatePackParams, reqEditors ...RequestEditorFn) (*UpdatePackResponse, error)
+
+	// ListPlatformLogsWithResponse request
+	ListPlatformLogsWithResponse(ctx context.Context, params *ListPlatformLogsParams, reqEditors ...RequestEditorFn) (*ListPlatformLogsResponse, error)
 
 	// ListPlaylistsWithResponse request
 	ListPlaylistsWithResponse(ctx context.Context, params *ListPlaylistsParams, reqEditors ...RequestEditorFn) (*ListPlaylistsResponse, error)
@@ -11318,6 +12139,9 @@ type ClientWithResponsesInterface interface {
 	// IssueScreenPairingCodeWithResponse request
 	IssueScreenPairingCodeWithResponse(ctx context.Context, screenId Ulid, params *IssueScreenPairingCodeParams, reqEditors ...RequestEditorFn) (*IssueScreenPairingCodeResponse, error)
 
+	// GetSystemHealthWithResponse request
+	GetSystemHealthWithResponse(ctx context.Context, params *GetSystemHealthParams, reqEditors ...RequestEditorFn) (*GetSystemHealthResponse, error)
+
 	// ListWebhookEndpointsWithResponse request
 	ListWebhookEndpointsWithResponse(ctx context.Context, params *ListWebhookEndpointsParams, reqEditors ...RequestEditorFn) (*ListWebhookEndpointsResponse, error)
 
@@ -11347,6 +12171,12 @@ type ClientWithResponsesInterface interface {
 	RotateWebhookSigningSecretWithBodyWithResponse(ctx context.Context, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RotateWebhookSigningSecretResponse, error)
 
 	RotateWebhookSigningSecretWithResponse(ctx context.Context, webhookEndpointId Ulid, params *RotateWebhookSigningSecretParams, body RotateWebhookSigningSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*RotateWebhookSigningSecretResponse, error)
+
+	// ListWorkspaceArchivesWithResponse request
+	ListWorkspaceArchivesWithResponse(ctx context.Context, params *ListWorkspaceArchivesParams, reqEditors ...RequestEditorFn) (*ListWorkspaceArchivesResponse, error)
+
+	// DownloadWorkspaceArchiveWithResponse request
+	DownloadWorkspaceArchiveWithResponse(ctx context.Context, name string, params *DownloadWorkspaceArchiveParams, reqEditors ...RequestEditorFn) (*DownloadWorkspaceArchiveResponse, error)
 
 	// DeleteWorkspaceWithBodyWithResponse request with any body
 	DeleteWorkspaceWithBodyWithResponse(ctx context.Context, params *DeleteWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*DeleteWorkspaceResponse, error)
@@ -12110,6 +12940,42 @@ func (r CreateCastResponse) ContentType() string {
 	return ""
 }
 
+type ImportCastResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON201                   *Cast
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON503 *ServiceUnavailable
+}
+
+// Status returns HTTPResponse.Status
+func (r ImportCastResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ImportCastResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ImportCastResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type DeleteCastResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
@@ -12208,6 +13074,40 @@ func (r UpdateCastResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r UpdateCastResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ExportCastResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON429 *TooManyRequests
+	ApplicationproblemJSON503 *ServiceUnavailable
+}
+
+// Status returns HTTPResponse.Status
+func (r ExportCastResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ExportCastResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ExportCastResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -13071,6 +13971,41 @@ func (r UpdatePackResponse) ContentType() string {
 	return ""
 }
 
+type ListPlatformLogsResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *PlatformLogPage
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON429 *TooManyRequests
+}
+
+// Status returns HTTPResponse.Status
+func (r ListPlatformLogsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListPlatformLogsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListPlatformLogsResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type ListPlaylistsResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
@@ -13914,6 +14849,40 @@ func (r IssueScreenPairingCodeResponse) ContentType() string {
 	return ""
 }
 
+type GetSystemHealthResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *SystemHealth
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON429 *TooManyRequests
+}
+
+// Status returns HTTPResponse.Status
+func (r GetSystemHealthResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetSystemHealthResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetSystemHealthResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type ListWebhookEndpointsResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
@@ -14181,6 +15150,75 @@ func (r RotateWebhookSigningSecretResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r RotateWebhookSigningSecretResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ListWorkspaceArchivesResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *WorkspaceArchiveList
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON429 *TooManyRequests
+	ApplicationproblemJSON503 *ServiceUnavailable
+}
+
+// Status returns HTTPResponse.Status
+func (r ListWorkspaceArchivesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListWorkspaceArchivesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListWorkspaceArchivesResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DownloadWorkspaceArchiveResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON429 *TooManyRequests
+	ApplicationproblemJSON503 *ServiceUnavailable
+}
+
+// Status returns HTTPResponse.Status
+func (r DownloadWorkspaceArchiveResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DownloadWorkspaceArchiveResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DownloadWorkspaceArchiveResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -14587,6 +15625,15 @@ func (c *ClientWithResponses) CreateCastWithResponse(ctx context.Context, params
 	return ParseCreateCastResponse(rsp)
 }
 
+// ImportCastWithBodyWithResponse request with arbitrary body returning *ImportCastResponse
+func (c *ClientWithResponses) ImportCastWithBodyWithResponse(ctx context.Context, params *ImportCastParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ImportCastResponse, error) {
+	rsp, err := c.ImportCastWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseImportCastResponse(rsp)
+}
+
 // DeleteCastWithResponse request returning *DeleteCastResponse
 func (c *ClientWithResponses) DeleteCastWithResponse(ctx context.Context, castId Ulid, params *DeleteCastParams, reqEditors ...RequestEditorFn) (*DeleteCastResponse, error) {
 	rsp, err := c.DeleteCast(ctx, castId, params, reqEditors...)
@@ -14620,6 +15667,15 @@ func (c *ClientWithResponses) UpdateCastWithResponse(ctx context.Context, castId
 		return nil, err
 	}
 	return ParseUpdateCastResponse(rsp)
+}
+
+// ExportCastWithResponse request returning *ExportCastResponse
+func (c *ClientWithResponses) ExportCastWithResponse(ctx context.Context, castId Ulid, params *ExportCastParams, reqEditors ...RequestEditorFn) (*ExportCastResponse, error) {
+	rsp, err := c.ExportCast(ctx, castId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseExportCastResponse(rsp)
 }
 
 // ListContentWithResponse request returning *ListContentResponse
@@ -14886,6 +15942,15 @@ func (c *ClientWithResponses) UpdatePackWithResponse(ctx context.Context, publis
 		return nil, err
 	}
 	return ParseUpdatePackResponse(rsp)
+}
+
+// ListPlatformLogsWithResponse request returning *ListPlatformLogsResponse
+func (c *ClientWithResponses) ListPlatformLogsWithResponse(ctx context.Context, params *ListPlatformLogsParams, reqEditors ...RequestEditorFn) (*ListPlatformLogsResponse, error) {
+	rsp, err := c.ListPlatformLogs(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListPlatformLogsResponse(rsp)
 }
 
 // ListPlaylistsWithResponse request returning *ListPlaylistsResponse
@@ -15193,6 +16258,15 @@ func (c *ClientWithResponses) IssueScreenPairingCodeWithResponse(ctx context.Con
 	return ParseIssueScreenPairingCodeResponse(rsp)
 }
 
+// GetSystemHealthWithResponse request returning *GetSystemHealthResponse
+func (c *ClientWithResponses) GetSystemHealthWithResponse(ctx context.Context, params *GetSystemHealthParams, reqEditors ...RequestEditorFn) (*GetSystemHealthResponse, error) {
+	rsp, err := c.GetSystemHealth(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetSystemHealthResponse(rsp)
+}
+
 // ListWebhookEndpointsWithResponse request returning *ListWebhookEndpointsResponse
 func (c *ClientWithResponses) ListWebhookEndpointsWithResponse(ctx context.Context, params *ListWebhookEndpointsParams, reqEditors ...RequestEditorFn) (*ListWebhookEndpointsResponse, error) {
 	rsp, err := c.ListWebhookEndpoints(ctx, params, reqEditors...)
@@ -15287,6 +16361,24 @@ func (c *ClientWithResponses) RotateWebhookSigningSecretWithResponse(ctx context
 		return nil, err
 	}
 	return ParseRotateWebhookSigningSecretResponse(rsp)
+}
+
+// ListWorkspaceArchivesWithResponse request returning *ListWorkspaceArchivesResponse
+func (c *ClientWithResponses) ListWorkspaceArchivesWithResponse(ctx context.Context, params *ListWorkspaceArchivesParams, reqEditors ...RequestEditorFn) (*ListWorkspaceArchivesResponse, error) {
+	rsp, err := c.ListWorkspaceArchives(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListWorkspaceArchivesResponse(rsp)
+}
+
+// DownloadWorkspaceArchiveWithResponse request returning *DownloadWorkspaceArchiveResponse
+func (c *ClientWithResponses) DownloadWorkspaceArchiveWithResponse(ctx context.Context, name string, params *DownloadWorkspaceArchiveParams, reqEditors ...RequestEditorFn) (*DownloadWorkspaceArchiveResponse, error) {
+	rsp, err := c.DownloadWorkspaceArchive(ctx, name, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDownloadWorkspaceArchiveResponse(rsp)
 }
 
 // DeleteWorkspaceWithBodyWithResponse request with arbitrary body returning *DeleteWorkspaceResponse
@@ -16514,6 +17606,74 @@ func ParseCreateCastResponse(rsp *http.Response) (*CreateCastResponse, error) {
 	return response, nil
 }
 
+// ParseImportCastResponse parses an HTTP response from a ImportCastWithResponse call
+func ParseImportCastResponse(rsp *http.Response) (*ImportCastResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ImportCastResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest Cast
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ServiceUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseDeleteCastResponse parses an HTTP response from a DeleteCastWithResponse call
 func ParseDeleteCastResponse(rsp *http.Response) (*DeleteCastResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -16684,6 +17844,60 @@ func ParseUpdateCastResponse(rsp *http.Response) (*UpdateCastResponse, error) {
 			return nil, err
 		}
 		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseExportCastResponse parses an HTTP response from a ExportCastWithResponse call
+func ParseExportCastResponse(rsp *http.Response) (*ExportCastResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ExportCastResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ServiceUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
 
 	}
 
@@ -17899,6 +19113,67 @@ func ParseUpdatePackResponse(rsp *http.Response) (*UpdatePackResponse, error) {
 			return nil, err
 		}
 		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListPlatformLogsResponse parses an HTTP response from a ListPlatformLogsWithResponse call
+func ParseListPlatformLogsResponse(rsp *http.Response) (*ListPlatformLogsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListPlatformLogsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PlatformLogPage
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
 
 	}
 
@@ -19206,6 +20481,60 @@ func ParseIssueScreenPairingCodeResponse(rsp *http.Response) (*IssueScreenPairin
 	return response, nil
 }
 
+// ParseGetSystemHealthResponse parses an HTTP response from a GetSystemHealthWithResponse call
+func ParseGetSystemHealthResponse(rsp *http.Response) (*GetSystemHealthResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetSystemHealthResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SystemHealth
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseListWebhookEndpointsResponse parses an HTTP response from a ListWebhookEndpointsWithResponse call
 func ParseListWebhookEndpointsResponse(rsp *http.Response) (*ListWebhookEndpointsResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -19632,6 +20961,121 @@ func ParseRotateWebhookSigningSecretResponse(rsp *http.Response) (*RotateWebhook
 			return nil, err
 		}
 		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ServiceUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListWorkspaceArchivesResponse parses an HTTP response from a ListWorkspaceArchivesWithResponse call
+func ParseListWorkspaceArchivesResponse(rsp *http.Response) (*ListWorkspaceArchivesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListWorkspaceArchivesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest WorkspaceArchiveList
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ServiceUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDownloadWorkspaceArchiveResponse parses an HTTP response from a DownloadWorkspaceArchiveWithResponse call
+func ParseDownloadWorkspaceArchiveResponse(rsp *http.Response) (*DownloadWorkspaceArchiveResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DownloadWorkspaceArchiveResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
 		var dest ServiceUnavailable

@@ -62,22 +62,42 @@ type screenStatusRow struct {
 	ScopeNode string `json:"scope_node,omitempty"`
 	RelayID   string `json:"relay_id,omitempty"`
 
-	// Reachability is `live` | `stale` | `never_seen` — never "offline". This
-	// surface cannot tell a screen that is switched off from one whose network
-	// dropped from one whose player crashed, and each sends an operator
-	// somewhere different (internal/app/screens' package doc).
+	// Reachability is `live` | `fetching` | `stale` | `never_seen` — never
+	// "offline". This surface cannot tell a screen that is switched off from one
+	// whose network dropped from one whose player crashed, and each sends an
+	// operator somewhere different (internal/app/screens' package doc).
 	Reachability string `json:"reachability"`
 	// LiveWindowMs is the threshold `reachability` was decided by, published
 	// alongside the judgement so a consumer that wants a different line can draw
 	// it from the raw ages rather than being stuck with this one.
 	LiveWindowMs int64 `json:"live_window_ms"`
+	// ContentTransferWindowMs is the SECOND threshold — how far past
+	// LiveWindowMs an unacknowledged pull still reads `fetching`. Published for
+	// the same reason as the first: a judgement without the lines it was drawn
+	// at is a number nobody can check, and a consumer that wants to treat
+	// `fetching` as `stale` needs to know which line it is disagreeing with.
+	ContentTransferWindowMs int64 `json:"content_transfer_window_ms"`
+	// FetchingMaxUnackedPulls is the THIRD line `reachability` was drawn at: the
+	// most outstanding pulls a screen may have and still be called `fetching`
+	// rather than `stale`. Published with the other two because it is the one
+	// that distinguishes a screen downloading a video from a screen re-asking
+	// forever and confirming nothing, and a consumer given the count below with
+	// no line to read it against cannot tell those apart either.
+	FetchingMaxUnackedPulls int64 `json:"fetching_max_unacked_pulls"`
 
 	Paired bool `json:"paired"`
 
 	LastPullAgeMs        int64 `json:"last_pull_age_ms"`
 	LastAckAgeMs         int64 `json:"last_ack_age_ms"`
 	LastRenderStartAgeMs int64 `json:"last_render_start_age_ms"`
-	ReportAgeMs          int64 `json:"report_age_ms"`
+	// UnackedPulls is how many program pulls the relay has served this screen
+	// since the last acknowledgement it saw: 0 up to date, 1 materialising the
+	// Lease it holds, climbing for one that keeps asking and never confirms. It
+	// is the most directly actionable number on the row for a screen that is not
+	// live — "this wall has failed twenty pulls in a row" is a different call-out
+	// than "this wall is downloading a video".
+	UnackedPulls int   `json:"unacked_pulls"`
+	ReportAgeMs  int64 `json:"report_age_ms"`
 
 	ProgramRevision string `json:"program_revision,omitempty"`
 	Priority        string `json:"priority,omitempty"`
@@ -174,12 +194,14 @@ func (srv *server) listScreenStatus(w http.ResponseWriter, r *http.Request) {
 func screenStatusRowOf(row store.Resource, st screens.Status, nowMs int64) screenStatusRow {
 	f := parseFields(row.Body)
 	out := screenStatusRow{
-		ScreenID:     row.ID,
-		Name:         screenNameOf(row.Body),
-		ScopeNode:    f.ScopeNode,
-		labels:       f.Labels,
-		Reachability: string(screens.ReachabilityNeverSeen),
-		LiveWindowMs: screens.LiveWindowMs,
+		ScreenID:                row.ID,
+		Name:                    screenNameOf(row.Body),
+		ScopeNode:               f.ScopeNode,
+		labels:                  f.Labels,
+		Reachability:            string(screens.ReachabilityNeverSeen),
+		LiveWindowMs:            screens.LiveWindowMs,
+		ContentTransferWindowMs: screens.ContentTransferWindowMs,
+		FetchingMaxUnackedPulls: screens.MaxFetchingUnackedPulls,
 		// Never observed, on every axis, until a report says otherwise. Spelled
 		// out rather than left at the struct's zero value, because the zero value
 		// of an age field is 0 — "just now" — which is the single most misleading
@@ -196,6 +218,7 @@ func screenStatusRowOf(row store.Resource, st screens.Status, nowMs int64) scree
 		out.LastPullAgeMs = st.LastPullAgeMs
 		out.LastAckAgeMs = st.LastAckAgeMs
 		out.LastRenderStartAgeMs = st.LastRenderStartAgeMs
+		out.UnackedPulls = st.UnackedPulls
 		out.ReportAgeMs = st.ReportAgeMs
 		out.ProgramRevision = st.ProgramRevision
 		out.Priority = st.Priority
