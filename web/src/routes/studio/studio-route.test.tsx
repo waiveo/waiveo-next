@@ -1018,9 +1018,10 @@ describe("Studio — undo and redo", () => {
 
     // Leave the field the way an operator does — click the layer's row in the
     // Layers list — so the keystroke belongs to the editor and not to the
-    // textarea's own undo. (Clicking the CANVAS would not do: the hit target
-    // preventDefaults its pointerdown to stop the browser dragging the artwork,
-    // which also means it never takes focus.)
+    // textarea's own undo. (Clicking the CANVAS also works now: the hit target
+    // preventDefaults its pointerdown to stop the browser dragging the artwork
+    // and then moves focus itself. It did not, once, and the arrow-key nudge was
+    // unreachable by pointer for exactly that reason.)
     const row = screen.getByRole("button", { name: "Text — Open at 9" });
     await user.click(row);
     expect(row).toHaveFocus();
@@ -1884,5 +1885,516 @@ describe("Studio — rasterized (derive) layers", () => {
     const layer = (await waitForSave(saved)).slides?.[0]?.layers?.[3] as Record<string, unknown>;
     expect(layer.derived_from).toBe("digest-1");
     expect(layer.asset_ref).toBe("sha256:aa11");
+  });
+});
+
+/**
+ * THE FULL-SCREEN EDITOR — the menu bar, the docked panels, the zoom, the
+ * arrange commands, the History palette and the keyboard.
+ *
+ * Every case here PRESSES something and then asserts on the model, the saved
+ * PATCH body, or a region appearing and disappearing. None of them assert that
+ * a thing rendered: this console has shipped a control that rendered perfectly
+ * and did nothing, and the layout it renders in is not what makes any of these
+ * correct.
+ */
+
+/** Open one of the menu-bar menus and return its panel. */
+async function openMenu(user: ReturnType<typeof userEvent.setup>, label: string) {
+  await user.click(screen.getByRole("menuitem", { name: label }));
+  return screen.getByRole("menu", { name: label });
+}
+
+/** The insert group's button for a kind — disambiguated from the layer rows and
+ * the canvas hit targets, which carry the same words. */
+function insertTool(name: string) {
+  return within(screen.getByRole("group", { name: "Insert a layer" })).getByRole("button", { name });
+}
+
+describe("Studio — the menu bar", () => {
+  it("opens a menu, runs a command from it, and closes", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    const insert = await openMenu(user, "Insert");
+    await user.click(within(insert).getByRole("menuitem", { name: "Rectangle" }));
+
+    // The command RAN: a fourth layer is on the canvas.
+    expect(await screen.findByRole("button", { name: /Layer 4: Rectangle/ })).toBeInTheDocument();
+    // …and the menu closed behind it, rather than staying over the panel that
+    // asks for the new layer's fields.
+    expect(screen.queryByRole("menu", { name: "Insert" })).not.toBeInTheDocument();
+  });
+
+  it("closes on Escape without running anything", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await openMenu(user, "Insert");
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByRole("menu", { name: "Insert" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Layer 4:/ })).not.toBeInTheDocument();
+  });
+
+  it("disables a command that cannot run, and enables it when it can", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    // Nothing is selected, so there is nothing to duplicate.
+    let edit = await openMenu(user, "Edit");
+    expect(within(edit).getByRole("menuitem", { name: /Duplicate layer/ })).toBeDisabled();
+    await user.keyboard("{Escape}");
+
+    await user.click(canvasLayer(2, /Layer 2: Text — Welcome/));
+    edit = await openMenu(user, "Edit");
+    expect(within(edit).getByRole("menuitem", { name: /Duplicate layer/ })).toBeEnabled();
+  });
+
+  it("toggles a dock panel from View, and the panel's CONTENT goes with it", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    expect(screen.getByRole("list", { name: "Layers" })).toBeInTheDocument();
+
+    const view = await openMenu(user, "View");
+    await user.click(within(view).getByRole("menuitem", { name: "Layers panel" }));
+    // Collapsed, not merely restyled: the list is GONE from the tree, which is
+    // the only version of "hidden" a screen reader agrees with.
+    expect(screen.queryByRole("list", { name: "Layers" })).not.toBeInTheDocument();
+
+    await user.click(within(await openMenu(user, "View")).getByRole("menuitem", { name: "Layers panel" }));
+    expect(screen.getByRole("list", { name: "Layers" })).toBeInTheDocument();
+  });
+
+  it("hides the slide rail from View and brings it back", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    expect(screen.getByRole("region", { name: "Slides" })).toBeInTheDocument();
+    await user.click(within(await openMenu(user, "View")).getByRole("menuitem", { name: "Slides panel" }));
+    expect(screen.queryByRole("region", { name: "Slides" })).not.toBeInTheDocument();
+  });
+});
+
+describe("Studio — zoom", () => {
+  it("zooms in, zooms out, and goes back to fitting", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    // jsdom reports a zero-sized viewport, so the fit falls back to 1:1 — see
+    // canvas-zoom.fitToViewport, which is where that rule is asserted directly.
+    const readout = () => screen.getByRole("button", { name: /Zoom is \d+ percent/ });
+    expect(readout()).toHaveTextContent("100%");
+
+    await user.click(screen.getByRole("button", { name: "Zoom in" }));
+    expect(readout()).toHaveTextContent("150%");
+    await user.click(screen.getByRole("button", { name: "Zoom in" }));
+    expect(readout()).toHaveTextContent("200%");
+    await user.click(screen.getByRole("button", { name: "Zoom out" }));
+    expect(readout()).toHaveTextContent("150%");
+
+    await user.click(screen.getByRole("button", { name: "Fit to window" }));
+    expect(readout()).toHaveTextContent("100%");
+    // Fitting is a MODE, not a value: the button reads as engaged so an operator
+    // can tell "100% because it fits" from "100% because I asked for it".
+    expect(screen.getByRole("button", { name: "Fit to window" })).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(screen.getByRole("button", { name: "Actual size" }));
+    expect(screen.getByRole("button", { name: "Fit to window" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("zooms the drawn stage, not just the readout", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    const { container } = renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    // Scoped to the CANVAS's stage. The slide rail draws its thumbnails through
+    // the very same component, and its first one comes earlier in the document —
+    // an unscoped query measures a 152px thumbnail and passes whatever the zoom
+    // does.
+    const stage = () =>
+      container.querySelector<HTMLElement>('[data-slot="slide-canvas"] [data-slot="slide-stage"]');
+    expect(stage()?.style.width).toBe("1920px");
+
+    await user.click(screen.getByRole("button", { name: "Zoom in" }));
+    // 1920 × 1.5. Asserted on the DRAWN size because a zoom control that moves a
+    // number and not the artwork is exactly the dead control this suite exists
+    // for.
+    expect(stage()?.style.width).toBe("2880px");
+  });
+
+  it("zooms from the keyboard", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.keyboard("{Meta>}={/Meta}");
+    expect(screen.getByRole("button", { name: /Zoom is \d+ percent/ })).toHaveTextContent("150%");
+    await user.keyboard("{Meta>}0{/Meta}");
+    expect(screen.getByRole("button", { name: /Zoom is \d+ percent/ })).toHaveTextContent("100%");
+  });
+});
+
+describe("Studio — arrange", () => {
+  it("aligns the selected layer to the canvas, and the save carries it", async () => {
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    // The text layer is x:120 w:900 — centring puts it at (1920-900)/2 = 510.
+    await user.click(canvasLayer(2, /Layer 2: Text — Welcome/));
+    await user.click(screen.getByRole("button", { name: "Align horizontal centre" }));
+    expect(screen.getByLabelText("X")).toHaveValue(510);
+    // And ONLY x moved: an align that also re-centres vertically is the bug a
+    // "set x and y" implementation ships.
+    expect(screen.getByLabelText("Y")).toHaveValue(200);
+
+    await user.click(screen.getByRole("button", { name: "Align bottom" }));
+    expect(screen.getByLabelText("Y")).toHaveValue(920);
+
+    await user.click(saveButton());
+    expect((await waitForSave(saved)).slides?.[0]?.layers?.[1]).toMatchObject({ x: 510, y: 920 });
+  });
+
+  it("brings a layer to the front, and the SAVED ARRAY ORDER changes", async () => {
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    // Array order IS z-order on this wire — there is no z-index field — so the
+    // only proof a "bring to front" worked is where the layer lands in `slides`.
+    await user.click(canvasLayer(1, /Layer 1: Rectangle/));
+    await user.click(screen.getByRole("button", { name: "Bring to front" }));
+
+    await user.click(saveButton());
+    const body = await waitForSave(saved);
+    expect(body.slides?.[0]?.layers.map((l) => l.kind)).toEqual(["text", "clock", "rect"]);
+  });
+
+  it("sends a layer to the back from the keyboard", async () => {
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(canvasLayer(3, /Layer 3: Clock/));
+    // Dispatched rather than typed: userEvent's keyboard grammar reads "[" as
+    // the start of a key-CODE descriptor. And the key it sends is the SHIFTED
+    // glyph, "{", which is what a US layout really produces for the chord — the
+    // exact case `unshift` exists for.
+    fireEvent.keyDown(document.body, { key: "{", metaKey: true, shiftKey: true });
+
+    await user.click(saveButton());
+    expect((await waitForSave(saved)).slides?.[0]?.layers.map((l) => l.kind)).toEqual([
+      "clock",
+      "rect",
+      "text",
+    ]);
+  });
+
+  it("greys out the order buttons the selected layer cannot use", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(canvasLayer(1, /Layer 1: Rectangle/));
+    expect(screen.getByRole("button", { name: "Send to back" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Bring to front" })).toBeEnabled();
+
+    await user.click(canvasLayer(3, /Layer 3: Clock/));
+    expect(screen.getByRole("button", { name: "Bring to front" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send to back" })).toBeEnabled();
+  });
+});
+
+describe("Studio — the keyboard acts on the SELECTION, wherever focus is", () => {
+  it("nudges after the layer was picked from the Layers panel", async () => {
+    // The regression this exists for: the nudge used to be an onKeyDown on the
+    // canvas hit target, and the hit target preventDefaults its own pointerdown
+    // (so the browser does not drag the artwork) — which also stops it taking
+    // focus. So the arrows worked only if the operator had TABBED to the layer,
+    // and did nothing at all after either of the two ways a layer is actually
+    // selected. Focus here is on a layer-list row, deliberately.
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    const row = screen.getByRole("button", { name: "Text — Welcome" });
+    await user.click(row);
+    expect(row).toHaveFocus();
+
+    await user.keyboard("{ArrowRight}{ArrowRight}");
+    expect(screen.getByLabelText("X")).toHaveValue(136);
+    await user.keyboard("{Alt>}{ArrowLeft}{/Alt}");
+    expect(screen.getByLabelText("X")).toHaveValue(135);
+    await user.keyboard("{Shift>}{ArrowDown}{/Shift}");
+    expect(screen.getByLabelText("Height")).toHaveValue(168);
+
+    await user.click(saveButton());
+    expect((await waitForSave(saved)).slides?.[0]?.layers?.[1]).toMatchObject({ x: 135, h: 168 });
+  });
+
+  it("focuses the layer a pointer press selected, so the two rings agree", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    const target = canvasLayer(2, /Layer 2: Text — Welcome/);
+    await user.click(target);
+    expect(target).toHaveFocus();
+  });
+
+  it("does not touch the arrows when nothing is selected", async () => {
+    // With no selection the arrows belong to the browser, which scrolls the
+    // canvas viewport with them. Claiming them would leave an operator unable to
+    // scroll a zoomed-in canvas from the keyboard at all.
+    server.use(...serveCast(cast(), {}));
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    expect(fireEvent.keyDown(document.body, { key: "ArrowRight" })).toBe(true);
+  });
+
+  it("leaves the arrows alone while the caret is in a text field", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(canvasLayer(2, /Layer 2: Text — Welcome/));
+    const textarea = screen.getByLabelText("Text");
+    await user.click(textarea);
+    expect(fireEvent.keyDown(textarea, { key: "ArrowRight" })).toBe(true);
+    // The caret moved; the layer did not.
+    expect(screen.getByLabelText("X")).toHaveValue(120);
+  });
+
+  it("deletes the selected layer with Delete, from anywhere in the editor", async () => {
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(screen.getByRole("button", { name: "Clock — 3:04 PM" }));
+    await user.keyboard("{Delete}");
+    expect(screen.queryByRole("button", { name: /Layer 3: Clock/ })).not.toBeInTheDocument();
+
+    await user.click(saveButton());
+    expect((await waitForSave(saved)).slides?.[0]?.layers).toHaveLength(2);
+  });
+
+  it("duplicates the selected layer with ⌘D, offset so the copy is findable", async () => {
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(canvasLayer(2, /Layer 2: Text — Welcome/));
+    await user.keyboard("{Meta>}d{/Meta}");
+
+    await user.click(saveButton());
+    const layers = (await waitForSave(saved)).slides?.[0]?.layers ?? [];
+    expect(layers).toHaveLength(4);
+    // Appended (top of the stack) and moved, not stacked exactly on top of the
+    // original where it would look as if nothing happened.
+    expect(layers[3]).toMatchObject({ kind: "text", text: "Welcome", x: 152, y: 232 });
+  });
+
+  it("saves with ⌘S", async () => {
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(insertTool("Rectangle"));
+    await user.keyboard("{Meta>}s{/Meta}");
+    expect((await waitForSave(saved)).slides?.[0]?.layers).toHaveLength(4);
+  });
+
+  it("deselects with Escape", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(canvasLayer(2, /Layer 2: Text — Welcome/));
+    expect(screen.getByLabelText("X")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByLabelText("X")).not.toBeInTheDocument();
+  });
+});
+
+describe("Studio — the History panel", () => {
+  it("lists every step, marks where the operator is, and jumps on a click", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(canvasLayer(2, /Layer 2: Text — Welcome/));
+    await user.click(screen.getByRole("button", { name: "Align right" }));
+    await user.click(insertTool("Rectangle"));
+
+    const list = screen.getByRole("list", { name: "Edit history" });
+    expect(within(list).getAllByRole("button")).toHaveLength(3);
+    expect(within(list).getByRole("button", { name: /Step 2: add rectangle layer — current/ })).toBeInTheDocument();
+
+    // Jump back TWO steps in one click — the thing ⌘Z cannot do.
+    await user.click(within(list).getByRole("button", { name: /Step 0: open the cast/ }));
+
+    expect(screen.queryByRole("button", { name: /Layer 4: Rectangle/ })).not.toBeInTheDocument();
+    await user.click(canvasLayer(2, /Layer 2: Text — Welcome/));
+    expect(screen.getByLabelText("X")).toHaveValue(120);
+    // The undone steps stay on the list, reachable, rather than being discarded.
+    expect(
+      within(screen.getByRole("list", { name: "Edit history" })).getByRole("button", {
+        name: /Step 2: add rectangle layer — undone/,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("jumps FORWARD again, and the save carries the state jumped to", async () => {
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(insertTool("Rectangle"));
+    await user.click(insertTool("Text"));
+
+    const rows = () => within(screen.getByRole("list", { name: "Edit history" }));
+    await user.click(rows().getByRole("button", { name: /Step 0: open the cast/ }));
+    expect(screen.queryByRole("button", { name: /Layer 4:/ })).not.toBeInTheDocument();
+
+    await user.click(rows().getByRole("button", { name: /Step 2: add text layer/ }));
+    expect(screen.getByRole("button", { name: /Layer 5: Text — New text/ })).toBeInTheDocument();
+
+    await user.click(saveButton());
+    expect((await waitForSave(saved)).slides?.[0]?.layers).toHaveLength(5);
+  });
+
+  it("reports the document CLEAN again when the jump lands on the opened state", async () => {
+    // The property that makes the panel safe to use: jumping back to where the
+    // cast was opened is not "undone edits still pending", it IS the saved
+    // document, and the Save affordance has to say so.
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(insertTool("Rectangle"));
+    expect(screen.getByRole("button", { name: /save changes/i })).toBeEnabled();
+
+    await user.click(
+      within(screen.getByRole("list", { name: "Edit history" })).getByRole("button", {
+        name: /Step 0: open the cast/,
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Saved" })).toBeDisabled();
+  });
+});
+
+describe("Studio — the workspace chrome", () => {
+  it("shows and hides the composition guides", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    const { container } = renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    expect(container.querySelector('[data-slot="canvas-guides"]')).toBeNull();
+    await user.click(within(await openMenu(user, "View")).getByRole("menuitem", { name: "Guides" }));
+    expect(container.querySelector('[data-slot="canvas-guides"]')).not.toBeNull();
+    await user.click(within(await openMenu(user, "View")).getByRole("menuitem", { name: "Guides" }));
+    expect(container.querySelector('[data-slot="canvas-guides"]')).toBeNull();
+  });
+
+  it("resizes the panel column from the keyboard", async () => {
+    // A drag handle nobody can reach without a mouse is a control half the
+    // operators do not have. The pointer path and this one call the same
+    // setter.
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    const { container } = renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    const handle = screen.getByRole("separator", { name: "Resize the panels" });
+    const sidebar = container.querySelector<HTMLElement>('[data-slot="studio-sidebar"]');
+    expect(sidebar?.style.width).toBe("304px");
+
+    handle.focus();
+    await user.keyboard("{ArrowLeft}");
+    expect(sidebar?.style.width).toBe("316px");
+    expect(handle).toHaveAttribute("aria-valuenow", "316");
+
+    // …and it stops at the ends rather than collapsing the column to nothing.
+    await user.keyboard("{Shift>}{ArrowRight}{/Shift}".repeat(6));
+    expect(sidebar?.style.width).toBe("248px");
+  });
+
+  it("prints the keyboard sheet from the same table the menus print", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(within(await openMenu(user, "Help")).getByRole("menuitem", { name: /Keyboard shortcuts/ }));
+    const sheet = await screen.findByRole("dialog");
+    expect(within(sheet).getByText("Bring to front")).toBeInTheDocument();
+    expect(within(sheet).getByText("Fit to window")).toBeInTheDocument();
+  });
+
+  it("states the fixed canvas as a READOUT, not as a control", async () => {
+    // Legacy's canvas chip opens a size dialog. This wire has no such setting —
+    // 1920×1080 is a constant of the player contract — so a button here would be
+    // a control that accepts the gesture and cannot perform it.
+    server.use(...serveCast(cast(), {}));
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    expect(screen.getByText("1920 × 1080")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /1920/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps a door out in the error state, when there is no cast to edit", async () => {
+    server.use(
+      http.get("*/api/v1/casts/:id", () =>
+        HttpResponse.json(problem(404, "NOT_FOUND", "no such cast"), { status: 404 }),
+      ),
+      http.get("*/api/v1/entities", () => HttpResponse.json({ items: [], cursor: null })),
+    );
+    renderStudio();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't open this cast/i);
+    // No confirm to get past: there is nothing unsaved in an editor that never
+    // opened, and a guard there would be a dead end.
+    expect(screen.getByRole("link", { name: /back to casts/i })).toHaveAttribute("href", "/casts");
   });
 });

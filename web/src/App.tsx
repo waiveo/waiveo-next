@@ -59,6 +59,31 @@ export default function App() {
               is minted by the next boot (internal/app/auth/destroy.go). The
               route's 401 message names the restart for exactly that reason. */}
           <Route path="/setup" element={<SetupRoute />} />
+          {/* The Studio is INSIDE the session gate and OUTSIDE the shell, and it
+              is the only route that is both.
+
+              It is a full-screen editor, not a console page: a header, a canvas
+              and four docked tool panels that between them want every pixel of
+              the viewport. Mounted in the shell's content column it rendered
+              beside a 240px nav rail that the operator cannot use while editing
+              anyway — the rail's destinations all abandon an unsaved cast — so
+              the rail was costing the canvas a sixth of its width and offering
+              nothing back. It is declared in the shell's OFF_RAIL_ROUTES for the
+              same reason it has no rail entry: it is a tool applied to a cast,
+              reached from the Casts library, and it carries its own door back
+              (the header's "Back to casts", which asks before discarding).
+
+              The gate still wraps it, because /casts and every read the editor
+              makes are authenticated (SEC-005); what it sheds is the CHROME, not
+              the authentication. */}
+          <Route
+            path="/studio"
+            element={
+              <SessionGate>
+                <StudioRoute />
+              </SessionGate>
+            }
+          />
           <Route
             element={
               <SessionGate>
@@ -88,13 +113,14 @@ export default function App() {
                 cmd/waiveo-feeder/consoleroutes_test.go now derives both lists and
                 resolves every route below against a real ServeMux. */}
             <Route path="/upload" element={<UploadRoute />} />
-            {/* The authoring pair: the cast library lists the slide documents,
-                and the Studio edits ONE of them — addressed by `?id=` rather
-                than a path segment because the Studio is a tool applied to a
-                cast, not a sub-resource of one, and the same editor opens with
-                no cast at all (it says so, and links back to the library). */}
+            {/* The cast library: the slide documents themselves. Its rows open
+                the Studio at `/studio?id=…` — a query rather than a path segment
+                because the Studio is a tool APPLIED to a cast, not a sub-resource
+                of one, and the same editor opens with no cast at all (it says so,
+                and links back here). The editor itself is mounted above, outside
+                this shell. */}
             <Route path="/casts" element={<CastsRoute />} />
-            <Route path="/studio" element={<StudioRoute />} />
+            {/* /studio is NOT here — see the full-screen note above the gate. */}
             {/* The content origin's READ half. /upload puts bytes on the box and
                 shows this session's uploads by filename; this browses everything
                 already stored, addressed by digest. */}
