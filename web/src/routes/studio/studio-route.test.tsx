@@ -855,6 +855,346 @@ describe("Studio — saving, conflicts and unsaved work", () => {
   });
 });
 
+/**
+ * UNDO AND REDO, driven with the pointer and the keyboard.
+ *
+ * The reducer's own cases live in edit-history.test.ts; these exist because the
+ * pure model being right proves nothing about the wiring. Two of these cases are
+ * here specifically because they are the ways this feature ships broken while
+ * every unit test passes: a real multi-event drag unwinding one frame at a time,
+ * and a document-level key handler that keeps editing a cast after the operator
+ * has left the page.
+ */
+describe("Studio — undo and redo", () => {
+  /** ⌘Z, delivered to whatever currently has focus, as a browser would. */
+  const undoChord = "{Meta>}z{/Meta}";
+  const redoChord = "{Meta>}{Shift>}z{/Shift}{/Meta}";
+
+  it("brings back a deleted slide, and the save carries it", async () => {
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(screen.getByRole("button", { name: /add slide/i }));
+    expect(screen.getByRole("button", { name: "Slide 2" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Delete slide 1" }));
+    expect(screen.queryByRole("button", { name: "Slide 2" })).toBeNull();
+
+    await user.keyboard(undoChord);
+
+    // The slide is back — and the operator is left where they were when they
+    // deleted it (on slide 2), because a step restores the state that preceded
+    // it rather than inventing a new selection.
+    expect(screen.getByRole("button", { name: "Slide 2" })).toHaveAttribute("aria-current", "true");
+    // It came back WITH its three layers, not as a placeholder of the right
+    // shape: open it and the clock is there.
+    await user.click(screen.getByRole("button", { name: "Slide 1" }));
+    expect(screen.getByRole("button", { name: /Layer 3: Clock/ })).toBeInTheDocument();
+
+    await user.click(saveButton());
+    const slides = (await waitForSave(saved)).slides ?? [];
+    expect(slides).toHaveLength(2);
+    expect(slides[0]?.layers.map((l) => l.kind)).toEqual(["rect", "text", "clock"]);
+  });
+
+  it("undoes a 20-frame drag in ONE press, back to where the layer started", async () => {
+    // The failure this asserts against is the usual one: a stack that records
+    // every pointermove, so ⌘Z crawls the layer back a few pixels at a time.
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    const target = canvasLayer(2, /Layer 2: Text — Welcome/);
+    await user.click(target);
+    expect(screen.getByLabelText("X")).toHaveValue(120);
+    expect(screen.getByLabelText("Y")).toHaveValue(200);
+
+    fireEvent.pointerDown(target, { clientX: 300, clientY: 300 });
+    for (let frame = 1; frame <= 20; frame += 1) {
+      fireEvent.pointerMove(window, { clientX: 300 + frame * 10, clientY: 300 + frame * 5 });
+    }
+    fireEvent.pointerUp(window);
+    expect(screen.getByLabelText("X")).toHaveValue(320);
+    expect(screen.getByLabelText("Y")).toHaveValue(300);
+
+    // ONE press. The affordance agrees about what it is going to do.
+    expect(screen.getByRole("button", { name: "Undo move layer" })).toBeEnabled();
+    await user.keyboard(undoChord);
+
+    expect(screen.getByLabelText("X")).toHaveValue(120);
+    expect(screen.getByLabelText("Y")).toHaveValue(200);
+    // …and nothing is left behind it, so the drag really was one step.
+    expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+
+    // Redo puts the whole drag back, also in one press.
+    await user.keyboard(redoChord);
+    expect(screen.getByLabelText("X")).toHaveValue(320);
+
+    await user.click(saveButton());
+    expect((await waitForSave(saved)).slides?.[0]?.layers?.[1]).toMatchObject({ x: 320, y: 300 });
+  });
+
+  it("keeps a drag the operator PAUSED in the middle of as one undo", async () => {
+    // The coalescing window cannot save this one — five seconds is many times
+    // its length — so this is the case that proves the canvas is announcing the
+    // gesture's edges and the history is honouring them. An operator who holds
+    // the button still while lining a layer up against another has not
+    // performed two drags.
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    const target = canvasLayer(2, /Layer 2: Text — Welcome/);
+    await user.click(target);
+
+    // The clock the coalescing window reads, driven rather than waited on.
+    let clock = Date.now();
+    const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
+    try {
+      fireEvent.pointerDown(target, { clientX: 300, clientY: 300 });
+      fireEvent.pointerMove(window, { clientX: 340, clientY: 300 });
+      clock += 5_000;
+      fireEvent.pointerMove(window, { clientX: 400, clientY: 340 });
+      fireEvent.pointerUp(window);
+    } finally {
+      now.mockRestore();
+    }
+
+    expect(screen.getByLabelText("X")).toHaveValue(220);
+    expect(screen.getByLabelText("Y")).toHaveValue(240);
+
+    await user.keyboard(undoChord);
+    expect(screen.getByLabelText("X")).toHaveValue(120);
+    expect(screen.getByLabelText("Y")).toHaveValue(200);
+    expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+  });
+
+  it("does not swallow the next edit into the drag that just finished", async () => {
+    // The other half of the gesture contract. If pointerup went unreported the
+    // flag would stay raised and everything after it would fold into the drag —
+    // a stack that looks healthy and holds one step for the whole session.
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    const target = canvasLayer(2, /Layer 2: Text — Welcome/);
+    await user.click(target);
+    fireEvent.pointerDown(target, { clientX: 300, clientY: 300 });
+    fireEvent.pointerMove(window, { clientX: 400, clientY: 300 });
+    fireEvent.pointerUp(window);
+    expect(screen.getByLabelText("X")).toHaveValue(220);
+
+    const textarea = screen.getByLabelText("Text");
+    await user.clear(textarea);
+    await user.type(textarea, "Open at 9");
+
+    const row = screen.getByRole("button", { name: "Text — Open at 9" });
+    await user.click(row);
+    await user.keyboard(undoChord);
+
+    // One press took back the typing and LEFT the drag: two edits, two steps.
+    expect(screen.getByLabelText("Text")).toHaveValue("Welcome");
+    expect(screen.getByLabelText("X")).toHaveValue(220);
+  });
+
+  it("undoes a typed phrase in ONE press, not one character at a time", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(canvasLayer(2, /Layer 2: Text — Welcome/));
+    const textarea = screen.getByLabelText("Text");
+    await user.clear(textarea);
+    await user.type(textarea, "Open at 9");
+    expect(canvasLayer(2, "Text — Open at 9")).toBeInTheDocument();
+
+    // Leave the field the way an operator does — click the layer's row in the
+    // Layers list — so the keystroke belongs to the editor and not to the
+    // textarea's own undo. (Clicking the CANVAS would not do: the hit target
+    // preventDefaults its pointerdown to stop the browser dragging the artwork,
+    // which also means it never takes focus.)
+    const row = screen.getByRole("button", { name: "Text — Open at 9" });
+    await user.click(row);
+    expect(row).toHaveFocus();
+
+    await user.keyboard(undoChord);
+
+    expect(canvasLayer(2, "Text — Welcome")).toBeInTheDocument();
+    expect(screen.getByLabelText("Text")).toHaveValue("Welcome");
+  });
+
+  it("leaves ⌘Z alone while the caret is in a text field", async () => {
+    // The field has its own undo, over the characters in it. Reverting a slide
+    // delete out from under someone mid-word would be a worse surprise than
+    // having no shortcut at all.
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(canvasLayer(2, /Layer 2: Text — Welcome/));
+    const textarea = screen.getByLabelText("Text");
+    await user.clear(textarea);
+    await user.type(textarea, "Zzz");
+    expect(textarea).toHaveFocus();
+
+    // Dispatched rather than typed, so the assertion is about the handler and
+    // not about how the emulation renders a held modifier. `fireEvent` returns
+    // false only when something cancelled the event, so a `true` here IS the
+    // claim: nothing intercepted it, and it reached the field's own undo.
+    expect(fireEvent.keyDown(textarea, { key: "z", metaKey: true })).toBe(true);
+
+    // And the MODEL is untouched — the canvas still describes the typed text.
+    expect(canvasLayer(2, "Text — Zzz")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Undo edit the text" })).toBeEnabled();
+  });
+
+  it("leaves ⌘Z alone while a dialog is in front of the editor", async () => {
+    // A modal is a different context. Reverting the document behind it, out of
+    // sight, on a keystroke aimed at the dialog is the wrong answer.
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(screen.getByRole("button", { name: "Text" }));
+    expect(screen.getByRole("button", { name: /Layer 4: Text — New text/ })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /back to casts/i }));
+    expect(await screen.findByRole("dialog")).toHaveTextContent(/leave without saving/i);
+
+    expect(fireEvent.keyDown(document, { key: "z", metaKey: true })).toBe(true);
+
+    // Dismiss it — the editor behind a modal is aria-hidden, so the layer can
+    // only be looked at once the dialog is gone — and the inserted layer is
+    // still there.
+    await user.keyboard("{Escape}");
+    expect(await screen.findByRole("button", { name: /Layer 4: Text — New text/ })).toBeInTheDocument();
+  });
+
+  it("names the step on the buttons, and disables them at the ends", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    // Freshly opened: nothing either way.
+    expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Redo" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /add slide/i }));
+    await user.click(screen.getByRole("button", { name: "Delete slide 1" }));
+
+    const undo = screen.getByRole("button", { name: "Undo delete slide" });
+    expect(undo).toBeEnabled();
+    await user.click(undo);
+
+    expect(screen.getByRole("button", { name: "Slide 2" })).toBeInTheDocument();
+    const redo = screen.getByRole("button", { name: "Redo delete slide" });
+    expect(redo).toBeEnabled();
+    // Behind the delete is the add — the label follows the stack rather than
+    // being a fixed string.
+    expect(screen.getByRole("button", { name: "Undo add slide" })).toBeEnabled();
+
+    await user.click(redo);
+    expect(screen.queryByRole("button", { name: "Slide 2" })).toBeNull();
+  });
+
+  it("undoes past a SAVE, and the save button comes back so the undo can be kept", async () => {
+    // The half that is easy to get wrong: after a save the draft is clean, so an
+    // undo has to report the draft dirty AGAIN or the operator is left looking
+    // at a reverted cast they cannot persist.
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    const name = screen.getByLabelText("Cast name");
+    await user.clear(name);
+    await user.type(name, "Front window");
+    await user.click(saveButton());
+    expect((await waitForSave(saved)).name).toBe("Front window");
+    expect(await screen.findByRole("button", { name: "Saved" })).toBeDisabled();
+
+    // Focus is on the save button, not in a field, so the chord is the editor's.
+    await user.keyboard(undoChord);
+
+    expect(screen.getByLabelText("Cast name")).toHaveValue("Lobby loop");
+    await user.click(saveButton());
+    expect((await waitForSave(saved)).name).toBe("Lobby loop");
+  });
+
+  it("undoing back to the opened cast reports it CLEAN again", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(screen.getByRole("button", { name: "Rectangle" }));
+    expect(saveButton()).toBeEnabled();
+
+    await user.keyboard(undoChord);
+    expect(screen.getByRole("button", { name: "Saved" })).toBeDisabled();
+  });
+
+  it("adopting the server's version after a conflict empties the stack", async () => {
+    // That version is a DIFFERENT document. An undo across it would write one
+    // cast's slides into another's draft.
+    let reads = 0;
+    server.use(
+      http.get("*/api/v1/casts/:id", () => {
+        reads += 1;
+        return reads === 1
+          ? HttpResponse.json(cast(), { headers: { ETag: '"1"', "Trace-Id": TRACE_ID } })
+          : HttpResponse.json(cast({ revision: 7, name: "Renamed elsewhere" }), {
+              headers: { ETag: '"7"', "Trace-Id": TRACE_ID },
+            });
+      }),
+      http.patch("*/api/v1/casts/:id", () =>
+        problem(412, "REVISION_CONFLICT", "The resource was modified concurrently.", { current_revision: 7 }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(screen.getByRole("button", { name: "Text" }));
+    expect(screen.getByRole("button", { name: "Undo add text layer" })).toBeEnabled();
+
+    await user.click(saveButton());
+    await screen.findByRole("status");
+    await user.click(screen.getByRole("button", { name: /load the current version/i }));
+
+    expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Redo" })).toBeDisabled();
+  });
+
+  it("gives ⌘Z back to the browser the moment the Studio unmounts", async () => {
+    // A document-level handler that outlives its page is a live editor nobody
+    // is looking at. `fireEvent` returns false when the event was cancelled, so
+    // this asserts on the handler's actual effect rather than on a spy.
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    const view = renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+    await user.click(screen.getByRole("button", { name: "Rectangle" }));
+
+    expect(fireEvent.keyDown(document, { key: "z", metaKey: true })).toBe(false);
+
+    view.unmount();
+    expect(fireEvent.keyDown(document, { key: "z", metaKey: true })).toBe(true);
+  });
+});
+
 /** Wait until the PATCH handler has recorded a body, then return it. */
 async function waitForSave(saved: { body?: SavedBody | undefined }): Promise<SavedBody> {
   const body = await vi.waitFor(() => {

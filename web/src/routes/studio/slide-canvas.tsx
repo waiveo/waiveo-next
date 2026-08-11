@@ -604,6 +604,17 @@ export interface SlideCanvasProps {
   /** A keyboard resize, by a canvas-space delta on one grip. */
   onResizeBy: (index: number, handle: ResizeHandle, dx: number, dy: number) => void;
   onDelete: (index: number) => void;
+  /**
+   * A pointer gesture started or finished.
+   *
+   * A drag emits one `onGeometry` per pointermove — hundreds for a long one —
+   * and the host's history has no other way to know that they were all ONE
+   * thing the operator did. Announcing the edges is what makes a 200px drag a
+   * single undo step rather than 200 of them, and it is exact where a timer
+   * is not: an operator who holds the button still for a second while lining
+   * a layer up has not performed two drags.
+   */
+  onGesture?: (phase: "begin" | "end") => void;
   /** The content origin's ref→url listing (see AssetUrls). */
   assetUrls?: AssetUrls;
   /** Which layers' drawn rasters are out of date (see StaleRasters). */
@@ -628,6 +639,7 @@ export function SlideCanvas({
   onNudge,
   onResizeBy,
   onDelete,
+  onGesture,
   assetUrls = null,
   staleRasters = null,
 }: SlideCanvasProps) {
@@ -665,8 +677,11 @@ export function SlideCanvas({
       onSelect(index);
       dragRef.current = { index, handle, startX: e.clientX, startY: e.clientY, origin: layer };
       setDragging(true);
+      // AFTER the selection, which is not part of the gesture and which ends
+      // whatever coalescing run preceded it.
+      onGesture?.("begin");
     },
-    [slide, onSelect],
+    [slide, onSelect, onGesture],
   );
 
   // The move/up listeners live on the WINDOW, not the grip: a fast drag outruns
@@ -688,6 +703,7 @@ export function SlideCanvas({
       if (!dragRef.current) return;
       dragRef.current = null;
       setDragging(false);
+      onGesture?.("end");
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -697,7 +713,7 @@ export function SlideCanvas({
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
     };
-  }, [onGeometry]);
+  }, [onGeometry, onGesture]);
 
   const onLayerKeyDown = useCallback(
     (e: ReactKeyboardEvent, index: number) => {

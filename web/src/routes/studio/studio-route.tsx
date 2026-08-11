@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
-import { ArrowLeft, Save } from "lucide-react";
+import { ArrowLeft, Redo2, Save, Undo2 } from "lucide-react";
 import { Button, ConfirmModal, FormField, PageHeader, Toaster, toast } from "@/components/kit";
 import {
   ApiError,
@@ -18,17 +18,24 @@ import {
 } from "@/api";
 import { MediaPickerModal, useContentLibrary } from "@/routes/media/media-library";
 import {
-  EMPTY_STUDIO_STATE,
   applyDerivePatch,
   currentSlide,
   defaultLayer,
   deriveLayer,
   selectedLayer,
   staleRasterKeys,
-  studioReducer,
   studioStateToUpdate,
   type ResizeHandle,
 } from "./cast-model";
+import {
+  EMPTY_STUDIO_HISTORY,
+  isTextEntryTarget,
+  matchHistoryShortcut,
+  redoLabel,
+  studioHistoryReducer,
+  undoLabel,
+  type StudioHistoryAction,
+} from "./edit-history";
 import { SlideCanvas } from "./slide-canvas";
 import { SlideFilmstrip } from "./slide-filmstrip";
 import { InsertToolbar, LayerList } from "./layer-list";
@@ -55,6 +62,16 @@ import { PropertiesPanel } from "./properties-panel";
  * overwrite with theirs (against the freshly-read revision). What is forbidden
  * is the silent retry, and neither of these is one.
  *
+ * ── Undo ────────────────────────────────────────────────────────────────────
+ * Every dispatch goes through `studioHistoryReducer`, which wraps the edit
+ * reducer and records a snapshot per step — so an edit cannot be added to the
+ * model and forgotten by the history. This file owns only the three things that
+ * are not pure: the wall clock each dispatch is stamped with (coalescing needs
+ * to know how far apart two edits were, and a reducer may not read a clock),
+ * the document-level key handler, and the affordances. Everything else,
+ * including what a step IS and when two edits merge into one, is in
+ * edit-history.ts with the reasoning.
+ *
  * ── Leaving with unsaved work ───────────────────────────────────────────────
  * `beforeunload` covers closing or reloading the tab. In-app navigation is
  * guarded at the one door out (the back link) with a confirm, rather than with
@@ -79,7 +96,17 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
   const castId = params.get("id");
   const navigate = useNavigate();
 
-  const [state, dispatch] = useReducer(studioReducer, EMPTY_STUDIO_STATE);
+  // Named `editHistory` rather than `history` so nothing in this file can read
+  // as the global `window.history`.
+  const [editHistory, rawDispatch] = useReducer(studioHistoryReducer, EMPTY_STUDIO_HISTORY);
+  const state = editHistory.present;
+  // Every action is stamped with the wall clock ON THE WAY IN. The history
+  // reducer is pure and cannot read one, and without a timestamp it can only
+  // fall back to "these two arrived together" — which is right inside a pointer
+  // gesture and wrong for a burst of typing followed by a pause.
+  const dispatch = useCallback((action: StudioHistoryAction) => {
+    rawDispatch({ ...action, at: Date.now() });
+  }, []);
   const [loaded, setLoaded] = useState<Cast | null>(null);
   const [etag, setEtag] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -177,7 +204,7 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
     return () => {
       cancelled = true;
     };
-  }, [client, castId]);
+  }, [client, castId, dispatch]);
 
   // ── Entities, for the entity widget's subject picker ──────────────────────
   //
@@ -221,6 +248,50 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, []);
 
+  // ── Undo / redo ───────────────────────────────────────────────────────────
+  const canUndo = editHistory.past.length > 0;
+  const canRedo = editHistory.future.length > 0;
+  const undoWhat = undoLabel(editHistory);
+  const redoWhat = redoLabel(editHistory);
+  // The accessible name NAMES the step, so a screen reader and a hover both say
+  // what a press will revert rather than leaving the operator to remember.
+  const undoName = undoWhat === null ? "Undo" : `Undo ${undoWhat}`;
+  const redoName = redoWhat === null ? "Redo" : `Redo ${redoWhat}`;
+
+  // Whether a dialog is in front of the editor. Read from a ref inside the key
+  // handler so opening the picker does not tear the listener down and rebind
+  // it; the value it needs is "is one open right now", not a dependency.
+  const modalOpen = pickerFor !== null || leaveOpen;
+  const modalOpenRef = useRef(modalOpen);
+  modalOpenRef.current = modalOpen;
+
+  // The shortcut is bound to the DOCUMENT, because the thing being undone is the
+  // whole cast and the operator may have focus anywhere in the editor — the
+  // canvas, the filmstrip, a layer row, or nothing at all. It is bound in an
+  // effect whose cleanup removes it, so it exists exactly as long as the Studio
+  // is mounted: navigating to another route takes ⌘Z back to the browser rather
+  // than leaving a handler behind that edits a cast nobody is looking at.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const command = matchHistoryShortcut(e);
+      if (command === null) return;
+      // A text field keeps its own undo, over the characters in it. Taking ⌘Z
+      // from an operator mid-word to undo a slide delete would be a worse
+      // surprise than not having the shortcut at all.
+      if (isTextEntryTarget(e.target)) return;
+      // A dialog is a modal context: the editor behind it is not what the
+      // operator is addressing.
+      if (modalOpenRef.current) return;
+      // Claimed whether or not there is anything on the stack. The Studio owns
+      // ⌘Z while it is mounted, and a key that sometimes reaches the browser
+      // and sometimes does not is the worse of the two behaviours.
+      e.preventDefault();
+      dispatch({ type: command });
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [dispatch]);
+
   // ── Save ──────────────────────────────────────────────────────────────────
   const save = useCallback(
     async (withEtag: string) => {
@@ -250,7 +321,7 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
         setSaving(false);
       }
     },
-    [client, castId, state],
+    [client, castId, state, dispatch],
   );
 
   // ── Editing callbacks (thin: every one is a single dispatch) ──────────────
@@ -260,31 +331,37 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
   // been open.
   const onInsert = useCallback(
     (kind: LayerKind) => dispatch({ type: "insertLayer", layer: defaultLayer(kind, Date.now()) }),
-    [],
+    [dispatch],
   );
   // A rasterized layer inserts through its own callback because `derive` is not
   // one kind: the SPEC decides what is drawn, so "insert a derive layer" has no
   // meaning without one.
   const onInsertDerive = useCallback(
     (kind: DeriveKind) => dispatch({ type: "insertLayer", layer: deriveLayer(kind) }),
-    [],
+    [dispatch],
   );
-  const onSelectLayer = useCallback((index: number | null) => dispatch({ type: "selectLayer", index }), []);
+  const onSelectLayer = useCallback((index: number | null) => dispatch({ type: "selectLayer", index }), [dispatch]);
   const onGeometry = useCallback(
     (index: number, geometry: Pick<SlideLayer, "x" | "y" | "w" | "h">) =>
       dispatch({ type: "patchLayer", index, patch: geometry }),
-    [],
+    [dispatch],
   );
   const onNudge = useCallback(
     (index: number, dx: number, dy: number) => dispatch({ type: "moveLayer", index, dx, dy }),
-    [],
+    [dispatch],
   );
   const onResizeBy = useCallback(
     (index: number, handle: ResizeHandle, dx: number, dy: number) =>
       dispatch({ type: "resizeLayer", index, handle, dx, dy }),
-    [],
+    [dispatch],
   );
-  const onDeleteLayer = useCallback((index: number) => dispatch({ type: "deleteLayer", index }), []);
+  const onDeleteLayer = useCallback((index: number) => dispatch({ type: "deleteLayer", index }), [dispatch]);
+  // The canvas announces the edges of a pointer drag so the hundreds of
+  // geometry patches between them collapse to one undo step.
+  const onGesture = useCallback(
+    (phase: "begin" | "end") => dispatch({ type: "gesture", phase }),
+    [dispatch],
+  );
 
   if (!castId) {
     return (
@@ -331,6 +408,45 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
                 onClick={() => (state.dirty ? setLeaveOpen(true) : navigate("/casts"))}
               >
                 Back to casts
+              </Button>
+              {/* Undo and redo live in the HEADER rather than beside the canvas
+                  because the header is the one region that renders in every
+                  state of the editor. Deleting the last slide replaces the
+                  canvas column with a "no slides yet" line, and an undo control
+                  that disappeared exactly when the operator had just deleted
+                  everything would be missing at the only moment it matters.
+
+                  The accessible name carries the step ("Undo delete slide") in
+                  every layout; the visible label follows the width it has. On a
+                  phone the header's action row is already four controls wide, so
+                  these two are the glyph alone; from `sm` they name the verb; from
+                  `xl` they name the whole step, so an operator with the room never
+                  has to hover to find out what a press will revert. */}
+              <Button
+                variant="secondary"
+                icon={Undo2}
+                aria-label={undoName}
+                title={undoName}
+                disabled={!canUndo}
+                onClick={() => dispatch({ type: "undo" })}
+              >
+                <span className="hidden sm:inline">Undo</span>
+                {undoWhat === null ? null : (
+                  <span className="hidden xl:inline">{` ${undoWhat}`}</span>
+                )}
+              </Button>
+              <Button
+                variant="secondary"
+                icon={Redo2}
+                aria-label={redoName}
+                title={redoName}
+                disabled={!canRedo}
+                onClick={() => dispatch({ type: "redo" })}
+              >
+                <span className="hidden sm:inline">Redo</span>
+                {redoWhat === null ? null : (
+                  <span className="hidden xl:inline">{` ${redoWhat}`}</span>
+                )}
               </Button>
               {/* No ETag means no read happened, and there is no
                   unconditional-overwrite path to fall back on (API-022) — so
@@ -485,10 +601,12 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
                 onNudge={onNudge}
                 onResizeBy={onResizeBy}
                 onDelete={onDeleteLayer}
+                onGesture={onGesture}
               />
               <p className="text-[12px] text-muted-foreground">
                 Drag a layer to move it, or drag a corner to resize. With a layer focused: arrow keys nudge,
-                Alt+arrows nudge by one pixel, Shift+arrows resize, Delete removes it.
+                Alt+arrows nudge by one pixel, Shift+arrows resize, Delete removes it. ⌘Z / Ctrl+Z takes back
+                the last change and ⌘⇧Z / Ctrl+Y puts it back.
               </p>
             </div>
 
