@@ -3,9 +3,10 @@ import { render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
+import { MemoryRouter } from "react-router";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import DevicesRoute from "./devices-route";
-import { createApi, type Device, type Entity } from "@/api";
+import { createApi, type Device, type Entity, type SystemHealth } from "@/api";
 import { TEST_BASE, TRACE_ID, ULID_A, ok } from "@/api/test-support";
 
 // The Devices route, clicked through. What is worth testing here is not that a
@@ -74,32 +75,71 @@ function page(items: unknown[]) {
   return HttpResponse.json({ items, cursor: null }, { headers: { "Trace-Id": TRACE_ID } });
 }
 
-/** The two reads the route makes on mount. Any of them can be overridden by a
+/** A `/system-health` body carrying one connected relay. Only `relays` is read
+ * by this route, but the whole required shape is served because the client
+ * types it from the generated schema and a partial body would let a test pass
+ * against a response the server has never produced. */
+function health(over: Partial<SystemHealth> = {}): SystemHealth {
+  return {
+    status: "ok",
+    checked_at_ms: 1_753_142_400_000,
+    uptime_ms: 3_600_000,
+    version: "test",
+    services: [],
+    storage: { path: "/", status: "ok", detail: "plenty of room" },
+    relays: [{ relay_id: RELAY, address: "192.0.2.9:7421", screen_count: 1 }],
+    screens: {
+      total: 0,
+      live: 0,
+      fetching: 0,
+      rejected: 0,
+      stale: 0,
+      never_seen: 0,
+      paired: 0,
+      overridden: 0,
+      live_window_ms: 30_000,
+      content_transfer_window_ms: 120_000,
+      fetching_max_unacked_pulls: 3,
+    },
+    ...over,
+  };
+}
+
+/** The THREE reads the route makes on mount. Any of them can be overridden by a
  * later `server.use` in a test.
  *
- * Two, not four: the page no longer lists `/adopted-devices` (it has no key to
- * join those rows onto a device) or `/scope-nodes` (the server places an
- * adopted device itself). `onUnhandledRequest: "error"` is what keeps that
- * honest — if the route regained either fetch, every test here would fail
- * loudly rather than silently reading a stale stub. */
+ * Three, not five: the page does not list `/adopted-devices` (it has no key to
+ * join those rows onto a device) or `/scope-nodes` (the server places an adopted
+ * device itself). It DOES read `/system-health`, because relay connectivity is
+ * the only way to tell "discovery is running and found nothing" from "nothing is
+ * discovering" — see ./discovery. `onUnhandledRequest: "error"` is what keeps
+ * that honest: a route that gained or lost a fetch fails every test here loudly
+ * rather than silently reading a stale stub. */
 function seed({
   devices = [device()],
   entities = [entity()],
+  systemHealth = health(),
 }: {
   devices?: Device[];
   entities?: Entity[];
+  systemHealth?: SystemHealth;
 } = {}) {
   server.use(
     http.get(`${TEST_BASE}/devices`, () => page(devices)),
     http.get(`${TEST_BASE}/entities`, () => page(entities)),
+    http.get(`${TEST_BASE}/system-health`, () => ok(systemHealth)),
   );
 }
 
+/** Rendered inside a router: the page links to the Roku console, and a `<Link>`
+ * with no router context throws rather than degrading. */
 function renderRoute() {
   const api = createApi({ baseUrl: TEST_BASE });
   render(
     <ThemeProvider>
-      <DevicesRoute api={api} />
+      <MemoryRouter>
+        <DevicesRoute api={api} />
+      </MemoryRouter>
     </ThemeProvider>,
   );
   return userEvent.setup();
@@ -123,6 +163,47 @@ describe("Devices — the discovered fleet", () => {
     await waitFor(() => expect(within(status).getByText("Discovered")).toBeInTheDocument());
     expect(within(status).getByText("Relays reporting")).toBeInTheDocument();
     expect(within(status).getByText(/there is no scan to start from here/)).toBeInTheDocument();
+  });
+
+  it("names the relay that reported the devices, with the address it dials on", async () => {
+    // "Which relay found this" is the first question after "why is this
+    // missing", and the page had no answer at all: it counted distinct relay
+    // ids and showed nothing about any of them.
+    seed({ devices: [device(), device({ id: OTHER_DEVICE_ID, name: "Cafe TV" })] });
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    const relay = await within(status).findByText(RELAY);
+    const row = relay.closest("[data-slot='discovery-relay']")!;
+    expect(within(row as HTMLElement).getByText("192.0.2.9:7421")).toBeInTheDocument();
+    expect(within(row as HTMLElement).getByText("2 devices")).toBeInTheDocument();
+  });
+
+  it("says outright that no sweep timestamp is published, rather than omitting the field", async () => {
+    // "When did it last sweep" is the obvious next question. The API cannot
+    // answer it, and an omitted field reads as an oversight — so the page says
+    // what its silence means and what is load-bearing instead.
+    seed();
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    await waitFor(() =>
+      expect(within(status).getByText(/No sweep timestamp is published/)).toBeInTheDocument(),
+    );
+    expect(
+      within(status).getByText(/which relays are connected now, not when each last swept/),
+    ).toBeInTheDocument();
+  });
+
+  it("explains why an expected device might not be listed, on demand", async () => {
+    seed();
+    const user = renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    // Collapsed by default — available without shouting.
+    expect(within(status).queryByText(/neither protocol crosses subnets/)).toBeNull();
+    await user.click(
+      within(status).getByRole("button", { name: /Why is a device I expected not listed/ }),
+    );
+    expect(within(status).getByText(/neither protocol crosses subnets/)).toBeInTheDocument();
+    expect(within(status).getByText(/one malformed candidate refuses the entire report/)).toBeInTheDocument();
   });
 
   it("reads adopted straight off the row, and does not offer to adopt it twice", async () => {
@@ -154,10 +235,119 @@ describe("Devices — the discovered fleet", () => {
   });
 });
 
+// The defect this whole block exists for: an empty devices table used to read
+// identically for four completely different situations, and an operator cannot
+// act on "no devices reported". Each test below asserts that ONE of those
+// situations says something the others do not — and, crucially, that the wrong
+// sentence is absent, since a page that said all four things at once would pass
+// a positive-only assertion while being just as useless.
+describe("Devices — the four ways a device list can be empty", () => {
+  async function stateRegion() {
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    return within(status).getByRole("status");
+  }
+
+  it("says discovery is NOT RUNNING when no relay is connected", async () => {
+    seed({ devices: [], entities: [], systemHealth: health({ relays: [] }) });
+    renderRoute();
+    const state = await stateRegion();
+    await waitFor(() => expect(state).toHaveAttribute("data-kind", "no-relay"));
+    expect(state).toHaveTextContent(/Discovery is not running — no relay is connected/);
+    // The distinguishing claim: an empty list here says nothing about the LAN.
+    expect(state).toHaveTextContent(/says nothing about what is on the network/);
+  });
+
+  it("says discovery IS running and found nothing when a relay is connected", async () => {
+    seed({ devices: [], entities: [] });
+    renderRoute();
+    const state = await stateRegion();
+    await waitFor(() => expect(state).toHaveAttribute("data-kind", "searching"));
+    expect(state).toHaveTextContent(/Discovery is running on 1 relay — nothing found yet/);
+    // …and points at the actual next thing to check, which is the network, not
+    // the relay.
+    expect(state).toHaveTextContent(/a relay only ever sees its own LAN/);
+    expect(state).not.toHaveTextContent(/no relay is connected/);
+  });
+
+  it("says everything found is ALREADY ADOPTED rather than showing a bare list", async () => {
+    seed({ devices: [device({ adopted: true })] });
+    renderRoute();
+    const state = await stateRegion();
+    await waitFor(() => expect(state).toHaveAttribute("data-kind", "all-adopted"));
+    expect(state).toHaveTextContent(/Everything found is adopted/);
+    expect(state).toHaveTextContent(/This is the steady state, not an empty result/);
+  });
+
+  it("says it does not KNOW when relay health is refused, and does not claim a sweep ran", async () => {
+    // /system-health is owner-only. A site admin gets 403 — and the page must
+    // not quietly render that as "a relay swept and found nothing", which is a
+    // claim it has no basis for.
+    seed({ devices: [], entities: [] });
+    server.use(
+      http.get(`${TEST_BASE}/system-health`, () =>
+        HttpResponse.json(
+          {
+            type: "about:blank",
+            title: "Forbidden",
+            status: 403,
+            code: "FORBIDDEN",
+            detail: "Only the workspace owner may read this.",
+            trace_id: TRACE_ID,
+          },
+          { status: 403, headers: { "Content-Type": "application/problem+json", "Trace-Id": TRACE_ID } },
+        ),
+      ),
+    );
+    renderRoute();
+    const state = await stateRegion();
+    await waitFor(() => expect(state).toHaveAttribute("data-kind", "blind"));
+    expect(state).toHaveTextContent(/it is not known whether anything is looking/);
+    expect(state).toHaveTextContent(/Only the workspace owner can read relay health/);
+    // The two claims it must NOT make.
+    expect(state).not.toHaveTextContent(/Discovery is running/);
+    expect(state).not.toHaveTextContent(/Discovery is not running/);
+    // And the relay list is omitted entirely rather than rendered empty: an
+    // empty list would read as "no relays", which is the claim just refused.
+    expect(screen.queryByText("Relays reporting")).not.toBeNull(); // the stat card label
+    expect(document.querySelector("[data-slot='discovery-relay']")).toBeNull();
+  });
+
+  it("keeps the fleet readable when only health is refused", async () => {
+    // The device plane and health are separate reads. A 403 on health must not
+    // blank a fleet the caller is perfectly entitled to see.
+    seed();
+    server.use(
+      http.get(`${TEST_BASE}/system-health`, () =>
+        HttpResponse.json(
+          {
+            type: "about:blank",
+            title: "Forbidden",
+            status: 403,
+            code: "FORBIDDEN",
+            detail: "Only the workspace owner may read this.",
+            trace_id: TRACE_ID,
+          },
+          { status: 403, headers: { "Content-Type": "application/problem+json", "Trace-Id": TRACE_ID } },
+        ),
+      ),
+    );
+    renderRoute();
+    const table = await screen.findByRole("table", { name: "Discovered devices" });
+    expect(within(table).getByText("Hanger TV")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    // The caveat is stated rather than the uncertainty being hidden.
+    const state = await stateRegion();
+    await waitFor(() =>
+      expect(state).toHaveTextContent(/whether it is running NOW is not known here/),
+    );
+  });
+});
+
 describe("Devices — adopting, clicked through", () => {
   it("adopts by device id with no body at all, and flips the row from the answer", async () => {
     let adoptedRows = [device()];
     let seen: { path: string; body: string; idempotencyKey: string | null } | null = null;
+    seed();
     server.use(
       http.get(`${TEST_BASE}/devices`, () => page(adoptedRows)),
       http.get(`${TEST_BASE}/entities`, () => page([entity()])),
@@ -197,6 +387,7 @@ describe("Devices — adopting, clicked through", () => {
     // leave the operator looking at a device they just adopted still labelled
     // Discovered, which reads as "the adopt did not work".
     let adoptCalls = 0;
+    seed();
     server.use(
       http.get(`${TEST_BASE}/devices`, () => {
         if (adoptCalls === 0) return page([device()]);
@@ -340,6 +531,26 @@ describe("Devices — entities and the remote", () => {
     expect(within(entities).getAllByRole("button", { name: "Remote" })).toHaveLength(1);
   });
 
+  it("links to the Roku console when a media player has been discovered", async () => {
+    seed();
+    renderRoute();
+    const link = await screen.findByRole("link", { name: "Roku console" });
+    expect(link).toHaveAttribute("href", "/roku");
+  });
+
+  it("offers no Roku console link when nothing on the fleet is a media player", async () => {
+    // The link is an offer to go and drive something. A deployment of
+    // thermostats has nothing to drive there, and a dead-end link is the same
+    // "button that does nothing" defect in a different shape.
+    seed({
+      devices: [device({ device_class: "thermostat" })],
+      entities: [entity({ device_class: "thermostat" })],
+    });
+    renderRoute();
+    await screen.findByRole("table", { name: "Discovered devices" });
+    expect(screen.queryByRole("link", { name: "Roku console" })).toBeNull();
+  });
+
   it("opens the remote and dispatches a real command at the chosen entity", async () => {
     let sent: Record<string, unknown> | null = null;
     seed();
@@ -360,6 +571,7 @@ describe("Devices — entities and the remote", () => {
 
 describe("Devices — when the device plane cannot be read", () => {
   it("surfaces the Problem rather than an empty fleet with no explanation", async () => {
+    seed();
     server.use(
       http.get(`${TEST_BASE}/devices`, () =>
         HttpResponse.json(

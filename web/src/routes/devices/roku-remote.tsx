@@ -1,4 +1,11 @@
-import { useCallback, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import {
   ChevronDown,
   ChevronLeft,
@@ -6,6 +13,8 @@ import {
   ChevronUp,
   FastForward,
   House,
+  Info,
+  Pause,
   Play,
   Power,
   PowerOff,
@@ -18,6 +27,7 @@ import {
 } from "lucide-react";
 import { Button, FormField, StatusBadge, toast } from "@/components/kit";
 import { ApiError, type Entity, type EntityCommandResult, type WaiveoApi } from "@/api";
+import type { CommandDispatch, CommandOutcome } from "./command-outcome";
 
 /**
  * The virtual remote — a physical Roku handset rendered as a panel, dispatching
@@ -70,7 +80,9 @@ type EcpKey =
   | "Right"
   | "Select"
   | "Back"
+  | "Info"
   | "Play"
+  | "Pause"
   | "Rev"
   | "Fwd"
   | "VolumeUp"
@@ -107,10 +119,20 @@ const BACK = keyPress("Back", Undo2, "Back");
  * separately, and using the declared command is what keeps a driver free to
  * implement "go home" as something other than an ECP keypress. */
 const HOME: IconPress = { label: "Home", icon: House, command: "home" };
+/** The `*` key on a physical handset. Legacy's remote had it beside Back and
+ * Home, and it is a plain ECP key the adapter passes straight through — the
+ * relay's `keypress` path URL-escapes whatever key it is given rather than
+ * whitelisting a set (internal/relay/ecp/ecp.go). */
+const INFO = keyPress("Info", Info, "Info");
 
+/** Play and Pause are SEPARATE keys, as legacy's remote had them. Roku's `Play`
+ * toggles on most surfaces but not all — a paused screensaver-adjacent surface
+ * can eat it — and an operator who means "pause" should be able to say so
+ * rather than pressing a toggle and reading the screen to find out what it did. */
 const TRANSPORT: IconPress[] = [
   keyPress("Rewind", Rewind, "Rev"),
-  keyPress("Play or pause", Play, "Play"),
+  keyPress("Play", Play, "Play"),
+  keyPress("Pause", Pause, "Pause"),
   keyPress("Fast forward", FastForward, "Fwd"),
 ];
 
@@ -147,6 +169,15 @@ export interface RokuRemoteProps {
    * any. api/1 publishes no channel inventory, so this is usually empty and the
    * free-text channel field is the path that always works. */
   apps?: { channel: string; name: string }[];
+  /** Called once per completed dispatch with what was asked and what came back.
+   *
+   * Optional, and the panel is fully usable without it — its own live region
+   * still reports the last press. It exists so a HOST PAGE can keep the whole
+   * sequence on screen: driving a device is "power on, home, launch, four D-pad
+   * presses", and the question afterwards is which of those actually landed.
+   * The panel does not own that history because the panel is also opened as a
+   * transient dialog, where a history would vanish with the dialog. */
+  onDispatch?: ((dispatch: CommandDispatch) => void) | undefined;
 }
 
 /** The last dispatch's outcome, for the panel's live region. */
@@ -155,7 +186,7 @@ type Outcome =
   | { kind: "sent"; label: string }
   | { kind: "refused"; label: string; code: string; message: string };
 
-export function RokuRemote({ api, entity, apps = [] }: RokuRemoteProps) {
+export function RokuRemote({ api, entity, apps = [], onDispatch }: RokuRemoteProps) {
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<Outcome>({ kind: "idle" });
   const [channel, setChannel] = useState("");
@@ -163,12 +194,43 @@ export function RokuRemote({ api, entity, apps = [] }: RokuRemoteProps) {
   // a ref as well as state: two arrow keys pressed inside one React batch would
   // both see the pre-render `busy === false` and both fire.
   const inFlight = useRef(false);
+  // The dispatch sequence, for the record's stable key. A ref rather than state
+  // because bumping it must not re-render, and two presses inside one batch
+  // must not both read the same value.
+  const seq = useRef(0);
+  // Held in a ref so `send` stays stable across a parent that passes a fresh
+  // closure every render — the keyboard handler and every button depend on it,
+  // and a `send` that changed identity on each parent render would rebuild the
+  // whole pad on every logged command.
+  //
+  // Updated in an EFFECT, not during render: a ref mutated during render is a
+  // side effect in a phase React is free to discard and re-run. Nothing is lost
+  // by the delay — every dispatch here originates from a click or a keystroke,
+  // which cannot happen before the commit that ran this effect.
+  const onDispatchRef = useRef(onDispatch);
+  useEffect(() => {
+    onDispatchRef.current = onDispatch;
+  }, [onDispatch]);
 
   const send = useCallback(
     async (press: Press) => {
       if (inFlight.current) return;
       inFlight.current = true;
       setBusy(true);
+      // Reported for EVERY completion, success included: a log that only records
+      // failures cannot answer "did the launch land", which is the question an
+      // operator actually has.
+      const report = (result: CommandOutcome) => {
+        seq.current += 1;
+        onDispatchRef.current?.({
+          seq: seq.current,
+          at: Date.now(),
+          label: press.label,
+          command: press.command,
+          params: press.params,
+          outcome: result,
+        });
+      };
       try {
         const result: EntityCommandResult = await api.entities.sendCommand(
           entity.id,
@@ -177,15 +239,18 @@ export function RokuRemote({ api, entity, apps = [] }: RokuRemoteProps) {
         );
         if (result.ok) {
           setOutcome({ kind: "sent", label: press.label });
+          report({ kind: "ok" });
         } else {
           const code = result.error?.code ?? "INTERNAL";
           const message = result.error?.message ?? "the relay reported no reason.";
           setOutcome({ kind: "refused", label: press.label, code, message });
+          report({ kind: "refused", code, message });
           toast.error(`${press.label} was not applied — ${code}: ${message}`);
         }
       } catch (err) {
         const detail = err instanceof ApiError ? (err.detail ?? err.code) : "the service is unreachable.";
         setOutcome({ kind: "refused", label: press.label, code: "REQUEST_FAILED", message: detail });
+        report({ kind: "failed", detail });
         toast.error(`Couldn't send ${press.label}: ${detail}`);
       } finally {
         inFlight.current = false;
@@ -300,6 +365,7 @@ export function RokuRemote({ api, entity, apps = [] }: RokuRemoteProps) {
       <div className="flex justify-center gap-2">
         {padButton(BACK)}
         {padButton(HOME)}
+        {padButton(INFO)}
       </div>
 
       <div className="flex justify-center gap-2">{TRANSPORT.map(padButton)}</div>

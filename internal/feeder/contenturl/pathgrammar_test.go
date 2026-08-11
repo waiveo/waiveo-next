@@ -428,12 +428,34 @@ func relPath(root, path string) string {
 // `web` and `player-v3` are skipped BY PATH, anchored at the module root, not by
 // name: they are two specific non-Go trees at the top of this repo, and skipping
 // every directory that happens to share their name would make a producer in, say,
-// `internal/app/web/` invisible to the whole guard. `.git`, `node_modules` and
-// `testdata` are skipped by name anywhere, which is safe for a different reason —
-// none of the three can contain Go source the toolchain compiles.
+// `internal/app/web/` invisible to the whole guard. `node_modules` and `testdata`
+// are skipped by name anywhere, which is safe for a different reason — neither can
+// contain Go source the toolchain compiles.
+//
+// Dot- and underscore-prefixed directories are skipped for the STRONGEST reason
+// available: the go tool ignores them outright, so nothing inside one is ever
+// compiled as part of this module. That is derived from the toolchain's own rule
+// rather than listed, which matters because the list would otherwise need a new
+// row every time some tool claims a dotted directory at the repo root. `.git` used
+// to be that list's only entry; `.claude/worktrees/` is why the list was wrong.
+//
+// That worktrees case is worth naming, because the failure it produced looked
+// alarming and was not: an agent working in an isolated git worktree checks out a
+// NESTED COPY of this whole repo under `.claude/`, and the walk found every
+// legitimate content-path producer a second time, reported at a path inside the
+// copy. A guard that fires on files the compiler cannot see is a guard that cries
+// wolf on every parallel track, and a guard people learn to ignore is worse than
+// no guard — this one is load-bearing (it is the anti-regression fence for the
+// defect where no image or video could display on any screen).
 func skipDir(rel, name string) bool {
+	if name == "" {
+		return false
+	}
+	if c := name[0]; c == '.' || c == '_' {
+		return true
+	}
 	switch name {
-	case ".git", "node_modules", "testdata":
+	case "node_modules", "testdata":
 		return true
 	}
 	return rel == "web" || rel == "player-v3"

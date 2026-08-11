@@ -114,7 +114,7 @@ describe("AppShell — locked-left responsive shell", () => {
         // appended: Schedules programs Screens, Upload is Media's write half.
         children: ["Casts", "Screens", "Schedules", "Media", "Upload", "Widgets"],
       },
-      { group: "Devices", expanded: true, children: ["All devices"] },
+      { group: "Devices", expanded: true, children: ["All devices", "Roku"] },
       { leaf: "Automations" },
       { group: "Extensions", expanded: true, children: ["Installed"] },
       {
@@ -155,6 +155,9 @@ describe("AppShell — locked-left responsive shell", () => {
       "Overview",
       "Screens",
       "Devices",
+      // Reachable as a link — this list checks nothing disappeared, not where it
+      // sits. Roku is a child of Devices; see the placement note in nav-tree.ts.
+      "Roku",
       "Schedules",
       "Casts",
       "Upload",

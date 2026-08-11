@@ -12,6 +12,7 @@ import {
   Presentation,
   Radio,
   Server,
+  Tv,
   Upload,
   Workflow,
   type LucideIcon,
@@ -150,7 +151,18 @@ export const NAV_TREE: NavNode[] = [
     id: "devices",
     label: "Devices",
     icon: Radio,
-    children: [{ kind: "leaf", to: "/devices", label: "All devices", icon: Radio }],
+    children: [
+      { kind: "leaf", to: "/devices", label: "All devices", icon: Radio },
+      // Roku is a SIBLING of All devices, not a top-level entry. The track that
+      // built it argued for top-level, "beside Devices, not inside it: discovering
+      // and OPERATING are different jobs" — true of the two pages, but it was
+      // reasoning against the flat rail, where "inside" did not exist. Under the
+      // area model the rule is the one this file already states: a top-level leaf
+      // is for a page belonging to no area, and a per-driver control surface
+      // plainly belongs to the device area. Filing it loose is the exact thing
+      // Matt objected to ("Screens should be under slide cast, just like CAS").
+      { kind: "leaf", to: "/roku", label: "Roku", icon: Tv },
+    ],
   },
 
   // Automations sit at the top level on purpose. A rule's trigger is usually a
