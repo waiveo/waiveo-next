@@ -148,6 +148,7 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		if e := checkRowPlacement(v.ScopeNode, "playlist"); e != nil {
 			errs = append(errs, *e)
 		}
+		errs = append(errs, checkPlaylistItems(v.Items)...)
 		rs.Playlists = append(rs.Playlists, v)
 	}
 	for _, r := range raw.Casts {
@@ -308,6 +309,62 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 		errs = append(errs, *e)
 	}
 	return rs, errs
+}
+
+// checkPlaylistItems enforces the DAT-041 rules that govern a playlist item's
+// own `content_type` — the field that decides whether an asset item PLAYS as a
+// video or is drawn as a still image (PlaylistItem.ContentType).
+//
+// It reports EVERY failing item rather than the first, for the same reason
+// checkCastSlides does: a playlist is a document an operator edits as a whole,
+// and an editor forced to re-submit once per bad item to discover the next one
+// is API-013's multi-field answer thrown away.
+//
+// Two rules, and both exist because the alternative is silence:
+//
+//   - a stated content_type is one of the closed vocabulary (image/video). An
+//     unrecognised value would ride, unaltered, all the way onto the Lease
+//     content item's `type`, where the relay's content-type filter (PLY-013,
+//     playerserver.filterContentTypes) would drop the item because no player
+//     declares that type — a screen showing nothing, with the only evidence
+//     buried in a Lease no operator reads. Refusing it at the write is the only
+//     place the operator is still holding the thing that is wrong.
+//   - content_type is stated only on an `asset` item. A `slide` or `cast`
+//     item's type is decided by its SOURCE (both project to `slide` items), and
+//     a `playable` has no direct content reference at all, so a content_type on
+//     any of those cannot change what the screen plays. Accepting it would
+//     store an operator's stated intent that nothing will ever honour — the
+//     accepts-work-it-never-performs shape — so it is refused instead.
+//
+// Nothing here re-validates `source` itself or the source/field pairing: those
+// belong to DAT-041's own rules and are not this function's business.
+func checkPlaylistItems(items []PlaylistItem) []Error {
+	var errs []Error
+	for i, item := range items {
+		if item.ContentType == "" {
+			continue
+		}
+		if item.ContentType != PlaylistContentTypeImage && item.ContentType != PlaylistContentTypeVideo {
+			errs = append(errs, Error{
+				Field: fmt.Sprintf("items[%d].content_type", i),
+				Code:  "PLAYLIST_ITEM_CONTENT_TYPE_INVALID",
+				Message: fmt.Sprintf(
+					"content_type %q is not one of %s/%s; a player switches its renderer on this value and would be served nothing for an unknown one (DAT-041)",
+					item.ContentType, PlaylistContentTypeImage, PlaylistContentTypeVideo),
+			})
+			continue
+		}
+		if item.Source != PlaylistSourceAsset {
+			errs = append(errs, Error{
+				Field: fmt.Sprintf("items[%d].content_type", i),
+				Code:  "PLAYLIST_ITEM_CONTENT_TYPE_INVALID",
+				Message: fmt.Sprintf(
+					"content_type is only meaningful on a %q item; a %q item's content type is decided by its source (DAT-041)",
+					PlaylistSourceAsset, item.Source),
+			})
+		}
+	}
+	return errs
 }
 
 // checkCastSlides enforces DAT-043's slide rules over one cast's slides, and

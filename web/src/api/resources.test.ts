@@ -192,4 +192,25 @@ describe("playlist item normalisation", () => {
   it("does not invent members the item never carried", () => {
     expect(normalizePlaylistItem({ source: "asset" })).toEqual({ source: "asset" });
   });
+
+  // `content_type` is the field that makes a scheduled video PLAY rather than
+  // being drawn as a still, so dropping it here would silently downgrade every
+  // video an operator saved — the item would still be accepted, still be
+  // scheduled, and still show nothing on the wall.
+  it("carries an asset item's content_type through", () => {
+    const video: PlaylistItem = { source: "asset", asset_ref: "sha256:aa11", content_type: "video" };
+    expect(normalizePlaylistItem(video)).toEqual(video);
+  });
+
+  // And it belongs to `asset` alone: the server refuses it on any other source
+  // (a cast item's content type is decided by its source), so a leftover from a
+  // switched item would turn a save into a 422 the operator cannot explain.
+  it("drops content_type left behind by switching an item away from asset", () => {
+    const switched = {
+      source: "cast",
+      cast_id: ULID_B,
+      content_type: "video",
+    } as PlaylistItem;
+    expect(normalizePlaylistItem(switched)).toEqual({ source: "cast", cast_id: ULID_B });
+  });
 });

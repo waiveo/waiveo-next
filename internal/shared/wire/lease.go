@@ -77,6 +77,12 @@ const (
 //     itself would need outbound internet per screen, a credential per screen,
 //     and a second implementation of every unit and format decision.
 //
+// The ninth, video, is the only MOVING element a slide can carry, and it splits
+// a third way again: like image (and unlike every widget) its substance is bytes
+// in the content origin, so it is authored as an asset_ref and fetched +
+// content-address-verified by the player before it is ever presented. See
+// LayerKindVideo and LayerFetchesContent.
+//
 // Forward compatibility is by SKIPPING, not by refusal: a player that predates
 // one of these kinds draws the layers it knows and silently skips the rest, so a
 // slide authored with a countdown still shows its title and image on an older
@@ -92,7 +98,45 @@ const (
 	LayerKindCountdown = "countdown" // a Label counting down to TargetMS
 	LayerKindWeather   = "weather"   // a Label showing server-resolved current conditions
 	LayerKindEntity    = "entity"    // a Label showing a platform entity's server-resolved state
+
+	// LayerKindVideo is a content-addressed video drawn as a positioned Video
+	// node — the ONE moving element a slide can carry, and the second kind
+	// (with image) whose bytes come from the content origin rather than from
+	// the layer itself.
+	//
+	// It is deliberately modelled as image's twin, not as its own species: an
+	// authored video layer carries exactly the same two content fields an image
+	// layer does (AssetRef authored, URL derived at projection time), passes the
+	// same required-field rules, and is placed in the same canvas with the same
+	// geometry. Everything that differs is downstream of the wire — a player
+	// creates a Video node instead of a Poster and loops it for the slide's
+	// dwell — so nothing here needs to know about codecs, streaming or duration.
+	// See LayerFetchesContent for the one predicate that names the pair, which
+	// is what keeps the two content projections' URL derivation from drifting
+	// into deriving one and not the other.
+	LayerKindVideo = "video"
 )
+
+// LayerFetchesContent reports whether a layer of this kind names bytes in the
+// content origin — i.e. whether it carries an `asset_ref` a player must fetch
+// and content-address-verify, and therefore whether a projection must derive
+// its `url`.
+//
+// It exists because that question is asked in FOUR places that must answer it
+// identically: this package's own per-kind required-field rules
+// (validateSlideLayers), and the URL derivation in each of the two content
+// projections (internal/feeder/snapshot.resolveLayers and
+// internal/relay/schedulehost.resolveLayers), plus any later producer. When
+// `image` was the only such kind, each of those spelled `l.Kind ==
+// LayerKindImage` inline, and adding `video` to the validator without adding it
+// to both projections would have produced exactly this codebase's signature
+// defect: a layer the store accepts, whose url is never minted, so
+// ValidateSlideLayers drops the whole slide at serve time and the screen shows
+// nothing with nothing anywhere saying why. One predicate makes that
+// impossible to do by halves.
+func LayerFetchesContent(kind string) bool {
+	return kind == LayerKindImage || kind == LayerKindVideo
+}
 
 // slideLayerKinds is the closed kind set above as a slice, in declaration
 // order — the ONE enumeration ValidateSlideLayers both tests membership against
@@ -102,6 +146,7 @@ const (
 var slideLayerKinds = []string{
 	LayerKindText, LayerKindRect, LayerKindImage, LayerKindClock,
 	LayerKindDate, LayerKindCountdown, LayerKindWeather, LayerKindEntity,
+	LayerKindVideo,
 }
 
 // isSlideLayerKind reports whether kind is one of the closed set.
@@ -165,11 +210,14 @@ type Layer struct {
 	//
 	// Unused by `rect`/`image`.
 	Text string `json:"text,omitempty"`
-	// AssetRef and URL address an `image` layer's bytes exactly as a plain
-	// `image` content item does (DAT-041 discipline): AssetRef is the
-	// content-addressed `sha256:` reference a player verifies the fetched
+	// AssetRef and URL address an `image` or `video` layer's bytes exactly as a
+	// plain `image`/`video` content item does (DAT-041 discipline): AssetRef is
+	// the content-addressed `sha256:` reference a player verifies the fetched
 	// bytes against, URL the direct content-origin fetch target (never a
-	// relay-hosted one, REL-140). Both are required together for `image`.
+	// relay-hosted one, REL-140). Both are required together for either kind —
+	// they are the SAME pair of fields under the same rules, which is why
+	// LayerFetchesContent names the two kinds once instead of each consumer
+	// testing for `image` and remembering to add `video`.
 	AssetRef string `json:"asset_ref,omitempty"`
 	URL      string `json:"url,omitempty"`
 	// FontPx is the pixel font size for a `text`/`clock` layer's Label. It is
@@ -246,8 +294,9 @@ type Layer struct {
 //     SlideCanvasHeight. A layer partly off-canvas is refused rather than
 //     left for a player to clip.
 //   - The required fields for the layer's own kind are present: `text` needs
-//     Text; `image` needs BOTH AssetRef and URL (an image with one but not
-//     the other cannot be both verified and fetched, DAT-041); `clock` needs
+//     Text; `image` and `video` — the two content-bearing kinds — each need
+//     BOTH AssetRef and URL (one with one but not the other cannot be both
+//     verified and fetched, DAT-041); `clock` needs
 //     a non-empty format in Text; `rect` needs Color; `date` needs a non-empty
 //     date layout in Text (same reason a clock does — an empty layout draws
 //     nothing, which is a producer bug, not a blank widget); `countdown` needs
@@ -278,12 +327,13 @@ func ValidateSlideLayers(layers []Layer) error {
 // layers as an OPERATOR authored them, before any producer has projected them
 // onto the wire.
 //
-// Exactly one rule differs, and it differs because of when it is asked. An
-// image layer's `url` is not authored — it is DERIVED at projection time from
-// the content origin the snapshot was built against (internal/feeder/snapshot
-// and internal/relay/schedulehost both mint it from the layer's own asset_ref),
-// so at authoring time there is no url to require and demanding one would make
-// every image layer unstorable. Everything else — the closed kind set, the
+// Exactly one rule differs, and it differs because of when it is asked. A
+// content-bearing layer's `url` (image or video, LayerFetchesContent) is not
+// authored — it is DERIVED at projection time from the content origin the
+// snapshot was built against (internal/feeder/snapshot and
+// internal/relay/schedulehost both mint it from the layer's own asset_ref), so
+// at authoring time there is no url to require and demanding one would make
+// every such layer unstorable. Everything else — the closed kind set, the
 // canvas geometry, the other per-kind required fields, the `#RRGGBB` colors —
 // is asked identically, because those ARE authored and a slide that would not
 // draw should be refused by the operator's own create rather than silently
@@ -301,11 +351,13 @@ func ValidateAuthoredSlideLayers(layers []Layer) error {
 }
 
 // validateSlideLayers is the one implementation behind both exported gates.
-// requireImageURL distinguishes the SERVE-time caller (a url has been minted
-// and an image layer without one cannot be fetched) from the AUTHORING-time
-// caller (the url is derived later, so only the content-addressed asset_ref is
-// authored) — see ValidateAuthoredSlideLayers.
-func validateSlideLayers(layers []Layer, requireImageURL bool) error {
+// requireContentURL distinguishes the SERVE-time caller (a url has been minted
+// and a content-bearing layer without one cannot be fetched) from the
+// AUTHORING-time caller (the url is derived later, so only the
+// content-addressed asset_ref is authored) — see ValidateAuthoredSlideLayers.
+// It governs both content-bearing kinds (LayerFetchesContent), which is why it
+// is no longer named for `image` alone.
+func validateSlideLayers(layers []Layer, requireContentURL bool) error {
 	if len(layers) == 0 {
 		return fmt.Errorf("wire: slide has no layers")
 	}
@@ -335,12 +387,16 @@ func validateSlideLayers(layers []Layer, requireImageURL bool) error {
 			if l.Text == "" {
 				return fmt.Errorf("wire: slide layer %d (clock): a non-empty time format (text) is required", i)
 			}
-		case LayerKindImage:
+		case LayerKindImage, LayerKindVideo:
+			// The two content-bearing kinds share one rule because they carry
+			// one pair of fields — see LayerFetchesContent. The kind is named in
+			// the message so an operator is told which layer is at fault, not
+			// merely that "a content layer" is.
 			if l.AssetRef == "" {
-				return fmt.Errorf("wire: slide layer %d (image): asset_ref is required", i)
+				return fmt.Errorf("wire: slide layer %d (%s): asset_ref is required", i, l.Kind)
 			}
-			if requireImageURL && l.URL == "" {
-				return fmt.Errorf("wire: slide layer %d (image): both asset_ref and url are required, got asset_ref=%q url=%q", i, l.AssetRef, l.URL)
+			if requireContentURL && l.URL == "" {
+				return fmt.Errorf("wire: slide layer %d (%s): both asset_ref and url are required, got asset_ref=%q url=%q", i, l.Kind, l.AssetRef, l.URL)
 			}
 		case LayerKindRect:
 			if l.Color == "" {

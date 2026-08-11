@@ -53,15 +53,69 @@ type Playlist struct {
 // inlined copy per playlist could never do. One cast item expands, at projection
 // time, into ONE CONTENT ITEM PER SLIDE in authored order — a playlist item and
 // a played item are not one-to-one for this source.
+//
+// ContentType is what an `asset` item's bytes ARE — `image` or `video` — and it
+// is the field that makes a video schedulable at all.
+//
+// # Why a field, and why on the item
+//
+// Before it existed, an asset item projected to a content reference with no
+// content_type, which every consumer resolves as `image` (REL-061a's stated
+// default, applied by internal/relay/playerserver.SetServedProgram). So an
+// operator could upload an MP4, reference it from a playlist, get a 201, and
+// watch a screen try to draw it as a still Poster: a surface that accepted the
+// work and never performed it. Nothing anywhere in the authored rows carried
+// the answer, so no projection could have derived one.
+//
+// The alternative — SNIFFING the stored bytes at projection time — was
+// rejected. The content origin is content-addressed and deliberately holds no
+// metadata (no filename, no MIME type: internal/feeder/origin), the relay's own
+// re-resolution never has the bytes at all (it holds only the schedule section,
+// internal/relay/schedulehost), and the two projections MUST agree item for
+// item. A field the operator states is the only answer both sides can read, and
+// it is also the honest one: whether an asset should PLAY as a video is an
+// authoring decision, not a property recoverable from a container header.
+//
+// It is `omitempty` and only meaningful for `source: "asset"`. An item that
+// states none marshals with no `content_type` key at all — byte-identical to
+// every playlist authored before this field existed — and is projected as
+// `image`, this codebase's own historical implicit value. A `slide` or `cast`
+// item's content type is decided by its SOURCE, not by this field, so stating
+// one on those is a validation error rather than a silently ignored member (see
+// checkPlaylistItems).
 type PlaylistItem struct {
 	Source          string `json:"source"`
 	AssetRef        string `json:"asset_ref,omitempty"`
+	ContentType     string `json:"content_type,omitempty"`
 	PackID          string `json:"pack_id,omitempty"`
 	ContentID       string `json:"content_id,omitempty"`
 	DurationSeconds *int   `json:"duration_seconds,omitempty"`
 	Slide           *Slide `json:"slide,omitempty"`
 	CastID          string `json:"cast_id,omitempty"`
 }
+
+// PlaylistSourceAsset is the DAT-041 playlist-item `source` value whose content
+// is a single content-addressed asset — the only source PlaylistItem.ContentType
+// applies to.
+//
+// PlaylistContentTypeImage and PlaylistContentTypeVideo are that field's CLOSED
+// vocabulary, and they are byte-identical to player/1's own content-type floor
+// (PLY-014: every conformant player declares at least `image` and `video`) —
+// the value rides unchanged from this row, through both content projections,
+// onto the Lease content item's `type` a player switches its renderer on. There
+// is deliberately no translation step anywhere along that path, so these three
+// constants are the whole vocabulary.
+//
+// They are exported here, on the contract's reference implementation, for the
+// same reason PlaylistSourceCast is: three independent components must agree on
+// these strings — the row validator and BOTH projections — and the consequence
+// of one disagreeing is not a compile error but a screen quietly showing a
+// frozen first frame instead of a playing video.
+const (
+	PlaylistSourceAsset      = "asset"
+	PlaylistContentTypeImage = "image"
+	PlaylistContentTypeVideo = "video"
+)
 
 // PlaylistSourceCast is the DAT-041 playlist-item `source` value whose content
 // is an authored Cast row referenced by `cast_id`.

@@ -328,6 +328,24 @@ func (e PairingCodeResultRedemptionMode) Valid() bool {
 	}
 }
 
+// Defines values for PlaylistItemContentType.
+const (
+	PlaylistItemContentTypeImage PlaylistItemContentType = "image"
+	PlaylistItemContentTypeVideo PlaylistItemContentType = "video"
+)
+
+// Valid indicates whether the value is a known member of the PlaylistItemContentType enum.
+func (e PlaylistItemContentType) Valid() bool {
+	switch e {
+	case PlaylistItemContentTypeImage:
+		return true
+	case PlaylistItemContentTypeVideo:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PlaylistItemSource.
 const (
 	PlaylistItemSourceAsset    PlaylistItemSource = "asset"
@@ -567,22 +585,25 @@ func (e SlideLayerAlign) Valid() bool {
 
 // Defines values for SlideLayerKind.
 const (
-	Clock SlideLayerKind = "clock"
-	Image SlideLayerKind = "image"
-	Rect  SlideLayerKind = "rect"
-	Text  SlideLayerKind = "text"
+	SlideLayerKindClock SlideLayerKind = "clock"
+	SlideLayerKindImage SlideLayerKind = "image"
+	SlideLayerKindRect  SlideLayerKind = "rect"
+	SlideLayerKindText  SlideLayerKind = "text"
+	SlideLayerKindVideo SlideLayerKind = "video"
 )
 
 // Valid indicates whether the value is a known member of the SlideLayerKind enum.
 func (e SlideLayerKind) Valid() bool {
 	switch e {
-	case Clock:
+	case SlideLayerKindClock:
 		return true
-	case Image:
+	case SlideLayerKindImage:
 		return true
-	case Rect:
+	case SlideLayerKindRect:
 		return true
-	case Text:
+	case SlideLayerKindText:
+		return true
+	case SlideLayerKindVideo:
 		return true
 	default:
 		return false
@@ -1222,12 +1243,18 @@ type PlaylistItem struct {
 	AssetRef *string `json:"asset_ref,omitempty"`
 
 	// CastId The cast this entry plays, required when `source` is `cast`. It MUST name an existing cast row, and that cast cannot be deleted while this reference stands (DAT-043).
-	CastId          *string            `json:"cast_id,omitempty"`
-	ContentId       *string            `json:"content_id,omitempty"`
-	DurationSeconds **int              `json:"duration_seconds,omitempty"`
-	PackId          *string            `json:"pack_id,omitempty"`
-	Source          PlaylistItemSource `json:"source"`
+	CastId    *string `json:"cast_id,omitempty"`
+	ContentId *string `json:"content_id,omitempty"`
+
+	// ContentType What this `asset` item's bytes ARE, and therefore how a screen presents them: `image` is drawn as a still for the item's dwell time, `video` is played. Optional; an item that states none is served as `image` (`relay/1` REL-061a's stated default for an absent content_type), so every playlist authored before this field existed behaves exactly as it did. Only meaningful on `source: "asset"` — a `cast` item's content type is decided by its source — and stating it on any other source is refused, rather than stored as an intent nothing will honour.
+	ContentType     *PlaylistItemContentType `json:"content_type,omitempty"`
+	DurationSeconds **int                    `json:"duration_seconds,omitempty"`
+	PackId          *string                  `json:"pack_id,omitempty"`
+	Source          PlaylistItemSource       `json:"source"`
 }
+
+// PlaylistItemContentType What this `asset` item's bytes ARE, and therefore how a screen presents them: `image` is drawn as a still for the item's dwell time, `video` is played. Optional; an item that states none is served as `image` (`relay/1` REL-061a's stated default for an absent content_type), so every playlist authored before this field existed behaves exactly as it did. Only meaningful on `source: "asset"` — a `cast` item's content type is decided by its source — and stating it on any other source is refused, rather than stored as an intent nothing will honour.
+type PlaylistItemContentType string
 
 // PlaylistItemSource defines model for PlaylistItem.Source.
 type PlaylistItemSource string
@@ -1535,21 +1562,23 @@ type SlideLayer struct {
 	// Align A `text` layer's horizontal alignment. Optional.
 	Align *SlideLayerAlign `json:"align,omitempty"`
 
-	// AssetRef An `image` layer's content-addressed `sha256:` reference — the only half of an image layer that is AUTHORED. Its fetch `url` is derived from the content origin at projection time.
+	// AssetRef An `image` or `video` layer's content-addressed `sha256:` reference — the only half of a content-bearing layer that is AUTHORED. Its fetch `url` is derived from the content origin at projection time.
 	AssetRef *string `json:"asset_ref,omitempty"`
 
 	// Color A `rect`'s fill (required) or a `text`/`clock`'s foreground (optional). `#RRGGBB` wherever present.
 	Color *string `json:"color,omitempty"`
 
 	// FontPx Pixel font size for a `text`/`clock` layer. Optional — an omitted size renders at the player's own default.
-	FontPx *int           `json:"font_px,omitempty"`
-	H      int            `json:"h"`
-	Kind   SlideLayerKind `json:"kind"`
+	FontPx *int `json:"font_px,omitempty"`
+	H      int  `json:"h"`
+
+	// Kind The element this layer draws. `video` is image's twin — the second kind whose substance is bytes in the content origin, authored as an `asset_ref` and fetched + content-address-verified by the player before it is presented — and the only moving element a slide can carry; a player draws it as a positioned Video node looped for the slide's dwell time.
+	Kind SlideLayerKind `json:"kind"`
 
 	// Text The literal string for a `text` layer; for a `clock` layer, the Go reference-time layout (`15:04:05`, `3:04 PM`) the player renders the current LOCAL time through, refreshed every second. Required for both of those kinds, unused by `rect`/`image`.
 	Text *string `json:"text,omitempty"`
 
-	// Url An `image` layer's direct content-origin fetch target, derived at projection time and present on a SERVED slide. A create/update need not supply it.
+	// Url An `image` or `video` layer's direct content-origin fetch target, derived at projection time and present on a SERVED slide. A create/update need not supply it.
 	Url *string `json:"url,omitempty"`
 	W   int     `json:"w"`
 	X   int     `json:"x"`
@@ -1559,7 +1588,7 @@ type SlideLayer struct {
 // SlideLayerAlign A `text` layer's horizontal alignment. Optional.
 type SlideLayerAlign string
 
-// SlideLayerKind defines model for SlideLayer.Kind.
+// SlideLayerKind The element this layer draws. `video` is image's twin — the second kind whose substance is bytes in the content origin, authored as an `asset_ref` and fetched + content-address-verified by the player before it is presented — and the only moving element a slide can carry; a player draws it as a positioned Video node looped for the slide's dwell time.
 type SlideLayerKind string
 
 // Timestamp A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.

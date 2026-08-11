@@ -1418,17 +1418,20 @@ export interface components {
         };
         /** @description One positioned native element of a slide (`data-model/1` DAT-043). Layers are drawn in ARRAY ORDER — the index IS the z-order — inside a fixed 1920x1080 top-left-origin canvas a player scales to its panel, so geometry is authored against those bounds whatever the real resolution is. Every member beyond `kind` and the geometry is kind-specific. */
         SlideLayer: {
-            /** @enum {string} */
-            kind: "text" | "rect" | "image" | "clock";
+            /**
+             * @description The element this layer draws. `video` is image's twin — the second kind whose substance is bytes in the content origin, authored as an `asset_ref` and fetched + content-address-verified by the player before it is presented — and the only moving element a slide can carry; a player draws it as a positioned Video node looped for the slide's dwell time.
+             * @enum {string}
+             */
+            kind: "text" | "rect" | "image" | "clock" | "video";
             x: number;
             y: number;
             w: number;
             h: number;
             /** @description The literal string for a `text` layer; for a `clock` layer, the Go reference-time layout (`15:04:05`, `3:04 PM`) the player renders the current LOCAL time through, refreshed every second. Required for both of those kinds, unused by `rect`/`image`. */
             text?: string;
-            /** @description An `image` layer's content-addressed `sha256:` reference — the only half of an image layer that is AUTHORED. Its fetch `url` is derived from the content origin at projection time. */
+            /** @description An `image` or `video` layer's content-addressed `sha256:` reference — the only half of a content-bearing layer that is AUTHORED. Its fetch `url` is derived from the content origin at projection time. */
             asset_ref?: string;
-            /** @description An `image` layer's direct content-origin fetch target, derived at projection time and present on a SERVED slide. A create/update need not supply it. */
+            /** @description An `image` or `video` layer's direct content-origin fetch target, derived at projection time and present on a SERVED slide. A create/update need not supply it. */
             url?: string;
             /** @description Pixel font size for a `text`/`clock` layer. Optional — an omitted size renders at the player's own default. */
             font_px?: number;
@@ -1484,6 +1487,11 @@ export interface components {
             /** @enum {string} */
             source: "asset" | "playable" | "cast";
             asset_ref?: string;
+            /**
+             * @description What this `asset` item's bytes ARE, and therefore how a screen presents them: `image` is drawn as a still for the item's dwell time, `video` is played. Optional; an item that states none is served as `image` (`relay/1` REL-061a's stated default for an absent content_type), so every playlist authored before this field existed behaves exactly as it did. Only meaningful on `source: "asset"` — a `cast` item's content type is decided by its source — and stating it on any other source is refused, rather than stored as an intent nothing will honour.
+             * @enum {string}
+             */
+            content_type?: "image" | "video";
             pack_id?: string;
             content_id?: string;
             /** @description The cast this entry plays, required when `source` is `cast`. It MUST name an existing cast row, and that cast cannot be deleted while this reference stands (DAT-043). */

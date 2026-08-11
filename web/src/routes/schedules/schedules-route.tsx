@@ -104,6 +104,13 @@ const messages: Record<string, string> = {
   "msg:pl.item.source.playable": "Content from a pack",
   "msg:pl.item.ref": "Content reference",
   "msg:pl.item.refPh": "sha256:…",
+  // The content origin is content-addressed and holds no MIME type, so nothing
+  // downstream can tell an MP4 from a PNG by looking at it — this is where an
+  // operator says which it is, and it is the difference between a video that
+  // plays and a black rectangle held for the item's dwell time.
+  "msg:pl.item.kind": "File type",
+  "msg:pl.item.kind.image": "Image (held on screen)",
+  "msg:pl.item.kind.video": "Video (plays)",
   "msg:pl.item.cast": "Cast",
   "msg:pl.item.castPh": "Choose a cast",
   "msg:pl.item.castNote":

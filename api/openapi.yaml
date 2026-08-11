@@ -3780,7 +3780,14 @@ components:
       properties:
         kind:
           type: string
-          enum: [text, rect, image, clock]
+          enum: [text, rect, image, clock, video]
+          description: >-
+            The element this layer draws. `video` is image's twin — the second
+            kind whose substance is bytes in the content origin, authored as an
+            `asset_ref` and fetched + content-address-verified by the player
+            before it is presented — and the only moving element a slide can
+            carry; a player draws it as a positioned Video node looped for the
+            slide's dwell time.
         x:
           type: integer
           minimum: 0
@@ -3807,15 +3814,15 @@ components:
         asset_ref:
           type: string
           description: >-
-            An `image` layer's content-addressed `sha256:` reference — the only
-            half of an image layer that is AUTHORED. Its fetch `url` is derived
-            from the content origin at projection time.
+            An `image` or `video` layer's content-addressed `sha256:` reference
+            — the only half of a content-bearing layer that is AUTHORED. Its
+            fetch `url` is derived from the content origin at projection time.
         url:
           type: string
           description: >-
-            An `image` layer's direct content-origin fetch target, derived at
-            projection time and present on a SERVED slide. A create/update need
-            not supply it.
+            An `image` or `video` layer's direct content-origin fetch target,
+            derived at projection time and present on a SERVED slide. A
+            create/update need not supply it.
         font_px:
           type: integer
           minimum: 1
@@ -3968,6 +3975,19 @@ components:
           enum: [asset, playable, cast]
         asset_ref:
           type: string
+        content_type:
+          type: string
+          enum: [image, video]
+          description: >-
+            What this `asset` item's bytes ARE, and therefore how a screen
+            presents them: `image` is drawn as a still for the item's dwell
+            time, `video` is played. Optional; an item that states none is
+            served as `image` (`relay/1` REL-061a's stated default for an absent
+            content_type), so every playlist authored before this field existed
+            behaves exactly as it did. Only meaningful on `source: "asset"` — a
+            `cast` item's content type is decided by its source — and stating it
+            on any other source is refused, rather than stored as an intent
+            nothing will honour.
         pack_id:
           type: string
         content_id:
