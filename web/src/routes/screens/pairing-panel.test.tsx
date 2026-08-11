@@ -92,6 +92,32 @@ describe("PairingPanel — the displays list", () => {
     renderPanel();
     expect(await screen.findByText("No displays yet")).toBeInTheDocument();
   });
+
+  it("finds one display by name, and narrows by where it SITS", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get(`${TEST_BASE}/screens`, () =>
+        page([
+          screenRow(),
+          screenRow({ id: "01J8ZSCREENR0WAAAAAAAAAAA2", name: "Cafe Board", scope_node: ULID_B }),
+        ]),
+      ),
+    );
+    renderPanel();
+    await screen.findByRole("table", { name: "Displays" });
+
+    await user.type(screen.getByLabelText("Search displays"), "Cafe");
+    await waitFor(() => expect(screen.queryByText("Lobby TV")).not.toBeInTheDocument());
+    expect(screen.getByText("Cafe Board")).toBeInTheDocument();
+
+    // The placement filter offers the RESOLVED scope names, not the ULIDs — the
+    // same text the column shows, faceted from the rows on screen.
+    await user.clear(screen.getByLabelText("Search displays"));
+    await waitFor(() => expect(screen.getByText("Lobby TV")).toBeInTheDocument());
+    await user.selectOptions(screen.getByLabelText("Placed under"), "Demo Site");
+    expect(screen.getByText("Lobby TV")).toBeInTheDocument();
+    expect(screen.queryByText("Cafe Board")).not.toBeInTheDocument();
+  });
 });
 
 describe("PairingPanel — pair a new screen, clicked through", () => {

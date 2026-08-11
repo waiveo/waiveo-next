@@ -582,6 +582,98 @@ describe("LiveScreensPanel — push now", () => {
   });
 });
 
+describe("LiveScreensPanel — finding and acting on several screens at once", () => {
+  /** A `now` override as the server reports one, for the screen given. */
+  const override = (screenId: string): NonNullable<ScreenStatus["now"]> => ({
+    screen_id: screenId,
+    mode: "play",
+    source: "cast",
+    cast_id: CAST_A,
+    pushed_at: 1752537000000,
+  });
+
+  it("narrows the fleet to the screen NAME that was typed", async () => {
+    const { user } = renderPanel([
+      statusRow({ screen_id: SCREEN_1, name: "Lobby TV" }),
+      statusRow({ screen_id: SCREEN_2, name: "Kitchen board" }),
+    ]);
+    await screen.findByRole("table", { name: "Live screens" });
+
+    await user.type(screen.getByLabelText("Search screens"), "Kitchen");
+    await waitFor(() => expect(screen.queryByText("Lobby TV")).not.toBeInTheDocument());
+    expect(screen.getByText("Kitchen board")).toBeInTheDocument();
+  });
+
+  it("filters by the reachability LABEL the column actually shows", async () => {
+    const { user } = renderPanel([
+      statusRow({ screen_id: SCREEN_1, name: "Lobby TV", reachability: "live" }),
+      statusRow({ screen_id: SCREEN_2, name: "Kitchen board", reachability: "stale" }),
+    ]);
+    await screen.findByRole("table", { name: "Live screens" });
+
+    // The option is the operator-facing wording, not the wire token — and it is
+    // offered only because a row is in that state.
+    await user.selectOptions(screen.getByLabelText("Reachability"), "Not heard from");
+    await waitFor(() => expect(screen.queryByText("Lobby TV")).not.toBeInTheDocument());
+    expect(screen.getByText("Kitchen board")).toBeInTheDocument();
+  });
+
+  it("clears the override on EVERY selected screen and says how many", async () => {
+    const { user, clears } = renderPanel([
+      statusRow({ screen_id: SCREEN_1, name: "Lobby TV", now: override(SCREEN_1) }),
+      statusRow({ screen_id: SCREEN_2, name: "Kitchen board", now: override(SCREEN_2) }),
+    ]);
+    await screen.findByRole("table", { name: "Live screens" });
+
+    await user.click(screen.getByRole("checkbox", { name: "Select Lobby TV" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select Kitchen board" }));
+    await user.click(screen.getByRole("button", { name: "Return selected to schedule" }));
+
+    await waitFor(() => expect(clears).toEqual([SCREEN_1, SCREEN_2]));
+    expect(await screen.findByText(/2 screens return to their schedules/)).toBeInTheDocument();
+  });
+
+  it("skips a selected screen that has NO override rather than claiming it cleared one", async () => {
+    const { user, clears } = renderPanel([
+      statusRow({ screen_id: SCREEN_1, name: "Lobby TV", now: override(SCREEN_1) }),
+      statusRow({ screen_id: SCREEN_2, name: "Kitchen board" }),
+    ]);
+    await screen.findByRole("table", { name: "Live screens" });
+
+    await user.click(screen.getByRole("checkbox", { name: "Select Lobby TV" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select Kitchen board" }));
+    await user.click(screen.getByRole("button", { name: "Return selected to schedule" }));
+
+    await waitFor(() => expect(clears).toEqual([SCREEN_1]));
+    expect(await screen.findByText(/1 screen returns to its schedule/)).toBeInTheDocument();
+  });
+
+  it("reports the screens it could NOT clear, by name, rather than a bare success", async () => {
+    const { user } = renderPanel([
+      statusRow({ screen_id: SCREEN_1, name: "Lobby TV", now: override(SCREEN_1) }),
+      statusRow({ screen_id: SCREEN_2, name: "Kitchen board", now: override(SCREEN_2) }),
+    ]);
+    await screen.findByRole("table", { name: "Live screens" });
+    server.use(
+      http.delete(`${TEST_BASE}/screens/:id/now`, ({ params }) =>
+        String(params.id) === SCREEN_2
+          ? problem(503, "UNAVAILABLE", "No relay is connected.")
+          : new HttpResponse(null, { status: 204, headers: { "Trace-Id": TRACE_ID } }),
+      ),
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "Select Lobby TV" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select Kitchen board" }));
+    await user.click(screen.getByRole("button", { name: "Return selected to schedule" }));
+
+    // The toast names the screen that is STILL overridden — the row is on the
+    // page too, so the assertion is scoped to the toast itself.
+    const toastText = await screen.findByText(/Cleared 1 of 2/);
+    expect(toastText).toHaveTextContent(/Still overridden: Kitchen board/);
+    expect(toastText).toHaveTextContent(/No relay is connected/);
+  });
+});
+
 describe("LiveScreensPanel — refresh", () => {
   it("re-reads on demand so an operator can watch a push land", async () => {
     let reads = 0;

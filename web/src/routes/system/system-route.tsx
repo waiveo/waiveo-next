@@ -442,6 +442,15 @@ export default function SystemRoute({ api }: { api?: WaiveoApi }) {
               columns={LOG_COLUMNS}
               data={logs.status === "ok" ? logs.value.items : []}
               loading={logs.status === "loading"}
+              // Paging only, no kit search box. This panel's narrowing is
+              // SERVER-side and already above the table — level, source and
+              // Contains are query parameters the box applies to its ring
+              // buffer, and the counts in the copy are the server's. A second,
+              // client-side search here would match only the page the server
+              // already returned and quietly disagree with the "showing N of M
+              // matching" line beside it. The buffer is thousands of lines,
+              // though, so it does need a pager. 50/page: a log is read in runs.
+              pagination={{ pageSize: 50, pageSizeOptions: [25, 50, 100, 200] }}
               emptyState={
                 <EmptyState
                   title={filtered ? "Nothing matched this filter" : "No log lines yet"}

@@ -56,6 +56,44 @@ interface ColumnDecl {
   cell: unknown;
 }
 
+/** Above this many rows a schema-driven table gets the kit's paging and search.
+ *
+ * A threshold rather than a flag because neither is expressible in the document:
+ * ui-schema/1's `table` props are `source` and `columns` (UIS-070) and a host may
+ * not invent a prop (Negotiation forbids silent host extensions). Paging IS a
+ * host presentation decision, in the same family as the loading skeleton and the
+ * stacked-card breakpoint the same component already applies unasked — so it is
+ * decided from the data instead. Below the threshold the table is untouched:
+ * chrome on a five-row table is noise, and a search box over rows that all fit on
+ * screen is a control with nothing to do. */
+const RENDERER_PAGE_SIZE = 25;
+
+/** Whether a column's `cell` names a value on the row, and can therefore be
+ * SORTED — this is what "the schema says it may" means for a table column.
+ *
+ * A Binding (a bare path string) or a LiveBinding (`{path, live:true}`) reads a
+ * field off the row, so the raw bound value is a well-defined sort key and
+ * numbers, timestamps and durations order correctly.
+ *
+ * A Computed or a JSON literal does not. A literal is the same on every row, so
+ * sorting by it is a no-op that still costs a click and a wrong `aria-sort`
+ * announcement; and a Computed's value is a rendered STRING — sorting a
+ * `formatDate` column lexically puts 1 April after 12 March, which is worse than
+ * not offering the sort, because it looks like it worked.
+ *
+ * Derived per column from the column's own declaration, so the sortable set can
+ * never drift from the columns that exist. */
+function cellIsRowValue(cell: unknown): boolean {
+  if (typeof cell === "string") return true;
+  return (
+    typeof cell === "object" &&
+    cell !== null &&
+    "live" in cell &&
+    (cell as { live?: unknown }).live === true &&
+    typeof (cell as { path?: unknown }).path === "string"
+  );
+}
+
 /** The leaf field of a Binding path, for a table's accessible name when the
  * document supplies no label (table is not an input, so UIS-075 does not apply). */
 function leafName(binding: unknown): string {
@@ -83,18 +121,30 @@ export function TableWidget({ node, scope, depth }: WidgetProps) {
   const decls = Array.isArray(node.props?.columns) ? (node.props?.columns as ColumnDecl[]) : [];
   const rowPress = node.on?.rowPress as ActionRef | undefined;
 
+  // Every column gets an ACCESSOR, not just a cell renderer. That is the whole
+  // fix behind removing the old `enableSorting: false`: a cell-only column has no
+  // value for the table to order (or to match a search against), so sorting could
+  // not have worked even if it had been enabled. The accessor returns the RAW
+  // bound value and the cell renders it, so a numeric column sorts numerically
+  // rather than by its rendered text.
   const columns: ColumnDef<Record<string, unknown>>[] = decls.map((col, ci) => ({
     id: `col-${ci}`,
     header: env.msg(String(col.headerMsg)),
-    enableSorting: false,
-    cell: ({ row }) => {
-      const itemScope = narrowToItem(scope, row.original, row.index, loc, tree, "item");
-      return toDisplay(evalBindingExpr(col.cell, itemScope, env)) as ReactNode;
+    enableSorting: cellIsRowValue(col.cell),
+    accessorFn: (row: Record<string, unknown>, index: number) => {
+      const itemScope = narrowToItem(scope, row, index, loc, tree, "item");
+      return evalBindingExpr(col.cell, itemScope, env);
     },
+    cell: ({ getValue }) => toDisplay(getValue()) as ReactNode,
   }));
 
   const data = array as Record<string, unknown>[];
   const label = typeof node.id === "string" ? node.id : leafName(sourcePath);
+  // Long-list affordances, decided from the data (see RENDERER_PAGE_SIZE). Search
+  // comes WITH paging rather than separately: paging a list you cannot search
+  // just hides rows behind a Next button, which is the "find one device in the
+  // fleet" problem with extra clicks.
+  const long = data.length > RENDERER_PAGE_SIZE;
 
   const onRowPress = rowPress
     ? (row: Record<string, unknown>, index: number) => {
@@ -105,6 +155,17 @@ export function TableWidget({ node, scope, depth }: WidgetProps) {
 
   void depth;
   return (
-    <DataTable columns={columns} data={data} label={label} {...(onRowPress ? { onRowPress } : {})} />
+    <DataTable
+      columns={columns}
+      data={data}
+      label={label}
+      {...(onRowPress ? { onRowPress } : {})}
+      {...(long
+        ? {
+            pagination: { pageSize: RENDERER_PAGE_SIZE },
+            search: { label: `Search ${label}` },
+          }
+        : {})}
+    />
   );
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import { STORAGE_KEY, type Theme } from "@/components/theme/theme-context";
@@ -124,6 +124,48 @@ describe.each(THEMES)("the design gallery under the %s theme", (theme) => {
     renderGallery(theme);
     const action = screen.getByRole("button", { name: "Actions for The Hangar TV" });
     expect(action.className).toContain("wv-touch");
+  });
+
+  // The gallery is the reference an author copies from, so a specimen that does
+  // nothing is worse here than anywhere else: it teaches the affordance and then
+  // proves it is decorative. Each of the table capabilities it advertises is
+  // therefore DRIVEN, not merely found in the DOM.
+  it("drives the gallery table's search, filter, paging and bulk selection", async () => {
+    const user = userEvent.setup();
+    const { container } = renderGallery(theme);
+    // Scoped to the data section: the Forms section below has its own "Daypart"
+    // field, and an unscoped label query would resolve to the wrong control.
+    const data = within(container.querySelector("#data") as HTMLElement);
+
+    // Paging: 5 fixture screens at 3/page.
+    const range = container.querySelector('[data-slot="table-range"]')!;
+    expect(range).toHaveTextContent("Showing 1–3 of 5 rows");
+    expect(data.queryByText("Drive-Thru Menu")).not.toBeInTheDocument();
+    await user.click(data.getByRole("button", { name: "Next" }));
+    expect(data.getByText("Drive-Thru Menu")).toBeInTheDocument();
+
+    // Filter: the options are the dayparts the FIXTURES carry.
+    await user.selectOptions(data.getByLabelText("Daypart"), "Sunrise");
+    expect(data.getByText("Lobby Wall")).toBeInTheDocument();
+    expect(data.queryByText("Cafe Board")).not.toBeInTheDocument();
+    await user.selectOptions(data.getByLabelText("Daypart"), "");
+
+    // Search.
+    await user.type(data.getByLabelText("Search screens"), "Patio");
+    await waitFor(() => expect(data.queryByText("Lobby Wall")).not.toBeInTheDocument());
+    expect(data.getByText("Patio Screen")).toBeInTheDocument();
+
+    // Selection + the bulk-action slot, which must reach the caller's handler.
+    await user.click(data.getByRole("checkbox", { name: "Select Patio Screen" }));
+    await user.click(data.getByRole("button", { name: "Publish to selected" }));
+    expect(await screen.findByText("Published to 1 screen")).toBeInTheDocument();
+  });
+
+  it("renders the kit Checkbox as its own specimen, accessibly named", () => {
+    renderGallery(theme);
+    expect(
+      screen.getByRole("checkbox", { name: "Restart the player if it stops reporting" }),
+    ).toBeInTheDocument();
   });
 
   it("highlights a nav item as the current section", async () => {

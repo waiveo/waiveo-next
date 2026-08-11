@@ -167,11 +167,15 @@ export function PairingPanel({ api, parents, nodeNames }: PairingPanelProps) {
 
   const columns = useMemo<ColumnDef<Screen>[]>(
     () => [
-      { accessorKey: "name", header: "Name" },
+      { accessorKey: "name", header: "Name", meta: { searchable: true } },
       {
         id: "placement",
         header: "Placed under",
-        cell: ({ row }) => nodeNames.get(row.original.scope_node) ?? row.original.scope_node,
+        // Named by the RESOLVED scope name, so both the search and the filter
+        // read what the operator sees rather than the ULID underneath it.
+        accessorFn: (screen) => nodeNames.get(screen.scope_node) ?? screen.scope_node,
+        meta: { searchable: true, filter: "enum", filterLabel: "Placed under" },
+        cell: ({ getValue }) => String(getValue()),
       },
     ],
     [nodeNames],
@@ -201,6 +205,9 @@ export function PairingPanel({ api, parents, nodeNames }: PairingPanelProps) {
         data={rows ?? []}
         label="Displays"
         loading={rows === null}
+        search={{ label: "Search displays", placeholder: "Screen name or where it sits" }}
+        filters
+        pagination
         emptyState={
           <EmptyState
             title="No displays yet"
