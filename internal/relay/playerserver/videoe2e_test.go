@@ -10,6 +10,7 @@ import (
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
@@ -105,7 +106,7 @@ func serveProjectedProgram(t *testing.T, s *store.Store) (*Server, string) {
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	programs, errs := snapshot.DeriveScreenPrograms(ds, videoE2EOrigin, seedContentInstant(t))
+	programs, errs := snapshot.DeriveScreenPrograms(ds, contenturl.Signer{Base: videoE2EOrigin}, seedContentInstant(t))
 	if len(errs) != 0 {
 		t.Fatalf("DeriveScreenPrograms reported %+v", errs)
 	}

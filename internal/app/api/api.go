@@ -63,8 +63,10 @@ const apiPrefix = "/api/v1"
 // is the shared content-addressed origin store the upload endpoint writes
 // into (and the feeder serves GET /content/<hex> from over the SAME
 // instance); contentBase is the feeder's own content-origin base URL the
-// upload's returned url is built from (<base>/content/<hex>, snapshot.Build's
-// form).
+// upload's returned url is stated against. That url is MINTED through that
+// same origin's signer (server.contentSigner) rather than assembled here, so
+// its signing posture is the origin's own by construction — the alternative
+// answered 201 with a url the very same process refused 403.
 type server struct {
 	store       *store.Store
 	idem        *apihttp.IdempotencyStore

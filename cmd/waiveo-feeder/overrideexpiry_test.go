@@ -7,6 +7,7 @@ import (
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
@@ -92,6 +93,7 @@ func TestAnAlertsTTLLapsesWithNoWriterRunning(t *testing.T) {
 	now := base
 	src := &desiredStateSource{
 		store:          st,
+		content:        origin.New(),
 		contentBaseURL: "https://192.0.2.12:7420",
 		id:             id,
 		nowMs:          func() int64 { return now },
@@ -208,6 +210,7 @@ func TestTheSnapshotCacheStillServesFromCacheWhenNothingCanChange(t *testing.T) 
 	now := base
 	src := &desiredStateSource{
 		store:          st,
+		content:        origin.New(),
 		contentBaseURL: "https://192.0.2.12:7420",
 		id:             id,
 		nowMs:          func() int64 { return now },

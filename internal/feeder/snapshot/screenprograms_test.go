@@ -9,6 +9,7 @@ import (
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/relay/schedulehost"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
@@ -116,7 +117,7 @@ func TestEditingAPlaylistChangesTheDeliveredProgram(t *testing.T) {
 
 	s := seededStore(t, originalAsset)
 
-	before, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
+	before, _, err := BuildFromStore(desiredState(t, s), contenturl.Signer{Base: "https://origin.example"}, id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore before the edit: %v", err)
 	}
@@ -150,7 +151,7 @@ func TestEditingAPlaylistChangesTheDeliveredProgram(t *testing.T) {
 		t.Fatalf("update playlist: %v", err)
 	}
 
-	after, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
+	after, _, err := BuildFromStore(desiredState(t, s), contenturl.Signer{Base: "https://origin.example"}, id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore after the edit: %v", err)
 	}
@@ -196,7 +197,7 @@ func TestUnchangedProgramReproducesItsRevision(t *testing.T) {
 	const asset = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
 	s := seededStore(t, asset)
 
-	first, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
+	first, _, err := BuildFromStore(desiredState(t, s), contenturl.Signer{Base: "https://origin.example"}, id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore #1: %v", err)
 	}
@@ -209,7 +210,7 @@ func TestUnchangedProgramReproducesItsRevision(t *testing.T) {
 		Items: []datamodel.PlaylistItem{{Source: "asset", AssetRef: asset}},
 	})
 
-	second, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
+	second, _, err := BuildFromStore(desiredState(t, s), contenturl.Signer{Base: "https://origin.example"}, id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore #2: %v", err)
 	}
@@ -280,7 +281,7 @@ func TestTwoScreensUnderDifferentPlacementsGetDifferentPrograms(t *testing.T) {
 		DisplayPower: "on", PlaylistID: playlistB, Name: "All Day B",
 	})
 
-	snap, degrades, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
+	snap, degrades, err := BuildFromStore(desiredState(t, s), contenturl.Signer{Base: "https://origin.example"}, id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -350,7 +351,7 @@ func TestSiteScheduleCascadesToAScreenPlacedOnTheSiteNode(t *testing.T) {
 		DisplayPower: "on", PlaylistID: sitePlaylist, Name: "Site All Day",
 	})
 
-	snap, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
+	snap, _, err := BuildFromStore(desiredState(t, s), contenturl.Signer{Base: "https://origin.example"}, id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -396,7 +397,7 @@ func TestScreenWithNoApplicableScheduleGetsTheTerminalDefault(t *testing.T) {
 		ID: unscheduledScr, ScopeNode: unscheduledNod, Name: "Unscheduled Screen",
 	})
 
-	snap, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
+	snap, _, err := BuildFromStore(desiredState(t, s), contenturl.Signer{Base: "https://origin.example"}, id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -446,11 +447,11 @@ func TestBlankDaypartYieldsABlankProgramAtTheSameGeneration(t *testing.T) {
 	s := seededStore(t, asset)
 	ds := desiredState(t, s)
 
-	day, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t), nil)
+	day, _, err := BuildFromStore(ds, contenturl.Signer{Base: "https://origin.example"}, id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore (day): %v", err)
 	}
-	night, _, err := BuildFromStore(ds, "https://origin.example", id, blankInstant(t), nil)
+	night, _, err := BuildFromStore(ds, contenturl.Signer{Base: "https://origin.example"}, id, blankInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore (night): %v", err)
 	}
@@ -494,7 +495,7 @@ func TestScreenWithUnresolvableTZIsOmittedNotSubstituted(t *testing.T) {
 		ID: orgScreen, ScopeNode: orgRoot, Name: "Screen on the org root",
 	})
 
-	snap, degrades, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
+	snap, degrades, err := BuildFromStore(desiredState(t, s), contenturl.Signer{Base: "https://origin.example"}, id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -533,7 +534,7 @@ func TestStoreWithNoScreenRowsYieldsAnEmptySection(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 
-	snap, degrades, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
+	snap, degrades, err := BuildFromStore(desiredState(t, s), contenturl.Signer{Base: "https://origin.example"}, id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -639,7 +640,7 @@ const parityOrigin = "https://origin.example"
 // buildSnapshot builds the signed snapshot for s at the seeded content instant.
 func buildSnapshot(t *testing.T, s *store.Store) SignedSnapshot {
 	t.Helper()
-	snap, _, err := BuildFromStore(desiredState(t, s), parityOrigin, testIdentity(t), contentInstant(t), nil)
+	snap, _, err := BuildFromStore(desiredState(t, s), contenturl.Signer{Base: parityOrigin}, testIdentity(t), contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -657,7 +658,7 @@ func assertProjectionsAgree(t *testing.T, s *store.Store) {
 	ds := desiredState(t, s)
 	at := contentInstant(t)
 
-	snap, _, err := BuildFromStore(ds, origin, id, at, nil)
+	snap, _, err := BuildFromStore(ds, contenturl.Signer{Base: origin}, id, at)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -768,7 +769,7 @@ func TestSlidePlaylistItemDerivesToASlideContentRef(t *testing.T) {
 		t.Fatalf("update playlist to a slide: %v", err)
 	}
 
-	snap, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
+	snap, _, err := BuildFromStore(desiredState(t, s), contenturl.Signer{Base: "https://origin.example"}, id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -812,7 +813,7 @@ func TestSeededDemoSlideValidatesAndDerives(t *testing.T) {
 	const asset = "sha256:5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5e"
 	s := seededStore(t, asset)
 
-	snap, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
+	snap, _, err := BuildFromStore(desiredState(t, s), contenturl.Signer{Base: "https://origin.example"}, id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -883,7 +884,7 @@ func TestInvalidSlideItemIsSkipped(t *testing.T) {
 		t.Fatalf("update playlist: %v", err)
 	}
 
-	snap, _, err := BuildFromStore(desiredState(t, s), "https://origin.example", id, contentInstant(t), nil)
+	snap, _, err := BuildFromStore(desiredState(t, s), contenturl.Signer{Base: "https://origin.example"}, id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}

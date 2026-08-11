@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	feederenroll "github.com/maaxton/waiveo-next/internal/feeder/enroll"
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
@@ -134,7 +135,7 @@ func TestApplyAppliesScreenProgram(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, []wire.PairingGrant{grant.Mint()})
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, id, []wire.PairingGrant{grant.Mint()})
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
@@ -194,7 +195,7 @@ func TestApplyExposesEdgeRules(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
@@ -226,7 +227,7 @@ func TestApplyRejectsWrongKeyEdgeRulesSnapshot(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
@@ -285,7 +286,7 @@ func TestApplyRejectsWrongKeySignedSnapshot(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
@@ -332,7 +333,7 @@ func TestApplyRejectsTamperedSections(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
@@ -371,7 +372,7 @@ func TestApplySameGenerationIsIdempotent(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
@@ -414,7 +415,7 @@ func TestApplyRejectsLowerGeneration(t *testing.T) {
 	id := testFeederIdentity(t)
 
 	// snapshot.Build always signs generation 1 (Wave-1 first-photon).
-	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
@@ -455,7 +456,7 @@ func TestApplyExposesSiteEffective(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
@@ -492,7 +493,7 @@ func TestApplyExposesRevoked(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
@@ -543,7 +544,7 @@ func TestServedDeviceInventorySurvivesTheStore(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
@@ -627,7 +628,7 @@ func TestServedRevocationSurvivesTheStore(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
@@ -698,7 +699,7 @@ func TestApplyExposesContentOrigin(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
@@ -727,7 +728,7 @@ func TestApplyExposesScreenPrograms(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
@@ -756,7 +757,7 @@ func TestApplyExposesSchedule(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
@@ -823,7 +824,7 @@ func TestApplyRejectsIncompleteSections(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
@@ -878,7 +879,7 @@ func TestApplyIgnoresWorkflowGeneration(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
@@ -916,7 +917,7 @@ func TestApplyFailsWithoutTrustAnchor(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, nil)
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}

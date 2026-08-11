@@ -8,6 +8,7 @@ import (
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
@@ -65,10 +66,25 @@ const leasePriorityScheduled = "scheduled"
 
 // DeriveScreenPrograms resolves ONE REL-061 screen-program per screen identity
 // row in rows.Screens, at absolute instant nowMs (Unix ms), with content URLs
-// based at contentBaseURL. Entries come back in screen-row id order (the order
-// the store reads them in), so the section is a deterministic function of
-// (rows, nowMs, contentBaseURL) and therefore so is the snapshot `hash`
-// (REL-053).
+// minted by sign. Entries come back in screen-row id order (the order the store
+// reads them in), so the section is a deterministic function of (rows, nowMs,
+// sign) and therefore so is the snapshot `hash` (REL-053).
+//
+// sign is the content-URL minter this generation's `url`s are stated by
+// (contenturl.Signer) — the SIGNED, expiring capability REL-061 calls a "signed
+// content reference", not a bare address. A caller obtains it from the content
+// origin itself (origin.Store.Signer), so its key is the key that origin
+// verifies under; a caller that constructs one literally is stating, visibly,
+// that this deployment does not sign. The failure this replaced is the reason
+// the parameter exists at all: these URLs were built by string concatenation
+// while the origin enforced signatures, so every `image` and `video` layer any
+// screen was ever handed answered 403.
+//
+// sign's own clock is OVERWRITTEN with nowMs here rather than trusted. The
+// deadline a URL carries must be measured from the same instant the program
+// carrying it was resolved at — a generation is reproducible from (rows, nowMs)
+// alone, and a mint clock free to disagree would make it reproducible from
+// neither.
 //
 // nowMs is a PARAMETER and never a wall-clock read: scheduling resolution is
 // time-dependent by construction (DAT-111 layers per instant), so the instant a
@@ -89,7 +105,8 @@ const leasePriorityScheduled = "scheduled"
 // A store with no screen rows yields a non-nil EMPTY section, which REL-060
 // explicitly provides for ("an empty array … where a site currently has nothing
 // to populate a section with") — never a nil that would marshal as `null`.
-func DeriveScreenPrograms(rows store.DesiredStateResult, contentBaseURL string, nowMs int64) ([]wire.ScreenProgram, []datamodel.Error) {
+func DeriveScreenPrograms(rows store.DesiredStateResult, sign contenturl.Signer, nowMs int64) ([]wire.ScreenProgram, []datamodel.Error) {
+	sign.NowMs = nowMs
 	programs := make([]wire.ScreenProgram, 0, len(rows.Screens))
 	if len(rows.Screens) == 0 {
 		return programs, nil
@@ -113,7 +130,7 @@ func DeriveScreenPrograms(rows store.DesiredStateResult, contentBaseURL string, 
 			}
 			continue
 		}
-		programs = append(programs, programFor(screen, state, rowStore, contentBaseURL, nowMs))
+		programs = append(programs, programFor(screen, state, rowStore, sign, nowMs))
 	}
 
 	return programs, errs
@@ -156,14 +173,14 @@ func resolutionStore(rows store.DesiredStateResult) (datamodel.RowStore, []datam
 // omitted from the section whether it is overridden or not, because the reason
 // it is omitted — nothing on this side may substitute box-local state — has
 // nothing to do with what an operator pushed).
-func programFor(screen datamodel.Screen, state datamodel.EffectiveState, rowStore datamodel.RowStore, contentBaseURL string, nowMs int64) wire.ScreenProgram {
+func programFor(screen datamodel.Screen, state datamodel.EffectiveState, rowStore datamodel.RowStore, sign contenturl.Signer, nowMs int64) wire.ScreenProgram {
 	var prog wire.ScreenProgram
 	if screen.Override.Applies(nowMs) {
-		prog = overrideProgram(screen, rowStore, contentBaseURL)
+		prog = overrideProgram(screen, rowStore, sign)
 	} else {
 		content := []wire.ContentRef{}
 		if state.Display == displayContent {
-			content = playlistContent(rowStore, state.PlaylistID, contentBaseURL)
+			content = playlistContent(rowStore, state.PlaylistID, sign)
 		}
 		prog = wire.ScreenProgram{
 			ScreenID: screen.ID,
@@ -231,7 +248,7 @@ const leasePriorityPreempt = "preempt"
 // cast directly with no item to carry one — so each slide's own `duration_ms`
 // governs, falling back to the cast's `default_duration_ms` and then the
 // player's own default (slideDurationMS with a zero item duration).
-func overrideProgram(screen datamodel.Screen, rowStore datamodel.RowStore, contentBaseURL string) wire.ScreenProgram {
+func overrideProgram(screen datamodel.Screen, rowStore datamodel.RowStore, sign contenturl.Signer) wire.ScreenProgram {
 	o := screen.Override
 	priority := leasePriorityScheduled
 	if o.Mode == datamodel.ScreenOverrideModeAlert {
@@ -240,13 +257,13 @@ func overrideProgram(screen datamodel.Screen, rowStore datamodel.RowStore, conte
 	content := []wire.ContentRef{}
 	switch {
 	case o.CastID != "":
-		content = castContent(rowStore, o.CastID, 0, contentBaseURL)
+		content = castContent(rowStore, o.CastID, 0, sign)
 	case o.Message != "":
-		if layers, ok := resolveLayers(wire.AlertSlideLayers(o.Message), contentBaseURL); ok {
+		if layers, expiresAt, ok := resolveLayers(wire.AlertSlideLayers(o.Message), sign); ok {
 			content = append(content, wire.ContentRef{
 				ContentType: contentTypeSlide,
 				Layers:      layers,
-				ExpiresAt:   contentURLExpiresAt,
+				ExpiresAt:   expiresAt,
 			})
 		}
 	}
@@ -295,12 +312,13 @@ const displayContent = "content"
 // item, by contrast, is a distinct item KIND, so it states `content_type:
 // "slide"` explicitly — a fact its authored `source` field does contain.
 //
-// The `url` grammar (`<base>/content/<hex>`) and the empty-origin degrade are the
-// same ones every content-serving path in this codebase uses (REL-061/140): with
-// no content origin there is no URL to state, and none is fabricated — an image
-// layer whose URL cannot be stated fails validation, so a slide referencing
-// unfetchable content is dropped rather than shipped with a dead image.
-func playlistContent(rowStore datamodel.RowStore, playlistID string, contentBaseURL string) []wire.ContentRef {
+// The `url` grammar and the empty-origin degrade are the same ones every
+// content-serving path in this codebase uses, because they are the same
+// function (contenturl.Signer.Mint, REL-061/140): with no content origin there
+// is no URL to state, and none is fabricated — an image layer whose URL cannot
+// be stated fails validation, so a slide referencing unfetchable content is
+// dropped rather than shipped with a dead image.
+func playlistContent(rowStore datamodel.RowStore, playlistID string, sign contenturl.Signer) []wire.ContentRef {
 	content := []wire.ContentRef{}
 	if playlistID == "" {
 		return content
@@ -316,11 +334,11 @@ func playlistContent(rowStore datamodel.RowStore, playlistID string, contentBase
 				durationMS = int64(*item.DurationSeconds) * 1000
 			}
 			if item.Source == datamodel.PlaylistSourceCast {
-				content = append(content, castContent(rowStore, item.CastID, durationMS, contentBaseURL)...)
+				content = append(content, castContent(rowStore, item.CastID, durationMS, sign)...)
 				continue
 			}
 			if item.Source == sourceSlide {
-				layers, ok := resolveSlideLayers(item.Slide, contentBaseURL)
+				layers, layersExpireAt, ok := resolveSlideLayers(item.Slide, sign)
 				if !ok {
 					// A slide whose layers do not validate (wire.ValidateSlideLayers)
 					// is SKIPPED, not emitted malformed: a player has no defined
@@ -332,7 +350,7 @@ func playlistContent(rowStore datamodel.RowStore, playlistID string, contentBase
 				content = append(content, wire.ContentRef{
 					ContentType: contentTypeSlide,
 					Layers:      layers,
-					ExpiresAt:   contentURLExpiresAt,
+					ExpiresAt:   layersExpireAt,
 					DurationMS:  durationMS,
 				})
 				continue
@@ -340,9 +358,10 @@ func playlistContent(rowStore datamodel.RowStore, playlistID string, contentBase
 			if item.AssetRef == "" {
 				continue // a pack `playable` has no direct content reference.
 			}
+			itemURL, itemExpiresAt := sign.Mint(item.AssetRef)
 			content = append(content, wire.ContentRef{
 				AssetRef: item.AssetRef,
-				URL:      contentURL(contentBaseURL, item.AssetRef),
+				URL:      itemURL,
 				// The item's own authored `content_type` (DAT-041), carried
 				// VERBATIM — including the empty string an item that states none
 				// leaves, which REL-061a defines as `image`. Carrying it rather
@@ -353,7 +372,7 @@ func playlistContent(rowStore datamodel.RowStore, playlistID string, contentBase
 				// relay as a video and the player plays it instead of trying to
 				// draw an MP4 as a Poster.
 				ContentType: item.ContentType,
-				ExpiresAt:   contentURLExpiresAt,
+				ExpiresAt:   itemExpiresAt,
 				DurationMS:  durationMS,
 			})
 		}
@@ -390,7 +409,7 @@ func playlistContent(rowStore datamodel.RowStore, playlistID string, contentBase
 // standalone `slide` item is (see resolveSlideLayers): a player has no defined
 // behavior for a malformed layer, so a slide that would not draw cleanly never
 // reaches the wire. One bad slide costs its own slot and not the whole cast.
-func castContent(rowStore datamodel.RowStore, castID string, itemDurationMS int64, contentBaseURL string) []wire.ContentRef {
+func castContent(rowStore datamodel.RowStore, castID string, itemDurationMS int64, sign contenturl.Signer) []wire.ContentRef {
 	out := []wire.ContentRef{}
 	if castID == "" {
 		return out
@@ -401,14 +420,14 @@ func castContent(rowStore datamodel.RowStore, castID string, itemDurationMS int6
 			continue
 		}
 		for _, slide := range c.Slides {
-			layers, ok := resolveLayers(slide.Layers, contentBaseURL)
+			layers, layersExpireAt, ok := resolveLayers(slide.Layers, sign)
 			if !ok {
 				continue
 			}
 			out = append(out, wire.ContentRef{
 				ContentType: contentTypeSlide,
 				Layers:      layers,
-				ExpiresAt:   contentURLExpiresAt,
+				ExpiresAt:   layersExpireAt,
 				DurationMS:  datamodel.SlideDwellMS(slide, c, itemDurationMS),
 			})
 		}
@@ -440,11 +459,11 @@ const contentTypeSlide = "slide"
 // schedulehost re-resolver applies too, so no drifting second copy of the rules
 // exists. A nil slide, or one whose layers do not validate, is not projectable
 // (ok=false) and the caller drops the item.
-func resolveSlideLayers(slide *datamodel.Slide, contentBaseURL string) ([]wire.Layer, bool) {
+func resolveSlideLayers(slide *datamodel.Slide, sign contenturl.Signer) ([]wire.Layer, int64, bool) {
 	if slide == nil {
-		return nil, false
+		return nil, 0, false
 	}
-	return resolveLayers(slide.Layers, contentBaseURL)
+	return resolveLayers(slide.Layers, sign)
 }
 
 // resolveLayers is the layer-level half of that job, shared with the cast
@@ -453,45 +472,38 @@ func resolveSlideLayers(slide *datamodel.Slide, contentBaseURL string) ([]wire.L
 // URL derivation and the identical validation gate — two paths that agreed today
 // and diverged later would show an operator a cast slide that renders and an
 // inline slide that does not, from the same authored layers.
-func resolveLayers(authored []wire.Layer, contentBaseURL string) ([]wire.Layer, bool) {
+//
+// It also returns WHEN the stack stops being fetchable: the deadline its minted
+// layer URLs carry, which the caller stamps as the content reference's own
+// `expires_at`. Every layer is minted by one signer at one instant, so they
+// share one deadline; a stack with no content-bearing layer at all (a text or
+// clock slide) has nothing that expires and reports 0.
+func resolveLayers(authored []wire.Layer, sign contenturl.Signer) ([]wire.Layer, int64, bool) {
 	layers := make([]wire.Layer, len(authored))
+	var expiresAt int64
 	for i, l := range authored {
 		if wire.LayerFetchesContent(l.Kind) {
 			// A content-bearing layer's URL — an image's or a video's,
-			// wire.LayerFetchesContent naming the pair once — is derived from the
-			// content origin, never authored: the same content-URL grammar and
-			// empty-origin degrade a plain asset item uses (contentURL). An empty
-			// origin leaves the URL empty, which ValidateSlideLayers then rejects,
-			// so a slide that could not fetch its bytes is dropped rather than
-			// served with a dead URL.
+			// wire.LayerFetchesContent naming the pair once — is minted from the
+			// content origin, never authored: the same signer, grammar, and
+			// degrades a plain asset item uses. An empty origin, or a ref that
+			// will not sign, leaves the URL empty, which ValidateSlideLayers then
+			// rejects, so a slide that could not fetch its bytes is dropped rather
+			// than served with a dead URL.
 			//
 			// Asking the shared predicate rather than testing for `image` inline
 			// is what makes adding a content-bearing kind a one-line change in
 			// wire instead of a change that has to be remembered here AND in
 			// internal/relay/schedulehost — the two projections a screen must
 			// never see disagree.
-			l.URL = contentURL(contentBaseURL, l.AssetRef)
+			l.URL, expiresAt = sign.Mint(l.AssetRef)
 		}
 		layers[i] = l
 	}
 	if err := wire.ValidateSlideLayers(layers); err != nil {
-		return nil, false
+		return nil, 0, false
 	}
-	return layers, true
-}
-
-// contentURL builds a derived content item's fetch URL from the content-origin
-// base and a content-addressed asset_ref (`sha256:<hex>`) — byte-identical to
-// the form contentRefFor stamps on the fixture path and to the one
-// internal/relay/schedulehost derives for the same asset, so there is exactly one
-// content-URL grammar on the wire (REL-061). An empty base yields an empty url:
-// a screen surfaces that as unresolvable content, which is the honest degrade,
-// and no relay-local or app-local origin is ever substituted (REL-066/140).
-func contentURL(contentBaseURL, assetRef string) string {
-	if contentBaseURL == "" {
-		return ""
-	}
-	return contentBaseURL + "/content/" + strings.TrimPrefix(assetRef, "sha256:")
+	return layers, expiresAt, true
 }
 
 // programRevisionFor derives a screen program's `program_revision` (REL-061)
@@ -517,6 +529,11 @@ func contentURL(contentBaseURL, assetRef string) string {
 // revision names a program, not a screen, so two screens showing the same thing
 // agree — which is a true statement about them, and one a consumer may rely on.
 //
+// The content array is digested through revisionContent, which drops the parts
+// of a signed URL that are re-minted on every build; see there for why a
+// revision that tracked them would restart every screen's rotation on every
+// unrelated write.
+//
 // The value is opaque on the wire (REL-061 constrains its form not at all), and
 // the whole digest is carried rather than a prefix so no truncation-collision
 // question arises.
@@ -525,7 +542,7 @@ func programRevisionFor(prog wire.ScreenProgram) string {
 		Display  string            `json:"display"`
 		Priority string            `json:"priority"`
 		Content  []wire.ContentRef `json:"content"`
-	}{Display: prog.Display, Priority: prog.Priority, Content: prog.Content})
+	}{Display: prog.Display, Priority: prog.Priority, Content: revisionContent(prog.Content)})
 	if err != nil {
 		// Unreachable: every field is a string, an int64, or a slice of those.
 		// A revision that cannot be derived must not silently collapse to a
@@ -536,8 +553,50 @@ func programRevisionFor(prog wire.ScreenProgram) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// contentURLExpiresAt is the `expires_at` every content reference this package
-// stamps carries. No content-URL TTL policy is defined yet — the content origin
-// serves by content address without expiry — so it is 0 on both the derived and
-// the fixture path rather than an invented deadline.
-const contentURLExpiresAt = 0
+// revisionContent is the content array programRevisionFor actually digests: the
+// projected one with every minted URL reduced to its content-addressed path and
+// every `expires_at` dropped.
+//
+// This is load-bearing, not tidying. A minted URL carries `exp` and `sig` query
+// parameters that are BY CONSTRUCTION different on every rebuild — that is what
+// an expiring capability is — so digesting the URL whole would change the
+// revision every time the snapshot was rebuilt, including on writes that touch
+// nothing this screen plays. A player treats a changed program_revision as a new
+// program and swaps to it (PLY-090/108), restarting the playlist from its first
+// item, so every unrelated authored edit anywhere in the store would visibly
+// restart every screen's rotation. internal/relay/schedulehost, which re-mints
+// on every 30-second tick, avoids the same trap by naming its revisions after
+// the winning schedule layer instead of the URLs.
+//
+// What survives the reduction is everything that decides what the screen plays:
+// the asset_ref, the content_type, the dwell, the layer stack, and the ORIGIN
+// and path a layer is fetched from — so moving a site to a different content
+// origin still changes the revision, while re-minting the same asset at the same
+// origin does not. The deadline is dropped entirely: it says when the capability
+// dies, never what is on screen.
+func revisionContent(content []wire.ContentRef) []wire.ContentRef {
+	out := make([]wire.ContentRef, len(content))
+	for i, c := range content {
+		c.URL = withoutQuery(c.URL)
+		c.ExpiresAt = 0
+		if len(c.Layers) > 0 {
+			layers := make([]wire.Layer, len(c.Layers))
+			for j, l := range c.Layers {
+				l.URL = withoutQuery(l.URL)
+				layers[j] = l
+			}
+			c.Layers = layers
+		}
+		out[i] = c
+	}
+	return out
+}
+
+// withoutQuery strips a minted URL's `?exp=…&sig=…` — the two parameters that
+// are re-minted on every build — leaving the stable `<base>/content/<hex>` half.
+// A content digest can never itself contain a `?`, so cutting at the first one
+// cannot truncate the part that matters.
+func withoutQuery(url string) string {
+	base, _, _ := strings.Cut(url, "?")
+	return base
+}

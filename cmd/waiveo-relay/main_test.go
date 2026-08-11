@@ -24,6 +24,7 @@ import (
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/deviceclass"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 	"github.com/maaxton/waiveo-next/internal/relay/automation"
@@ -584,7 +585,7 @@ func buildDemoAppliedForTest(t *testing.T) desiredstate.Applied {
 	if err != nil {
 		t.Fatalf("signing.LoadOrCreate: %v", err)
 	}
-	snap, err := snapshot.Build([]byte("fixture-image-bytes"), "https://origin.example", id, nil)
+	snap, err := snapshot.Build([]byte("fixture-image-bytes"), contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}

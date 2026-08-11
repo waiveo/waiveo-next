@@ -29,6 +29,7 @@ import (
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/deviceclass"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 	"github.com/maaxton/waiveo-next/internal/relay/automationhost"
@@ -129,7 +130,7 @@ func TestAutomationAuthoringLoopAuthoredRuleLoadsAndFires(t *testing.T) {
 	if err != nil {
 		t.Fatalf("signing.LoadOrCreate: %v", err)
 	}
-	snap, _, err := snapshot.BuildFromStore(ds, e.contentBase, id, automationE2EInstantMs, nil)
+	snap, _, err := snapshot.BuildFromStore(ds, contenturl.Signer{Base: e.contentBase}, id, automationE2EInstantMs)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -260,7 +261,7 @@ func TestAutomationAuthoringLoopDisabledRuleNeverFires(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	snap, _, err := snapshot.BuildFromStore(ds, e.contentBase, mustSigning(t), automationE2EInstantMs, nil)
+	snap, _, err := snapshot.BuildFromStore(ds, contenturl.Signer{Base: e.contentBase}, mustSigning(t), automationE2EInstantMs)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}

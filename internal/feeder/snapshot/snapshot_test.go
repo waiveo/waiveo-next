@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/rules/compile"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
@@ -38,7 +39,7 @@ func TestBuildShape(t *testing.T) {
 	img := loadTestImage(t)
 	id := testIdentity(t)
 
-	snap, err := Build(img, "https://origin.example", id, nil)
+	snap, err := Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -163,7 +164,7 @@ func TestBuildEmitsDemoEdgeRule(t *testing.T) {
 	img := loadTestImage(t)
 	id := testIdentity(t)
 
-	snap, err := Build(img, "https://origin.example", id, nil)
+	snap, err := Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -240,7 +241,7 @@ func TestBuildEmitsSiteEffective(t *testing.T) {
 	img := loadTestImage(t)
 	id := testIdentity(t)
 
-	snap, err := Build(img, "https://origin.example", id, nil)
+	snap, err := Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -286,7 +287,7 @@ func TestBuildEmitsContentOrigin(t *testing.T) {
 	img := loadTestImage(t)
 	id := testIdentity(t)
 
-	snap, err := Build(img, "https://origin.example", id, nil)
+	snap, err := Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -323,7 +324,7 @@ func TestBuildSignatureVerifies(t *testing.T) {
 	img := loadTestImage(t)
 	id := testIdentity(t)
 
-	snap, err := Build(img, "https://origin.example", id, nil)
+	snap, err := Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -354,7 +355,7 @@ func TestBuildSignatureBindsGeneration(t *testing.T) {
 	img := loadTestImage(t)
 	id := testIdentity(t)
 
-	snap, err := Build(img, "https://origin.example", id, nil)
+	snap, err := Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -387,7 +388,7 @@ func TestHashDeterministic(t *testing.T) {
 	img := loadTestImage(t)
 	id := testIdentity(t)
 
-	snap, err := Build(img, "https://origin.example", id, nil)
+	snap, err := Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -402,7 +403,7 @@ func TestHashDeterministic(t *testing.T) {
 
 	otherImg := append([]byte(nil), img...)
 	otherImg = append(otherImg, 0x00) // perturb bytes -> different content
-	otherSnap, err := Build(otherImg, "https://origin.example", id, nil)
+	otherSnap, err := Build(otherImg, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("Build (other image): %v", err)
 	}
@@ -413,7 +414,7 @@ func TestHashDeterministic(t *testing.T) {
 
 func TestBuildRejectsNilIdentity(t *testing.T) {
 	img := loadTestImage(t)
-	if _, err := Build(img, "https://origin.example", nil, nil); err == nil {
+	if _, err := Build(img, contenturl.Signer{Base: "https://origin.example"}, nil, nil); err == nil {
 		t.Error("Build(nil identity) succeeded, want an error")
 	}
 }
@@ -448,7 +449,7 @@ func TestBuildWithGrantsRidesAndVerifies(t *testing.T) {
 		IssuedAt:               1752537000000,
 	}
 
-	snap, err := Build(img, "https://origin.example", id, []wire.PairingGrant{g})
+	snap, err := Build(img, contenturl.Signer{Base: "https://origin.example"}, id, []wire.PairingGrant{g})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -500,11 +501,11 @@ func TestBuildCastSingleItemByteIdenticalToBuild(t *testing.T) {
 	img := loadTestImage(t)
 	id := testIdentity(t)
 
-	viaBuild, err := Build(img, "https://origin.example", id, nil)
+	viaBuild, err := Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	viaCast, err := BuildCast([]CastItem{{Bytes: img}}, "https://origin.example", id, nil)
+	viaCast, err := BuildCast([]CastItem{{Bytes: img}}, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("BuildCast: %v", err)
 	}
@@ -563,7 +564,7 @@ func TestBuildCastOrderedMultiItemEachIndependentlyVerifiable(t *testing.T) {
 		{Bytes: []byte("cast-item-three-fixture-video-bytes"), ContentType: "video", DurationMS: 12000},
 	}
 
-	snap, err := BuildCast(items, "https://origin.example", id, nil)
+	snap, err := BuildCast(items, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("BuildCast: %v", err)
 	}
@@ -615,10 +616,10 @@ func TestBuildCastOrderedMultiItemEachIndependentlyVerifiable(t *testing.T) {
 // at the boundary rather than downstream.
 func TestBuildCastRejectsEmptyItems(t *testing.T) {
 	id := testIdentity(t)
-	if _, err := BuildCast(nil, "https://origin.example", id, nil); err == nil {
+	if _, err := BuildCast(nil, contenturl.Signer{Base: "https://origin.example"}, id, nil); err == nil {
 		t.Error("BuildCast(nil items) = nil error, want an error")
 	}
-	if _, err := BuildCast([]CastItem{}, "https://origin.example", id, nil); err == nil {
+	if _, err := BuildCast([]CastItem{}, contenturl.Signer{Base: "https://origin.example"}, id, nil); err == nil {
 		t.Error("BuildCast(empty items) = nil error, want an error")
 	}
 }

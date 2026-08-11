@@ -7,6 +7,7 @@ import (
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
@@ -121,7 +122,7 @@ func TestBuildFromStoreCarriesAdoptedDeviceInventory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	snap, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t), nil)
+	snap, _, err := BuildFromStore(ds, contenturl.Signer{Base: "https://origin.example"}, id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -189,7 +190,7 @@ func TestPackMatchPatternsTrackTheInstalledPacks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DesiredState (%s): %v", what, err)
 		}
-		snap, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t), nil)
+		snap, _, err := BuildFromStore(ds, contenturl.Signer{Base: "https://origin.example"}, id, contentInstant(t))
 		if err != nil {
 			t.Fatalf("BuildFromStore (%s): %v", what, err)
 		}
@@ -289,7 +290,7 @@ func TestUnchangedAdoptedSetDoesNotChurnTheGeneration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DesiredState (%s): %v", what, err)
 		}
-		snap, _, err := BuildFromStore(ds, "https://origin.example", id, contentInstant(t), nil)
+		snap, _, err := BuildFromStore(ds, contenturl.Signer{Base: "https://origin.example"}, id, contentInstant(t))
 		if err != nil {
 			t.Fatalf("BuildFromStore (%s): %v", what, err)
 		}

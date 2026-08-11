@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
@@ -53,7 +54,8 @@ func TestPlaylistContentThreadsContentOriginURL(t *testing.T) {
 		t.Errorf("content[0].url = %q, want %q (<content-origin>/content/<hex>, REL-061)", content[0].URL, want)
 	}
 	if content[0].ExpiresAt != 0 {
-		t.Errorf("content[0].expires_at = %d, want 0 (no TTL policy yet, matching snapshot.Build)", content[0].ExpiresAt)
+		t.Errorf("content[0].expires_at = %d, want 0 — this projection does not yet carry the deadline its minted url "+
+			"really has (a known gap; playlistContent's doc and REL-066d)", content[0].ExpiresAt)
 	}
 }
 
@@ -141,6 +143,13 @@ func TestPlaylistContentEmptyOriginLeavesURLEmpty(t *testing.T) {
 // for a given asset + content-origin base is BYTE-IDENTICAL to what
 // snapshot.Build (the app-authored path) produces for the same asset + base —
 // there is no second content-URL grammar.
+//
+// Both sides are driven with NO key, which is what makes the comparison a
+// statement about the GRAMMAR rather than about the signature. Signed, the two
+// urls differ in their query by design: each side signs its own deadline from
+// its own clock (REL-066d), and requiring those to match would be requiring the
+// relay not to re-mint. What must never differ is the path, and that is what a
+// keyless comparison isolates.
 func TestScheduleResolvedURLMatchesSnapshotBuildByteForByte(t *testing.T) {
 	img := []byte("fixture-image-bytes")
 	const base = "https://origin.example"
@@ -157,7 +166,7 @@ func TestScheduleResolvedURLMatchesSnapshotBuildByteForByte(t *testing.T) {
 	if err != nil {
 		t.Fatalf("signing.LoadOrCreate: %v", err)
 	}
-	snap, err := snapshot.Build(img, base, id, nil)
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: base}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/feeder/enroll"
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
 	feederrelayconn "github.com/maaxton/waiveo-next/internal/feeder/relayconn"
@@ -91,7 +92,12 @@ func NewInProcessFeeder() (*InProcessFeeder, error) {
 	// Canonical sections + hash, reused across every generation the driver
 	// stages (so gen 42 and gen 43 are byte-identical in content, REL-070).
 	img := []byte("relay1-conformance-driver-image-bytes")
-	base, err := snapshot.Build(img, "https://198.51.100.20:5173", id, []wire.PairingGrant{grant.Mint()})
+	// A zero-Key signer, stated literally: this driver never fetches the content
+	// it references, so it stands up no origin and there is no key for one to
+	// agree with. A driver that DID serve content would take its signer from that
+	// origin (origin.Store.Signer) rather than declare one here.
+	sign := contenturl.Signer{Base: "https://198.51.100.20:5173"}
+	base, err := snapshot.Build(img, sign, id, []wire.PairingGrant{grant.Mint()})
 	if err != nil {
 		f.Close()
 		return nil, fmt.Errorf("relay1: snapshot.Build: %w", err)

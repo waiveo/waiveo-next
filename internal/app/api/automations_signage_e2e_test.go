@@ -8,6 +8,7 @@ import (
 
 	"github.com/maaxton/waiveo-next/internal/app/api"
 	"github.com/maaxton/waiveo-next/internal/app/devices"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
@@ -48,7 +49,7 @@ func screenProgramOf(t *testing.T, e *testEnv, screenID string, nowMs int64) wir
 	if err != nil {
 		t.Fatalf("read desired state: %v", err)
 	}
-	programs, derrs := snapshot.DeriveScreenPrograms(rows, e.contentBase, nowMs)
+	programs, derrs := snapshot.DeriveScreenPrograms(rows, contenturl.Signer{Base: e.contentBase}, nowMs)
 	for _, d := range derrs {
 		t.Logf("screen-program derive degrade: %s: %s: %s", d.Field, d.Code, d.Message)
 	}

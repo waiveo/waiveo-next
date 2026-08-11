@@ -44,10 +44,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
@@ -143,16 +143,25 @@ type CastItem struct {
 	DurationMS  int64
 }
 
-// contentRefFor builds the wire.ContentRef a single CastItem resolves to,
-// under contentBaseURL — the same `<base>/content/<hex>` URL grammar every
-// content-serving path in this codebase uses (REL-061/140).
-func contentRefFor(item CastItem, contentBaseURL string) wire.ContentRef {
+// contentRefFor builds the wire.ContentRef a single CastItem resolves to, with
+// its `url` and matching `expires_at` MINTED by sign — the signed, expiring
+// capability REL-061 calls a signed content reference, through the one minter
+// every content-serving path in this codebase shares (contenturl.Signer.Mint,
+// REL-061/140).
+//
+// A signer with no key mints the unsigned form, which is exactly right for the
+// deployments this fixture path serves: the conformance drivers and the
+// virtual-player proof each stand up an origin with no key, so nothing verifies
+// and nothing needs to be signed. It is wrong — and now impossible to reach by
+// accident — for a signer taken from a key-holding origin, which is where this
+// used to concatenate a bare URL that same origin would refuse.
+func contentRefFor(item CastItem, sign contenturl.Signer) wire.ContentRef {
 	assetRef := signhash.ContentID(item.Bytes)
-	hexDigest := strings.TrimPrefix(assetRef, "sha256:")
+	url, expiresAt := sign.Mint(assetRef)
 	return wire.ContentRef{
 		AssetRef:    assetRef,
-		URL:         contentBaseURL + "/content/" + hexDigest,
-		ExpiresAt:   contentURLExpiresAt,
+		URL:         url,
+		ExpiresAt:   expiresAt,
 		ContentType: item.ContentType,
 		DurationMS:  item.DurationMS,
 	}
@@ -161,9 +170,10 @@ func contentRefFor(item CastItem, contentBaseURL string) wire.ContentRef {
 // Build builds and signs generation 1 of a relay/1 desired-state
 // snapshot carrying exactly one screen-program that shows img: one
 // `content` item whose `asset_ref` is img's sha256 content ID
-// (signhash.ContentID) and whose `url` resolves to the content origin's
-// `/content/<hex>` route under contentBaseURL. It signs with id's
-// signing private key.
+// (signhash.ContentID) and whose `url` is minted by sign for the content
+// origin's `/content/<hex>` route. It signs the SNAPSHOT with id's signing
+// private key; sign is the separate, symmetric key the content URLs inside it
+// are minted under (contenturl.Signer).
 //
 // Build is BuildCast's single-item convenience wrapper: it carries no
 // `content_type`/`duration_ms` (CastItem{Bytes: img} — both left at their
@@ -172,10 +182,13 @@ func contentRefFor(item CastItem, contentBaseURL string) wire.ContentRef {
 // the exact same wire bytes, and the exact same `hash` (REL-053), as before
 // those fields existed.
 //
-// contentBaseURL also rides `sections.revocation_and_site.content_origin`
+// sign.Base also rides `sections.revocation_and_site.content_origin`
 // (REL-061/066) verbatim — the same base URL a relay-side schedule resolver
 // (internal/relay/schedulehost) later derives schedule-resolved content URLs
-// from, so the app-authored and schedule-resolved paths share one origin.
+// from, so the app-authored and schedule-resolved paths share one origin. This
+// is the store-less FIXTURE builder, whose consumers stand up origins that hold
+// no key, so a zero-Key signer is its ordinary case and mints unsigned URLs an
+// unverifying origin serves.
 //
 // The `sections.edge_rules` section (REL-062) carries the Wave-1
 // first-automation demo rule (demoEdgeRuleJSON) under rules_minor_version
@@ -191,8 +204,8 @@ func contentRefFor(item CastItem, contentBaseURL string) wire.ContentRef {
 // `sections` ahead of hashing/signing, so it is covered by `hash`
 // (REL-053) and transitively by `signature` (REL-075) exactly like every
 // other section.
-func Build(img []byte, contentBaseURL string, id *signing.Identity, grants []wire.PairingGrant) (SignedSnapshot, error) {
-	snap, err := BuildCast([]CastItem{{Bytes: img}}, contentBaseURL, id, grants)
+func Build(img []byte, sign contenturl.Signer, id *signing.Identity, grants []wire.PairingGrant) (SignedSnapshot, error) {
+	snap, err := BuildCast([]CastItem{{Bytes: img}}, sign, id, grants)
 	if err != nil {
 		return SignedSnapshot{}, fmt.Errorf("snapshot: Build: %w", err)
 	}
@@ -223,7 +236,7 @@ func Build(img []byte, contentBaseURL string, id *signing.Identity, grants []wir
 // `omitempty` tags marshal as absent keys — so a 1-item BuildCast call
 // produces byte-identical wire output, and therefore an identical `hash`
 // (REL-053), to Build's own pre-existing output.
-func BuildCast(items []CastItem, contentBaseURL string, id *signing.Identity, grants []wire.PairingGrant) (SignedSnapshot, error) {
+func BuildCast(items []CastItem, sign contenturl.Signer, id *signing.Identity, grants []wire.PairingGrant) (SignedSnapshot, error) {
 	if id == nil {
 		return SignedSnapshot{}, fmt.Errorf("snapshot: BuildCast: id must not be nil")
 	}
@@ -263,7 +276,7 @@ func BuildCast(items []CastItem, contentBaseURL string, id *signing.Identity, gr
 
 	content := make([]wire.ContentRef, 0, len(items))
 	for _, item := range items {
-		content = append(content, contentRefFor(item, contentBaseURL))
+		content = append(content, contentRefFor(item, sign))
 	}
 
 	// The demo schedule's own playlist still shows a single item — the
@@ -311,7 +324,7 @@ func BuildCast(items []CastItem, contentBaseURL string, id *signing.Identity, gr
 		RevocationAndSite: wire.RevocationAndSite{
 			Revoked:       []string{},
 			SiteEffective: firstPhotonSiteEffective,
-			ContentOrigin: contentBaseURL,
+			ContentOrigin: sign.Base,
 		},
 		PairingGrants:      grants,
 		WorkflowGeneration: nil, // RESERVED, REL-068
@@ -360,8 +373,9 @@ func BuildCast(items []CastItem, contentBaseURL string, id *signing.Identity, gr
 //     INSTALLED PACK declares (REL-064), which are watched for independent of
 //     what is already adopted.
 //   - `revocation_and_site` (REL-066) carries the site node's own tz/lat/long
-//     (rows.SiteEffective, per DAT-033 — never the feeder's OS locale) and
-//     contentBaseURL as the content origin.
+//     (rows.SiteEffective, per DAT-033 — never the feeder's OS locale), sign.Base
+//     as the content origin, and sign.Key as the `content_url_key` every relay at
+//     the site re-mints with (REL-066a).
 //   - `pairing_grants` (REL-067) carries the store's pending pairing-grant
 //     records (rows.PairingGrants, store.AddPairingGrant), filtered to those
 //     still inside their ttl at nowMs and — for a screen-bound grant
@@ -389,6 +403,17 @@ func BuildCast(items []CastItem, contentBaseURL string, id *signing.Identity, gr
 // and reported here for the caller to log. The snapshot itself is complete and
 // signed regardless.
 //
+// sign is the content-URL minter for this site (contenturl.Signer): the origin
+// base, the key, and the lifetime every `url` in this generation is stated
+// under. It is ONE value rather than three parameters on purpose, and it is the
+// same value the `content_url_key` a relay re-mints with is read out of — so the
+// key this builder signs URLs with and the key it tells every relay to sign URLs
+// with cannot be two different keys. A caller obtains it from the content origin
+// itself (origin.Store.Signer), which makes the app-minting and origin-verifying
+// halves one key by construction; the failure that motivated it was those halves
+// silently differing, which made every uploaded image 403 at the screen while
+// every gate stayed green.
+//
 // The snapshot's `generation` is the store's own monotonic counter
 // (rows.Generation) rather than a constant, so an api write that advances the
 // store generation yields a higher-generation snapshot on the next build — the
@@ -397,14 +422,14 @@ func BuildCast(items []CastItem, contentBaseURL string, id *signing.Identity, gr
 // are preserved: this reuses the exact same wire helpers Build does
 // (hashSections / signGenerationHash), so signing here and verifying on the relay
 // (internal/relay/desiredstate) cannot drift.
-func BuildFromStore(rows store.DesiredStateResult, contentBaseURL string, id *signing.Identity, nowMs int64, contentURLKey []byte) (SignedSnapshot, []datamodel.Error, error) {
+func BuildFromStore(rows store.DesiredStateResult, sign contenturl.Signer, id *signing.Identity, nowMs int64) (SignedSnapshot, []datamodel.Error, error) {
 	if id == nil {
 		return SignedSnapshot{}, nil, fmt.Errorf("snapshot: BuildFromStore: id must not be nil")
 	}
 
 	grants := deliverablePairingGrants(rows, nowMs)
 
-	screenPrograms, degrades := DeriveScreenPrograms(rows, contentBaseURL, nowMs)
+	screenPrograms, degrades := DeriveScreenPrograms(rows, sign, nowMs)
 
 	scheduleSection, err := scheduleSectionFromStore(rows)
 	if err != nil {
@@ -444,12 +469,12 @@ func BuildFromStore(rows store.DesiredStateResult, contentBaseURL string, id *si
 			// was built for.
 			Revoked:       revokedOrEmpty(rows.Revoked),
 			SiteEffective: rows.SiteEffective,
-			ContentOrigin: contentBaseURL,
+			ContentOrigin: sign.Base,
 			// REL-066a: the key every relay at this site MINTS content URLs
 			// with. base64 so it rides JSON; omitted entirely when unset, which
 			// keeps the REL-053 hash byte-identical for a deployment that has
 			// not turned signing on.
-			ContentURLKey: encodeContentURLKey(contentURLKey),
+			ContentURLKey: encodeContentURLKey(sign.Key),
 		},
 		PairingGrants:      grants,
 		WorkflowGeneration: nil, // RESERVED, REL-068

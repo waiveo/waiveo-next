@@ -198,6 +198,7 @@ func TestDesiredStateSourceCurrentRebuildsOnAPIWriteGenerationBump(t *testing.T)
 	// The desired-state source exactly as main wires it (fixture content host).
 	src := &desiredStateSource{
 		store:          st,
+		content:        origin.New(),
 		contentBaseURL: "https://192.0.2.12:7420",
 		id:             id,
 		nowMs:          feederContentInstant(t),
@@ -335,6 +336,7 @@ func TestAPIWriteNudgesConnectedRelayEndToEnd(t *testing.T) {
 	// hook nudging the connection server).
 	src := &desiredStateSource{
 		store:          st,
+		content:        origin.New(),
 		contentBaseURL: "https://192.0.2.12:7420", id: id,
 		nowMs: feederContentInstant(t),
 	}
@@ -550,6 +552,7 @@ func TestDesiredStateSourceMultiItemCastOrderedAndVerifiable(t *testing.T) {
 
 	src := &desiredStateSource{
 		store:          st,
+		content:        origin.New(),
 		contentBaseURL: "https://192.0.2.12:7420",
 		id:             id,
 		nowMs:          feederContentInstant(t),

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/feeder/enroll"
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
@@ -251,7 +252,10 @@ func bootFeeder(bindHost, dialHost string) (baseURL string, cleanup func(), err 
 	for i := range grants {
 		grants[i] = grant.Mint()
 	}
-	snap, err := snapshot.Build(img, baseURL, id, grants)
+	// The signer comes from the content store this driver actually serves from,
+	// so whatever signing posture that store has, the URLs match it — here, no
+	// key and therefore unsigned URLs an unverifying origin serves.
+	snap, err := snapshot.Build(img, contentStore.Signer(baseURL, contenturl.ServeTTL), id, grants)
 	if err != nil {
 		_ = lis.Close()
 		_ = os.RemoveAll(dir)
@@ -278,7 +282,7 @@ func bootFeeder(bindHost, dialHost string) (baseURL string, cleanup func(), err 
 	)
 
 	mux := http.NewServeMux()
-	mux.Handle("/content/", contentStore.Handler())
+	mux.Handle(contenturl.PathPrefix, contentStore.Handler())
 	enrollSrv.Register(mux)
 	mux.Handle("/relay/v1", connSrv.Handler())
 

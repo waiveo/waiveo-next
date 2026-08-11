@@ -706,7 +706,7 @@ func main() {
 	// cached by generation and invalidated when an api write advances it — so each
 	// pull serves the current generation (the authoring loop's serving half).
 	src := &desiredStateSource{
-		store: st, contentBaseURL: contentBaseURL, id: id, contentURLKey: contentURLKey,
+		store: st, content: contentStore, contentBaseURL: contentBaseURL, id: id,
 		nowMs: nowMs,
 	}
 	// Fail fast if the seeded/persisted store cannot derive a signed snapshot
@@ -1170,7 +1170,11 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzFor(cfg.storePath, cfg.contentPath))
-	mux.Handle("/content/", contentStore.Handler())
+	// contenturl.PathPrefix, not a literal: the route this origin is MOUNTED at
+	// and the path every producer mints must be one string, or a perfectly
+	// signed url 404s. TestEveryContentURLIsMintedByThisPackage enforces the
+	// single spelling.
+	mux.Handle(contenturl.PathPrefix, contentStore.Handler())
 	mux.Handle("/api/v1/", apiHandler)
 	mux.Handle("/telemetry/v1/push", telemetryIngest)
 	// The subscriber's visible set (events/1 EVT-120) is resolved per connection
@@ -1468,12 +1472,19 @@ func startWebhookDelivery(
 type desiredStateSource struct {
 	store          *store.Store
 	contentBaseURL string
-	// contentURLKey rides every derived snapshot's revocation_and_site
-	// (REL-066a) so every relay at this site can mint the content URLs it
-	// serves — including the schedule-resolved ones no app peer can pre-sign,
-	// and including re-minting through an outage (REL-050/066d).
-	contentURLKey []byte
-	id            *signing.Identity
+	// content is the content origin this feeder serves, and the source of the
+	// key every derived snapshot mints its own `url`s under AND publishes as
+	// revocation_and_site.content_url_key (REL-066a) for every relay at the site
+	// to re-mint with — including the schedule-resolved URLs no app peer can
+	// pre-sign, and including re-minting through an outage (REL-050/066d).
+	//
+	// The key is READ FROM THE ORIGIN (origin.Store.Signer) rather than carried
+	// alongside it, so the half that mints and the half that verifies are one
+	// value. Carried separately, they were free to differ — and the shape that
+	// differed silently was an origin holding a key while every app-authored URL
+	// was minted without one, which 403'd every image and video on every screen.
+	content *origin.Store
+	id      *signing.Identity
 
 	// nowMs is the instant each rebuild resolves every screen's program at
 	// (snapshot.BuildFromStore). It is injected rather than read inline because
@@ -1513,7 +1524,7 @@ func (d *desiredStateSource) current() (wire.StateSnapshotBody, error) {
 	if err != nil {
 		return wire.StateSnapshotBody{}, err
 	}
-	snap, degrades, err := snapshot.BuildFromStore(ds, d.contentBaseURL, d.id, now, d.contentURLKey)
+	snap, degrades, err := snapshot.BuildFromStore(ds, d.content.Signer(d.contentBaseURL, contenturl.SnapshotTTL), d.id, now)
 	if err != nil {
 		return wire.StateSnapshotBody{}, err
 	}

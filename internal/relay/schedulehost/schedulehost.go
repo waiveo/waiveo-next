@@ -20,11 +20,10 @@ package schedulehost
 import (
 	"context"
 	"encoding/json"
-	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
-	"strings"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/relay/automation"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
@@ -266,13 +265,20 @@ func programRevisionFor(state datamodel.EffectiveState) string {
 //
 // contentOrigin is the desired-state's content-origin base URL
 // (desiredstate.Applied.ContentOrigin, from revocation_and_site.content_origin,
-// REL-061/066). Each asset item's Lease `url` is stamped as
-// `contentOrigin + "/content/" + hex(asset_ref)` — the sha256: prefix stripped
-// off the content-addressed ref — which is BYTE-IDENTICAL to the URL form the
-// app-authored path (snapshot.Build) emits for the same asset + base, so the
-// two content-URL grammars are single-sourced (REL-061), never a second shape.
-// `expires_at` is 0 for now, matching snapshot.Build (no content-URL TTL policy
-// is defined yet).
+// REL-061/066). Each asset item's Lease `url` is MINTED by contenturl.Signer
+// under that base (contentSigner.urlFor) — the same minter the app-authored path
+// calls, so the two sides cannot grow a second URL grammar (REL-061). The PATH
+// is identical to what the app emits for the same asset + base; the query is
+// not, and must not be: each side signs its own deadline, measured from its own
+// clock, which is exactly what lets an offline relay keep re-minting through an
+// outage (REL-050/066d).
+//
+// `expires_at` on the Lease item is still 0 here, and that is now a KNOWN GAP
+// rather than the accurate statement it once was. A minted url has a real
+// deadline, so a Lease claiming none understates it; the app-authored path
+// (snapshot) carries the true one. Closing it here means deciding what a
+// re-minted item's deadline says to a player mid-Lease (PLY-086/092) and is left
+// to the same work that finishes REL-066d.
 //
 // When contentOrigin is "" — the desired state carried no content origin — the
 // url is left EMPTY exactly as before: the relay derives content URLs only from
@@ -472,7 +478,12 @@ type contentSigner struct {
 // good for. It is generous because the cost of it being too short is a screen
 // that cannot fetch content it was told to play, and the cost of it being too
 // long is bounded by the key's own rotation.
-const contentURLTTL = 24 * time.Hour
+//
+// It is contenturl.ServeTTL rather than its own number: the app side mints
+// under a deliberately LONGER one (contenturl.SnapshotTTL) because it mints at
+// build time, and the two lifetimes are only comparable — and the asymmetry
+// only defensible — while they are stated side by side in one place.
+const contentURLTTL = contenturl.ServeTTL
 
 // urlFor mints the URL for one asset_ref.
 //
@@ -480,24 +491,19 @@ const contentURLTTL = 24 * time.Hour
 // peer delivers no key has always had. With no origin it returns empty, and the
 // relay never fabricates a box-local one (REL-140) — the caller degrades to a
 // url-less content item, which a screen surfaces as unresolvable rather than
-// fetching from somewhere nobody authorized.
+// fetching from somewhere nobody authorized. A digest that will not sign returns
+// empty too: the UNSIGNED form would be worse than none, since against a
+// verifying origin it 403s, which reads to an operator as an authorization fault
+// rather than as the malformed asset_ref it is.
+//
+// The three-case rule is contenturl.Signer.Mint's, called rather than restated,
+// so this relay's minting and the app's cannot drift on the URL grammar or on
+// what an unmintable ref degrades to. This projection carries no `expires_at`
+// onto its Lease items today, so the deadline is dropped here; the app side,
+// which does carry one, uses it.
 func (c contentSigner) urlFor(assetRef string) string {
-	if c.origin == "" {
-		return ""
-	}
-	hexDigest := strings.TrimPrefix(assetRef, "sha256:")
-	if len(c.key) == 0 {
-		return c.origin + "/content/" + hexDigest
-	}
-	signed, err := contenturl.URL(c.origin, c.key, hexDigest, c.nowMs+contentURLTTL.Milliseconds())
-	if err != nil {
-		// A digest that will not sign is one this relay cannot serve a fetchable
-		// url for. Returning the UNSIGNED form would be worse than returning
-		// none: against a verifying origin it 403s, which reads to an operator
-		// as an authorization fault rather than as the malformed asset_ref it is.
-		return ""
-	}
-	return signed
+	url, _ := contenturl.Signer{Base: c.origin, Key: c.key, TTL: contentURLTTL, NowMs: c.nowMs}.Mint(assetRef)
+	return url
 }
 
 // Resolver owns the per-instant serving of ONE scope node's schedule-resolved
