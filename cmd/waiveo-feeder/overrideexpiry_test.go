@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
@@ -229,20 +231,159 @@ func TestTheSnapshotCacheStillServesFromCacheWhenNothingCanChange(t *testing.T) 
 	// observable: the sentinel comes back only if it was.
 	const sentinel = "cache-was-consulted"
 	src.mu.Lock()
-	if !src.haveCache || src.cachedUntil != 0 {
+	if want := base + contenturl.SnapshotRemintInterval.Milliseconds(); !src.haveCache || src.cachedUntil != want {
 		src.mu.Unlock()
-		t.Fatalf("after a build with no override anywhere: haveCache=%v cachedUntil=%d, want true/0 — a store with no TTL'd override must leave the window unbounded",
-			src.haveCache, src.cachedUntil)
+		t.Fatalf("after a build with no override anywhere: haveCache=%v cachedUntil=%d, want true/%d — with no TTL'd "+
+			"override the window is bounded by the content-URL re-mint deadline alone",
+			src.haveCache, src.cachedUntil, want)
 	}
 	src.cached.Hash = sentinel
 	src.mu.Unlock()
 
-	// No override anywhere, so cachedUntil is zero and only a write may
-	// invalidate. Move the clock a long way and the cached snapshot must stand.
-	now = base + 86_400_000
+	// No override anywhere, so only a write or the re-mint deadline may
+	// invalidate. Move the clock a long way SHORT of that deadline and the cached
+	// snapshot must stand.
+	now = base + contenturl.SnapshotRemintInterval.Milliseconds() - 1
 	second := mustCurrent(t, src)
 	if second.Hash != sentinel {
-		t.Fatalf("a day of clock with no override rebuilt the snapshot instead of serving the cache — the generation cache is gone and every relay pull now re-derives and re-signs a whole snapshot")
+		t.Fatalf("a pull one millisecond before the re-mint deadline rebuilt the snapshot instead of serving the cache — the generation cache is gone and every relay pull now re-derives and re-signs a whole snapshot")
+	}
+}
+
+// TestTheSnapshotIsRebuiltBeforeItsContentURLsExpire is N1's half of the same
+// seam, and the reason SnapshotTTL could come down from thirty days to one.
+//
+// A built generation carries SIGNED, EXPIRING content urls. The cache in front of
+// it was keyed on the store generation, which only an api write advances — so a
+// feeder simply staying up without an authoring write served, indefinitely, a
+// generation whose urls were on their way to 403. The previous answer was to
+// stretch the DEADLINE to thirty days, which does not remove the cliff (a feeder
+// up longer than that hits it) and hands out a month-long bearer capability for
+// every asset the site displays to do it.
+//
+// So: hold the store perfectly still, move ONLY the clock past the re-mint
+// deadline, and require both that the snapshot was rebuilt and that the urls in
+// it carry a LATER deadline than the ones it replaced. The second half is the
+// one that matters — a rebuild that re-minted nothing would satisfy every
+// assertion about cache identity while leaving the screens exactly as stranded.
+func TestTheSnapshotIsRebuiltBeforeItsContentURLsExpire(t *testing.T) {
+	ctx := context.Background()
+
+	st, err := store.Open(":memory:", store.WallClockMs)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	img := placeholderImage()
+	if err := st.SeedDemo(ctx, signhash.ContentID(img)); err != nil {
+		t.Fatalf("SeedDemo: %v", err)
+	}
+	id, err := signing.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("signing.LoadOrCreate: %v", err)
+	}
+
+	base := feederContentInstant(t)()
+	now := base
+	// A SIGNING origin, because an unsigned url has no deadline to age out and
+	// this test would pass over one while proving nothing.
+	oc := origin.New(origin.WithSigningKey([]byte("a-32-byte-test-key-for-hmac-0001")))
+	if _, err := oc.Add(img); err != nil {
+		t.Fatalf("origin.Add: %v", err)
+	}
+	src := &desiredStateSource{
+		store:          st,
+		content:        oc,
+		contentBaseURL: "https://192.0.2.12:7420",
+		id:             id,
+		nowMs:          func() int64 { return now },
+	}
+
+	first := ovxProgram(t, mustCurrent(t, src), store.SeedScreenID)
+	if len(first.Content) == 0 || first.Content[0].ExpiresAt == 0 {
+		t.Fatalf("the seeded program carries no expiring content url (%+v) — this test would prove nothing", first.Content)
+	}
+
+	genBefore, err := st.Generation(ctx)
+	if err != nil {
+		t.Fatalf("read generation: %v", err)
+	}
+
+	// The clock alone travels PAST the re-mint deadline. No write of any kind.
+	//
+	// A full day rather than exactly the interval, so the instant lands back
+	// inside the seeded content daypart (06:00–22:00 local): the deadline itself
+	// falls at midnight, where the screen is legitimately blank and there would be
+	// no content url to compare. What is under test is the re-mint, not the
+	// schedule.
+	now = base + 24*time.Hour.Milliseconds()
+	if now <= base+contenturl.SnapshotRemintInterval.Milliseconds() {
+		t.Fatalf("the test clock (%d) did not pass the re-mint deadline (%d)", now, base+contenturl.SnapshotRemintInterval.Milliseconds())
+	}
+	second := ovxProgram(t, mustCurrent(t, src), store.SeedScreenID)
+
+	if second.Content[0].ExpiresAt <= first.Content[0].ExpiresAt {
+		t.Errorf("after the re-mint deadline the content url still expires at %d (was %d) — the snapshot was not re-minted, "+
+			"so a feeder that goes SnapshotTTL (%s) without an authoring write hands every screen a url the origin refuses, "+
+			"and nothing anywhere reports it",
+			second.Content[0].ExpiresAt, first.Content[0].ExpiresAt, contenturl.SnapshotTTL)
+	}
+	if second.Content[0].URL == first.Content[0].URL {
+		t.Errorf("the url is byte-identical across the re-mint (%q) — the deadline in the signature did not move either", first.Content[0].URL)
+	}
+	// …and the rebuild really was a re-derivation, not a write. DAT-004d's
+	// discipline, applied to this second reason for invalidating: the feeder must
+	// not advance the generation to refresh its own cache, which would nudge every
+	// relay in the site twice a day for a change that is not news to them.
+	if genAfter, gerr := st.Generation(ctx); gerr != nil || genAfter != genBefore {
+		t.Errorf("generation moved from %d to %d (err %v) with no write — a re-mint is a re-derivation, not a mutation", genBefore, genAfter, gerr)
+	}
+}
+
+// TestTheCacheWindowIsBoundedByWhicheverComesFirst covers cacheWindowEnd's own
+// arithmetic: two independent reasons to stop trusting a build, and the window
+// closes at the earlier of them.
+//
+// The unconditional half is the one worth pinning. A deployment with no TTL'd
+// override anywhere — which is every ordinary site — used to get a window of
+// ZERO, meaning "unbounded", and that is exactly the state in which the content
+// urls aged out unobserved.
+func TestTheCacheWindowIsBoundedByWhicheverComesFirst(t *testing.T) {
+	const now = int64(1_000_000)
+	remint := now + contenturl.SnapshotRemintInterval.Milliseconds()
+	screen := func(expiresAt int64) datamodel.Screen {
+		return datamodel.Screen{Override: &datamodel.ScreenOverride{
+			Mode: datamodel.ScreenOverrideModeAlert, Message: "x", ExpiresAt: expiresAt,
+		}}
+	}
+
+	cases := []struct {
+		name    string
+		screens []datamodel.Screen
+		want    int64
+	}{
+		{"no screens at all: the re-mint deadline still bounds it", nil, remint},
+		{"no pending override: likewise", []datamodel.Screen{{}}, remint},
+		{"a nearer override expiry wins", []datamodel.Screen{screen(now + 500)}, now + 500},
+		{"a LATER override expiry does not extend the window past the re-mint", []datamodel.Screen{screen(remint + 1)}, remint},
+		{"an already-lapsed override is not a deadline", []datamodel.Screen{screen(now - 1)}, remint},
+		{"the earliest pending one, when it is nearer", []datamodel.Screen{screen(remint + 5), screen(now + 9)}, now + 9},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cacheWindowEnd(tc.screens, now); got != tc.want {
+				t.Errorf("cacheWindowEnd = %d, want %d", got, tc.want)
+			}
+		})
+	}
+
+	// The bound is only a bound while it is shorter than the life of what it
+	// protects. Stated here rather than left to the constants' own doc, because
+	// the failure of getting it wrong is silent at every other gate.
+	if contenturl.SnapshotRemintInterval >= contenturl.SnapshotTTL {
+		t.Errorf("SnapshotRemintInterval (%s) is not shorter than SnapshotTTL (%s) — a snapshot would be re-minted at or "+
+			"after the instant its own urls die, which is no bound at all",
+			contenturl.SnapshotRemintInterval, contenturl.SnapshotTTL)
 	}
 }
 

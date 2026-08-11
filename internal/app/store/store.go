@@ -593,6 +593,11 @@ func (s *Store) Create(ctx context.Context, kind Kind, body json.RawMessage, gua
 	if err != nil {
 		return Resource{}, err
 	}
+	// …and its opposite: a member the platform DERIVES is dropped rather than
+	// persisted (derivedmembers.go). Beside the completion rather than anywhere
+	// else, because both answer the same question — what the stored
+	// representation of this row is, as against what a writer happened to send.
+	body = stripDerivedMembers(kind, body)
 	bf, err := parseBaseline(kind, body)
 	if err != nil {
 		return Resource{}, err
@@ -770,6 +775,11 @@ func (s *Store) Update(ctx context.Context, kind Kind, id string, rev int64, pat
 		if err != nil {
 			return err
 		}
+		// Over the EFFECTIVE post-merge body, for the reason the completion runs
+		// there too: a patch is where a derived member most easily arrives, since
+		// a console read-modify-write echoes back the whole document it was
+		// served.
+		merged = stripDerivedMembers(kind, merged)
 		curBaseline, err := parseBaseline(kind, json.RawMessage(curBody))
 		if err != nil {
 			return err

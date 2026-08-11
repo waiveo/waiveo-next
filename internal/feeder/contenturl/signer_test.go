@@ -126,23 +126,48 @@ func TestMintAcceptsABareHexDigestToo(t *testing.T) {
 	}
 }
 
-// TestTheTwoTTLsAreOrderedByWhenTheyMint states the sizing rule as an assertion
-// rather than leaving it in a comment: a deadline fixed at BUILD time has to
-// outlive an authoring lull, while one minted at SERVE time only has to outlive
-// a session.
-func TestTheTwoTTLsAreOrderedByWhenTheyMint(t *testing.T) {
+// TestTheTTLsAreSizedByWhatRefreshesThem states the sizing rule as an assertion
+// rather than leaving it in a comment.
+//
+// The rule changed, and the change is the point. A build-time deadline used to be
+// sized to outlive an AUTHORING LULL, because nothing but an authored write
+// re-minted it — thirty days of bearer capability bought to cover a case the
+// deployment could not otherwise survive. It is now sized like the serve-time one
+// because the feeder re-mints on a TIMER (SnapshotRemintInterval), so what a
+// build-time url has to outlive is that interval and nothing longer. The pair of
+// bounds below is what keeps those two facts from drifting apart: shorten the
+// interval freely, but a TTL that does not comfortably exceed it is a site whose
+// urls die between re-mints.
+func TestTheTTLsAreSizedByWhatRefreshesThem(t *testing.T) {
 	if ServeTTL <= 0 || SnapshotTTL <= 0 {
 		t.Fatalf("a non-positive TTL mints nothing: ServeTTL=%s SnapshotTTL=%s", ServeTTL, SnapshotTTL)
-	}
-	if SnapshotTTL <= ServeTTL {
-		t.Errorf("SnapshotTTL (%s) must exceed ServeTTL (%s): the snapshot one is fixed when a generation is BUILT and "+
-			"that generation is re-derived only when someone authors something, while the serve one is minted as the url "+
-			"is handed over", SnapshotTTL, ServeTTL)
 	}
 	// A day is the floor for the serve-time one: comfortably beyond the player's
 	// ~10 s program poll and every prefetch retry behind it.
 	if ServeTTL < 24*time.Hour {
 		t.Errorf("ServeTTL is %s — a screen that cannot fetch content it was just told to play is the failure this "+
 			"lifetime is sized against, and the poll/prefetch loop needs far more headroom than that", ServeTTL)
+	}
+	if SnapshotRemintInterval <= 0 {
+		t.Fatalf("SnapshotRemintInterval is %s — a non-positive re-mint interval is not a bound, it is a rebuild on "+
+			"every single relay pull", SnapshotRemintInterval)
+	}
+	// Twice the interval, not merely more than it: a url minted at the start of a
+	// window must still be good for the whole of the NEXT one, since a relay that
+	// pulls just before a re-mint holds that url until it pulls again.
+	if SnapshotTTL < 2*SnapshotRemintInterval {
+		t.Errorf("SnapshotTTL (%s) is less than twice SnapshotRemintInterval (%s): a relay that pulls one millisecond "+
+			"before a re-mint holds those urls for a full interval afterwards, so anything less leaves a window in which "+
+			"a screen is handed a url that dies before its next pull", SnapshotTTL, SnapshotRemintInterval)
+	}
+	// And the collapse itself, asserted. A build-time deadline LONGER than a
+	// serve-time one is the shape that has to be re-argued: it can only be
+	// justified by something that stops the build-time mint being refreshed, and
+	// the feeder's timer is precisely what removed that.
+	if SnapshotTTL > ServeTTL {
+		t.Errorf("SnapshotTTL (%s) exceeds ServeTTL (%s). That is only defensible if a built generation can be served "+
+			"for longer than the feeder's re-mint interval; if that is now true again, fix the refresh rather than "+
+			"lengthening the capability — a long-lived content url is a long-lived unrevocable read of every asset the "+
+			"site displays, which is the property this package exists to remove", SnapshotTTL, ServeTTL)
 	}
 }

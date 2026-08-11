@@ -148,12 +148,34 @@ func (f *e2eFixture) build(t *testing.T) SignedSnapshot {
 // returns the status and body.
 func (f *e2eFixture) fetch(t *testing.T, rawURL string) (int, []byte) {
 	t.Helper()
+	return fetchAtOrigin(t, f.origin, e2eOrigin, rawURL)
+}
+
+// fetchAtOrigin serves rawURL from oc's real handler, first requiring that the
+// url is actually STATED AGAINST wantBase.
+//
+// The prefix check is not decoration. An httptest request is built from
+// url.RequestURI(), which is path+query and DISCARDS the scheme and host — so
+// without this, a producer that minted `http://127.0.0.1:9/content/<hex>?…`
+// against a box-local origin would be handed to this same handler, answer 200,
+// and pass. That is the REL-140 violation the whole content path is written to
+// refuse (a relay never fabricates its own origin), and it is precisely the kind
+// of defect this file exists for: a wrong url that every green test agrees with,
+// because every green test threw away the half that was wrong.
+func fetchAtOrigin(t *testing.T, oc *origin.Store, wantBase, rawURL string) (int, []byte) {
+	t.Helper()
+	if !strings.HasPrefix(rawURL, wantBase+contenturl.PathPrefix) {
+		t.Fatalf("the url %q is not stated against the content origin %q.\n"+
+			"A screen fetches the ORIGIN this snapshot was built against; a url pointing anywhere else (a box-local "+
+			"address, a stale base) is unreachable in the deployment that will be handed it, and this fixture would "+
+			"otherwise serve it anyway because an httptest request keeps only the path and query.", rawURL, wantBase)
+	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		t.Fatalf("the snapshot carried an unparseable url %q: %v", rawURL, err)
+		t.Fatalf("unparseable content url %q: %v", rawURL, err)
 	}
 	rec := httptest.NewRecorder()
-	f.origin.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, u.RequestURI(), nil))
+	oc.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, u.RequestURI(), nil))
 	return rec.Code, rec.Body.Bytes()
 }
 
@@ -374,24 +396,34 @@ func TestTheWireDeadlineIsTheOneTheURLActuallyDies_At(t *testing.T) {
 	}
 }
 
-// TestTheSnapshotTTLOutlivesAnAuthoringLull is the sizing argument, asserted.
+// TestTheSnapshotTTLOutlivesTheGapItIsMintedAcross is the sizing argument,
+// asserted from this side.
 //
-// The app mints at BUILD time and the built generation is cached by store
-// generation, so it is served for as long as nobody authors anything. A TTL
-// chosen against the player's poll interval (seconds) or against the relay's own
-// serve-time lifetime (a day) would expire mid-deployment on any site that goes
-// a weekend without an edit — the same P0 in slow motion. This pins the property
-// rather than the number, so a future change to SnapshotTTL has to keep it.
-func TestTheSnapshotTTLOutlivesAnAuthoringLull(t *testing.T) {
-	const aFortnight = 14 * 24 * time.Hour
-	if contenturl.SnapshotTTL < aFortnight {
-		t.Errorf("SnapshotTTL is %s — shorter than a fortnight. A snapshot is re-minted only when an api write advances "+
-			"the store generation, so a site nobody edits for that long serves urls minted that long ago, and every one of "+
-			"them 403s.", contenturl.SnapshotTTL)
+// The app mints at BUILD time, so what its deadline must outlive is the longest
+// gap between a build and a fetch made with it. That gap used to be "however
+// long nobody authors anything", which is unbounded, and the answer taken was to
+// stretch the deadline to thirty days — a month-long bearer capability for every
+// asset a site displays, bought to cover a gap it still did not close.
+//
+// The gap is now bounded by the feeder itself (contenturl.SnapshotRemintInterval,
+// enforced by cmd/waiveo-feeder's cacheWindowEnd), so the deadline is sized
+// against THAT. Pinning it here rather than only next door to the constants is
+// deliberate: this is the package whose output carries the deadline onto the
+// wire, and a future change to SnapshotTTL made for a snapshot-side reason has to
+// meet the bound where it is actually spent.
+func TestTheSnapshotTTLOutlivesTheGapItIsMintedAcross(t *testing.T) {
+	if contenturl.SnapshotTTL < 2*contenturl.SnapshotRemintInterval {
+		t.Errorf("SnapshotTTL is %s, less than twice the feeder's re-mint interval (%s). A generation is served until it "+
+			"is re-minted, and a relay that pulled just before a re-mint holds those urls for a full interval after it — "+
+			"so anything shorter hands a screen a url that dies before its next pull.",
+			contenturl.SnapshotTTL, contenturl.SnapshotRemintInterval)
 	}
-	if contenturl.SnapshotTTL <= contenturl.ServeTTL {
-		t.Errorf("SnapshotTTL (%s) is not longer than ServeTTL (%s) — a deadline fixed at build time cannot be sized like "+
-			"one minted at serve time.", contenturl.SnapshotTTL, contenturl.ServeTTL)
+	// The floor is still a real duration, not merely a multiple: a re-mint
+	// interval driven to microseconds would satisfy the ratio above while making
+	// every relay pull re-derive and re-sign a whole snapshot.
+	if contenturl.SnapshotTTL < time.Hour {
+		t.Errorf("SnapshotTTL is %s. A screen prefetching a program it just pulled, retrying over a flaky link, needs "+
+			"far more headroom than that, and no re-mint cadence can substitute for it.", contenturl.SnapshotTTL)
 	}
 }
 
@@ -402,6 +434,21 @@ func TestTheSnapshotTTLOutlivesAnAuthoringLull(t *testing.T) {
 // player treats a changed revision as a new program and restarts the rotation
 // (PLY-090/108). Signing would then make every unrelated authored write visibly
 // restart every screen in the site.
+//
+// # The clock has to move, and the premise has to be an assertion
+//
+// This test shipped unable to fail. Both builds ran at the fixture's ONE fixed
+// instant, so `exp` — and therefore `sig` — came out byte-identical, the two
+// urls were the same string, and the revision would have matched whether or not
+// screenprograms.revisionContent existed at all. A reviewer deleted the
+// reduction from the digest and the whole module still passed. The guard that
+// was supposed to establish the premise only checked the urls were non-EMPTY,
+// under a comment claiming it proved they had been re-minted.
+//
+// So the second build is made a second later, and "the urls really did change"
+// is now asserted rather than described. Advancing the clock by a second cannot
+// move the schedule (the fixture's instant is the middle of the seeded content
+// daypart), so the only thing that differs between the two builds is the mint.
 func TestRebuildingTheSameProgramReproducesItsRevision(t *testing.T) {
 	f := newE2EFixture(t)
 	first := programForScreen(t, f.build(t).Sections.ScreenPrograms, store.SeedScreenID)
@@ -412,15 +459,85 @@ func TestRebuildingTheSameProgramReproducesItsRevision(t *testing.T) {
 		ID: "01J8ZE2ENREFP1AY11ST000001", ScopeNode: castScopeNode, Name: "Unreferenced",
 		Items: []datamodel.PlaylistItem{{Source: datamodel.PlaylistSourceAsset, AssetRef: signhash.ContentID([]byte("e2e-image-bytes"))}},
 	})
+	// …at a LATER instant, which is what makes the deadline — and so the
+	// signature — genuinely different bytes.
+	f.nowMs += 1000
 	second := programForScreen(t, f.build(t).Sections.ScreenPrograms, store.SeedScreenID)
+
+	// The premise, ASSERTED. If the two builds minted the identical url, the
+	// invariant below is describing a build that produced identical bytes and
+	// proves nothing about the reduction.
+	if len(first.Content) == 0 || len(second.Content) == 0 {
+		t.Fatal("no content to compare; the fixture is not exercising minting")
+	}
+	if first.Content[0].URL == second.Content[0].URL {
+		t.Fatalf("PREMISE FALSE: the two builds minted the IDENTICAL url %q, so the revision below would match whether or "+
+			"not the minted query is excluded from the digest. Advance the clock between the builds.", first.Content[0].URL)
+	}
+	if first.Content[0].ExpiresAt == second.Content[0].ExpiresAt {
+		t.Fatalf("PREMISE FALSE: both builds stated the same expires_at %d — the clock did not move", first.Content[0].ExpiresAt)
+	}
+	// Every content-bearing LAYER too, not just the item-level url: the layer
+	// stack is digested as well, and a reduction applied to one and not the other
+	// would churn the revision on exactly the slides this fixture carries.
+	if a, b := firstLayerURL(t, first), firstLayerURL(t, second); a == b {
+		t.Fatalf("PREMISE FALSE: the two builds minted the identical LAYER url %q", a)
+	}
 
 	if first.ProgramRevision != second.ProgramRevision {
 		t.Errorf("program_revision churned (%q -> %q) across a rebuild that changed nothing this screen plays — every "+
-			"screen on the site would restart its rotation on every unrelated write", first.ProgramRevision, second.ProgramRevision)
+			"screen on the site would restart its rotation on every unrelated write, and every rotation would restart "+
+			"from item 1 (PLY-090/108)", first.ProgramRevision, second.ProgramRevision)
 	}
-	// The premise: the urls really were re-minted, so the invariant above is
-	// doing work rather than describing a build that produced identical bytes.
-	if first.Content[0].URL == "" || second.Content[0].URL == "" {
-		t.Fatal("no url to compare; the fixture is not exercising minting")
+}
+
+// TestChangingWhatAScreenPlaysMovesItsRevision is the other half, and the reason
+// the reduction above cannot simply drop the whole content array.
+//
+// program_revision must NOT move while the delivered program is unchanged AND
+// MUST move when it changes; a reduction sized wrong satisfies the first by
+// destroying the second. A screen whose revision is frozen never swaps to the
+// cast an operator just published, which is the same "the wall does not show
+// what was authored" failure as HV-1, arrived at from the opposite direction.
+func TestChangingWhatAScreenPlaysMovesItsRevision(t *testing.T) {
+	f := newE2EFixture(t)
+	before := programForScreen(t, f.build(t).Sections.ScreenPrograms, store.SeedScreenID)
+
+	// A DIFFERENT asset in the first playlist item — same origin, same shape,
+	// same everything else. What changes is the bytes the screen fetches, which
+	// survives the reduction as the content-addressed path.
+	swapped := []byte("e2e-image-bytes-but-different")
+	swappedRef, err := f.origin.Add(swapped)
+	if err != nil {
+		t.Fatalf("origin.Add: %v", err)
 	}
+	f.bytesByRef[swappedRef] = swapped
+	replaceSeedPlaylistItems(t, f.store, []datamodel.PlaylistItem{
+		{Source: datamodel.PlaylistSourceAsset, AssetRef: swappedRef},
+	})
+	after := programForScreen(t, f.build(t).Sections.ScreenPrograms, store.SeedScreenID)
+
+	if len(after.Content) == 0 || after.Content[0].AssetRef != swappedRef {
+		t.Fatalf("the swap did not take: content = %+v", after.Content)
+	}
+	if before.ProgramRevision == after.ProgramRevision {
+		t.Errorf("program_revision did not move (%q) when the screen was pointed at a different asset — a frozen revision "+
+			"means a player never swaps to what was just published (PLY-090/108)", before.ProgramRevision)
+	}
+}
+
+// firstLayerURL returns the url of the first content-bearing layer anywhere in
+// prog, failing when there is none — so a premise stated about layers is not
+// quietly satisfied by a program that carries no layer at all.
+func firstLayerURL(t *testing.T, prog wire.ScreenProgram) string {
+	t.Helper()
+	for _, c := range prog.Content {
+		for _, l := range c.Layers {
+			if wire.LayerFetchesContent(l.Kind) {
+				return l.URL
+			}
+		}
+	}
+	t.Fatalf("no content-bearing layer in %+v", prog.Content)
+	return ""
 }

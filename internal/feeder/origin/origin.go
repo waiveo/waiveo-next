@@ -129,7 +129,8 @@ func WithSigningKey(key []byte) Option {
 // Signer returns the content-URL minter for THIS origin under base: a
 // contenturl.Signer carrying this store's own signing key and its own clock,
 // with the stated ttl (contenturl.ServeTTL for a URL handed straight to its
-// consumer, contenturl.SnapshotTTL for one minted into a signed generation).
+// consumer, contenturl.SnapshotTTL for one minted into a signed generation —
+// equal values today, two policies either way).
 //
 // # This method is the point, not a convenience
 //

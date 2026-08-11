@@ -94,7 +94,16 @@ const statementDomain = "waiveo-content-url/1"
 // 403, and no `image` or `video` layer could display on any screen. A grammar
 // spelled in one place cannot acquire a fifth producer that forgot to sign
 // without that showing up as a diff in this package.
-// TestEveryContentURLIsMintedByThisPackage enforces it over the whole tree.
+//
+// TestEveryContentURLIsMintedByThisPackage is the mechanical half of that, and
+// it is a SOURCE SCAN with stated limits, not a guarantee: it parses every
+// non-test .go file in the module and rejects the segment spelled as a literal,
+// split across a concatenation, or joined on by path.Join/url.JoinPath/a
+// slash-bearing Sprintf — and it cannot see a path assembled from values it
+// cannot read (a variable, a config string, a computed format). That test's own
+// doc enumerates exactly what gets past it. Its behavioural complement is
+// snapshot.TestEveryContentURLTheSnapshotCarriesIsFetchableAtTheOrigin, which
+// does not care how a url was spelled but only sees producers a fixture drives.
 const PathPrefix = "/content/"
 
 // assetRefPrefix is the `sha256:` scheme a content-addressed asset_ref carries
@@ -122,35 +131,71 @@ const (
 	ServeTTL = 24 * time.Hour
 
 	// SnapshotTTL is for a URL minted at snapshot BUILD time into a signed
-	// desired-state generation (internal/feeder/snapshot). That gap is not a
-	// session and not a poll interval: it is however long that generation stays
-	// the one being served, and three separate mechanisms make it long.
+	// desired-state generation (internal/feeder/snapshot), and it is EQUAL to
+	// ServeTTL. The two names are kept because they are two policies that happen
+	// to coincide, not one policy with two spellings — a future divergence should
+	// have to be argued at the site that needs it.
 	//
-	// The feeder caches its built snapshot by store generation and rebuilds only
-	// when an api write advances it or a pending screen-override expiry lapses —
-	// so a site nobody authors for a fortnight serves a fortnight-old mint. A
-	// relay applies its cached snapshot for the whole of an outage (REL-050),
-	// with nothing able to refresh it. And internal/relay/playerserver's
-	// SetServedProgram carries an app-authored `url` through to the Lease
-	// UNMODIFIED, so for a pinned screen override — push-now, the very path this
-	// defect was found on — the app-minted URL is the only one that screen will
-	// ever be given for that program.
+	// # Why it was thirty days, and why that was the wrong answer
 	//
-	// So the deadline here has to outlive an AUTHORING LULL, and 24 hours does
-	// not: a screen showing the same pushed cast for two days would 403 on the
-	// second, which is the same P0 in a slower costume. Thirty days covers a
-	// month of an unedited site while still bounding an observed URL to a month
-	// rather than to forever — which is the entire property this package exists
-	// to establish. Any authored write re-mints, so an actively-managed site's
-	// real exposure is far shorter than the ceiling.
+	// A build-time mint is fetched not within a session but for however long its
+	// generation stays the one being served, and three mechanisms make that long.
+	// The feeder caches its built snapshot by store GENERATION, which only an api
+	// write advances — so a site nobody authors for a fortnight would serve a
+	// fortnight-old mint. A relay applies its cached snapshot for the whole of an
+	// outage (REL-050). And internal/relay/playerserver's SetServedProgram
+	// carries an app-authored `url` through to the Lease UNMODIFIED, so for a
+	// pinned screen override — push-now, the path HV-1 was found on — the
+	// app-minted URL is the only one that screen will ever be given.
 	//
-	// The durable fix for the gap itself is REL-066d, which requires a relay to
-	// re-mint EVERY url it serves at the moment it serves it, app-authored ones
-	// included; the relay does that for the items it resolves itself and not yet
-	// for the app-authored baseline it passes through. When it does, this
-	// constant can come down to ServeTTL. Until then it is sized for the world
-	// that exists rather than the one the contract describes.
-	SnapshotTTL = 30 * 24 * time.Hour
+	// That argument is right about the exposure and wrong about the remedy. It
+	// sized the DEADLINE to the longest lull, which buys reachability by handing
+	// out a month-long bearer capability for every asset a site displays — the
+	// exact property this package's own doc says an unsigned URL has and signing
+	// exists to remove. And it did not even close the hole it was sized for: a
+	// feeder up for longer than the ceiling with no authoring write still serves
+	// expired URLs, silently, to any screen that reboots or evicts its cache.
+	//
+	// # What closes it instead
+	//
+	// Bound the AGE OF THE MINT rather than stretching the deadline: the feeder's
+	// snapshot cache expires on SnapshotRemintInterval as well as on the store
+	// generation, so no generation is ever served with URLs older than half their
+	// own lifetime, whatever an operator does or does not author
+	// (cmd/waiveo-feeder's desiredStateSource). The mechanism was already there —
+	// that cache is ALREADY invalidated on an instant "for reasons no write will
+	// announce", the pending screen-override expiry — so this is one more term in
+	// the same bound, not a new moving part.
+	//
+	// # The residual, which is REL-066d's to close
+	//
+	// A relay riding out an outage longer than this TTL (REL-050) still serves a
+	// snapshot whose URLs have died, because nothing on the box can re-mint the
+	// app-authored baseline it passes through. REL-066d — a relay re-mints EVERY
+	// url at the moment it serves it, app-authored ones included — is the durable
+	// fix; the relay does that today only for items it resolves itself, and only
+	// on a single-governed-node, single-screen, non-pinned site
+	// (cmd/waiveo-relay's soleServedScreenID). Until then the honest statement is
+	// that content survives an outage of up to this TTL, which is a bound an
+	// operator can read, rather than a month-long capability that hides the same
+	// cliff further out.
+	SnapshotTTL = ServeTTL
+
+	// SnapshotRemintInterval is how often the feeder must rebuild its cached
+	// desired-state generation so the URLs in it are re-minted, independently of
+	// whether anyone authored anything (cmd/waiveo-feeder's desiredStateSource).
+	//
+	// It lives here, beside the deadline it is derived from, because the two are
+	// one decision: a re-mint interval at or above SnapshotTTL is no bound at all,
+	// and changing either alone reintroduces the gap. Half the TTL is the ordinary
+	// choice — every URL a pull is answered with has at least half its life left,
+	// so the relay and the screens behind it have a full ServeTTL/2 of slack even
+	// if the feeder then goes away entirely.
+	//
+	// The cost is one snapshot rebuild every twelve hours on a site nobody is
+	// editing, which is a rebuild of in-memory rows: cheaper than the pull it is
+	// answering.
+	SnapshotRemintInterval = SnapshotTTL / 2
 )
 
 // Distinguishable refusals. A caller branches on these: an expired URL is a

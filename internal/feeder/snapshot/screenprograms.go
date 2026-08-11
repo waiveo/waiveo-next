@@ -574,15 +574,31 @@ func programRevisionFor(prog wire.ScreenProgram) string {
 // origin still changes the revision, while re-minting the same asset at the same
 // origin does not. The deadline is dropped entirely: it says when the capability
 // dies, never what is on screen.
+//
+// TestRebuildingTheSameProgramReproducesItsRevision and
+// TestChangingWhatAScreenPlaysMovesItsRevision pin BOTH halves — the second
+// build there is made at a LATER instant, so its urls really are different bytes
+// and deleting this reduction fails the first of the two.
 func revisionContent(content []wire.ContentRef) []wire.ContentRef {
 	out := make([]wire.ContentRef, len(content))
 	for i, c := range content {
-		c.URL = withoutQuery(c.URL)
+		c.URL = withoutMintedQuery(c.URL)
 		c.ExpiresAt = 0
 		if len(c.Layers) > 0 {
 			layers := make([]wire.Layer, len(c.Layers))
 			for j, l := range c.Layers {
-				l.URL = withoutQuery(l.URL)
+				// Only a CONTENT-BEARING layer's url is re-minted, so only that
+				// one is reduced. wire.LayerFetchesContent is the same shared
+				// predicate resolveLayers asks a hundred lines above — asking it
+				// here too is what keeps "which layers carry a minted url" one
+				// answer rather than two that agree today. A non-content layer
+				// that somehow carried a url would be carrying an AUTHORED value,
+				// which nothing re-mints and which therefore belongs in the
+				// digest whole; silently truncating it would hide a real change
+				// to what the screen plays.
+				if wire.LayerFetchesContent(l.Kind) {
+					l.URL = withoutMintedQuery(l.URL)
+				}
 				layers[j] = l
 			}
 			c.Layers = layers
@@ -592,11 +608,31 @@ func revisionContent(content []wire.ContentRef) []wire.ContentRef {
 	return out
 }
 
-// withoutQuery strips a minted URL's `?exp=…&sig=…` — the two parameters that
-// are re-minted on every build — leaving the stable `<base>/content/<hex>` half.
-// A content digest can never itself contain a `?`, so cutting at the first one
-// cannot truncate the part that matters.
-func withoutQuery(url string) string {
-	base, _, _ := strings.Cut(url, "?")
-	return base
+// withoutMintedQuery strips a MINTED content URL's `?exp=…&sig=…` — the two
+// parameters that are re-minted on every build — leaving the stable
+// `<base>/content/<hex>` half that says what is fetched and from where.
+//
+// It cuts at the first `?` AFTER the content path segment rather than at the
+// first `?` in the string, and returns anything that is not a content URL
+// untouched. Both are deliberate. The origin base is operator-configured
+// (REL-066's `content_origin`), so it is not this function's business to assume
+// the base carries no query of its own: cutting at the first `?` anywhere would
+// reduce `https://cdn/?p=/content/<hex>?exp=…` to `https://cdn/`, collapsing
+// every asset at that origin onto one digest input and quietly weakening the
+// revision's "MUST change when the program changes" half. Leaving a non-content
+// url alone is the same rule from the other side — nothing re-mints it, so
+// nothing about it should be dropped.
+//
+// The segment is contenturl.PathPrefix rather than a literal, for the reason
+// that package's doc gives: the grammar is spelled once.
+func withoutMintedQuery(raw string) string {
+	at := strings.Index(raw, contenturl.PathPrefix)
+	if at < 0 {
+		return raw
+	}
+	q := strings.IndexByte(raw[at:], '?')
+	if q < 0 {
+		return raw
+	}
+	return raw[:at+q]
 }

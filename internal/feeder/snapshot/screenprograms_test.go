@@ -3,14 +3,19 @@ package snapshot
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
+	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/relay/schedulehost"
+	"github.com/maaxton/waiveo-next/internal/shared/signhash"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
@@ -577,59 +582,109 @@ func TestStoreWithNoScreenRowsYieldsAnEmptySection(t *testing.T) {
 // order. A cast is also the only shape whose expansion depends on a row carried
 // separately in the schedule section, which is the part a feeder that
 // pre-flattened its casts would break.
+//
+// # And it runs over BOTH signing postures
+//
+// Every case runs twice: against an origin holding no key, and against one that
+// signs. That is not thoroughness, it is the whole validity of the comparison.
+// When content URLs became signed, every caller here was migrated to a
+// contenturl.Signer with NO KEY — so the byte-for-byte url equality below went
+// on holding for a configuration nothing runs in (cmd/waiveo-feeder
+// loads-or-creates the key unconditionally), which is verbatim the failure mode
+// this branch's own api test file was written to indict. Under a key the two
+// sides legitimately differ in their query — two independent mints, each with
+// its own deadline — so the comparison itself had to change too: it compares
+// what is fetched and from where, and then FETCHES BOTH at the real origin.
 func TestDerivedContentMatchesRelaySideProjection(t *testing.T) {
-	const asset = "sha256:7777111111111111111111111111111111111111111111111111111111111111"
-	t.Run("seeded demo", func(t *testing.T) {
-		assertProjectionsAgree(t, seededStore(t, asset))
-	})
-	t.Run("playlist referencing a cast", func(t *testing.T) {
-		s := seededStore(t, asset)
-		castID := writeCast(t, s, castWithThreeSlides(asset))
-		replaceSeedPlaylistItems(t, s, []datamodel.PlaylistItem{
-			{Source: "asset", AssetRef: asset},
-			{Source: datamodel.PlaylistSourceCast, CastID: castID, DurationSeconds: intPtr(11)},
+	img := loadTestImage(t)
+	asset := signhash.ContentID(img)
+	// Real bytes behind a real digest, because both sides' urls are fetched from
+	// a real origin below; a literal hex digest names bytes no origin can hold.
+	forEachSigningPosture(t, img, func(t *testing.T, oc *origin.Store) {
+		t.Run("seeded demo", func(t *testing.T) {
+			assertProjectionsAgree(t, seededStore(t, asset), oc)
 		})
-		// The fan-out itself, asserted here rather than left implicit in the
-		// two-sided comparison: an agreement on zero content items would pass a
-		// pure equality check while proving nothing about casts.
-		prog := programForScreen(t, buildSnapshot(t, s).Sections.ScreenPrograms, store.SeedScreenID)
-		if len(prog.Content) != 4 {
-			t.Fatalf("content = %d items, want 4 (one asset + the cast's three slides); got %+v", len(prog.Content), prog.Content)
-		}
-		assertProjectionsAgree(t, s)
-	})
-	// The video shapes, added because the two sides resolve an item's TYPE
-	// differently by construction (the app side carries the authored value, the
-	// relay side substitutes the required default) and because a video layer's
-	// url is derived by a second, independent copy of the same rule. Both are
-	// exactly the kind of near-duplicate that agrees on the day it is written;
-	// without a case that carries a video, the type and layer comparisons above
-	// only ever see items where the two sides trivially match.
-	t.Run("a scheduled video and a slide carrying one", func(t *testing.T) {
-		s := seededStore(t, asset)
-		castID := writeCast(t, s, datamodel.Cast{
-			ID: "01J8ZCASTPAR1TYV1DE0000001", ScopeNode: castScopeNode, Name: "Promo",
-			Slides: []datamodel.CastSlide{{ID: "promo", DurationMS: 12000, Layers: []wire.Layer{
-				{Kind: wire.LayerKindVideo, X: 0, Y: 0, W: 1920, H: 1080, AssetRef: asset},
-			}}},
+		t.Run("playlist referencing a cast", func(t *testing.T) {
+			s := seededStore(t, asset)
+			castID := writeCast(t, s, castWithThreeSlides(asset))
+			replaceSeedPlaylistItems(t, s, []datamodel.PlaylistItem{
+				{Source: "asset", AssetRef: asset},
+				{Source: datamodel.PlaylistSourceCast, CastID: castID, DurationSeconds: intPtr(11)},
+			})
+			// The fan-out itself, asserted here rather than left implicit in the
+			// two-sided comparison: an agreement on zero content items would pass a
+			// pure equality check while proving nothing about casts.
+			prog := programForScreen(t, buildSnapshot(t, s).Sections.ScreenPrograms, store.SeedScreenID)
+			if len(prog.Content) != 4 {
+				t.Fatalf("content = %d items, want 4 (one asset + the cast's three slides); got %+v", len(prog.Content), prog.Content)
+			}
+			assertProjectionsAgree(t, s, oc)
 		})
-		replaceSeedPlaylistItems(t, s, []datamodel.PlaylistItem{
-			{Source: datamodel.PlaylistSourceAsset, AssetRef: asset, ContentType: datamodel.PlaylistContentTypeVideo},
-			{Source: datamodel.PlaylistSourceAsset, AssetRef: asset},
-			{Source: datamodel.PlaylistSourceCast, CastID: castID},
+		// The video shapes, added because the two sides resolve an item's TYPE
+		// differently by construction (the app side carries the authored value, the
+		// relay side substitutes the required default) and because a video layer's
+		// url is derived by a second, independent copy of the same rule. Both are
+		// exactly the kind of near-duplicate that agrees on the day it is written;
+		// without a case that carries a video, the type and layer comparisons above
+		// only ever see items where the two sides trivially match.
+		t.Run("a scheduled video and a slide carrying one", func(t *testing.T) {
+			s := seededStore(t, asset)
+			castID := writeCast(t, s, datamodel.Cast{
+				ID: "01J8ZCASTPAR1TYV1DE0000001", ScopeNode: castScopeNode, Name: "Promo",
+				Slides: []datamodel.CastSlide{{ID: "promo", DurationMS: 12000, Layers: []wire.Layer{
+					{Kind: wire.LayerKindVideo, X: 0, Y: 0, W: 1920, H: 1080, AssetRef: asset},
+				}}},
+			})
+			replaceSeedPlaylistItems(t, s, []datamodel.PlaylistItem{
+				{Source: datamodel.PlaylistSourceAsset, AssetRef: asset, ContentType: datamodel.PlaylistContentTypeVideo},
+				{Source: datamodel.PlaylistSourceAsset, AssetRef: asset},
+				{Source: datamodel.PlaylistSourceCast, CastID: castID},
+			})
+			// The premise, asserted rather than assumed: the app side really did
+			// produce a video item and a surviving slide, so the comparison below is
+			// comparing something.
+			prog := programForScreen(t, buildSnapshot(t, s).Sections.ScreenPrograms, store.SeedScreenID)
+			if len(prog.Content) != 3 {
+				t.Fatalf("content = %d items, want 3 (video asset + image asset + the cast's one slide); got %+v", len(prog.Content), prog.Content)
+			}
+			if prog.Content[0].ContentType != datamodel.PlaylistContentTypeVideo {
+				t.Fatalf("content[0].content_type = %q, want %q", prog.Content[0].ContentType, datamodel.PlaylistContentTypeVideo)
+			}
+			assertProjectionsAgree(t, s, oc)
 		})
-		// The premise, asserted rather than assumed: the app side really did
-		// produce a video item and a surviving slide, so the comparison below is
-		// comparing something.
-		prog := programForScreen(t, buildSnapshot(t, s).Sections.ScreenPrograms, store.SeedScreenID)
-		if len(prog.Content) != 3 {
-			t.Fatalf("content = %d items, want 3 (video asset + image asset + the cast's one slide); got %+v", len(prog.Content), prog.Content)
-		}
-		if prog.Content[0].ContentType != datamodel.PlaylistContentTypeVideo {
-			t.Fatalf("content[0].content_type = %q, want %q", prog.Content[0].ContentType, datamodel.PlaylistContentTypeVideo)
-		}
-		assertProjectionsAgree(t, s)
 	})
+}
+
+// forEachSigningPosture runs body twice — once against a content origin holding
+// NO key and once against one that signs — with img already stored in each, so a
+// url either side mints is genuinely fetchable there.
+//
+// Both postures, because a guard that only holds in one is a guard for a
+// deployment that may not exist. The keyless one is the one the fixtures were
+// silently migrated to and is a real configuration (an operator who sets no
+// key); the signing one is what cmd/waiveo-feeder always builds.
+func forEachSigningPosture(t *testing.T, img []byte, body func(t *testing.T, oc *origin.Store)) {
+	t.Helper()
+	at := contentInstant(t)
+	for _, posture := range []struct {
+		name string
+		key  []byte
+	}{
+		{"origin holds no key", nil},
+		{"origin signs", []byte("a-32-byte-test-key-for-hmac-0001")},
+	} {
+		t.Run(posture.name, func(t *testing.T) {
+			opts := []origin.Option{origin.WithClock(func() int64 { return at })}
+			if posture.key != nil {
+				opts = append(opts, origin.WithSigningKey(posture.key))
+			}
+			oc := origin.New(opts...)
+			if _, err := oc.Add(img); err != nil {
+				t.Fatalf("origin.Add: %v", err)
+			}
+			body(t, oc)
+		})
+	}
 }
 
 // parityOrigin is the content origin both sides of the parity comparison derive
@@ -650,30 +705,56 @@ func buildSnapshot(t *testing.T, s *store.Store) SignedSnapshot {
 // assertProjectionsAgree is the comparison itself: build the app-signed program
 // for the seeded screen, re-project the SAME snapshot's schedule section through
 // the relay's own resolver at the same instant, and require the two to describe
-// the same playback.
-func assertProjectionsAgree(t *testing.T, s *store.Store) {
+// the same playback — against the content origin oc, under whatever signing
+// posture it holds.
+//
+// # What "the same url" means once urls are signed
+//
+// Not "the same bytes". Each side mints independently, and a signed url carries
+// its own `exp` and `sig`; requiring those to match would be requiring the two
+// producers to agree on a deadline, which is neither true nor desirable (the
+// relay's serve-time mint is measured from when it serves). What must agree is
+// WHAT IS FETCHED AND FROM WHERE — origin and content-addressed path — which is
+// exactly the reduction program_revision already digests (withoutMintedQuery).
+//
+// Equality of that reduction is necessary and not sufficient, so both urls are
+// then FETCHED at oc's real handler and required to serve the right bytes. That
+// is what makes the comparison mean something under a key: two urls can share a
+// path and differ in whether either of them actually works.
+func assertProjectionsAgree(t *testing.T, s *store.Store, oc *origin.Store) {
 	t.Helper()
 	id := testIdentity(t)
-	const origin = parityOrigin
+	const base = parityOrigin
 	ds := desiredState(t, s)
 	at := contentInstant(t)
 
-	snap, _, err := BuildFromStore(ds, contenturl.Signer{Base: origin}, id, at)
+	sign := oc.Signer(base, contenturl.SnapshotTTL)
+	snap, _, err := BuildFromStore(ds, sign, id, at)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
 	derived := programForScreen(t, snap.Sections.ScreenPrograms, store.SeedScreenID)
 
 	// The relay's own projection, over the schedule section this snapshot carries
-	// — the exact bytes a relay would apply.
+	// — the exact bytes a relay would apply, under THE SAME key the origin holds
+	// (REL-066a delivers it to the relay in revocation_and_site). Handing it a nil
+	// key against a signing origin would compare a working url with a broken one
+	// and call the difference expected.
 	rowStore, errs := schedulehost.BuildStore(snap.Sections.Schedule)
 	if len(errs) != 0 {
 		t.Fatalf("relay-side BuildStore reported %+v", errs)
 	}
-	display, priority, content, _, err := schedulehost.ProjectLease(rowStore, "01J8Z4DEM0SCREENF1RSTPH0TN", at, origin, nil)
+	display, priority, content, _, err := schedulehost.ProjectLease(rowStore, "01J8Z4DEM0SCREENF1RSTPH0TN", at, base, sign.Key)
 	if err != nil {
 		t.Fatalf("relay-side ProjectLease: %v", err)
 	}
+
+	// The premise: this fixture really is exercising the posture it claims. A
+	// keyless run that quietly signed, or a signing run that quietly did not,
+	// would make every assertion below true of the wrong configuration — which is
+	// how the byte-for-byte comparison this replaced came to hold only for a
+	// deployment nothing runs.
+	assertSigningPosture(t, derived, sign.Signs())
 
 	if derived.Display != display {
 		t.Errorf("display: app-derived %q != relay-projected %q", derived.Display, display)
@@ -688,9 +769,15 @@ func assertProjectionsAgree(t *testing.T, s *store.Store) {
 		if derived.Content[i].AssetRef != content[i].AssetRef {
 			t.Errorf("content[%d].asset_ref: app-derived %q != relay-projected %q", i, derived.Content[i].AssetRef, content[i].AssetRef)
 		}
-		if derived.Content[i].URL != content[i].URL {
-			t.Errorf("content[%d].url: app-derived %q != relay-projected %q", i, derived.Content[i].URL, content[i].URL)
+		// Compared through the reduction, then PROVEN by fetching: see this
+		// function's own doc for why the raw bytes must not be required to match
+		// once each side mints its own deadline.
+		if a, b := withoutMintedQuery(derived.Content[i].URL), withoutMintedQuery(content[i].URL); a != b {
+			t.Errorf("content[%d].url: app-derived %q != relay-projected %q (queries aside) — the two projections "+
+				"disagree about WHICH bytes this item is, or about which origin they come from", i, a, b)
 		}
+		assertFetchable(t, oc, derived.Content[i].URL, "app-derived content[%d].url", i)
+		assertFetchable(t, oc, content[i].URL, "relay-projected content[%d].url", i)
 		if derived.Content[i].DurationMS != content[i].DurationMS {
 			t.Errorf("content[%d].duration_ms: app-derived %d != relay-projected %d", i, derived.Content[i].DurationMS, content[i].DurationMS)
 		}
@@ -714,9 +801,68 @@ func assertProjectionsAgree(t *testing.T, s *store.Store) {
 		// 2). Both derive content-layer URLs from the same origin through the same
 		// wire.ValidateSlideLayers gate, so a mismatch here is exactly the silent
 		// drift this test exists to catch.
-		if !reflect.DeepEqual(derived.Content[i].Layers, content[i].Layers) {
+		if !reflect.DeepEqual(layersWithoutMintedQuery(derived.Content[i].Layers), layersWithoutMintedQuery(content[i].Layers)) {
 			t.Errorf("content[%d].layers: app-derived %+v != relay-projected %+v", i, derived.Content[i].Layers, content[i].Layers)
 		}
+		for j := range derived.Content[i].Layers {
+			if !wire.LayerFetchesContent(derived.Content[i].Layers[j].Kind) {
+				continue
+			}
+			assertFetchable(t, oc, derived.Content[i].Layers[j].URL, "app-derived content[%d].layers[%d].url", i, j)
+			assertFetchable(t, oc, content[i].Layers[j].URL, "relay-projected content[%d].layers[%d].url", i, j)
+		}
+	}
+}
+
+// layersWithoutMintedQuery reduces a layer stack the way revisionContent does,
+// so two independently-minted stacks compare on everything BUT the deadline each
+// side chose.
+func layersWithoutMintedQuery(layers []wire.Layer) []wire.Layer {
+	out := make([]wire.Layer, len(layers))
+	for i, l := range layers {
+		if wire.LayerFetchesContent(l.Kind) {
+			l.URL = withoutMintedQuery(l.URL)
+		}
+		out[i] = l
+	}
+	return out
+}
+
+// assertSigningPosture requires that the urls a program carries are signed
+// exactly when the origin they were minted from holds a key.
+func assertSigningPosture(t *testing.T, prog wire.ScreenProgram, wantSigned bool) {
+	t.Helper()
+	for _, c := range prog.Content {
+		urls := []string{c.URL}
+		for _, l := range c.Layers {
+			if wire.LayerFetchesContent(l.Kind) {
+				urls = append(urls, l.URL)
+			}
+		}
+		for _, u := range urls {
+			if u == "" {
+				continue
+			}
+			if signed := strings.Contains(u, "?"); signed != wantSigned {
+				t.Fatalf("PREMISE FALSE: url %q is signed=%v, want %v — this case is not exercising the posture it "+
+					"names, so the parity assertions below describe a configuration nobody runs", u, signed, wantSigned)
+			}
+		}
+	}
+}
+
+// assertFetchable requires that rawURL is stated against the parity origin and
+// serves 200 there. A url the two projections agree on and neither can fetch is
+// agreement about a broken answer — which is the whole of HV-1.
+func assertFetchable(t *testing.T, oc *origin.Store, rawURL, whatFmt string, args ...any) {
+	t.Helper()
+	what := fmt.Sprintf(whatFmt, args...)
+	if rawURL == "" {
+		return // a slide item carries no item-level url; the layers below are its substance.
+	}
+	if code, _ := fetchAtOrigin(t, oc, parityOrigin, rawURL); code != http.StatusOK {
+		t.Errorf("%s (%q) answered %d at the content origin — the two projections agree on a url the origin refuses, "+
+			"which is exactly the shape HV-1 had", what, rawURL, code)
 	}
 }
 

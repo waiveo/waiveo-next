@@ -479,10 +479,12 @@ type contentSigner struct {
 // that cannot fetch content it was told to play, and the cost of it being too
 // long is bounded by the key's own rotation.
 //
-// It is contenturl.ServeTTL rather than its own number: the app side mints
-// under a deliberately LONGER one (contenturl.SnapshotTTL) because it mints at
-// build time, and the two lifetimes are only comparable — and the asymmetry
-// only defensible — while they are stated side by side in one place.
+// It is contenturl.ServeTTL rather than its own number, so that this relay's
+// lifetime and the app side's are stated side by side in one place and can be
+// compared. They are equal today (contenturl.SnapshotTTL collapsed onto ServeTTL
+// once the feeder began re-minting its snapshot on a timer); the app side is the
+// one that would have to argue for diverging again, and its constant is where
+// that argument lives.
 const contentURLTTL = contenturl.ServeTTL
 
 // urlFor mints the URL for one asset_ref.

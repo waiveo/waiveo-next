@@ -298,9 +298,12 @@ export function PropertiesPanel({
                     size="sm"
                     variant="ghost"
                     icon={X}
-                    // Both fields are cleared together: a served slide's layer
-                    // carries asset_ref and url as a pair, so clearing one would
-                    // leave a layer whose bytes are named but unfetchable.
+                    // `url` is cleared alongside asset_ref even though the
+                    // editor no longer sets one: it is a DERIVED member (see
+                    // cast-model's withoutDerivedLayerFields), and a cast
+                    // written before the server began refusing to store it may
+                    // still carry one. Clearing the asset while leaving that
+                    // behind would name no bytes and still ship a link.
                     onClick={() => onPatch({ asset_ref: undefined, url: undefined })}
                   >
                     Clear

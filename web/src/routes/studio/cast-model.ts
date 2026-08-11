@@ -285,10 +285,36 @@ export function studioStateFromCast(cast: Cast): StudioState {
   return {
     name: cast.name,
     defaultDurationMs: cast.default_duration_ms ?? null,
-    slides: cast.slides,
+    slides: cast.slides.map(withoutDerivedLayerFields),
     slideIndex: 0,
     layerIndex: null,
     dirty: false,
+  };
+}
+
+/** A loaded slide with every layer's DERIVED members dropped, so the document
+ * the editor holds contains only what an operator authored.
+ *
+ * Today that is one member: a content-bearing layer's `url`. It is minted by the
+ * server per response and it EXPIRES (`internal/feeder/contenturl`), so a copy
+ * saved with the cast is a link that dies — which is exactly what happened,
+ * because the picker patched the listing's url into the layer and the save sent
+ * it. The canvas resolves a live one from the content listing at render time
+ * instead (`slide-canvas.tsx`'s AssetUrls).
+ *
+ * Applied on LOAD as well as on pick, because a row written before the server
+ * began refusing to store one still carries it, and a read-modify-write would
+ * otherwise echo it straight back on the next save. */
+function withoutDerivedLayerFields(slide: CastSlide): CastSlide {
+  if (!slide.layers.some((l) => l.url !== undefined)) return slide;
+  return {
+    ...slide,
+    layers: slide.layers.map((l) => {
+      if (l.url === undefined) return l;
+      const authored = { ...l };
+      delete authored.url;
+      return authored;
+    }),
   };
 }
 

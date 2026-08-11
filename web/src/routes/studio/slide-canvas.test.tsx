@@ -25,10 +25,19 @@ function layer(over: Partial<SlideLayer> & { kind: SlideLayer["kind"] }): SlideL
   return { x: 100, y: 200, w: 400, h: 120, ...over };
 }
 
+/** The content library every content-bearing case below draws through. A
+ * layer's fetch url is NOT part of the layer — it is minted per response and
+ * expires — so the canvas resolves it from here by `asset_ref`, and a test that
+ * set `layer.url` would be exercising a path the component no longer has. */
+const LIBRARY: ReadonlyMap<string, string> = new Map([
+  ["sha256:aa11", "https://origin.example/content/aa11?exp=9999999999999&sig=beef"],
+  ["sha256:cc77", "https://origin.example/content/cc77?exp=9999999999999&sig=cafe"],
+]);
+
 /** Render ONE layer and return the node it drew. Each call gets its own
  * container, so the queries below can never read a previous case's paint. */
 function draw(l: SlideLayer, slot = `layer-${l.kind}`): HTMLElement {
-  const { container } = render(<LayerView layer={l} now={NOW} />);
+  const { container } = render(<LayerView layer={l} now={NOW} assetUrls={LIBRARY} />);
   return container.querySelector(`[data-slot="${slot}"]`) as HTMLElement;
 }
 
@@ -94,10 +103,34 @@ describe("the canvas preview of each LIVE widget kind", () => {
 
   it("draws rect and image without a text branch, and marks an unfinished image", () => {
     expect(draw(layer({ kind: "rect", color: "#101020" }))).toHaveStyle({ backgroundColor: "#101020" });
-    expect(draw(layer({ kind: "image", url: "blob:asset" }))).toHaveAttribute("src", "blob:asset");
+    expect(draw(layer({ kind: "image", asset_ref: "sha256:aa11" }))).toHaveAttribute(
+      "src",
+      LIBRARY.get("sha256:aa11"),
+    );
     // No bytes chosen yet: a labelled outline, not nothing — an invisible object
     // could not be found again on the canvas.
     expect(draw(layer({ kind: "image" }), "layer-image-empty")).not.toBeNull();
+  });
+
+  it("draws the LIBRARY's url for an asset_ref, and ignores a url carried on the layer", () => {
+    // The regression this closes. A content url is minted per response and
+    // EXPIRES (internal/feeder/contenturl), so one saved with the cast is a link
+    // that dies — an operator reopening the cast the next day met a canvas of
+    // broken images. The layer holds the content-addressed asset_ref and nothing
+    // else; the url is resolved at render time, every time.
+    const stale = "https://origin.example/content/aa11?exp=1&sig=dead";
+    const el = draw(layer({ kind: "image", asset_ref: "sha256:aa11", url: stale }));
+    expect(el).toHaveAttribute("src", LIBRARY.get("sha256:aa11"));
+    expect(el).not.toHaveAttribute("src", stale);
+  });
+
+  it("draws the unfinished outline for an asset the library no longer holds", () => {
+    // A ref the content origin has swept: there is nothing to draw, and saying
+    // so is better than an <img> pointed at a 404. A layer carrying a url for it
+    // must not resurrect it either.
+    const gone = layer({ kind: "image", asset_ref: "sha256:beef", url: "https://origin.example/content/beef?exp=1&sig=dead" });
+    expect(draw(gone, "layer-image-empty")).not.toBeNull();
+    expect(draw(gone)).toBeNull();
   });
 
   // ── video ────────────────────────────────────────────────────────────────
@@ -108,10 +141,10 @@ describe("the canvas preview of each LIVE widget kind", () => {
   // the whole suite green. What a WYSIWYG canvas DRAWS is the thing the editor
   // exists for, so it is asserted here for video exactly as it is for image.
   it("draws a video layer as a real video element, never as a Label or an <img>", () => {
-    const el = draw(layer({ kind: "video", url: "blob:clip" }));
+    const el = draw(layer({ kind: "video", asset_ref: "sha256:cc77" }));
     expect(el).not.toBeNull();
     expect(el.tagName).toBe("VIDEO");
-    expect(el).toHaveAttribute("src", "blob:clip");
+    expect(el).toHaveAttribute("src", LIBRARY.get("sha256:cc77"));
     // The still-frame posture: the filmstrip draws every slide through this same
     // component, so a canvas that autoplayed would start one decoder per slide
     // the moment a cast is opened.
@@ -122,7 +155,9 @@ describe("the canvas preview of each LIVE widget kind", () => {
 
     // …and it is NOT drawn through either of the two branches that would swallow
     // it silently: the image element, or the Label branch's own div.
-    const { container } = render(<LayerView layer={layer({ kind: "video", url: "blob:clip" })} now={NOW} />);
+    const { container } = render(
+      <LayerView layer={layer({ kind: "video", asset_ref: "sha256:cc77" })} now={NOW} assetUrls={LIBRARY} />,
+    );
     expect(container.querySelector('[data-slot="layer-image"]')).toBeNull();
     expect(container.querySelector("div[data-slot='layer-video']")).toBeNull();
   });

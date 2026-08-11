@@ -26,7 +26,15 @@ import { TRACE_ID, ULID_A, ULID_B, ULID_C, cast, contentAsset, problem } from "@
  * deterministic gesture.
  */
 
-const server = setupServer();
+// The Studio reads the content listing on mount — the canvas resolves every
+// content-bearing layer's preview url from it, because a layer holds only the
+// content-addressed asset_ref and the url for those bytes is minted per response
+// and expires. An EMPTY library is the base handler so a text-layer case is not
+// a failure about the content origin; the cases that care register their own,
+// which takes precedence over a base handler.
+const server = setupServer(
+  http.get("*/api/v1/content", () => HttpResponse.json({ content: [] })),
+);
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
   server.resetHandlers();
@@ -408,7 +416,7 @@ describe("Studio — the save gate", () => {
 });
 
 describe("Studio — the image layer and the media picker", () => {
-  it("picks an asset from the content origin and sets asset_ref AND url together", async () => {
+  it("picks an asset from the content origin and saves the asset_ref ALONE", async () => {
     const saved: { body?: SavedBody } = {};
     server.use(
       ...serveCast(cast(), saved),
@@ -432,7 +440,13 @@ describe("Studio — the image layer and the media picker", () => {
 
     await user.click(saveButton());
     const layers = (await waitForSave(saved)).slides?.[0]?.layers ?? [];
-    expect(layers[3]).toMatchObject({ kind: "image", asset_ref: "sha256:ff99", url: "/content/ff99" });
+    expect(layers[3]).toMatchObject({ kind: "image", asset_ref: "sha256:ff99" });
+    // …and NOT the url. It is derived — minted per response, with a deadline —
+    // so it is resolved at render time and never carried in the document. The
+    // server strips one anyway (internal/app/store/derivedmembers.go); keeping
+    // it out of the model here is what makes that a backstop rather than the
+    // only defence.
+    expect(layers[3]).not.toHaveProperty("url");
   });
 
   // Clearing leaves an image layer naming no bytes, which the SERVER refuses at
@@ -477,7 +491,62 @@ describe("Studio — the image layer and the media picker", () => {
     await waitFor(() => expect(saveButton()).toBeEnabled());
     await user.click(saveButton());
     const layer = (await waitForSave(saved)).slides?.[0]?.layers?.[0] ?? {};
-    expect(layer).toMatchObject({ asset_ref: "sha256:ff99", url: "/content/ff99" });
+    expect(layer).toMatchObject({ asset_ref: "sha256:ff99" });
+    expect(layer).not.toHaveProperty("url");
+  });
+
+  // ── The url a cast was saved with must never be drawn ─────────────────────
+  //
+  // The regression HV-1's fix introduced on the authoring surface. Content urls
+  // became SIGNED and EXPIRING; the picker handed the Studio one of those, the
+  // Studio patched it into the layer, and the save persisted it. Nothing reached
+  // a screen — both projections re-mint from the asset_ref — but an operator who
+  // built a cast today and reopened it tomorrow was looking at broken images and
+  // a dead link in the properties panel.
+  //
+  // The fixture therefore carries a REAL signed url shape on both sides: an
+  // expired one on the stored layer (the kind a cast saved yesterday holds) and
+  // a live one in the listing. Anything that reads the layer's own url draws the
+  // dead one and fails here.
+  it("draws a stored image from a FRESHLY minted url, never the one saved with the cast", async () => {
+    const stale = "https://origin.example/content/aa11?exp=1700000000000&sig=deadbeef";
+    const fresh = "https://origin.example/content/aa11?exp=9999999999999&sig=cafebabe";
+    const saved: { body?: SavedBody } = {};
+    const withImage = cast({
+      slides: [
+        {
+          id: "slide-1",
+          layers: [{ kind: "image", x: 0, y: 0, w: 640, h: 360, asset_ref: "sha256:aa11", url: stale }],
+        },
+      ],
+    });
+    server.use(
+      ...serveCast(withImage, saved),
+      http.get("*/api/v1/content", () =>
+        HttpResponse.json({ content: [contentAsset({ asset_ref: "sha256:aa11", url: fresh })] }),
+      ),
+    );
+    renderStudio();
+
+    await screen.findByRole("button", { name: /Layer 1: Image/ });
+    // The canvas AND the filmstrip thumbnail — the same renderer at two scales,
+    // so a fix applied to one and not the other is visible here.
+    await waitFor(() => {
+      const drawn = Array.from(document.querySelectorAll('[data-slot="layer-image"]'));
+      expect(drawn.length).toBeGreaterThan(0);
+      for (const el of drawn) expect(el.getAttribute("src")).toBe(fresh);
+    });
+
+    // And the dead url is not merely out-drawn — it is gone from the document
+    // being edited, so a save cannot put it back.
+    const user = userEvent.setup();
+    await user.click(canvasLayer(1, /Layer 1: Image/));
+    await user.type(screen.getByLabelText("X"), "{selectall}24");
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+    await user.click(saveButton());
+    const layer = (await waitForSave(saved)).slides?.[0]?.layers?.[0] ?? {};
+    expect(layer).toMatchObject({ asset_ref: "sha256:aa11" });
+    expect(layer).not.toHaveProperty("url");
   });
 });
 
@@ -526,7 +595,8 @@ describe("Studio — the video layer", () => {
     await waitFor(() => expect(saveButton()).toBeEnabled());
     await user.click(saveButton());
     const layers = (await waitForSave(saved)).slides?.[0]?.layers ?? [];
-    expect(layers[3]).toMatchObject({ kind: "video", asset_ref: "sha256:cc77", url: "/content/cc77" });
+    expect(layers[3]).toMatchObject({ kind: "video", asset_ref: "sha256:cc77" });
+    expect(layers[3]).not.toHaveProperty("url");
   });
 
   it("saves a cast that already carries a video layer instead of calling its kind unknown", async () => {

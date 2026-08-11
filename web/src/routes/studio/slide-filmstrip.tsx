@@ -2,7 +2,7 @@ import { AlertTriangle, ChevronLeft, ChevronRight, Copy, Plus, Trash2 } from "lu
 import { Button, KitIcon } from "@/components/kit";
 import { SLIDE_CANVAS_WIDTH, type CastSlide, type SlideProblem } from "@/api";
 import { cn } from "@/lib/utils";
-import { SlideStage } from "./slide-canvas";
+import { SlideStage, type AssetUrls } from "./slide-canvas";
 
 /**
  * The slide filmstrip — the cast's slides in play order, as live thumbnails.
@@ -33,6 +33,8 @@ export interface SlideFilmstripProps {
   onDuplicate: (index: number) => void;
   onDelete: (index: number) => void;
   onMove: (from: number, to: number) => void;
+  /** The content library, for content-bearing layers' previews. See AssetUrls. */
+  assetUrls?: AssetUrls | undefined;
 }
 
 export function SlideFilmstrip({
@@ -44,6 +46,7 @@ export function SlideFilmstrip({
   onDuplicate,
   onDelete,
   onMove,
+  assetUrls,
 }: SlideFilmstripProps) {
   return (
     <section aria-label="Slides" className="flex min-w-0 flex-col gap-2">
@@ -74,7 +77,7 @@ export function SlideFilmstrip({
                   active ? "border-[color:var(--wv-accent-text)]" : "border-border hover:border-[color:var(--wv-accent-text)]/60",
                 )}
               >
-                <SlideStage slide={slide} scale={THUMB_SCALE} />
+                <SlideStage slide={slide} scale={THUMB_SCALE} assetUrls={assetUrls} />
                 <span className="absolute left-1 top-1 rounded-[6px] bg-[color:var(--wv-bg)]/80 px-1.5 text-[11px] font-semibold">
                   {i + 1}
                 </span>

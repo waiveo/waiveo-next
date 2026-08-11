@@ -17,9 +17,16 @@ import (
 // route concatenated a bare address.
 //
 // contenturl.ServeTTL, not SnapshotTTL: these URLs are minted at RESPONSE time
-// and fetched by whoever asked, within the life of one console session — the
-// short lifetime is the correct one, and the long one exists only for URLs
-// minted into a signed generation that may be served for weeks.
+// and fetched by whoever asked, within the life of one console session. The two
+// constants hold the same value today, so naming the right one is not currently
+// load-bearing — which is exactly why it is named deliberately rather than left
+// to chance, since the day they diverge again this route must not silently
+// acquire a build-time lifetime.
+//
+// A url minted here is DERIVED and short-lived, so it is never stored: an
+// authoring surface persists the `asset_ref` and re-resolves the url from this
+// listing when it needs to render. store.stripDerivedMembers enforces that on
+// the write side — see its doc for what a persisted one did.
 func (srv *server) contentSigner() contenturl.Signer {
 	return srv.content.Signer(srv.contentBase, contenturl.ServeTTL)
 }
