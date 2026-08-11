@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
 )
@@ -357,5 +358,44 @@ func assertControllerError(t *testing.T, err error, wantCode string) {
 	}
 	if ce.Code != wantCode {
 		t.Errorf("ControllerError.Code = %q, want %q", ce.Code, wantCode)
+	}
+}
+
+// TestControlVerbTimeoutClearsMeasuredHardwareLatency pins the ECP round-trip
+// bound above the latency real hardware actually exhibits.
+//
+// This is a regression guard for a defect found by driving a real screen, not
+// by reasoning: a Roku TV in `Ready` fast-start standby — the state an
+// unattended signage screen sits in between dayparts — answers a control verb
+// (POST /keypress/<key>) in ~5.05s while answering a query in ~25ms. The bound
+// was 3s, i.e. UNDER the control-verb latency, so every keypress and launch
+// dispatched to a standby screen reported COMMAND_TARGET_UNREACHABLE *after the
+// device had already accepted the command* (it answers 202). The operator saw a
+// failure, the television did the thing, and nothing reconciled the two.
+//
+// Screen keep-alive and power-on auto-launch dispatch exactly these verbs at
+// exactly that moment, so a bound under the real number does not merely log
+// noise — it makes both capabilities appear broken while they work.
+//
+// The assertion is deliberately against the MEASURED figure with headroom
+// rather than against the constant's current value: a future change may raise
+// it, and that is fine; what must never happen again is dropping it back under
+// what the hardware in this lab demonstrably takes.
+func TestControlVerbTimeoutClearsMeasuredHardwareLatency(t *testing.T) {
+	// Measured 2026-08-10 on a Roku TV (firmware 15.3.4) in `Ready` standby:
+	// POST /keypress/<key> answered 202 in ~5.05s across repeated trials.
+	const measuredControlVerbLatency = 5100 * time.Millisecond
+
+	if defaultTimeout <= measuredControlVerbLatency {
+		t.Fatalf("defaultTimeout = %v, which is at or under the ~%v a real standby Roku takes to answer a "+
+			"control verb: every keypress/launch to a standby screen will report UNREACHABLE after the device "+
+			"already accepted it", defaultTimeout, measuredControlVerbLatency)
+	}
+
+	// And it must stay bounded — the constant exists so a wedged device cannot
+	// hang this dispatch, and transitively (REL-115) every other command queued
+	// against the same physical device.
+	if defaultTimeout > 30*time.Second {
+		t.Fatalf("defaultTimeout = %v, too long to bound a wedged device", defaultTimeout)
 	}
 }

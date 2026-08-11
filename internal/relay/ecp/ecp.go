@@ -70,10 +70,36 @@ const codeUnresolved = "COMMAND_UNRESOLVED"
 const defaultPort = 8060
 
 // defaultTimeout bounds a single ECP HTTP round trip. Roku's ECP has no
-// documented SLA; 3s keeps a dead or wedged device from hanging a dispatch
-// (and, transitively via REL-115, every other command queued against the same
-// physical device) indefinitely.
-const defaultTimeout = 3 * time.Second
+// documented SLA, so this is set from MEASUREMENT rather than from a guess —
+// and the measurement is far slower than the guess it replaced.
+//
+// Measured on real hardware (a Roku TV, firmware 15.3.4, in `Ready`
+// fast-start standby — the state an unattended signage screen is normally in
+// between dayparts), 2026-08-10:
+//
+//	GET  /query/device-info   ~25ms
+//	GET  /query/active-app    ~23ms
+//	POST /keypress/<key>      ~5.05s, consistently, answering 202
+//
+// A CONTROL verb to a standby screen therefore takes ~5s while a QUERY takes
+// milliseconds. The previous 3s bound was under the control-verb latency, so
+// every keypress/launch this relay dispatched to a standby screen failed
+// COMMAND_TARGET_UNREACHABLE *after the device had already accepted it* —
+// the operator saw an error, the TV did the thing, and the two disagreed.
+// Screen keep-alive and power-on auto-launch both dispatch exactly these verbs
+// at exactly this moment, so the bound has to clear the real number with room
+// for a slower device, not sit under it.
+//
+// 12s is that headroom (~2.4x measured). The original concern this constant
+// exists for still holds — a dead or wedged device must not hang a dispatch,
+// and transitively (REL-115) every other command queued against the same
+// physical device — so it is bounded, just bounded above reality instead of
+// below it. A tighter bound for the query verbs is a possible refinement (they
+// are 200x faster and a wedged poll is cheap to abandon); it is deliberately
+// NOT done here, because one bound that is correct for the slowest verb is
+// safer than two bounds where the fast one can be applied to a slow verb by
+// mistake.
+const defaultTimeout = 12 * time.Second
 
 // Target names one Roku ECP endpoint — the (host, port) a media-player
 // entity's commands dispatch to over plain HTTP (REL-114: ECP is
