@@ -961,3 +961,147 @@ describe("Studio — cast playback settings", () => {
     expect(body.slides?.[0]?.duration_ms).toBe(25_000);
   });
 });
+
+/**
+ * The RASTERIZED FALLBACK, authored the way an operator authors it (parity row
+ * 2.4). Every case here ends at the PATCH body, because the whole risk in this
+ * feature is a control that renders and does nothing: a QR whose payload cannot
+ * be changed would still look right on the canvas and would still save — as a
+ * sign pointing at example.com.
+ */
+describe("Studio — rasterized (derive) layers", () => {
+  async function insertDerive(user: ReturnType<typeof userEvent.setup>, label: string) {
+    await user.click(screen.getByRole("button", { name: "Add rasterized" }));
+    await user.click(await screen.findByRole("button", { name: new RegExp(label) }));
+  }
+
+  it("inserts a QR layer, lets the payload be changed, and saves the spec", async () => {
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await insertDerive(user, "QR code");
+
+    // It lands on the canvas, selected, and SAYS it is not rendered — the one
+    // kind whose appearance does not follow from saving.
+    expect(canvasLayer(4, /Layer 4: QR/)).toHaveAttribute("aria-pressed", "true");
+    // Twice: the canvas and the filmstrip thumbnail are the same renderer.
+    expect(screen.getAllByText("NEEDS RENDER")).toHaveLength(2);
+
+    const payload = screen.getByLabelText("Encoded link or text");
+    await user.clear(payload);
+    await user.type(payload, "https://waiveo.local/pair/ABCD-1234");
+    await user.selectOptions(screen.getByLabelText("Error correction"), "H");
+
+    await user.click(saveButton());
+    const layers = (await waitForSave(saved)).slides?.[0]?.layers ?? [];
+    expect(layers).toHaveLength(4);
+    expect(layers[3]).toMatchObject({
+      kind: "derive",
+      derive: { kind: "qr", data: "https://waiveo.local/pair/ABCD-1234", ec_level: "H" },
+    });
+    // The raster is the RENDERER's to produce: an authored layer never invents
+    // an asset_ref, and one here would name bytes nobody uploaded.
+    expect(layers[3]).not.toHaveProperty("asset_ref");
+  });
+
+  it("edits a styled panel's gradient, shadow and corner radius", async () => {
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await insertDerive(user, "Styled panel");
+
+    fireEvent.change(screen.getByLabelText("Gradient from hex"), { target: { value: "#112233" } });
+    fireEvent.change(screen.getByLabelText("Gradient to hex"), { target: { value: "#445566" } });
+    fireEvent.change(screen.getByLabelText("Gradient angle"), { target: { value: "45" } });
+    fireEvent.change(screen.getByLabelText("Corner radius"), { target: { value: "16" } });
+    await user.click(screen.getByLabelText(/Drop shadow/));
+
+    await user.click(saveButton());
+    const layer = (await waitForSave(saved)).slides?.[0]?.layers?.[3] as Record<string, unknown>;
+    expect(layer.derive).toMatchObject({
+      kind: "rect",
+      fill: { kind: "linear", from: "#112233", to: "#445566", angle_deg: 45 },
+      border: { radius: 16 },
+      shadow: { dy: 8, blur: 24, opacity_pct: 55 },
+    });
+  });
+
+  it("drops the gradient's second stop when the fill is switched to solid", async () => {
+    // The server REFUSES a solid fill carrying a `to`, so a switch that left the
+    // old stop behind would make the cast unsavable — and the control that did
+    // it would no longer be on screen for the operator to undo.
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await insertDerive(user, "Styled panel");
+    await user.selectOptions(screen.getByLabelText("Fill"), "solid");
+
+    await user.click(saveButton());
+    const layer = (await waitForSave(saved)).slides?.[0]?.layers?.[3] as Record<string, unknown>;
+    expect(layer.derive).toMatchObject({ fill: { kind: "solid" } });
+    expect((layer.derive as Record<string, Record<string, unknown>>).fill).not.toHaveProperty("to");
+    expect((layer.derive as Record<string, Record<string, unknown>>).fill).not.toHaveProperty("angle_deg");
+  });
+
+  it("draws the real picture, and stops warning, once a raster exists", async () => {
+    // A cast whose derive layer has already been through waiveo-derive: the
+    // canvas must show the PNG rather than its own approximation, because the
+    // approximation is a browser that has neither the embedded font nor a QR
+    // encoder — and it is the last thing an operator sees before shipping.
+    const rendered = cast();
+    rendered.slides[0]!.layers.push({
+      kind: "derive", x: 1400, y: 120, w: 400, h: 400,
+      asset_ref: "sha256:aa11", url: "https://origin.example/content/aa11",
+      derived_from: "digest-1",
+      derive: { kind: "qr", data: "https://waiveo.local/pair" },
+    } as never);
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(rendered, saved));
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    expect(screen.queryAllByText("NEEDS RENDER")).toHaveLength(0);
+    await waitFor(() => {
+      const imgs = document.querySelectorAll('[data-slot="layer-derive"]');
+      expect(imgs.length).toBeGreaterThan(0);
+      expect(imgs[0]).toHaveAttribute("src", "https://origin.example/content/aa11");
+    });
+  });
+
+  it("keeps derived_from across an unrelated edit", async () => {
+    // `derived_from` is what tells the server CURRENT from STALE. A Studio that
+    // dropped it on save would report every layer as never rendered, and its
+    // picture would come off the wall until somebody ran the tool again.
+    const rendered = cast();
+    rendered.slides[0]!.layers.push({
+      kind: "derive", x: 1400, y: 120, w: 400, h: 400,
+      asset_ref: "sha256:aa11", url: "https://origin.example/content/aa11",
+      derived_from: "digest-1",
+      derive: { kind: "qr", data: "https://waiveo.local/pair" },
+    } as never);
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(rendered, saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(canvasLayer(2, /Layer 2: Text — Welcome/));
+    const textarea = screen.getByLabelText("Text");
+    await user.clear(textarea);
+    await user.type(textarea, "Open at 9");
+
+    await user.click(saveButton());
+    const layer = (await waitForSave(saved)).slides?.[0]?.layers?.[3] as Record<string, unknown>;
+    expect(layer.derived_from).toBe("digest-1");
+    expect(layer.asset_ref).toBe("sha256:aa11");
+  });
+});

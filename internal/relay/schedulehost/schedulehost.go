@@ -377,8 +377,20 @@ func resolveSlideLayers(slide *datamodel.Slide, sign contentSigner) ([]wire.Laye
 // must reach a Lease through the identical URL minting and the identical
 // validation gate.
 func resolveLayers(authored []wire.Layer, sign contentSigner) ([]wire.Layer, bool) {
-	layers := make([]wire.Layer, len(authored))
-	for i, l := range authored {
+	layers := make([]wire.Layer, 0, len(authored))
+	for _, a := range authored {
+		// A `derive` layer (the rasterized fallback, wire/derive.go) is rewritten
+		// into the plain `image` layer a player draws BEFORE anything else looks
+		// at it, through the one shared wire.DeriveProjection both projections
+		// call — so the wire a screen reads never carries an authoring-only kind
+		// and the player needs no new capability. A layer whose PNG has not been
+		// rendered yet is dropped (ok=false from the projection) rather than
+		// dropping the whole slide: the title, the image and the clock beside it
+		// still draw.
+		l, ok := wire.DeriveProjection(a)
+		if !ok {
+			continue
+		}
 		// wire.LayerFetchesContent, not an inline `== LayerKindImage`: it names
 		// the content-bearing kinds (image and video) in ONE place, shared with
 		// the validator and with snapshot.resolveLayers, so a kind cannot be
@@ -387,7 +399,7 @@ func resolveLayers(authored []wire.Layer, sign contentSigner) ([]wire.Layer, boo
 		if wire.LayerFetchesContent(l.Kind) {
 			l.URL = sign.urlFor(l.AssetRef)
 		}
-		layers[i] = l
+		layers = append(layers, l)
 	}
 	if err := wire.ValidateSlideLayers(layers); err != nil {
 		return nil, false

@@ -454,8 +454,18 @@ func resolveSlideLayers(slide *datamodel.Slide, contentBaseURL string) ([]wire.L
 // and diverged later would show an operator a cast slide that renders and an
 // inline slide that does not, from the same authored layers.
 func resolveLayers(authored []wire.Layer, contentBaseURL string) ([]wire.Layer, bool) {
-	layers := make([]wire.Layer, len(authored))
-	for i, l := range authored {
+	layers := make([]wire.Layer, 0, len(authored))
+	for _, a := range authored {
+		// A `derive` layer (the rasterized fallback, wire/derive.go) is rewritten
+		// into the plain `image` layer a player draws BEFORE anything else looks
+		// at it, through the one shared wire.DeriveProjection the relay-side
+		// projection also calls — so a screen never sees an authoring-only kind
+		// and no player learns anything new. A layer whose PNG has not been
+		// rendered yet is dropped rather than dropping the whole slide.
+		l, ok := wire.DeriveProjection(a)
+		if !ok {
+			continue
+		}
 		if wire.LayerFetchesContent(l.Kind) {
 			// A content-bearing layer's URL — an image's or a video's,
 			// wire.LayerFetchesContent naming the pair once — is derived from the
@@ -472,7 +482,7 @@ func resolveLayers(authored []wire.Layer, contentBaseURL string) ([]wire.Layer, 
 			// never see disagree.
 			l.URL = contentURL(contentBaseURL, l.AssetRef)
 		}
-		layers[i] = l
+		layers = append(layers, l)
 	}
 	if err := wire.ValidateSlideLayers(layers); err != nil {
 		return nil, false

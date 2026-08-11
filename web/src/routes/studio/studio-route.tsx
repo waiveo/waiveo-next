@@ -11,6 +11,7 @@ import {
   validateCastSlides,
   type Cast,
   type Entity,
+  type DeriveKind,
   type LayerKind,
   type SlideLayer,
   type WaiveoApi,
@@ -20,6 +21,7 @@ import {
   EMPTY_STUDIO_STATE,
   currentSlide,
   defaultLayer,
+  deriveLayer,
   selectedLayer,
   studioReducer,
   studioStateToUpdate,
@@ -213,6 +215,13 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
     (kind: LayerKind) => dispatch({ type: "insertLayer", layer: defaultLayer(kind, Date.now()) }),
     [],
   );
+  // A rasterized layer inserts through its own callback because `derive` is not
+  // one kind: the SPEC decides what is drawn, so "insert a derive layer" has no
+  // meaning without one.
+  const onInsertDerive = useCallback(
+    (kind: DeriveKind) => dispatch({ type: "insertLayer", layer: deriveLayer(kind) }),
+    [],
+  );
   const onSelectLayer = useCallback((index: number | null) => dispatch({ type: "selectLayer", index }), []);
   const onGeometry = useCallback(
     (index: number, geometry: Pick<SlideLayer, "x" | "y" | "w" | "h">) =>
@@ -402,7 +411,7 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
         {slide ? (
           <div className="grid min-w-0 grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
             <div className="flex min-w-0 flex-col gap-3">
-              <InsertToolbar onInsert={onInsert} />
+              <InsertToolbar onInsert={onInsert} onInsertDerive={onInsertDerive} />
               <SlideCanvas
                 slide={slide}
                 selectedIndex={state.layerIndex}

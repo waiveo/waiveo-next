@@ -20,6 +20,8 @@ import {
   type Cast,
   type CastSlide,
   type CastUpdate,
+  type DeriveKind,
+  type DeriveSpec,
   type LayerKind,
   type SlideLayer,
 } from "@/api";
@@ -150,6 +152,59 @@ export function defaultLayer(kind: LayerKind, nowMs: number = Date.now()): Slide
       // No entity_id: see this function's doc. The template defaults to the
       // bare state token, which is also what the box assumes for an empty one.
       return { kind, x: 160, y: 860, w: 1200, h: 140, text: "{state}", font_px: 72, color: "#FFFFFF", align: "left" };
+    case "derive":
+      // A bare `derive` has no meaning — the spec decides what is drawn — so the
+      // toolbar always inserts through `deriveLayer` below and this arm exists
+      // only to keep the switch exhaustive. QR is the default because it is the
+      // one derive kind with no native alternative at all.
+      return deriveLayer("qr");
+  }
+}
+
+/**
+ * A new RASTERIZED layer of one derive kind, positioned and pre-styled.
+ *
+ * Each default is chosen so the layer looks like a finished thing the moment it
+ * lands, because a derive layer costs a render to see: an operator who has to
+ * set four properties before the first render is an operator who renders four
+ * times. A QR arrives with the light field a scanner needs; a panel arrives with
+ * a gradient (a flat one should be a NATIVE rect, which needs no render at all);
+ * styled text arrives with the drop shadow that is the usual reason to reach for
+ * it.
+ *
+ * None of them carries an `asset_ref`: a freshly authored derive layer is
+ * PENDING by definition, and it is the off-appliance `waiveo-derive` tool that
+ * fills that in.
+ */
+export function deriveLayer(kind: DeriveKind): SlideLayer {
+  switch (kind) {
+    case "qr":
+      return {
+        kind: "derive", x: 1400, y: 120, w: 400, h: 400,
+        derive: {
+          kind: "qr", data: "https://example.com", ec_level: "M", color: "#111827",
+          fill: { kind: "solid", from: "#FFFFFF" },
+          border: { radius: 24 },
+        },
+      };
+    case "text":
+      return {
+        kind: "derive", x: 160, y: 420, w: 1600, h: 280,
+        derive: {
+          kind: "text", text: "Styled text", font_px: 120, color: "#FFFFFF",
+          align: "center", valign: "middle",
+          shadow: { dy: 8, blur: 24, color: "#000000", opacity_pct: 55 },
+        },
+      };
+    case "rect":
+      return {
+        kind: "derive", x: 240, y: 240, w: 900, h: 420,
+        derive: {
+          kind: "rect",
+          fill: { kind: "linear", from: "#7C3AED", to: "#0EA5E9", angle_deg: 135 },
+          border: { radius: 32 },
+        },
+      };
   }
 }
 
@@ -172,6 +227,25 @@ type OptionalLayerField = Exclude<keyof SlideLayer, RequiredLayerField>;
 export type LayerPatch = Partial<Pick<SlideLayer, RequiredLayerField>> & {
   [K in OptionalLayerField]?: SlideLayer[K] | undefined;
 };
+
+/** The same "explicit undefined REMOVES the key" convention, one level down, for
+ * a derive layer's spec. It is needed for exactly the same reason and it bites
+ * harder: `wire.DeriveSpec` refuses a member the chosen kind does not use — a
+ * solid fill carrying a second stop, a border with a width and no colour — so a
+ * turned-off control that left `undefined` behind would serialise a key the
+ * server rejects, and the Studio's save would fail on a control the operator can
+ * no longer see. */
+export type DeriveSpecPatch = { [K in keyof DeriveSpec]?: DeriveSpec[K] | undefined };
+
+/** Merge a spec patch, DELETING the members whose value is undefined. */
+export function applyDerivePatch(spec: DeriveSpec, patch: DeriveSpecPatch): DeriveSpec {
+  const next = { ...spec } as DeriveSpec & Record<string, unknown>;
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) delete next[key];
+    else next[key] = value;
+  }
+  return next;
+}
 
 function applyPatch(layer: SlideLayer, patch: LayerPatch): SlideLayer {
   const next = { ...layer } as SlideLayer & Record<string, unknown>;

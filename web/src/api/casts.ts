@@ -52,7 +52,7 @@ export const SLIDE_CANVAS_HEIGHT = 1080;
  * that cast at all, for a reason the server did not agree with. A kind the
  * server accepts and this array omits is not a missing capability, it is a
  * broken editor. */
-export const LAYER_KINDS = ["text", "rect", "image", "clock", "date", "countdown", "weather", "entity", "video"] as const;
+export const LAYER_KINDS = ["text", "rect", "image", "clock", "date", "countdown", "weather", "entity", "video", "derive"] as const;
 export type LayerKind = (typeof LAYER_KINDS)[number];
 
 /** The four kinds whose content is LIVE — computed rather than typed in. Two are
@@ -86,6 +86,92 @@ export type ContentLayerKind = (typeof CONTENT_LAYER_KINDS)[number];
 /** Whether a layer kind's content is bytes the player must fetch. */
 export function isContentKind(kind: LayerKind): kind is ContentLayerKind {
   return (CONTENT_LAYER_KINDS as readonly string[]).includes(kind);
+}
+
+/** The three things the OFF-APPLIANCE rasterizer can draw (`wire.DeriveKind*`).
+ * `qr` has no native equivalent at all; `text` and `rect` are the STYLED forms
+ * of the two native kinds, for when a layer needs a gradient, a drop shadow, a
+ * rounded border or a font the device does not ship. */
+export const DERIVE_KINDS = ["qr", "text", "rect"] as const;
+export type DeriveKind = (typeof DERIVE_KINDS)[number];
+
+/** A derive layer's backing. `solid` sits beside the two gradients so a spec can
+ * state a flat fill under a shadow or a rounded border. */
+export const DERIVE_FILL_KINDS = ["solid", "linear", "radial"] as const;
+export type DeriveFillKind = (typeof DERIVE_FILL_KINDS)[number];
+
+export interface DeriveFill {
+  kind: DeriveFillKind;
+  from: string;
+  /** Required for the gradients, REJECTED on `solid` — the server refuses a
+   * second stop a solid fill would ignore. */
+  to?: string;
+  /** `linear` only. CSS convention: 0 points up, 90 right. */
+  angle_deg?: number;
+}
+
+export interface DeriveShadow {
+  dx?: number;
+  dy?: number;
+  blur?: number;
+  color?: string;
+  /** An integer PERCENT, not a fraction: the spec is hashed to produce the
+   * raster's content address, and a float would make that address depend on
+   * decimal formatting. */
+  opacity_pct?: number;
+}
+
+export interface DeriveBorder {
+  width?: number;
+  color?: string;
+  radius?: number;
+}
+
+/** What the off-appliance rasterizer must draw for one `derive` layer —
+ * `wire.DeriveSpec`, field for field. A closed, declarative vocabulary: the
+ * renderer drives a real browser, so there is deliberately no way to send it
+ * markup. */
+export interface DeriveSpec {
+  kind: DeriveKind;
+  /** `qr`: the payload. */
+  data?: string;
+  /** `qr`: error-correction level; empty means M. */
+  ec_level?: "L" | "M" | "Q" | "H";
+  /** `text`: the LITERAL string. Never a format — a raster is a frozen picture,
+   * so a clock or a countdown must stay a native live layer. */
+  text?: string;
+  font_px?: number;
+  font_family?: string;
+  /** A font file in the content origin, embedded by the renderer before drawing.
+   * This is the member that makes a face the device does not ship possible. */
+  font_asset_ref?: string;
+  /** `text` only — a symbol is always centred and a rect fills its box. */
+  align?: LayerAlign;
+  /** `text` only. */
+  valign?: "top" | "middle" | "bottom";
+  /** Text colour for `text`; the DARK MODULE colour for `qr`. */
+  color?: string;
+  fill?: DeriveFill;
+  shadow?: DeriveShadow;
+  border?: DeriveBorder;
+}
+
+/** Whether a derive layer still needs the off-appliance renderer to run over it
+ * — the console-side mirror of `wire.LayerDeriveState`.
+ *
+ * `pending`: no PNG has ever been produced, so the projection omits the layer
+ * and the rest of the slide still draws. `stale`: a PNG exists but the spec or
+ * the GEOMETRY has changed since — the raster is rendered at the layer's pixel
+ * size, so a resize invalidates it exactly as an edit does — and the OLD picture
+ * keeps being served until the tool catches up, because an edit nobody has
+ * rendered yet must never blank a screen.
+ *
+ * The console cannot recompute the digest (it is a hash of the server's own
+ * canonical encoding), so "stale" is only reported when the server said so. What
+ * this function decides unaided is the one case that matters at authoring time:
+ * a layer with no raster at all. */
+export function deriveNeedsRender(layer: SlideLayer): boolean {
+  return layer.kind === "derive" && !layer.asset_ref;
 }
 
 /** The weather template tokens the BOX substitutes (`slidelive`'s closed set).
@@ -149,6 +235,15 @@ export interface SlideLayer {
   color?: string;
   /** A Label kind's horizontal alignment. Optional. */
   align?: LayerAlign;
+  /** `derive`: what the OFF-APPLIANCE rasterizer must draw. Required for that
+   * kind and rejected on every other — a derive block hung on a text layer would
+   * be ignored by every projection, which is a styling control that silently
+   * does nothing. */
+  derive?: DeriveSpec;
+  /** `derive`: the spec digest the current `asset_ref` was rendered from. Written
+   * by `waiveo-derive`, never authored — the Studio round-trips it untouched so
+   * that saving an unrelated edit does not make every raster look stale. */
+  derived_from?: string;
 }
 
 /** One slide of a cast: an ordered layer stack plus how long it holds the screen.
@@ -286,6 +381,32 @@ export function validateSlide(slide: CastSlide): SlideProblem[] {
     }
     if (l.kind === "weather" && !l.text) at("A weather widget needs a display template, e.g. \u007Btemp\u007D\u00B0 \u007Bcond\u007D.");
     if (l.kind === "entity" && !l.entity_id) at("Choose which entity this widget shows.");
+    // The rasterized fallback. These mirror `wire.ValidateDeriveSpec`'s arms —
+    // and only the ones an operator can break while authoring, for the reason
+    // this function's doc gives: a mirror STRICTER than the server holds the save
+    // for a cast the server would accept.
+    if (l.kind === "derive") {
+      const d = l.derive;
+      if (!d) {
+        at("A rasterized layer needs something to draw.");
+      } else if (!(DERIVE_KINDS as readonly string[]).includes(d.kind)) {
+        at(`Unknown rasterized kind "${d.kind}".`);
+      } else {
+        if (d.kind === "qr" && !d.data) at("A QR code needs a link or text to encode.");
+        if (d.kind === "text" && !d.text) at("Text is required.");
+        if (d.kind === "rect" && !d.fill) at("A styled panel needs a fill.");
+        if (d.fill && d.fill.kind !== "solid" && !d.fill.to) at("A gradient needs a second colour.");
+        if (d.fill && d.fill.kind === "solid" && d.fill.to) at("A solid fill has no second colour.");
+        if (d.border && d.border.width && !d.border.color) at("A border with a width needs a colour.");
+        for (const [what, value] of [["Colour", d.color], ["Fill", d.fill?.from], ["Gradient end", d.fill?.to],
+          ["Shadow colour", d.shadow?.color], ["Border colour", d.border?.color]] as const) {
+          if (value && !HEX_COLOR.test(value)) at(`${what} "${value}" is not a #RRGGBB value.`);
+        }
+      }
+    }
+    // Every OTHER kind must not carry one: the server refuses it outright, so a
+    // console that let one through would produce a 422 an operator cannot read.
+    if (l.kind !== "derive" && l.derive) at("Only a rasterized layer carries a rasterizer spec.");
     if (l.color && !HEX_COLOR.test(l.color)) at(`Colour "${l.color}" is not a #RRGGBB value.`);
   });
   return problems;

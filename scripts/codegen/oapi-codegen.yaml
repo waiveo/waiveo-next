@@ -5,3 +5,17 @@ generate:
 output: api/gen/go/api.gen.go
 output-options:
   skip-prune: false
+compatibility:
+  # Every enum constant is prefixed with its own type name, ALWAYS — not only
+  # when the bare value name happens to collide with another enum's.
+  #
+  # This is defensive, and it was earned. Without it oapi-codegen names a
+  # constant after the VALUE alone (`Pending`, `Solid`, `M`) and falls back to a
+  # type prefix only on collision, so adding an unrelated schema whose enum
+  # happens to share one value RENAMES constants in a completely different
+  # family: introducing `DerivePendingLayerState{pending,stale}` silently
+  # rewrote `apiv1.JobTargetStatePending` to `apiv1.Pending` and broke every
+  # existing caller. That is a generated-code landmine under every future schema
+  # addition, and it also stops the package exporting bare `M`, `L`, `H`, `Top`
+  # and `Solid` into a namespace shared by 200 other types.
+  always-prefix-enum-values: true

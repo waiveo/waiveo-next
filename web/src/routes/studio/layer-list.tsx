@@ -7,6 +7,7 @@ import {
   CloudSun,
   Image as ImageIcon,
   LayoutGrid,
+  Sparkles,
   Square,
   Timer,
   ToggleLeft,
@@ -16,7 +17,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Button, EmptyState, KitIcon, Modal } from "@/components/kit";
-import { WIDGET_LAYER_KINDS, type LayerKind, type SlideLayer, type WidgetLayerKind } from "@/api";
+import { DERIVE_KINDS, WIDGET_LAYER_KINDS, type DeriveKind, type LayerKind, type SlideLayer, type WidgetLayerKind } from "@/api";
 import { cn } from "@/lib/utils";
 import { describeLayer } from "./slide-canvas";
 
@@ -43,6 +44,7 @@ const KIND_ICON: Record<LayerKind, LucideIcon> = {
   weather: CloudSun,
   entity: ToggleLeft,
   video: Video,
+  derive: Sparkles,
 };
 
 const KIND_LABEL: Record<LayerKind, string> = {
@@ -55,6 +57,7 @@ const KIND_LABEL: Record<LayerKind, string> = {
   weather: "Weather",
   entity: "Entity state",
   video: "Video",
+  derive: "Rasterized",
 };
 
 /** The kinds the toolbar offers DIRECTLY: the static ones plus the clock, which
@@ -82,8 +85,27 @@ const WIDGET_BLURB: Record<WidgetLayerKind, string> = {
   entity: "The live state of one device — on, off, playing — as the box last observed it.",
 };
 
+/** What each rasterized kind IS, and — because a derive layer costs a render an
+ * operator has to go and run — WHEN NOT to reach for it. Two of the three have a
+ * native equivalent that stays live, needs no content and re-styles instantly;
+ * choosing the rasterized one for a flat panel is a real, silent cost. */
+const DERIVE_LABEL: Record<DeriveKind, string> = {
+  qr: "QR code",
+  text: "Styled text",
+  rect: "Styled panel",
+};
+
+const DERIVE_BLURB: Record<DeriveKind, string> = {
+  qr: "A scannable QR code. No screen can draw one itself, so this is the only way to put a code on a slide.",
+  text: "Text with a gradient, a drop shadow, a rounded backing or a font the screen does not ship. Plain text should stay a Text layer — it needs no render.",
+  rect: "A panel with a gradient fill, rounded corners or a drop shadow. A flat block of colour should stay a Rectangle — it needs no render.",
+};
+
 export interface InsertToolbarProps {
   onInsert: (kind: LayerKind) => void;
+  /** Insert a rasterized layer of one derive kind. Separate from `onInsert`
+   * because `derive` is not one thing: the spec decides what is drawn. */
+  onInsertDerive: (kind: DeriveKind) => void;
 }
 
 /**
@@ -97,8 +119,9 @@ export interface InsertToolbarProps {
  * toolbar button does not — and picking the wrong one is otherwise invisible
  * until it is on a wall.
  */
-export function InsertToolbar({ onInsert }: InsertToolbarProps) {
+export function InsertToolbar({ onInsert, onInsertDerive }: InsertToolbarProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [derivePickerOpen, setDerivePickerOpen] = useState(false);
 
   return (
     <>
@@ -124,7 +147,49 @@ export function InsertToolbar({ onInsert }: InsertToolbarProps) {
         >
           Add widget
         </Button>
+        <Button
+          size="sm"
+          variant="secondary"
+          icon={Sparkles}
+          className="wv-touch"
+          onClick={() => setDerivePickerOpen(true)}
+        >
+          Add rasterized
+        </Button>
       </div>
+
+      <Modal
+        title="Add a rasterized layer"
+        description="These are the things a screen cannot draw by itself — a QR code, a gradient, a drop shadow, a font the screen does not ship. They are rendered to a picture by waiveo-derive, which runs on your machine and not on the box, and the layer stays marked NEEDS RENDER on the canvas until you have run it."
+        open={derivePickerOpen}
+        onOpenChange={setDerivePickerOpen}
+        footer={
+          <Button variant="secondary" onClick={() => setDerivePickerOpen(false)}>
+            Cancel
+          </Button>
+        }
+      >
+        <ul aria-label="Rasterized layers" className="flex flex-col gap-2">
+          {DERIVE_KINDS.map((kind) => (
+            <li key={kind}>
+              <button
+                type="button"
+                className="wv-touch flex w-full items-start gap-3 rounded-md border border-[color:var(--wv-border)] bg-[color:var(--wv-surface-2)] p-3 text-left hover:border-[color:var(--wv-accent)]"
+                onClick={() => {
+                  onInsertDerive(kind);
+                  setDerivePickerOpen(false);
+                }}
+              >
+                <KitIcon icon={Sparkles} decorative className="mt-0.5 size-5 text-[color:var(--wv-accent)]" />
+                <span className="flex flex-col gap-1">
+                  <span className="font-medium">{DERIVE_LABEL[kind]}</span>
+                  <span className="text-sm text-muted-foreground">{DERIVE_BLURB[kind]}</span>
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </Modal>
 
       <Modal
         title="Add a widget"

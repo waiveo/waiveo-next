@@ -220,6 +220,58 @@ describe("validateSlide — the console-side mirror of wire.ValidateSlideLayers"
     }
   });
 
+  it("mirrors the rasterizer's own rules for a derive layer", () => {
+    // Each of these is a refusal the SERVER makes, so a console that let it
+    // through would answer the operator with a 422 they cannot read. And each is
+    // reachable in the ordinary course of authoring: turning a gradient into a
+    // solid, giving a border a width, clearing a QR's payload.
+    const derive = (spec: unknown) =>
+      validateSlide({ id: "s", layers: [{ kind: "derive", ...geo, derive: spec } as never] }).map((p) => p.message);
+
+    expect(derive({ kind: "qr", data: "https://waiveo.local/pair" })).toEqual([]);
+    expect(derive({ kind: "text", text: "hi" })).toEqual([]);
+    expect(derive({ kind: "rect", fill: { kind: "solid", from: "#FFFFFF" } })).toEqual([]);
+
+    expect(derive({ kind: "qr" }).join(" ")).toMatch(/link or text to encode/i);
+    expect(derive({ kind: "text" }).join(" ")).toMatch(/text is required/i);
+    expect(derive({ kind: "rect" }).join(" ")).toMatch(/needs a fill/i);
+    expect(derive({ kind: "hologram" }).join(" ")).toMatch(/unknown rasterized kind/i);
+    expect(derive({ kind: "rect", fill: { kind: "linear", from: "#FFFFFF" } }).join(" ")).toMatch(/second colour/i);
+    expect(derive({ kind: "rect", fill: { kind: "solid", from: "#FFFFFF", to: "#000000" } }).join(" ")).toMatch(
+      /solid fill has no second colour/i,
+    );
+    expect(
+      derive({ kind: "text", text: "hi", border: { width: 2 } }).join(" "),
+    ).toMatch(/border with a width needs a colour/i);
+    expect(derive({ kind: "text", text: "hi", color: "red" }).join(" ")).toMatch(/not a #RRGGBB/i);
+
+    // A layer with no spec at all, and a spec on a kind that does not take one —
+    // the mirror direction, which the server also refuses.
+    expect(validateSlide({ id: "s", layers: [{ kind: "derive", ...geo }] }).map((p) => p.message).join(" ")).toMatch(
+      /needs something to draw/i,
+    );
+    expect(
+      validateSlide({
+        id: "s",
+        layers: [{ kind: "text", ...geo, text: "hi", derive: { kind: "rect", fill: { kind: "solid", from: "#FFFFFF" } } } as never],
+      })
+        .map((p) => p.message)
+        .join(" "),
+    ).toMatch(/only a rasterized layer/i);
+  });
+
+  it("accepts a derive layer that has not been rendered yet", () => {
+    // PENDING is the normal state of a freshly authored rasterized layer — the
+    // off-appliance tool has not run. A mirror that demanded an asset_ref would
+    // make it impossible to SAVE the thing the tool is supposed to find.
+    expect(
+      validateSlide({
+        id: "s",
+        layers: [{ kind: "derive", ...geo, derive: { kind: "qr", data: "x" } } as never],
+      }),
+    ).toEqual([]);
+  });
+
   it("does not demand the DERIVED url of a content layer the way the serving gate does", () => {
     // `url` is minted by the producer at projection time
     // (wire.ValidateAuthoredSlideLayers accepts a content layer without one), so

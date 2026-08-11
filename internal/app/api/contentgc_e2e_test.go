@@ -414,3 +414,66 @@ func etagOf(t *testing.T, e *testEnv, playlistID string) string {
 	}
 	return resp.Header.Get("ETag")
 }
+
+// TestContentADeriveLayersFontAndRasterAreNotReclaimed extends the retention
+// claim to the rasterized fallback's TWO references, which are the newest place
+// the reference projection could have a blind spot.
+//
+// A derive layer names content twice: the rendered PNG at `asset_ref`, exactly
+// where an image layer names one, and — nested one level deeper, inside the
+// spec — a CUSTOM FONT at `derive.font_asset_ref`. A projection that walked only
+// the field paths it knew about when it was written would see the first and miss
+// the second, and the miss is invisible until the sweep runs and the font is
+// gone: the layer still shows its old PNG, so nothing on any screen changes, and
+// the failure only surfaces the next time somebody re-renders that layer and the
+// tool cannot fetch the face.
+//
+// This is the third time this projection's coverage has had to be widened (a
+// cast's images, then video, now these), which is why the case is written from
+// the sweep's side rather than only from the write gate's: the write gate
+// refusing an unknown font proves the reference is SEEN, and only this proves it
+// is HONOURED.
+func TestContentADeriveLayersFontAndRasterAreNotReclaimed(t *testing.T) {
+	e, content, dir := gcOriginEnv(t)
+
+	siteID := e.createNode(t, siteNode(""))
+	screenID := e.createNode(t, screenNode("", siteID, ""))
+
+	fontRef := e.uploadContent(t, []byte("waiveo-next retention: a custom face a cast still names")).AssetRef
+	rasterRef := e.uploadContent(t, []byte("waiveo-next retention: the PNG the derive tool produced")).AssetRef
+	orphanRef := e.uploadContent(t, []byte("waiveo-next retention: an image no row names")).AssetRef
+
+	layer := wire.Layer{Kind: wire.LayerKindDerive, X: 0, Y: 0, W: 900, H: 300, Derive: &wire.DeriveSpec{
+		Kind: wire.DeriveKindText, Text: "SCAN TO PAIR", FontFamily: "Oswald", FontAssetRef: fontRef,
+	}}
+	layer.AssetRef = rasterRef
+	layer.DerivedFrom = wire.DeriveDigest(layer)
+
+	castID := decodeID(t, e.createOK(t, "/api/v1/casts", rowCreateBody(t, datamodel.Cast{
+		ScopeNode: screenID, Name: "Pairing Poster",
+		Slides: []datamodel.CastSlide{{ID: "poster", Layers: []wire.Layer{layer}}},
+	})))
+	e.createOK(t, "/api/v1/playlists", rowCreateBody(t, datamodel.Playlist{
+		ScopeNode: screenID, Name: "Poster Playlist",
+		Items: []datamodel.PlaylistItem{{Source: datamodel.PlaylistSourceCast, CastID: castID}},
+	}))
+
+	clock := gcTestNow + contentgc.DefaultMinAssetAgeMs
+	sw := gcSweeper(t, e, content, func() int64 { return clock })
+	res := gcSweepTwice(t, sw, &clock, contentgc.DefaultMinUnreferencedAgeMs)
+
+	if !gcOnDisk(t, dir, rasterRef) {
+		t.Error("the sweep deleted the rendered PNG a scheduled derive layer is showing")
+	}
+	if !gcOnDisk(t, dir, fontRef) {
+		t.Error("the sweep deleted the CUSTOM FONT a scheduled derive layer names — the layer keeps showing its old raster, so nothing looks wrong until the next re-render cannot fetch the face")
+	}
+	// The sweep must still reclaim in the same pass, or the two assertions above
+	// would pass on a sweep that reclaims nothing at all.
+	if res.Reclaimed != 1 {
+		t.Fatalf("reclaimed %d asset(s), want exactly 1 (the orphan; retained: %v)", res.Reclaimed, res.Retained)
+	}
+	if gcOnDisk(t, dir, orphanRef) {
+		t.Error("the genuinely unreferenced asset survived; this case is not exercising reclamation")
+	}
+}

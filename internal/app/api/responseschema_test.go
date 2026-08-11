@@ -535,12 +535,19 @@ func (e *schemaProbeEnv) mintScreen(t *testing.T, scopeNode string) string {
 	return decodeID(t, raw)
 }
 
-// castSlides is the one authored slide stack every cast probe writes: one text
-// layer and one rect, both well inside the 1920x1080 canvas. It deliberately
-// carries no image layer — an image layer's asset_ref must resolve in the
-// content origin at projection time, and this env uploads no bytes, so a slide
-// naming one would be exercising the content origin rather than the cast's own
-// response shape.
+// castSlides is the one authored slide stack every cast probe writes: a text
+// layer, a rect and a `derive` layer, all well inside the 1920x1080 canvas. It
+// deliberately carries no image layer — an image layer's asset_ref must resolve
+// in the content origin at projection time, and this env uploads no bytes, so a
+// slide naming one would be exercising the content origin rather than the cast's
+// own response shape.
+//
+// The derive layer carries NO asset_ref on purpose: that is the state a
+// freshly-authored rasterized layer is in, it is what puts a work order on
+// GET /derive/pending for that probe to check, and — because a derive layer's
+// `derive` block is a nested schema — it is what makes the cast probes verify
+// that SlideLayer actually declares the derive members rather than merely
+// tolerating them.
 func castSlides() []map[string]any {
 	return []map[string]any{{
 		"id":          "s1",
@@ -548,6 +555,9 @@ func castSlides() []map[string]any {
 		"layers": []map[string]any{
 			{"kind": "text", "x": 100, "y": 100, "w": 900, "h": 120, "text": "Fixture Cast", "font_px": 96, "color": "#ffffff"},
 			{"kind": "rect", "x": 0, "y": 980, "w": 1920, "h": 100, "color": "#101820"},
+			{"kind": "derive", "x": 1500, "y": 100, "w": 320, "h": 320, "derive": map[string]any{
+				"kind": "qr", "data": "https://waiveo.local/pair", "ec_level": "M",
+			}},
 		},
 	}}
 }
@@ -782,6 +792,16 @@ var probes = map[string]probe{
 	"listCasts": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		e.mintCast(t, e.mintOrg(t))
 		return e.do(t, http.MethodGet, "/api/v1/casts", nil, nil)
+	},
+
+	// --- derive -----------------------------------------------------------
+	"listPendingDerives": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// castSlides() carries a derive layer with no asset_ref, so the cast this
+		// mints puts exactly one work order in the queue — a non-empty `items`,
+		// which is what makes the item schema actually checked rather than
+		// vacuously satisfied.
+		e.mintCast(t, e.mintOrg(t))
+		return e.do(t, http.MethodGet, "/api/v1/derive/pending", nil, nil)
 	},
 
 	// --- adopted-devices --------------------------------------------------

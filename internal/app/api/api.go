@@ -353,6 +353,11 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	srv.mountScreenStatus(rt)
 	rt.HandleFunc("POST "+apiPrefix+"/content", srv.uploadContent)
 	rt.HandleFunc("GET "+apiPrefix+"/content", srv.listContent)
+	// The rasterized fallback's work queue (derive.go). Read-only by design: the
+	// appliance holds no browser, so the renderer is off-box and writes its
+	// results back through POST /content and PATCH /casts, not through a second
+	// content path here.
+	rt.HandleFunc("GET "+apiPrefix+"/derive/pending", srv.listPendingDerives)
 	// The read half of the async convention: a Job returned by 202 is polled
 	// here until its state is terminal (API-112, openapi getJob). It is not a
 	// resourceConfig mount — a Job carries no revision to condition a write on,

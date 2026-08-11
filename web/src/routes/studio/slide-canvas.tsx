@@ -8,9 +8,17 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { ImageOff, VideoOff } from "lucide-react";
+import { ImageOff, QrCode, VideoOff } from "lucide-react";
 import { KitIcon } from "@/components/kit";
-import { SLIDE_CANVAS_HEIGHT, SLIDE_CANVAS_WIDTH, isContentKind, type CastSlide, type SlideLayer } from "@/api";
+import {
+  SLIDE_CANVAS_HEIGHT,
+  SLIDE_CANVAS_WIDTH,
+  deriveNeedsRender,
+  isContentKind,
+  type CastSlide,
+  type DeriveSpec,
+  type SlideLayer,
+} from "@/api";
 import { cn } from "@/lib/utils";
 import { RESIZE_HANDLES, moveLayerBy, resizeLayerBy, type ResizeHandle } from "./cast-model";
 import { COUNTDOWN_DEFAULT_LAYOUT, formatCountdownLayout, formatGoTimeLayout } from "./go-time-layout";
@@ -86,7 +94,45 @@ export function describeLayer(layer: SlideLayer): string {
       return `Weather — ${layer.text ?? "(no template)"}`;
     case "entity":
       return layer.entity_id ? `Entity — ${layer.entity_id}` : "Entity — (none chosen)";
+    case "derive": {
+      const d = layer.derive;
+      const what = d?.kind === "qr" ? `QR — ${d.data ?? "(nothing to encode)"}`
+        : d?.kind === "text" ? `Styled text — ${d.text || "(empty)"}`
+        : d?.kind === "rect" ? "Styled panel"
+        : "Rasterized — (nothing to draw)";
+      return deriveNeedsRender(layer) ? `${what} — needs render` : what;
+    }
   }
+}
+
+/** The CSS that APPROXIMATES a derive spec in the editor.
+ *
+ * It is an approximation and the canvas says so (see the NEEDS RENDER badge):
+ * the authoritative pixels come from Chromium running off-appliance, and the
+ * browser drawing this preview is not necessarily the same Chromium, does not
+ * have the embedded font, and cannot encode a QR symbol. What it CAN do
+ * faithfully is the geometry and the styling — which is the whole reason an
+ * operator is looking at the canvas — so gradient, radius, border and shadow are
+ * built from the same members the page builder reads.
+ *
+ * Once a raster EXISTS the canvas stops approximating and draws the real PNG,
+ * so what an operator checks before shipping is the actual picture. */
+function deriveApproxStyle(spec: DeriveSpec | undefined): CSSProperties {
+  if (!spec) return {};
+  const out: CSSProperties = {};
+  const f = spec.fill;
+  if (f?.kind === "linear") out.background = `linear-gradient(${f.angle_deg ?? 0}deg, ${f.from} 0%, ${f.to} 100%)`;
+  else if (f?.kind === "radial") out.background = `radial-gradient(circle at 50% 50%, ${f.from} 0%, ${f.to} 100%)`;
+  else if (f) out.background = f.from;
+  const b = spec.border;
+  if (b?.width) out.border = `${b.width}px solid ${b.color ?? "#FFFFFF"}`;
+  if (b?.radius) out.borderRadius = b.radius;
+  const sh = spec.shadow;
+  if (sh) {
+    const pct = (sh.opacity_pct ?? 50) / 100;
+    out.boxShadow = `${sh.dx ?? 0}px ${sh.dy ?? 0}px ${sh.blur ?? 0}px rgba(0,0,0,${pct})`;
+  }
+  return out;
 }
 
 /** The string a live widget SHOWS in the editor's preview.
@@ -139,6 +185,49 @@ export function LayerView({ layer, now }: { layer: SlideLayer; now: Date }) {
 
   if (layer.kind === "rect") {
     return <div data-slot="layer-rect" aria-hidden="true" style={{ ...box, backgroundColor: layer.color }} />;
+  }
+
+  if (layer.kind === "derive") {
+    // A RENDERED derive layer is drawn as exactly what it becomes on the wire —
+    // an image — so the canvas stops approximating the moment the real pixels
+    // exist. That is not a nicety: the whole point of the rasterizer is styling
+    // this browser cannot reproduce, so an approximation that never gave way to
+    // the truth would be the last thing an operator saw before shipping.
+    if (layer.url) {
+      return <img data-slot="layer-derive" src={layer.url} alt="" style={{ ...box, objectFit: "contain" }} />;
+    }
+    const spec = layer.derive;
+    return (
+      <div data-slot="layer-derive-preview" aria-hidden="true" style={{ ...box, ...deriveApproxStyle(spec) }}
+        className="flex items-center justify-center overflow-hidden">
+        {spec?.kind === "text" ? (
+          <span
+            style={{
+              color: spec.color ?? "#FFFFFF",
+              fontSize: spec.font_px ?? 64,
+              lineHeight: 1.15,
+              textAlign: spec.align ?? "left",
+              width: "100%",
+              padding: "0 8px",
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {spec.text ?? ""}
+          </span>
+        ) : spec?.kind === "qr" ? (
+          <span style={{ color: spec.color ?? "#111827" }}>
+            <KitIcon icon={QrCode} decorative className="size-32" />
+          </span>
+        ) : null}
+        <span
+          data-slot="layer-derive-badge"
+          className="absolute left-2 top-2 rounded bg-black/70 px-2 py-1 text-white"
+          style={{ fontSize: 28 }}
+        >
+          NEEDS RENDER
+        </span>
+      </div>
+    );
   }
 
   if (isContentKind(layer.kind)) {

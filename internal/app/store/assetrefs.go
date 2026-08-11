@@ -138,13 +138,28 @@ func RowAssetReferences(kind Kind, body []byte) ([]AssetReference, error) {
 func layerAssetReferences(prefix string, layers []wire.Layer) []AssetReference {
 	var refs []AssetReference
 	for i, l := range layers {
-		if l.AssetRef == "" {
-			continue
+		if l.AssetRef != "" {
+			refs = append(refs, AssetReference{
+				Field: fmt.Sprintf("%s.layers[%d].asset_ref", prefix, i),
+				Ref:   l.AssetRef,
+			})
 		}
-		refs = append(refs, AssetReference{
-			Field: fmt.Sprintf("%s.layers[%d].asset_ref", prefix, i),
-			Ref:   l.AssetRef,
-		})
+		// A `derive` layer's CUSTOM FONT is a second reference into the same
+		// content origin (wire.DeriveSpec.FontAssetRef), and it is projected here
+		// for both of the reasons the layer's own asset_ref is: a font that was
+		// never uploaded must be refused at write time rather than leaving the
+		// layer permanently un-renderable with nothing saying why, and a font a
+		// cast still names must not be reclaimed by the content retention sweep.
+		// That second half is the one this projection's blind spots have already
+		// cost: a cast's images were once invisible here, which made them
+		// simultaneously unchecked at write time AND sweepable while a screen was
+		// playing them.
+		if l.Derive != nil && l.Derive.FontAssetRef != "" {
+			refs = append(refs, AssetReference{
+				Field: fmt.Sprintf("%s.layers[%d].derive.font_asset_ref", prefix, i),
+				Ref:   l.Derive.FontAssetRef,
+			})
+		}
 	}
 	return refs
 }

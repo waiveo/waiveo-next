@@ -24,16 +24,16 @@ const (
 
 // Defines values for AdoptedDeviceEntityCategory.
 const (
-	Diagnostic AdoptedDeviceEntityCategory = "diagnostic"
-	Primary    AdoptedDeviceEntityCategory = "primary"
+	AdoptedDeviceEntityCategoryDiagnostic AdoptedDeviceEntityCategory = "diagnostic"
+	AdoptedDeviceEntityCategoryPrimary    AdoptedDeviceEntityCategory = "primary"
 )
 
 // Valid indicates whether the value is a known member of the AdoptedDeviceEntityCategory enum.
 func (e AdoptedDeviceEntityCategory) Valid() bool {
 	switch e {
-	case Diagnostic:
+	case AdoptedDeviceEntityCategoryDiagnostic:
 		return true
-	case Primary:
+	case AdoptedDeviceEntityCategoryPrimary:
 		return true
 	default:
 		return false
@@ -90,19 +90,19 @@ func (e AutomationCreateMode) Valid() bool {
 
 // Defines values for AutomationRunResultDisposition.
 const (
-	Ran       AutomationRunResultDisposition = "ran"
-	Restarted AutomationRunResultDisposition = "restarted"
-	Skipped   AutomationRunResultDisposition = "skipped"
+	AutomationRunResultDispositionRan       AutomationRunResultDisposition = "ran"
+	AutomationRunResultDispositionRestarted AutomationRunResultDisposition = "restarted"
+	AutomationRunResultDispositionSkipped   AutomationRunResultDisposition = "skipped"
 )
 
 // Valid indicates whether the value is a known member of the AutomationRunResultDisposition enum.
 func (e AutomationRunResultDisposition) Valid() bool {
 	switch e {
-	case Ran:
+	case AutomationRunResultDispositionRan:
 		return true
-	case Restarted:
+	case AutomationRunResultDispositionRestarted:
 		return true
-	case Skipped:
+	case AutomationRunResultDispositionSkipped:
 		return true
 	default:
 		return false
@@ -111,22 +111,148 @@ func (e AutomationRunResultDisposition) Valid() bool {
 
 // Defines values for AutomationUpdateMode.
 const (
-	Parallel AutomationUpdateMode = "parallel"
-	Queued   AutomationUpdateMode = "queued"
-	Restart  AutomationUpdateMode = "restart"
-	Single   AutomationUpdateMode = "single"
+	AutomationUpdateModeParallel AutomationUpdateMode = "parallel"
+	AutomationUpdateModeQueued   AutomationUpdateMode = "queued"
+	AutomationUpdateModeRestart  AutomationUpdateMode = "restart"
+	AutomationUpdateModeSingle   AutomationUpdateMode = "single"
 )
 
 // Valid indicates whether the value is a known member of the AutomationUpdateMode enum.
 func (e AutomationUpdateMode) Valid() bool {
 	switch e {
-	case Parallel:
+	case AutomationUpdateModeParallel:
 		return true
-	case Queued:
+	case AutomationUpdateModeQueued:
 		return true
-	case Restart:
+	case AutomationUpdateModeRestart:
 		return true
-	case Single:
+	case AutomationUpdateModeSingle:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DeriveFillKind.
+const (
+	DeriveFillKindLinear DeriveFillKind = "linear"
+	DeriveFillKindRadial DeriveFillKind = "radial"
+	DeriveFillKindSolid  DeriveFillKind = "solid"
+)
+
+// Valid indicates whether the value is a known member of the DeriveFillKind enum.
+func (e DeriveFillKind) Valid() bool {
+	switch e {
+	case DeriveFillKindLinear:
+		return true
+	case DeriveFillKindRadial:
+		return true
+	case DeriveFillKindSolid:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DerivePendingLayerState.
+const (
+	DerivePendingLayerStatePending DerivePendingLayerState = "pending"
+	DerivePendingLayerStateStale   DerivePendingLayerState = "stale"
+)
+
+// Valid indicates whether the value is a known member of the DerivePendingLayerState enum.
+func (e DerivePendingLayerState) Valid() bool {
+	switch e {
+	case DerivePendingLayerStatePending:
+		return true
+	case DerivePendingLayerStateStale:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DeriveSpecAlign.
+const (
+	DeriveSpecAlignCenter DeriveSpecAlign = "center"
+	DeriveSpecAlignLeft   DeriveSpecAlign = "left"
+	DeriveSpecAlignRight  DeriveSpecAlign = "right"
+)
+
+// Valid indicates whether the value is a known member of the DeriveSpecAlign enum.
+func (e DeriveSpecAlign) Valid() bool {
+	switch e {
+	case DeriveSpecAlignCenter:
+		return true
+	case DeriveSpecAlignLeft:
+		return true
+	case DeriveSpecAlignRight:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DeriveSpecEcLevel.
+const (
+	DeriveSpecEcLevelH DeriveSpecEcLevel = "H"
+	DeriveSpecEcLevelL DeriveSpecEcLevel = "L"
+	DeriveSpecEcLevelM DeriveSpecEcLevel = "M"
+	DeriveSpecEcLevelQ DeriveSpecEcLevel = "Q"
+)
+
+// Valid indicates whether the value is a known member of the DeriveSpecEcLevel enum.
+func (e DeriveSpecEcLevel) Valid() bool {
+	switch e {
+	case DeriveSpecEcLevelH:
+		return true
+	case DeriveSpecEcLevelL:
+		return true
+	case DeriveSpecEcLevelM:
+		return true
+	case DeriveSpecEcLevelQ:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DeriveSpecKind.
+const (
+	DeriveSpecKindQr   DeriveSpecKind = "qr"
+	DeriveSpecKindRect DeriveSpecKind = "rect"
+	DeriveSpecKindText DeriveSpecKind = "text"
+)
+
+// Valid indicates whether the value is a known member of the DeriveSpecKind enum.
+func (e DeriveSpecKind) Valid() bool {
+	switch e {
+	case DeriveSpecKindQr:
+		return true
+	case DeriveSpecKindRect:
+		return true
+	case DeriveSpecKindText:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DeriveSpecValign.
+const (
+	DeriveSpecValignBottom DeriveSpecValign = "bottom"
+	DeriveSpecValignMiddle DeriveSpecValign = "middle"
+	DeriveSpecValignTop    DeriveSpecValign = "top"
+)
+
+// Valid indicates whether the value is a known member of the DeriveSpecValign enum.
+func (e DeriveSpecValign) Valid() bool {
+	switch e {
+	case DeriveSpecValignBottom:
+		return true
+	case DeriveSpecValignMiddle:
+		return true
+	case DeriveSpecValignTop:
 		return true
 	default:
 		return false
@@ -291,22 +417,22 @@ func (e JobTargetState) Valid() bool {
 
 // Defines values for MarketplaceRefTrustChannel.
 const (
-	Community  MarketplaceRefTrustChannel = "community"
-	Dev        MarketplaceRefTrustChannel = "dev"
-	FirstParty MarketplaceRefTrustChannel = "first-party"
-	Verified   MarketplaceRefTrustChannel = "verified"
+	MarketplaceRefTrustChannelCommunity  MarketplaceRefTrustChannel = "community"
+	MarketplaceRefTrustChannelDev        MarketplaceRefTrustChannel = "dev"
+	MarketplaceRefTrustChannelFirstParty MarketplaceRefTrustChannel = "first-party"
+	MarketplaceRefTrustChannelVerified   MarketplaceRefTrustChannel = "verified"
 )
 
 // Valid indicates whether the value is a known member of the MarketplaceRefTrustChannel enum.
 func (e MarketplaceRefTrustChannel) Valid() bool {
 	switch e {
-	case Community:
+	case MarketplaceRefTrustChannelCommunity:
 		return true
-	case Dev:
+	case MarketplaceRefTrustChannelDev:
 		return true
-	case FirstParty:
+	case MarketplaceRefTrustChannelFirstParty:
 		return true
-	case Verified:
+	case MarketplaceRefTrustChannelVerified:
 		return true
 	default:
 		return false
@@ -315,13 +441,13 @@ func (e MarketplaceRefTrustChannel) Valid() bool {
 
 // Defines values for PairingCodeResultRedemptionMode.
 const (
-	OneTime PairingCodeResultRedemptionMode = "one-time"
+	PairingCodeResultRedemptionModeOneTime PairingCodeResultRedemptionMode = "one-time"
 )
 
 // Valid indicates whether the value is a known member of the PairingCodeResultRedemptionMode enum.
 func (e PairingCodeResultRedemptionMode) Valid() bool {
 	switch e {
-	case OneTime:
+	case PairingCodeResultRedemptionModeOneTime:
 		return true
 	default:
 		return false
@@ -546,16 +672,16 @@ func (e ScreenNowRequestMode) Valid() bool {
 
 // Defines values for ScreenOverrideMode.
 const (
-	Alert ScreenOverrideMode = "alert"
-	Play  ScreenOverrideMode = "play"
+	ScreenOverrideModeAlert ScreenOverrideMode = "alert"
+	ScreenOverrideModePlay  ScreenOverrideMode = "play"
 )
 
 // Valid indicates whether the value is a known member of the ScreenOverrideMode enum.
 func (e ScreenOverrideMode) Valid() bool {
 	switch e {
-	case Alert:
+	case ScreenOverrideModeAlert:
 		return true
-	case Play:
+	case ScreenOverrideModePlay:
 		return true
 	default:
 		return false
@@ -564,16 +690,16 @@ func (e ScreenOverrideMode) Valid() bool {
 
 // Defines values for ScreenStatusDisplay.
 const (
-	Blank   ScreenStatusDisplay = "blank"
-	Content ScreenStatusDisplay = "content"
+	ScreenStatusDisplayBlank   ScreenStatusDisplay = "blank"
+	ScreenStatusDisplayContent ScreenStatusDisplay = "content"
 )
 
 // Valid indicates whether the value is a known member of the ScreenStatusDisplay enum.
 func (e ScreenStatusDisplay) Valid() bool {
 	switch e {
-	case Blank:
+	case ScreenStatusDisplayBlank:
 		return true
-	case Content:
+	case ScreenStatusDisplayContent:
 		return true
 	default:
 		return false
@@ -582,16 +708,16 @@ func (e ScreenStatusDisplay) Valid() bool {
 
 // Defines values for ScreenStatusPriority.
 const (
-	Preempt   ScreenStatusPriority = "preempt"
-	Scheduled ScreenStatusPriority = "scheduled"
+	ScreenStatusPriorityPreempt   ScreenStatusPriority = "preempt"
+	ScreenStatusPriorityScheduled ScreenStatusPriority = "scheduled"
 )
 
 // Valid indicates whether the value is a known member of the ScreenStatusPriority enum.
 func (e ScreenStatusPriority) Valid() bool {
 	switch e {
-	case Preempt:
+	case ScreenStatusPriorityPreempt:
 		return true
-	case Scheduled:
+	case ScreenStatusPriorityScheduled:
 		return true
 	default:
 		return false
@@ -600,19 +726,19 @@ func (e ScreenStatusPriority) Valid() bool {
 
 // Defines values for ScreenStatusReachability.
 const (
-	Live      ScreenStatusReachability = "live"
-	NeverSeen ScreenStatusReachability = "never_seen"
-	Stale     ScreenStatusReachability = "stale"
+	ScreenStatusReachabilityLive      ScreenStatusReachability = "live"
+	ScreenStatusReachabilityNeverSeen ScreenStatusReachability = "never_seen"
+	ScreenStatusReachabilityStale     ScreenStatusReachability = "stale"
 )
 
 // Valid indicates whether the value is a known member of the ScreenStatusReachability enum.
 func (e ScreenStatusReachability) Valid() bool {
 	switch e {
-	case Live:
+	case ScreenStatusReachabilityLive:
 		return true
-	case NeverSeen:
+	case ScreenStatusReachabilityNeverSeen:
 		return true
-	case Stale:
+	case ScreenStatusReachabilityStale:
 		return true
 	default:
 		return false
@@ -621,16 +747,16 @@ func (e ScreenStatusReachability) Valid() bool {
 
 // Defines values for SessionSummaryAal.
 const (
-	Recovery SessionSummaryAal = "recovery"
-	Standard SessionSummaryAal = "standard"
+	SessionSummaryAalRecovery SessionSummaryAal = "recovery"
+	SessionSummaryAalStandard SessionSummaryAal = "standard"
 )
 
 // Valid indicates whether the value is a known member of the SessionSummaryAal enum.
 func (e SessionSummaryAal) Valid() bool {
 	switch e {
-	case Recovery:
+	case SessionSummaryAalRecovery:
 		return true
-	case Standard:
+	case SessionSummaryAalStandard:
 		return true
 	default:
 		return false
@@ -669,22 +795,22 @@ func (e SessionSummaryKind) Valid() bool {
 
 // Defines values for SessionSummaryRole.
 const (
-	Admin    SessionSummaryRole = "admin"
-	Operator SessionSummaryRole = "operator"
-	Owner    SessionSummaryRole = "owner"
-	Viewer   SessionSummaryRole = "viewer"
+	SessionSummaryRoleAdmin    SessionSummaryRole = "admin"
+	SessionSummaryRoleOperator SessionSummaryRole = "operator"
+	SessionSummaryRoleOwner    SessionSummaryRole = "owner"
+	SessionSummaryRoleViewer   SessionSummaryRole = "viewer"
 )
 
 // Valid indicates whether the value is a known member of the SessionSummaryRole enum.
 func (e SessionSummaryRole) Valid() bool {
 	switch e {
-	case Admin:
+	case SessionSummaryRoleAdmin:
 		return true
-	case Operator:
+	case SessionSummaryRoleOperator:
 		return true
-	case Owner:
+	case SessionSummaryRoleOwner:
 		return true
-	case Viewer:
+	case SessionSummaryRoleViewer:
 		return true
 	default:
 		return false
@@ -693,19 +819,19 @@ func (e SessionSummaryRole) Valid() bool {
 
 // Defines values for SlideLayerAlign.
 const (
-	Center SlideLayerAlign = "center"
-	Left   SlideLayerAlign = "left"
-	Right  SlideLayerAlign = "right"
+	SlideLayerAlignCenter SlideLayerAlign = "center"
+	SlideLayerAlignLeft   SlideLayerAlign = "left"
+	SlideLayerAlignRight  SlideLayerAlign = "right"
 )
 
 // Valid indicates whether the value is a known member of the SlideLayerAlign enum.
 func (e SlideLayerAlign) Valid() bool {
 	switch e {
-	case Center:
+	case SlideLayerAlignCenter:
 		return true
-	case Left:
+	case SlideLayerAlignLeft:
 		return true
-	case Right:
+	case SlideLayerAlignRight:
 		return true
 	default:
 		return false
@@ -717,6 +843,7 @@ const (
 	SlideLayerKindClock     SlideLayerKind = "clock"
 	SlideLayerKindCountdown SlideLayerKind = "countdown"
 	SlideLayerKindDate      SlideLayerKind = "date"
+	SlideLayerKindDerive    SlideLayerKind = "derive"
 	SlideLayerKindEntity    SlideLayerKind = "entity"
 	SlideLayerKindImage     SlideLayerKind = "image"
 	SlideLayerKindRect      SlideLayerKind = "rect"
@@ -733,6 +860,8 @@ func (e SlideLayerKind) Valid() bool {
 	case SlideLayerKindCountdown:
 		return true
 	case SlideLayerKindDate:
+		return true
+	case SlideLayerKindDerive:
 		return true
 	case SlideLayerKindEntity:
 		return true
@@ -768,16 +897,16 @@ func (e TotpCredentialKind) Valid() bool {
 
 // Defines values for WebhookDeliveryStateStatus.
 const (
-	Active   WebhookDeliveryStateStatus = "active"
-	Disabled WebhookDeliveryStateStatus = "disabled"
+	WebhookDeliveryStateStatusActive   WebhookDeliveryStateStatus = "active"
+	WebhookDeliveryStateStatusDisabled WebhookDeliveryStateStatus = "disabled"
 )
 
 // Valid indicates whether the value is a known member of the WebhookDeliveryStateStatus enum.
 func (e WebhookDeliveryStateStatus) Valid() bool {
 	switch e {
-	case Active:
+	case WebhookDeliveryStateStatusActive:
 		return true
-	case Disabled:
+	case WebhookDeliveryStateStatusDisabled:
 		return true
 	default:
 		return false
@@ -1236,6 +1365,126 @@ type DaypartUpdate struct {
 	ScopeNode *Ulid   `json:"scope_node,omitempty"`
 	StartTime *string `json:"start_time,omitempty"`
 }
+
+// DeriveBorder A stroked and/or rounded outline. A radius with a zero width is legal and useful — it rounds the FILL without stroking an edge.
+type DeriveBorder struct {
+	// Color Required when `width` is non-zero.
+	Color  *string `json:"color,omitempty"`
+	Radius *int    `json:"radius,omitempty"`
+	Width  *int    `json:"width,omitempty"`
+}
+
+// DeriveFill The backing behind the foreground — the gradient no native node can draw. Absent means a TRANSPARENT background, so a derive layer composites over whatever native layers sit beneath it.
+type DeriveFill struct {
+	// AngleDeg A `linear` gradient's direction, CSS convention: 0 points up, 90 points right, increasing clockwise. Rejected on the other two kinds.
+	AngleDeg *int `json:"angle_deg,omitempty"`
+
+	// From The solid colour, or the gradient's first stop.
+	From string `json:"from"`
+
+	// Kind `solid` exists beside the two gradients so a spec can state a flat backing under a shadow or a rounded border without pretending to be a gradient with two equal stops.
+	Kind DeriveFillKind `json:"kind"`
+
+	// To The gradient's second stop. Required for `linear`/`radial` and REJECTED for `solid` — a member the renderer would ignore is a setting that silently does nothing.
+	To *string `json:"to,omitempty"`
+}
+
+// DeriveFillKind `solid` exists beside the two gradients so a spec can state a flat backing under a shadow or a rounded border without pretending to be a gradient with two equal stops.
+type DeriveFillKind string
+
+// DerivePendingLayer One outstanding rasterization: a complete work order for `waiveo-derive`. It carries WHAT to draw (`spec`, at `w`x`h`) and WHERE the result goes (`cast_id`, `slide_id`, `layer_index`), so the tool needs no second read to act on it.
+type DerivePendingLayer struct {
+	CastId     string  `json:"cast_id"`
+	CastName   *string `json:"cast_name,omitempty"`
+	H          int     `json:"h"`
+	LayerIndex int     `json:"layer_index"`
+	SlideId    string  `json:"slide_id"`
+
+	// Spec What the off-appliance rasterizer must draw for one `derive` layer. It is a CLOSED, declarative vocabulary rather than CSS or HTML on purpose: the renderer drives a real browser, so a spec that could carry markup would make an authored cast a script-injection vector into whichever machine runs the derive tool. Every member here is a scalar the renderer validates and then formats into markup it wrote itself.
+	Spec DeriveSpec `json:"spec"`
+
+	// SpecDigest The digest the tool must write back as `derived_from` after uploading the PNG. Supplying it here rather than making the tool recompute it is what keeps one definition of the digest on the server side of the loop.
+	SpecDigest string `json:"spec_digest"`
+
+	// State `pending` — no PNG has ever been produced, so the projection omits the layer and the rest of the slide still draws. `stale` — a PNG exists but the spec or the geometry has changed since; the OLD picture keeps being served until the tool catches up, because an edit nobody has rendered yet must never blank a screen.
+	State DerivePendingLayerState `json:"state"`
+	W     int                     `json:"w"`
+}
+
+// DerivePendingLayerState `pending` — no PNG has ever been produced, so the projection omits the layer and the rest of the slide still draws. `stale` — a PNG exists but the spec or the geometry has changed since; the OLD picture keeps being served until the tool catches up, because an edit nobody has rendered yet must never blank a screen.
+type DerivePendingLayerState string
+
+// DerivePendingList defines model for DerivePendingList.
+type DerivePendingList struct {
+	DeriveJobs []DerivePendingLayer `json:"derive_jobs"`
+}
+
+// DeriveShadow A drop shadow cast by the layer box. Offsets and blur are canvas pixels.
+type DeriveShadow struct {
+	Blur *int `json:"blur,omitempty"`
+
+	// Color Optional; the default is `#000000`.
+	Color *string `json:"color,omitempty"`
+	Dx    *int    `json:"dx,omitempty"`
+	Dy    *int    `json:"dy,omitempty"`
+
+	// OpacityPct Shadow opacity as an integer PERCENT rather than a float, deliberately: the spec is hashed to produce the raster's content address, and a float would make that address depend on decimal formatting.
+	OpacityPct *int `json:"opacity_pct,omitempty"`
+}
+
+// DeriveSpec What the off-appliance rasterizer must draw for one `derive` layer. It is a CLOSED, declarative vocabulary rather than CSS or HTML on purpose: the renderer drives a real browser, so a spec that could carry markup would make an authored cast a script-injection vector into whichever machine runs the derive tool. Every member here is a scalar the renderer validates and then formats into markup it wrote itself.
+type DeriveSpec struct {
+	// Align Horizontal alignment of a `text` spec inside the layer box. Optional; default `left`. Rejected on `qr` and `rect` — a symbol is always centred and a rect fills its box, so an alignment there would be a control that silently does nothing.
+	Align *DeriveSpecAlign `json:"align,omitempty"`
+
+	// Border A stroked and/or rounded outline. A radius with a zero width is legal and useful — it rounds the FILL without stroking an edge.
+	Border *DeriveBorder `json:"border,omitempty"`
+
+	// Color The foreground: text colour for `text`, DARK MODULE colour for `qr`. Optional; the default is `#FFFFFF`.
+	Color *string `json:"color,omitempty"`
+
+	// Data The payload a `qr` spec encodes. The cap is well below the format's theoretical ceiling: a denser symbol is unreadable across a room, so accepting one would mean authoring a sign that cannot work.
+	Data *string `json:"data,omitempty"`
+
+	// EcLevel A `qr` spec's error-correction level. Optional; the default is `M`, which is what a sign read at an angle in bad light wants.
+	EcLevel *DeriveSpecEcLevel `json:"ec_level,omitempty"`
+
+	// Fill The backing behind the foreground — the gradient no native node can draw. Absent means a TRANSPARENT background, so a derive layer composites over whatever native layers sit beneath it.
+	Fill *DeriveFill `json:"fill,omitempty"`
+
+	// FontAssetRef CUSTOM TYPOGRAPHY — a content-addressed reference to a font file (TTF/OTF/WOFF2) in the content origin, which the renderer fetches and embeds before drawing. It is a real content reference: it is checked to exist when the cast is written, and it is protected from the content retention sweep for as long as a cast names it.
+	FontAssetRef *string `json:"font_asset_ref,omitempty"`
+
+	// FontFamily The family name the text is drawn in. With `font_asset_ref` it is the name the embedded face registers under; without one it must be a family the rendering host already has.
+	FontFamily *string `json:"font_family,omitempty"`
+
+	// FontPx Text size in canvas pixels. Optional; the default is 64.
+	FontPx *int `json:"font_px,omitempty"`
+
+	// Kind What to draw. `qr` is a scannable symbol — there is no player node that makes one, so this is the only way a slide can carry a QR code at all. `text` and `rect` are the STYLED forms of the two native kinds: use them only when the layer needs a gradient, a shadow, a rounded border or a custom face, because a native `text`/`rect` layer costs no content, needs no render, and re-styles instantly.
+	Kind DeriveSpecKind `json:"kind"`
+
+	// Shadow A drop shadow cast by the layer box. Offsets and blur are canvas pixels.
+	Shadow *DeriveShadow `json:"shadow,omitempty"`
+
+	// Text The LITERAL string a `text` spec draws — never a format. A rasterized layer is a frozen picture, so a clock or a countdown must stay a native live layer and there is deliberately no way to ask for one here.
+	Text *string `json:"text,omitempty"`
+
+	// Valign Vertical alignment of a `text` spec inside the layer box. Optional; default `top`. It exists because a rasterized layer's box is exactly the layer geometry — unlike a native Label there is no larger canvas to centre against later. Rejected on `qr` and `rect`.
+	Valign *DeriveSpecValign `json:"valign,omitempty"`
+}
+
+// DeriveSpecAlign Horizontal alignment of a `text` spec inside the layer box. Optional; default `left`. Rejected on `qr` and `rect` — a symbol is always centred and a rect fills its box, so an alignment there would be a control that silently does nothing.
+type DeriveSpecAlign string
+
+// DeriveSpecEcLevel A `qr` spec's error-correction level. Optional; the default is `M`, which is what a sign read at an angle in bad light wants.
+type DeriveSpecEcLevel string
+
+// DeriveSpecKind What to draw. `qr` is a scannable symbol — there is no player node that makes one, so this is the only way a slide can carry a QR code at all. `text` and `rect` are the STYLED forms of the two native kinds: use them only when the layer needs a gradient, a shadow, a rounded border or a custom face, because a native `text`/`rect` layer costs no content, needs no render, and re-styles instantly.
+type DeriveSpecKind string
+
+// DeriveSpecValign Vertical alignment of a `text` spec inside the layer box. Optional; default `top`. It exists because a rasterized layer's box is exactly the layer geometry — unlike a native Label there is no larger canvas to centre against later. Rejected on `qr` and `rect`.
+type DeriveSpecValign string
 
 // Device One physical device a relay has found on its own LAN. Its descriptive members are read-only on this API — a device is DISCOVERED by its relay's device plane (`relay/1` Device plane), not authored here, so this resource carries no `revision` and no optimistic-concurrency envelope. The one decision this API does make about a device is `adopted`, taken through the `adoptDevice` operation. A device exposes one or more entities; commands are addressed to those entities, never to the device.
 type Device struct {
@@ -1930,6 +2179,12 @@ type SlideLayer struct {
 	// Color A `rect`'s fill (required) or a Label-drawn kind's foreground (optional). `#RRGGBB` wherever present.
 	Color *string `json:"color,omitempty"`
 
+	// Derive A `derive` layer's rasterization spec — what the off-appliance renderer must draw. Required for `derive` and REJECTED on every other kind: a derive block hung on a text layer would be ignored by every projection, which is a styling control that silently does nothing.
+	Derive *DeriveSpec `json:"derive,omitempty"`
+
+	// DerivedFrom The spec digest the layer's current `asset_ref` was rendered from, written by `waiveo-derive` alongside the `asset_ref`, never authored by hand. It is what distinguishes a CURRENT raster from one the operator has since edited past: the digest covers the spec AND the layer's `w`/`h`, so resizing a layer marks it for re-render exactly as changing its text does. A stale layer keeps serving its old PNG — an edit nobody has rendered yet must never blank a screen.
+	DerivedFrom *string `json:"derived_from,omitempty"`
+
 	// EntityId The platform entity an `entity` layer displays the current state of — the same identifier a device's `entities[].entity_id` carries. Required for `entity`, unused elsewhere. It is the AUTHORED half of an entity widget; the resolved display string is filled by the box at Lease issuance and never appears in an authored row (the same authored/derived split an `image` layer's `asset_ref`/`url` has, which is why there is no `value` member here).
 	EntityId *string `json:"entity_id,omitempty"`
 
@@ -1937,7 +2192,7 @@ type SlideLayer struct {
 	FontPx *int `json:"font_px,omitempty"`
 	H      int  `json:"h"`
 
-	// Kind The closed layer-kind set, and it MUST stay equal to `internal/shared/wire`'s own (`slideLayerKinds`) — same members, same order. The four LIVE kinds beyond the static three plus `clock` are the widgets: `date` and `countdown` are computed by the player from its own clock, `weather` and `entity` are resolved by the box at Lease issuance (`internal/slidelive`) and drawn verbatim. `video` is image's twin — the second kind whose substance is bytes in the content origin, authored as an `asset_ref` and fetched + content-address-verified by the player before it is presented — and the only moving element a slide can carry; a player draws it as a positioned Video node looped for the slide's dwell time. They are all listed here because this enum is the AUTHORING gate: a kind the player renders and this enum omits is a widget nothing can ever create — the shape of defect this repo keeps producing, and the one that shipped in wave 1 (the four widget kinds landed on the wire and the player, and `POST /casts` answered 422 for every one of them).
+	// Kind The closed layer-kind set, and it MUST stay equal to `internal/shared/wire`'s own (`slideLayerKinds` plus `authoredOnlyLayerKinds`) — same members, same order. The four LIVE kinds beyond the static three plus `clock` are the widgets: `date` and `countdown` are computed by the player from its own clock, `weather` and `entity` are resolved by the box at Lease issuance (`internal/slidelive`) and drawn verbatim. `video` is image's twin — the second kind whose substance is bytes in the content origin, authored as an `asset_ref` and fetched + content-address-verified by the player before it is presented — and the only moving element a slide can carry; a player draws it as a positioned Video node looped for the slide's dwell time. They are all listed here because this enum is the AUTHORING gate: a kind the player renders and this enum omits is a widget nothing can ever create — the shape of defect this repo keeps producing, and the one that shipped in wave 1 (the four widget kinds landed on the wire and the player, and `POST /casts` answered 422 for every one of them). `derive` is the one AUTHORING-ONLY member: it is the rasterized fallback for what no player node can draw, and both content projections rewrite it into an `image` layer before serving, so it appears here (an operator authors it) and never on a Lease.
 	Kind SlideLayerKind `json:"kind"`
 
 	// TargetMs A `countdown` layer's target instant, in Unix epoch MILLISECONDS (UTC) — the same absolute-instant unit every other time on this wire uses, never a local wall time and never seconds. Absolute is what lets the player count down without knowing the authoring timezone. Required and strictly positive for `countdown`, unused elsewhere; a target already past renders as all zeroes rather than as a negative, so it is deliberately NOT rejected here.
@@ -1956,7 +2211,7 @@ type SlideLayer struct {
 // SlideLayerAlign A Label-drawn layer's horizontal alignment. Optional.
 type SlideLayerAlign string
 
-// SlideLayerKind The closed layer-kind set, and it MUST stay equal to `internal/shared/wire`'s own (`slideLayerKinds`) — same members, same order. The four LIVE kinds beyond the static three plus `clock` are the widgets: `date` and `countdown` are computed by the player from its own clock, `weather` and `entity` are resolved by the box at Lease issuance (`internal/slidelive`) and drawn verbatim. `video` is image's twin — the second kind whose substance is bytes in the content origin, authored as an `asset_ref` and fetched + content-address-verified by the player before it is presented — and the only moving element a slide can carry; a player draws it as a positioned Video node looped for the slide's dwell time. They are all listed here because this enum is the AUTHORING gate: a kind the player renders and this enum omits is a widget nothing can ever create — the shape of defect this repo keeps producing, and the one that shipped in wave 1 (the four widget kinds landed on the wire and the player, and `POST /casts` answered 422 for every one of them).
+// SlideLayerKind The closed layer-kind set, and it MUST stay equal to `internal/shared/wire`'s own (`slideLayerKinds` plus `authoredOnlyLayerKinds`) — same members, same order. The four LIVE kinds beyond the static three plus `clock` are the widgets: `date` and `countdown` are computed by the player from its own clock, `weather` and `entity` are resolved by the box at Lease issuance (`internal/slidelive`) and drawn verbatim. `video` is image's twin — the second kind whose substance is bytes in the content origin, authored as an `asset_ref` and fetched + content-address-verified by the player before it is presented — and the only moving element a slide can carry; a player draws it as a positioned Video node looped for the slide's dwell time. They are all listed here because this enum is the AUTHORING gate: a kind the player renders and this enum omits is a widget nothing can ever create — the shape of defect this repo keeps producing, and the one that shipped in wave 1 (the four widget kinds landed on the wire and the player, and `POST /casts` answered 422 for every one of them). `derive` is the one AUTHORING-ONLY member: it is the rasterized fallback for what no player node can draw, and both content projections rewrite it into an `image` layer before serving, so it appears here (an operator authors it) and never on a Lease.
 type SlideLayerKind string
 
 // Timestamp A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
@@ -2466,6 +2721,12 @@ type UpdateDaypartParams struct {
 	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
 	IfMatch IfMatchParam `json:"If-Match"`
 
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// ListPendingDerivesParams defines parameters for ListPendingDerives.
+type ListPendingDerivesParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
@@ -3272,6 +3533,9 @@ type ClientInterface interface {
 
 	UpdateDaypart(ctx context.Context, daypartId Ulid, params *UpdateDaypartParams, body UpdateDaypartJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ListPendingDerives request
+	ListPendingDerives(ctx context.Context, params *ListPendingDerivesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListDevices request
 	ListDevices(ctx context.Context, params *ListDevicesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -4025,6 +4289,18 @@ func (c *Client) UpdateDaypartWithBody(ctx context.Context, daypartId Ulid, para
 
 func (c *Client) UpdateDaypart(ctx context.Context, daypartId Ulid, params *UpdateDaypartParams, body UpdateDaypartJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewUpdateDaypartRequest(c.Server, daypartId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListPendingDerives(ctx context.Context, params *ListPendingDerivesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListPendingDerivesRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -6877,6 +7153,48 @@ func NewUpdateDaypartRequestWithBody(server string, daypartId Ulid, params *Upda
 			}
 
 			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewListPendingDerivesRequest generates requests for ListPendingDerives
+func NewListPendingDerivesRequest(server string, params *ListPendingDerivesParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/derive/pending")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
 		}
 
 	}
@@ -10776,6 +11094,9 @@ type ClientWithResponsesInterface interface {
 
 	UpdateDaypartWithResponse(ctx context.Context, daypartId Ulid, params *UpdateDaypartParams, body UpdateDaypartJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateDaypartResponse, error)
 
+	// ListPendingDerivesWithResponse request
+	ListPendingDerivesWithResponse(ctx context.Context, params *ListPendingDerivesParams, reqEditors ...RequestEditorFn) (*ListPendingDerivesResponse, error)
+
 	// ListDevicesWithResponse request
 	ListDevicesWithResponse(ctx context.Context, params *ListDevicesParams, reqEditors ...RequestEditorFn) (*ListDevicesResponse, error)
 
@@ -12046,6 +12367,37 @@ func (r UpdateDaypartResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r UpdateDaypartResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ListPendingDerivesResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *DerivePendingList
+	ApplicationproblemJSON401 *Unauthorized
+}
+
+// Status returns HTTPResponse.Status
+func (r ListPendingDerivesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListPendingDerivesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListPendingDerivesResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -14279,6 +14631,15 @@ func (c *ClientWithResponses) UpdateDaypartWithResponse(ctx context.Context, day
 		return nil, err
 	}
 	return ParseUpdateDaypartResponse(rsp)
+}
+
+// ListPendingDerivesWithResponse request returning *ListPendingDerivesResponse
+func (c *ClientWithResponses) ListPendingDerivesWithResponse(ctx context.Context, params *ListPendingDerivesParams, reqEditors ...RequestEditorFn) (*ListPendingDerivesResponse, error) {
+	rsp, err := c.ListPendingDerives(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListPendingDerivesResponse(rsp)
 }
 
 // ListDevicesWithResponse request returning *ListDevicesResponse
@@ -16556,6 +16917,39 @@ func ParseUpdateDaypartResponse(rsp *http.Response) (*UpdateDaypartResponse, err
 			return nil, err
 		}
 		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListPendingDerivesResponse parses an HTTP response from a ListPendingDerivesWithResponse call
+func ParseListPendingDerivesResponse(rsp *http.Response) (*ListPendingDerivesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListPendingDerivesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest DerivePendingList
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
 
 	}
 

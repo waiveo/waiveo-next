@@ -629,6 +629,68 @@ func TestDerivedContentMatchesRelaySideProjection(t *testing.T) {
 		}
 		assertProjectionsAgree(t, s)
 	})
+	// The rasterized fallback (parity row 2.4). A `derive` layer is the FIRST
+	// kind whose projection is not a pass-through with a url bolted on: it is
+	// rewritten into a different kind, or DROPPED, and which of those happens
+	// depends on state the layer carries. That is exactly the shape where two
+	// independent projections agree the day they are written and diverge later —
+	// and the divergence here is invisible, because both sides still produce a
+	// perfectly valid slide, just with a different number of layers in it.
+	//
+	// The slide carries all three states at once on purpose: a rendered layer
+	// (must become an image), an unrendered one (must be dropped by BOTH sides,
+	// or the two disagree on the layer count), and a stale one (must keep
+	// serving its previous picture on BOTH sides, or an operator's un-rendered
+	// edit blanks the layer at the next daypart boundary and not before).
+	t.Run("a cast slide carrying derive layers", func(t *testing.T) {
+		s := seededStore(t, asset)
+		rendered := wire.Layer{Kind: wire.LayerKindDerive, X: 1400, Y: 60, W: 400, H: 400,
+			Derive: &wire.DeriveSpec{Kind: wire.DeriveKindQR, Data: "https://waiveo.local/pair"}}
+		rendered.AssetRef = asset
+		rendered.DerivedFrom = wire.DeriveDigest(rendered)
+
+		stale := wire.Layer{Kind: wire.LayerKindDerive, X: 100, Y: 700, W: 900, H: 260,
+			Derive: &wire.DeriveSpec{Kind: wire.DeriveKindText, Text: "TODAY", FontPx: 120,
+				Fill: &wire.DeriveFill{Kind: wire.DeriveFillLinear, From: "#7C3AED", To: "#0EA5E9", AngleDeg: 90}}}
+		stale.AssetRef = asset
+		stale.DerivedFrom = "0000000000000000000000000000000000000000000000000000000000000000"
+
+		pending := wire.Layer{Kind: wire.LayerKindDerive, X: 40, Y: 40, W: 200, H: 200,
+			Derive: &wire.DeriveSpec{Kind: wire.DeriveKindRect,
+				Fill: &wire.DeriveFill{Kind: wire.DeriveFillSolid, From: "#101828"}}}
+
+		castID := writeCast(t, s, datamodel.Cast{
+			ID: "01J8ZCASTPAR1TYDER1VE00001", ScopeNode: castScopeNode, Name: "Derive",
+			Slides: []datamodel.CastSlide{{ID: "d1", DurationMS: 9000, Layers: []wire.Layer{
+				{Kind: wire.LayerKindText, X: 0, Y: 0, W: 800, H: 120, Text: "Welcome"},
+				rendered, stale, pending,
+			}}},
+		})
+		replaceSeedPlaylistItems(t, s, []datamodel.PlaylistItem{
+			{Source: datamodel.PlaylistSourceCast, CastID: castID},
+		})
+
+		// The premise, asserted rather than assumed: the app side really did
+		// rewrite two derive layers into images and drop the unrendered one, so
+		// the two-sided comparison below is comparing something.
+		prog := programForScreen(t, buildSnapshot(t, s).Sections.ScreenPrograms, store.SeedScreenID)
+		if len(prog.Content) != 1 {
+			t.Fatalf("content = %d items, want 1; got %+v", len(prog.Content), prog.Content)
+		}
+		layers := prog.Content[0].Layers
+		if len(layers) != 3 {
+			t.Fatalf("the projected slide has %d layers, want 3 (text + rendered + stale; the unrendered one is dropped): %+v", len(layers), layers)
+		}
+		for i, l := range layers[1:] {
+			if l.Kind != wire.LayerKindImage {
+				t.Fatalf("projected layer %d is %q, want an image — a derive kind reached the wire", i+1, l.Kind)
+			}
+			if l.URL == "" {
+				t.Fatalf("projected layer %d has no fetch url; the whole slide would be dropped at serve time", i+1)
+			}
+		}
+		assertProjectionsAgree(t, s)
+	})
 }
 
 // parityOrigin is the content origin both sides of the parity comparison derive
