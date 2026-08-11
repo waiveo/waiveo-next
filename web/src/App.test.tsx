@@ -89,3 +89,32 @@ describe("App", () => {
     expect(probes).toBe(0);
   });
 });
+
+describe("App — the toast host is MOUNTED", () => {
+  // This exists because the console had every part of a toast system except the
+  // part that renders one. `components/kit` exported `Toaster` and `toast`,
+  // `components/ui/sonner.tsx` themed it, and `ui.themes.test.tsx` proved it
+  // mounts under both themes — but nothing in the application tree ever rendered
+  // it. Five production `toast()` calls fired into a void, including
+  // `toast.success("Workspace exported")`: the sole confirmation that an
+  // operator's backup had actually been written.
+  //
+  // Every one of those parts passing its own test is exactly why no test failed.
+  // A mount assertion inside a test that mounts the Toaster itself proves nothing
+  // about the app, so this drives the real thing: raise a toast through the
+  // public kit entry point that routes use, against the real <App/>, and require
+  // it to reach the document.
+  it("renders a toast raised from the same kit entry point the routes use", async () => {
+    const { toast } = await import("@/components/kit");
+    window.history.pushState({}, "", "/");
+    render(<App />);
+
+    // Wait for the app to settle so the assertion cannot pass on a transient
+    // tree that a later render would discard.
+    await screen.findByRole("navigation", { name: /primary/i });
+
+    toast.success("Workspace exported");
+
+    expect(await screen.findByText("Workspace exported")).toBeInTheDocument();
+  });
+});

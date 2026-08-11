@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from "react-router";
 import { ThemeProvider } from "@/components/theme/theme-provider";
+import { Toaster } from "@/components/kit";
 import { SessionGate } from "@/auth/session-gate";
 import { AppShell } from "@/shell/app-shell";
 import LoginRoute from "@/routes/login/login-route";
@@ -134,6 +135,19 @@ export default function App() {
           </Route>
         </Routes>
       </BrowserRouter>
+      {/* The toast HOST. It lives here, above the router and inside the theme,
+          for the reason the bug it fixes demonstrates: the console had a themed
+          Toaster, kit exports for it, and passing theme tests for it — and it was
+          MOUNTED NOWHERE. Five production `toast()` calls across three routes
+          (backup export, and the design/pages surfaces) fired into a void, and
+          `toast.success("Workspace exported")` was the sharpest: the one signal
+          that an operator's backup actually succeeded could never appear.
+
+          Above the router, so a toast survives the navigation that often follows
+          the action that raised it. Inside ThemeProvider, because the sonner host
+          reads the active Dusk/Daybreak theme from context. Outside SessionGate,
+          so a route that toasts before a session resolves is still heard. */}
+      <Toaster />
     </ThemeProvider>
   );
 }
