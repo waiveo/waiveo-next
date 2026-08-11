@@ -8,9 +8,9 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { ImageOff } from "lucide-react";
+import { ImageOff, VideoOff } from "lucide-react";
 import { KitIcon } from "@/components/kit";
-import { SLIDE_CANVAS_HEIGHT, SLIDE_CANVAS_WIDTH, type CastSlide, type SlideLayer } from "@/api";
+import { SLIDE_CANVAS_HEIGHT, SLIDE_CANVAS_WIDTH, isContentKind, type CastSlide, type SlideLayer } from "@/api";
 import { cn } from "@/lib/utils";
 import { RESIZE_HANDLES, moveLayerBy, resizeLayerBy, type ResizeHandle } from "./cast-model";
 import { COUNTDOWN_DEFAULT_LAYOUT, formatCountdownLayout, formatGoTimeLayout } from "./go-time-layout";
@@ -71,6 +71,8 @@ export function describeLayer(layer: SlideLayer): string {
       return `Rectangle — ${layer.color ?? "(no colour)"}`;
     case "image":
       return layer.asset_ref ? `Image — ${layer.asset_ref.replace(/^sha256:/, "").slice(0, 10)}…` : "Image — (none chosen)";
+    case "video":
+      return layer.asset_ref ? `Video — ${layer.asset_ref.replace(/^sha256:/, "").slice(0, 10)}…` : "Video — (none chosen)";
     case "date":
       return `Date — ${layer.text ?? "(no format)"}`;
     case "countdown":
@@ -139,20 +141,39 @@ export function LayerView({ layer, now }: { layer: SlideLayer; now: Date }) {
     return <div data-slot="layer-rect" aria-hidden="true" style={{ ...box, backgroundColor: layer.color }} />;
   }
 
-  if (layer.kind === "image") {
-    // An image layer with no bytes chosen yet is drawn as a labelled outline
-    // rather than nothing: it is a placed, selectable, movable object that
-    // simply is not finished, and an invisible one could not be found again.
+  if (isContentKind(layer.kind)) {
+    // A content-bearing layer with no bytes chosen yet is drawn as a labelled
+    // outline rather than nothing: it is a placed, selectable, movable object
+    // that simply is not finished, and an invisible one could not be found
+    // again.
     if (!layer.url) {
       return (
         <div
-          data-slot="layer-image-empty"
+          data-slot={`layer-${layer.kind}-empty`}
           aria-hidden="true"
           style={box}
           className="flex items-center justify-center border-4 border-dashed border-[color:var(--wv-border)] bg-[color:var(--wv-surface-2)]"
         >
-          <KitIcon icon={ImageOff} decorative className="size-16 text-muted-foreground" />
+          <KitIcon icon={layer.kind === "video" ? VideoOff : ImageOff} decorative className="size-16 text-muted-foreground" />
         </div>
+      );
+    }
+    if (layer.kind === "video") {
+      // The first frame, not playback. The player loops the clip for the
+      // slide's dwell time, but the Studio is a LAYOUT surface: a still frame
+      // answers "is this the right clip, and does it fit the box" without
+      // spinning up a decoder per thumbnail — the filmstrip draws every slide
+      // through this same component, so autoplaying here would start one video
+      // per slide the moment a cast is opened.
+      return (
+        <video
+          data-slot="layer-video"
+          src={layer.url}
+          muted
+          playsInline
+          preload="metadata"
+          style={{ ...box, objectFit: "contain" }}
+        />
       );
     }
     return (

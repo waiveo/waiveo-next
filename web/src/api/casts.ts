@@ -35,18 +35,24 @@ import type { ResourceModule } from "./resources";
 export const SLIDE_CANVAS_WIDTH = 1920;
 export const SLIDE_CANVAS_HEIGHT = 1080;
 
-/** The eight v1 layer kinds (`wire.LayerKind*`). A closed set: the wire's
- * validator refuses anything else, and the projector DROPS a slide whose layers
- * do not validate rather than serving it malformed — so an editor that let an
- * operator author a ninth kind would produce a slide that silently never
- * appears.
+/** The nine v1 layer kinds (`wire.LayerKind*`), in the order the openapi enum
+ * declares them. A closed set: the wire's validator refuses anything else, and
+ * the projector DROPS a slide whose layers do not validate rather than serving
+ * it malformed — so an editor that let an operator author a tenth kind would
+ * produce a slide that silently never appears.
  *
- * The list must also stay COMPLETE, which is the half that actually went wrong:
- * the four live-widget kinds landed on the wire, in the server-side resolver and
- * in the player while this array still held four, so the Studio could not insert
- * one and `POST /casts` refused one — four rendered capabilities nothing could
- * author. */
-export const LAYER_KINDS = ["text", "rect", "image", "clock", "date", "countdown", "weather", "entity"] as const;
+ * The list must also stay COMPLETE, and that is the half this repo keeps getting
+ * wrong — twice now, in the same way. The four live-widget kinds landed on the
+ * wire, in the server-side resolver and in the player while this array still
+ * held four; then `video` landed on the wire, in the projector and in the player
+ * while this array still held eight. The second time was worse than an absent
+ * feature: because `validateSlide` reads this array as the closed set, a cast
+ * that ALREADY carried a video layer was reported "Unknown layer kind" by the
+ * console, which holds the Studio's save gate — so an operator could not save
+ * that cast at all, for a reason the server did not agree with. A kind the
+ * server accepts and this array omits is not a missing capability, it is a
+ * broken editor. */
+export const LAYER_KINDS = ["text", "rect", "image", "clock", "date", "countdown", "weather", "entity", "video"] as const;
 export type LayerKind = (typeof LAYER_KINDS)[number];
 
 /** The four kinds whose content is LIVE — computed rather than typed in. Two are
@@ -58,14 +64,28 @@ export type LayerKind = (typeof LAYER_KINDS)[number];
 export const WIDGET_LAYER_KINDS = ["date", "countdown", "weather", "entity"] as const;
 export type WidgetLayerKind = (typeof WIDGET_LAYER_KINDS)[number];
 
-/** The kinds the player draws as a Label — everything but `rect` and `image`.
- * These are the layers that carry `font_px`, `color` and `align`, so the
- * properties panel offers those three for exactly this set. */
+/** The kinds the player draws as a Label — everything but the two content-bearing
+ * kinds and `rect`. These are the layers that carry `font_px`, `color` and
+ * `align`, so the properties panel offers those three for exactly this set. */
 export const LABEL_LAYER_KINDS = ["text", "clock", "date", "countdown", "weather", "entity"] as const;
 
 /** Whether a layer kind is drawn as a Label (and so carries text styling). */
 export function isLabelKind(kind: LayerKind): boolean {
   return (LABEL_LAYER_KINDS as readonly string[]).includes(kind);
+}
+
+/** The two kinds whose substance is BYTES in the content origin —
+ * `wire.LayerFetchesContent`. They are the pair, not `image` alone, and naming
+ * the pair once is the point: every place that tested for `image` by hand is a
+ * place `video` was forgotten (the player's own fetch loop carries the same
+ * note). Both are authored as an `asset_ref` and fetched + content-address
+ * verified by the player before anything is drawn. */
+export const CONTENT_LAYER_KINDS = ["image", "video"] as const;
+export type ContentLayerKind = (typeof CONTENT_LAYER_KINDS)[number];
+
+/** Whether a layer kind's content is bytes the player must fetch. */
+export function isContentKind(kind: LayerKind): kind is ContentLayerKind {
+  return (CONTENT_LAYER_KINDS as readonly string[]).includes(kind);
 }
 
 /** The weather template tokens the BOX substitutes (`slidelive`'s closed set).
@@ -103,9 +123,12 @@ export interface SlideLayer {
    * for `countdown` (optional), and the substitution template the BOX fills for
    * `weather` (required) / `entity` (optional). Unused by rect/image. */
   text?: string;
-  /** `image`: the content-addressed `sha256:` ref the player verifies against. */
+  /** `image`/`video`: the content-addressed `sha256:` ref the player verifies
+   * against. The only AUTHORED half of a content-bearing layer. */
   asset_ref?: string;
-  /** `image`: the content-origin fetch URL for those bytes. */
+  /** `image`/`video`: the content-origin fetch URL for those bytes. DERIVED —
+   * a producer mints it from the asset_ref at projection time, so an authored
+   * layer need not carry one (`wire.ValidateAuthoredSlideLayers`). */
   url?: string;
   /** `countdown`: the target instant as Unix epoch MILLISECONDS, UTC — an
    * absolute instant, so the player counts down without knowing the authoring
@@ -218,6 +241,15 @@ const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
  *
  * It is a mirror, not the authority. The wire's copy still runs server-side; this
  * one exists to be legible to the person who can fix the problem.
+ *
+ * Which copy it mirrors matters, and the answer is the AUTHORING gate
+ * (`wire.ValidateAuthoredSlideLayers`), not the serving one. They differ in
+ * exactly one rule — a content-bearing layer's `url` is derived by the producer
+ * at projection time, so it is not required of an author — and a mirror stricter
+ * than the server is not a safety margin: it reports a slide the server would
+ * accept as invalid, which in the Studio HOLDS THE SAVE for the whole cast. That
+ * is the same failure this function shipped with for `video` (an unknown-kind
+ * error for a kind the server accepts), reached from the other direction.
  */
 export function validateSlide(slide: CastSlide): SlideProblem[] {
   const problems: SlideProblem[] = [];
@@ -238,7 +270,11 @@ export function validateSlide(slide: CastSlide): SlideProblem[] {
     }
     if (l.kind === "text" && !l.text) at("Text is required.");
     if (l.kind === "clock" && !l.text) at("A clock needs a time format.");
-    if (l.kind === "image" && (!l.asset_ref || !l.url)) at("Pick an image from the media library.");
+    // Both content-bearing kinds, one rule — `url` deliberately not demanded:
+    // see this function's doc.
+    if (isContentKind(l.kind) && !l.asset_ref) {
+      at(l.kind === "video" ? "Pick a video from the media library." : "Pick an image from the media library.");
+    }
     if (l.kind === "rect" && !l.color) at("A rectangle needs a fill colour.");
     // The live widgets. Each mirrors one arm of wire.ValidateSlideLayers, and
     // each is a rule an operator can break in the ordinary course of authoring —

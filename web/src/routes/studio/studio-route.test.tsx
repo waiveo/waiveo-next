@@ -481,6 +481,93 @@ describe("Studio — the image layer and the media picker", () => {
   });
 });
 
+/**
+ * The VIDEO layer (parity row 1.5-video).
+ *
+ * `video` is the ninth layer kind. It landed on the wire, in the projector and
+ * in the player, and the console was left believing there were eight — with two
+ * consequences, and the second is the one that mattered. It could not be
+ * inserted, which is a missing feature; and any cast that ALREADY held one was
+ * reported by the console's own mirror as carrying an "Unknown layer kind",
+ * which sets `invalidSlideCount > 0`, which disables Save for the whole
+ * document. An operator opening that cast could edit nothing and save nothing,
+ * with a message blaming a slide the server was perfectly happy with.
+ *
+ * Both halves are driven here as an operator drives them, and both end at the
+ * PATCH body rather than at something rendering.
+ */
+describe("Studio — the video layer", () => {
+  it("inserts a video, picks its bytes, and saves the layer", async () => {
+    const saved: { body?: SavedBody } = {};
+    server.use(
+      ...serveCast(cast(), saved),
+      http.get("*/api/v1/content", () =>
+        HttpResponse.json({ content: [contentAsset({ asset_ref: "sha256:cc77", url: "/content/cc77" })] }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    // The toolbar offers it directly, beside Image: a clip is content chosen
+    // from the library, not a live widget that needs explaining.
+    await user.click(screen.getByRole("button", { name: "Video" }));
+    expect(screen.getByText(/no video chosen yet/i)).toBeInTheDocument();
+
+    // A fresh video layer names no bytes, so the save is held — exactly as an
+    // image's is, and for the same reason.
+    expect(saveButton()).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /choose video/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/choose a video/i)).toBeInTheDocument();
+    await user.click(await within(dialog).findByRole("button", { name: "Use sha256:cc77" }));
+
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+    await user.click(saveButton());
+    const layers = (await waitForSave(saved)).slides?.[0]?.layers ?? [];
+    expect(layers[3]).toMatchObject({ kind: "video", asset_ref: "sha256:cc77", url: "/content/cc77" });
+  });
+
+  it("saves a cast that already carries a video layer instead of calling its kind unknown", async () => {
+    const saved: { body?: SavedBody } = {};
+    const withVideo = cast({
+      slides: [
+        {
+          id: "slide-1",
+          layers: [
+            { kind: "video", x: 0, y: 0, w: 1920, h: 1080, asset_ref: "sha256:cc77", url: "/content/cc77" },
+            { kind: "text", x: 120, y: 200, w: 900, h: 160, text: "Now showing", font_px: 96, color: "#ffffff" },
+          ],
+        },
+      ],
+    });
+    server.use(...serveCast(withVideo, saved));
+    const user = userEvent.setup();
+    renderStudio();
+
+    // It is a real, selectable object in the stack — not a mystery layer.
+    await user.click(await screen.findByRole("button", { name: /Layer 1: Video/ }));
+    // Nothing is held, and no phantom problem is shown against a layer the
+    // server stored happily.
+    expect(screen.queryByText(/won't draw yet/i)).toBeNull();
+    expect(screen.queryByText(/unknown layer kind/i)).toBeNull();
+
+    // And an edit to the OTHER layer really can be saved, which is the whole
+    // point: the defect made the document read-only.
+    await user.click(canvasLayer(2, /Layer 2: Text — Now showing/));
+    const textarea = screen.getByRole("textbox", { name: /^text$/i });
+    await user.clear(textarea);
+    await user.type(textarea, "Feature presentation");
+
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+    await user.click(saveButton());
+    const layers = (await waitForSave(saved)).slides?.[0]?.layers ?? [];
+    expect(layers[0]).toMatchObject({ kind: "video", asset_ref: "sha256:cc77" });
+    expect(layers[1]).toMatchObject({ kind: "text", text: "Feature presentation" });
+  });
+});
+
 describe("Studio — slides", () => {
   it("adds, duplicates, reorders and deletes slides", async () => {
     const saved: { body?: SavedBody } = {};

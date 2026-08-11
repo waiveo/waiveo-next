@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, ImagePlus, X } from "lucide-react";
+import { AlertTriangle, FileVideo, ImagePlus, X } from "lucide-react";
 import { Button, FormField, KitIcon } from "@/components/kit";
 import {
   ENTITY_STATE_TOKEN,
   SLIDE_CANVAS_HEIGHT,
   SLIDE_CANVAS_WIDTH,
   WEATHER_TOKENS,
+  isContentKind,
   isLabelKind,
   type Entity,
   type LayerAlign,
@@ -51,7 +52,10 @@ export interface PropertiesPanelProps {
   problems: SlideProblem[];
   layerIndex: number | null;
   onPatch: (patch: LayerPatch) => void;
-  onPickImage: () => void;
+  /** Open the content-origin picker for the selected content-bearing layer
+   * (`image` or `video` — one picker, because the origin holds one kind of
+   * thing: bytes with a digest). */
+  onPickAsset: () => void;
   /** The current slide's hold time, and how to change it. */
   durationMs: number | undefined;
   onDurationChange: (durationMs: number | null) => void;
@@ -67,7 +71,7 @@ export function PropertiesPanel({
   problems,
   layerIndex,
   onPatch,
-  onPickImage,
+  onPickAsset,
   durationMs,
   onDurationChange,
   entities,
@@ -267,31 +271,36 @@ export function PropertiesPanel({
             />
           ) : null}
 
-          {layer.kind === "image" ? (
+          {/* The two content-bearing kinds share one control, because they are
+              one gesture: pick bytes out of the content origin. The origin has
+              no MIME metadata (it is content-addressed — see media-library.tsx),
+              so there is nothing to branch on but the WORD, and duplicating the
+              block to change that word is how `video` gets forgotten the next
+              time this file changes. */}
+          {isContentKind(layer.kind) ? (
             <div className="flex flex-col gap-2">
-              <span className="text-sm font-medium">Image</span>
+              <span className="text-sm font-medium">{layer.kind === "video" ? "Video" : "Image"}</span>
               {layer.asset_ref ? (
                 <code className="min-w-0 truncate rounded-input bg-[color:var(--wv-surface-2)] px-2 py-1 font-mono text-[12px] text-muted-foreground">
                   {layer.asset_ref}
                 </code>
               ) : (
                 <p className="text-[13px] text-muted-foreground">
-                  No image chosen yet — this slide will not render until one is.
+                  No {layer.kind} chosen yet — this slide will not render until one is.
                 </p>
               )}
               <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="secondary" icon={ImagePlus} onClick={onPickImage}>
-                  {layer.asset_ref ? "Replace image" : "Choose image"}
+                <Button size="sm" variant="secondary" icon={layer.kind === "video" ? FileVideo : ImagePlus} onClick={onPickAsset}>
+                  {layer.asset_ref ? `Replace ${layer.kind}` : `Choose ${layer.kind}`}
                 </Button>
                 {layer.asset_ref ? (
                   <Button
                     size="sm"
                     variant="ghost"
                     icon={X}
-                    // Both fields are cleared together: the wire requires
-                    // asset_ref and url as a pair, so clearing one would leave a
-                    // layer that fails validation for a reason the panel is not
-                    // showing.
+                    // Both fields are cleared together: a served slide's layer
+                    // carries asset_ref and url as a pair, so clearing one would
+                    // leave a layer whose bytes are named but unfetchable.
                     onClick={() => onPatch({ asset_ref: undefined, url: undefined })}
                   >
                     Clear

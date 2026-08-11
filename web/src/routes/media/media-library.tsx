@@ -190,29 +190,37 @@ export function MediaGrid({
 }
 
 /**
- * The image picker: the same grid in a modal, resolving `{asset_ref, url}` onto
- * an image layer. Both fields travel together and that is a wire requirement,
- * not a convenience — `wire.ValidateSlideLayers` refuses an image layer holding
- * one without the other, and the projector would drop the whole slide.
+ * The content picker: the same grid in a modal, resolving `{asset_ref, url}`
+ * onto a content-bearing slide layer. Both fields travel together and that is a
+ * wire requirement, not a convenience — `wire.ValidateSlideLayers` refuses an
+ * image or video layer holding one without the other, and the projector would
+ * drop the whole slide.
+ *
+ * `kind` changes the WORDING and nothing else, deliberately: the origin is
+ * content-addressed and knows no MIME type (see this file's header), so there is
+ * nothing to filter the grid by. Saying "video" while offering every asset is
+ * honest about that; pretending to filter would not be.
  */
 export function MediaPickerModal({
   open,
   onOpenChange,
   api,
+  kind = "image",
   selectedRef,
   onPick,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   api: WaiveoApi;
+  kind?: "image" | "video";
   selectedRef?: string | undefined;
   onPick: (asset: ContentAsset) => void;
 }) {
   const { assets, error, reload } = useContentLibrary(api, open);
   return (
     <Modal
-      title="Choose an image"
-      description="Everything the content origin is serving. Uploads land on the Content page."
+      title={kind === "video" ? "Choose a video" : "Choose an image"}
+      description="Everything the content origin is serving — it stores bytes by digest, not by file type, so every asset is listed. Uploads land on the Content page."
       size="xl"
       open={open}
       onOpenChange={onOpenChange}
