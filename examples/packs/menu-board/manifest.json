@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "displayName": "msg:pack.displayName",
   "icon": "utensils",
-  "description": "A tasteful sample extension: manage a cafe menu as declarative data. No pack code runs anywhere — the manifest, the two pages, and the locale catalog are DATA the host validates and renders through the same Horizon kit every console page uses.",
+  "description": "A tasteful sample extension: manage a cafe menu as declarative data. This pack runs no code of its own — its manifest, its two pages and its locale catalog are DATA the host validates and renders through the same Horizon kit every console page uses.",
   "compat": {
     "ctx": ">=1.0 <2.0",
     "renderer": ["list-detail", "settings-form"]
