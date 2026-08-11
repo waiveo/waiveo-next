@@ -1390,3 +1390,32 @@ describe("Automations — responsive at 360px", () => {
     expect(screen.getByText("Open the doors")).toBeInTheDocument();
   });
 });
+
+describe("Automations list — whether a rule is even ON", () => {
+  // The list showed name, mode, trigger count and action count, and NOT `enabled`
+  // — which the Automation schema has carried all along. A disabled rule was
+  // indistinguishable from a live one, so "why did this not fire?" meant opening
+  // every rule in turn. The detail already had a Disable/Enable button; only the
+  // list could not answer the question.
+  it("shows Disabled for a rule that is off and Enabled for one that is on", async () => {
+    server.use(
+      ...liveLists(
+        [
+          automation({ id: ULID_A, name: "Morning open", enabled: true }),
+          automation({ id: ULID_B, name: "Holiday sign", enabled: false }),
+        ],
+        HQ,
+      ),
+    );
+    renderRoute();
+
+    const table = await screen.findByRole("table", { name: /automations/i });
+    const on = within(table).getByText("Morning open").closest("tr") as HTMLElement;
+    const off = within(table).getByText("Holiday sign").closest("tr") as HTMLElement;
+
+    expect(within(on).getByText("Enabled")).toBeInTheDocument();
+    expect(within(off).getByText("Disabled")).toBeInTheDocument();
+    // Not the raw boolean — a cell bound straight to `enabled` renders "true".
+    expect(within(off).queryByText("false")).not.toBeInTheDocument();
+  });
+});

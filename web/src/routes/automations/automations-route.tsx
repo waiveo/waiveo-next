@@ -102,6 +102,7 @@ const messages: Record<string, string> = {
   "msg:auto.col.mode": "Mode",
   "msg:auto.col.triggers": "Triggers",
   "msg:auto.col.actions": "Actions",
+  "msg:auto.col.enabled": "Status",
   "msg:auto.detail.title": "Automation",
   "msg:auto.detail.empty": "Select an automation to edit it, or add a new one.",
   "msg:auto.detail.name": "Name",
@@ -497,7 +498,28 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
    * override substituted, each hydrated so its nested builder binds have somewhere
    * to write (see rule-shape.ts). */
   const boundAutomations = useMemo(
-    () => (automations ?? []).map((a) => hydrateForBuilder(overrides[a.id] ?? a)),
+    () =>
+      (automations ?? []).map((a) => {
+        const row = hydrateForBuilder(overrides[a.id] ?? a);
+        // A DISPLAY projection for the list's status column. `enabled` is a
+        // boolean and a table cell binds a BindingExpr, so binding it directly
+        // renders "true"/"false"; ui-schema/1's closed compute list (eq, not,
+        // and, or, count, isEmpty, join, label, msg, formatDuration, formatDate,
+        // formatNumber, formatCurrency, firstKey) has no conditional-label
+        // function to turn one into a word.
+        //
+        // grammar-gap: a Computed that selects between two BindingExprs on a
+        // predicate — or a `label` whose vocabRef may be a page-local map rather
+        // than a contract vocabulary. `label` is deliberately NOT abused here: it
+        // maps a value through a NAMED closed vocabulary, and `enabled` is a
+        // boolean, not a member of one. Inventing "rules/1:enabled" to borrow the
+        // mechanism would put a vocabulary in the document that the contract does
+        // not have.
+        //
+        // Recorded per parity-loop Step 1.5; the projection is the same shape the
+        // Variables route already uses for its polymorphic value.
+        return { ...row, enabled_label: row.enabled === false ? "Disabled" : "Enabled" };
+      }),
     [automations, overrides],
   );
 
