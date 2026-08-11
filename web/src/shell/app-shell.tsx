@@ -8,7 +8,6 @@ import {
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
-  Puzzle,
 } from "lucide-react";
 import { Button, KitIcon, NavDrawer } from "@/components/kit";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
@@ -311,18 +310,25 @@ function ExtensionsNav({
   onNavigate?: (() => void) | undefined;
 }) {
   return (
-    <nav aria-label="Extensions" className="flex flex-col gap-2">
-      <div className={cn("flex items-center gap-2 px-3", collapsed && "justify-center")}>
-        <KitIcon icon={Puzzle} decorative className="size-4 shrink-0 text-muted-foreground" />
-        <span
-          className={cn(
-            "text-[11px] font-semibold uppercase tracking-wide text-muted-foreground",
-            collapsed && "sr-only",
-          )}
-        >
-          Extensions
-        </span>
-      </div>
+    // The landmark keeps its accessible name ("Extensions") and its own <nav>, so
+    // assistive tech still hears third-party content announced as a separate
+    // region — the demarcation above is intact where it does the work.
+    //
+    // What it no longer renders is a VISIBLE heading reading "Extensions", which
+    // collided head-on with the core Extensions group in Primary: the rail showed
+    // two sections under that one word, one meaning "manage packs" and one meaning
+    // "pages packs contributed". Legacy never had this meta-heading — each
+    // extension declared its own titled section and they stacked as peers of the
+    // core ones — and every pack group here already carries the pack's own name
+    // and icon, so the word was labelling a set its members label better.
+    //
+    // The rule is separated by a border instead. That keeps the boundary visible
+    // (a pack may title a page "Backup"; an operator must be able to see that it
+    // is a pack's page) without spending a section name on it.
+    <nav
+      aria-label="Extensions"
+      className="flex flex-col gap-2 border-t border-border pt-3 mt-1"
+    >
       {groups.map((group) => (
         <div key={group.packId} className="flex flex-col gap-1">
           {/* The group heading wears the pack's icon: its manifest-declared glyph

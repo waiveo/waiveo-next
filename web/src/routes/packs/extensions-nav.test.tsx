@@ -223,4 +223,36 @@ describe("Extensions nav — pack icons (never broken)", () => {
     await user.click(link);
     expect(link).toHaveAttribute("aria-current", "page");
   });
+
+  it("gives no two rail sections the SAME visible label — an operator can always tell which section they mean", async () => {
+    // The regression this pins actually shipped. The pack landmark rendered a
+    // visible heading reading "Extensions" at the same moment a core nav group
+    // called "Extensions" was added to Primary, so the rail carried that one word
+    // twice: once meaning "manage packs", once meaning "pages packs contributed".
+    // Nothing failed, because every existing assertion addressed the landmark by
+    // its ARIA name — which stayed unique the whole time.
+    //
+    // The set is DERIVED from what the rail renders, never enumerated here. A
+    // hand-kept list of expected section names is exactly the guard that cannot
+    // see the section somebody adds next.
+    await renderWithPack();
+    const sidebar = document.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
+
+    const sectionLabels = [
+      // Core groups: the collapse toggles in Primary.
+      ...within(within(sidebar).getByRole("navigation", { name: /primary/i }))
+        .getAllByRole("button")
+        .map((b) => b.textContent?.trim()),
+      // Pack groups, plus any visible heading the landmark itself renders.
+      ...[...sidebar.querySelectorAll('[data-slot="pack-group-heading"]')].map((h) =>
+        h.textContent?.trim(),
+      ),
+      ...[...sidebar.querySelectorAll('nav[aria-label="Extensions"] > div')].map((d) =>
+        d.textContent?.trim(),
+      ),
+    ].filter((s): s is string => !!s);
+
+    const dupes = sectionLabels.filter((s, i) => sectionLabels.indexOf(s) !== i);
+    expect(dupes, `rail sections sharing a label: ${dupes.join(", ")}`).toEqual([]);
+  });
 });
