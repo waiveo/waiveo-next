@@ -15,7 +15,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { createApi, updateWithReview } from "./resources";
-import { validateSlide, validateCastSlides, type CastSlide } from "./casts";
+import { LAYER_KINDS, validateSlide, validateCastSlides, type CastSlide } from "./casts";
 import { TEST_BASE, ULID_A, ULID_ROOT, cast, contentAsset, etag, ok, problem } from "./test-support";
 
 const server = setupServer();
@@ -191,6 +191,49 @@ describe("validateSlide — the console-side mirror of wire.ValidateSlideLayers"
   it("refuses an image layer with no bytes behind it", () => {
     const problems = validateSlide({ id: "s", layers: [{ kind: "image", ...geo }] });
     expect(problems[0]?.message).toMatch(/media library/i);
+  });
+
+  // `video` is the ninth kind, and the console shipped believing there were
+  // eight. The consequence was not a missing feature but a BROKEN editor: this
+  // mirror reported "Unknown layer kind" for a layer the server had just stored,
+  // and the Studio's save gate reads exactly this list of problems — so a cast
+  // that already carried a video layer could never be saved again, for a reason
+  // no server would agree with. Both directions are pinned below.
+  it("accepts a video layer, which the server accepts too", () => {
+    expect(
+      validateSlide({ id: "s", layers: [{ kind: "video", ...geo, asset_ref: "sha256:bb", url: "/content/bb" }] }),
+    ).toEqual([]);
+  });
+
+  it("never reports a server-valid kind as unknown", () => {
+    // The whole closed set, each with the fields its kind requires, must pass
+    // the unknown-kind branch. Driven off LAYER_KINDS so a tenth kind added to
+    // the wire and forgotten here fails HERE rather than on an operator's save.
+    for (const kind of LAYER_KINDS) {
+      const problems = validateSlide({
+        id: "s",
+        layers: [{ kind, ...geo, text: "{temp} x", color: "#00FF00", asset_ref: "sha256:aa", url: "/content/aa", entity_id: ULID_A, target_ms: 1 }],
+      });
+      expect(problems.map((p) => p.message).join(" "), `${kind} must not be reported as an unknown kind`).not.toMatch(
+        /unknown layer kind/i,
+      );
+    }
+  });
+
+  it("does not demand the DERIVED url of a content layer the way the serving gate does", () => {
+    // `url` is minted by the producer at projection time
+    // (wire.ValidateAuthoredSlideLayers accepts a content layer without one), so
+    // an authored layer that names only its asset_ref is valid. A mirror
+    // stricter than the server is not caution — it holds the save on a cast the
+    // server would have taken.
+    for (const kind of ["image", "video"] as const) {
+      expect(validateSlide({ id: "s", layers: [{ kind, ...geo, asset_ref: "sha256:aa" }] })).toEqual([]);
+    }
+  });
+
+  it("still refuses a video layer with no bytes behind it", () => {
+    const problems = validateSlide({ id: "s", layers: [{ kind: "video", ...geo }] });
+    expect(problems[0]?.message).toMatch(/pick a video/i);
   });
 
   it("indexes a whole cast's problems by slide so the filmstrip can badge them", () => {

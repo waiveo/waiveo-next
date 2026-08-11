@@ -266,7 +266,7 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
       <div className="mx-auto flex max-w-[1400px] flex-col gap-5 px-4 py-6 lg:px-8">
         <PageHeader
           title="Studio"
-          description="Place native text, shapes, images and a live clock on the 1920×1080 canvas your screens draw directly."
+          description="Place native text, shapes, images, video and live widgets on the 1920×1080 canvas your screens draw directly."
           actions={
             <>
               <Button
@@ -435,7 +435,7 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
                   if (state.layerIndex === null) return;
                   dispatch({ type: "patchLayer", index: state.layerIndex, patch });
                 }}
-                onPickImage={() => setPickerOpen(true)}
+                onPickAsset={() => setPickerOpen(true)}
                 durationMs={slide.duration_ms}
                 onDurationChange={(durationMs) =>
                   dispatch({ type: "setSlideDuration", index: state.slideIndex, durationMs })
@@ -454,6 +454,10 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
         open={pickerOpen}
         onOpenChange={setPickerOpen}
         api={client}
+        // The origin holds one kind of thing (bytes with a digest), so the same
+        // picker serves an image layer and a video layer; only the wording
+        // follows the selected layer's kind.
+        kind={layer?.kind === "video" ? "video" : "image"}
         selectedRef={layer?.asset_ref}
         onPick={(asset) => {
           if (state.layerIndex === null) return;
@@ -488,7 +492,7 @@ function StudioFrame({ children }: { children: ReactNode }) {
       <div className="mx-auto flex max-w-[1400px] flex-col gap-5 px-4 py-6 lg:px-8">
         <PageHeader
           title="Studio"
-          description="Place native text, shapes, images and a live clock on the 1920×1080 canvas your screens draw directly."
+          description="Place native text, shapes, images, video and live widgets on the 1920×1080 canvas your screens draw directly."
         />
         {children}
       </div>

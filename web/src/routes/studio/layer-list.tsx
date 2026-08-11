@@ -12,6 +12,7 @@ import {
   ToggleLeft,
   Trash2,
   Type,
+  Video,
   type LucideIcon,
 } from "lucide-react";
 import { Button, EmptyState, KitIcon, Modal } from "@/components/kit";
@@ -41,6 +42,7 @@ const KIND_ICON: Record<LayerKind, LucideIcon> = {
   countdown: Timer,
   weather: CloudSun,
   entity: ToggleLeft,
+  video: Video,
 };
 
 const KIND_LABEL: Record<LayerKind, string> = {
@@ -52,14 +54,22 @@ const KIND_LABEL: Record<LayerKind, string> = {
   countdown: "Countdown",
   weather: "Weather",
   entity: "Entity state",
+  video: "Video",
 };
 
 /** The kinds the toolbar offers DIRECTLY: the static ones plus the clock, which
  * predates the widget concept and is the layer an operator reaches for most.
- * Everything else lives behind the widget picker — a flat row of eight buttons
- * is a worse door than four plus one, and the live kinds are the four that need
- * explaining before they are chosen. */
-const DIRECT_KINDS: LayerKind[] = ["text", "rect", "image", "clock"];
+ * Everything else lives behind the widget picker — a flat row of nine buttons
+ * is a worse door than five plus one, and the live kinds are the four that need
+ * explaining before they are chosen.
+ *
+ * `video` belongs here rather than behind the picker for the same reason
+ * `image` does: it is not a live widget, it is a piece of content chosen from
+ * the library, and it is the second half of a pair an operator thinks of as one
+ * choice ("put a file on the slide"). Its absence from this row was the whole of
+ * the defect — the kind was on the wire, in the projector and in the player, and
+ * unreachable from the only surface that authors one. */
+const DIRECT_KINDS: LayerKind[] = ["text", "rect", "image", "video", "clock"];
 
 /** What each live widget IS, in the terms that decide whether it is the one you
  * want. Every line says where the value comes from, because that is the whole
@@ -183,7 +193,7 @@ export function LayerList({ layers, selectedIndex, onSelect, onReorder, onDelete
     return (
       <EmptyState
         title="This slide is empty"
-        description="Insert a text, rectangle, image or clock layer — or add a live widget — to start building it."
+        description="Insert a text, rectangle, image, video or clock layer — or add a live widget — to start building it."
       />
     );
   }

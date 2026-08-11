@@ -1,6 +1,7 @@
 package playercontentcache
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -139,32 +140,256 @@ func TestTheCacheIsTrimmedOnEverySuccessfulLease(t *testing.T) {
 	}
 }
 
-// TestTheTrimHonoursBothCapsAndActuallyDeletes: the trim enforces an entry cap
-// AND a byte cap, and reclaims space rather than merely forgetting.
+// ─────────────────────────────────────────────────────────────────────────────
+// The trim, EXECUTED. Everything below drives the real wvTrimContentCache out of
+// the shipped Program.brs (see brsrun_test.go) instead of reading it.
 //
-// Both caps are needed and neither implies the other — a hundred posters blow
-// the count while using no space, two long videos blow the budget as two
-// entries. And dropping an entry from the map without unlinking the file is the
-// version of this bug that looks completely correct in review: the cache reports
-// itself as bounded while the filesystem fills anyway.
-func TestTheTrimHonoursBothCapsAndActuallyDeletes(t *testing.T) {
-	body := routineBody(t, readBrs(t, programPath), "wvTrimContentCache")
+// This replaces a structural guard that asserted the trim MENTIONS both caps,
+// calls wvDeleteCachedFile, deletes from the map and mentions keepPrev. Every
+// one of those was true of a trim that could never evict anything: the shipped
+// routine handed its PROTECTED set forward as `keepPrev`, which made the
+// protected set the running union of every key ever kept, so `oldestKey` was
+// always "" and both caps were dead code from the second poll onwards. A
+// reviewer confirmed the guard was blind by making the trim provably incapable
+// of eviction and watching the package stay green. Structure was the wrong
+// question; these ask what the cache CONTAINS after N polls.
+// ─────────────────────────────────────────────────────────────────────────────
 
-	for _, cap := range []string{"wvContentCacheMaxEntries", "wvContentCacheMaxBytes"} {
-		if indexOfCall(body, cap) < 0 {
-			t.Errorf("wvTrimContentCache does not consult %s", cap)
+// cacheHarness is one player thread's content cache, ready to be trimmed.
+type cacheHarness struct {
+	in    *interp
+	cache *assoc
+	// tick mirrors wvEnsureContent's own counter, which is what `used` (the LRU
+	// ordering) is drawn from.
+}
+
+func newCacheHarness(t *testing.T) *cacheHarness {
+	t.Helper()
+	in := newInterp(t, programPath)
+	cache, ok := in.call("wvContentCache").(*assoc)
+	if !ok {
+		t.Fatal("wvContentCache() did not return an associative array")
+	}
+	return &cacheHarness{in: in, cache: cache}
+}
+
+func (h *cacheHarness) entries() *assoc {
+	e, ok := h.cache.get("entries").(*assoc)
+	if !ok {
+		panic("the cache has no `entries` map")
+	}
+	return e
+}
+
+// store adds one materialized asset exactly as wvEnsureContent's fetch path does
+// (Program.brs: `cache.tick = cache.tick + 1` then
+// `cache.entries[key] = { path:, sizeBytes:, used: cache.tick }`), so the LRU
+// order these tests assert on is the order the player itself would produce.
+func (h *cacheHarness) store(key, path string, sizeBytes int) {
+	tick, _ := h.cache.get("tick").(int)
+	tick++
+	h.cache.set("tick", tick)
+	entry := newAssoc()
+	entry.set("path", path)
+	entry.set("sizeBytes", sizeBytes)
+	entry.set("used", tick)
+	h.entries().set(key, entry)
+}
+
+// poll is one whole Lease: it materializes the named assets and then trims,
+// which is the only sequence the player ever performs.
+func (h *cacheHarness) poll(t *testing.T, sizeBytes int, keys ...string) {
+	t.Helper()
+	keep := newAssoc()
+	for _, k := range keys {
+		h.store(k, "cachefs:/wv_"+k+".bin", sizeBytes)
+		keep.set(k, true)
+	}
+	h.in.call("wvTrimContentCache", keep)
+}
+
+func (h *cacheHarness) holds(key string) bool { return h.entries().has(key) }
+
+func (h *cacheHarness) totalBytes() int {
+	total := 0
+	for _, k := range h.entries().keyList() {
+		e := h.entries().get(k).(*assoc)
+		n, _ := e.get("sizeBytes").(int)
+		total += n
+	}
+	return total
+}
+
+const mib = 1024 * 1024
+
+// TestTheTrimEvictsPastTheEntryCapAndUnlinksTheBytes: the count cap is real.
+//
+// A hundred posters blow the entry count while using almost no space, so the
+// cap has to bite on count alone — and the eviction has to UNLINK, not merely
+// forget: dropping the entry without deleting the file is the version of this
+// bug that looks completely correct in review, because the cache reports itself
+// bounded while the filesystem fills anyway.
+func TestTheTrimEvictsPastTheEntryCapAndUnlinksTheBytes(t *testing.T) {
+	h := newCacheHarness(t)
+	maxEntries := h.in.call("wvContentCacheMaxEntries").(int)
+
+	// One Lease that references far more assets than the cap allows, then two
+	// ordinary Leases naming a single new asset each. TWO are needed, not one:
+	// the wide program is the previous generation after the first of them and
+	// still carries its grace, and only becomes evictable once a further program
+	// change has retired it.
+	wide := make([]string, 0, maxEntries+4)
+	for i := 0; i < maxEntries+4; i++ {
+		wide = append(wide, fmt.Sprintf("image:%02d", i))
+	}
+	stored := len(wide) + 2
+	h.poll(t, 4096, wide...)
+	h.poll(t, 4096, "image:new")
+	h.poll(t, 4096, "image:newer")
+
+	if got := h.entries().count(); got > maxEntries {
+		t.Errorf("after three polls the cache holds %d entries, cap is %d — the entry cap is not enforced", got, maxEntries)
+	}
+	if !h.holds("image:newer") {
+		t.Error("the trim evicted the asset THIS Lease is about to play")
+	}
+	// The oldest unprotected keys are the ones that went, and their bytes with
+	// them.
+	if h.holds("image:00") {
+		t.Error("the least-recently-used entry survived: eviction is not LRU-ordered, or is not happening at all")
+	}
+	if len(h.in.deleted) == 0 {
+		t.Fatal("nothing was handed to roFileSystem.Delete: the trim forgot entries without reclaiming a single byte")
+	}
+	for _, path := range h.in.deleted {
+		if !strings.HasPrefix(path, "cachefs:/wv_") {
+			t.Errorf("the trim deleted %q, which is not a file this player wrote", path)
 		}
 	}
-	if indexOfCall(body, "wvDeleteCachedFile") < 0 {
-		t.Error("wvTrimContentCache never deletes a file: dropping the entry alone leaves the bytes on the device forever, so the cache reports itself bounded while the filesystem fills")
+	if h.entries().count()+len(h.in.deleted) != stored {
+		t.Errorf("%d entries remain and %d files were deleted, but %d were stored: an entry left the map without its bytes being reclaimed",
+			h.entries().count(), len(h.in.deleted), stored)
 	}
-	if !contains(body, "cache.entries.Delete(") {
-		t.Error("wvTrimContentCache never removes an evicted entry from the map: the cache would keep claiming to hold a file it just deleted, and the next hit would hand a player a path to nothing")
+}
+
+// TestTheTrimEvictsPastTheByteCap: the byte cap is real, and independent.
+//
+// Two long videos blow the budget as two entries, which no count cap can see.
+func TestTheTrimEvictsPastTheByteCap(t *testing.T) {
+	h := newCacheHarness(t)
+	maxBytes := h.in.call("wvContentCacheMaxBytes").(int)
+
+	// Three clips of 40 MiB each: three entries (well under the count cap) and
+	// 120 MiB (over the byte cap), reached one Lease at a time the way a screen
+	// cycling through a playlist reaches it.
+	h.poll(t, 40*mib, "video:a")
+	h.poll(t, 40*mib, "video:b")
+	h.poll(t, 40*mib, "video:c")
+
+	if got := h.totalBytes(); got > maxBytes {
+		t.Errorf("the cache holds %d bytes, cap is %d — the byte cap is not enforced", got, maxBytes)
 	}
-	// The previous generation's keys are protected, so a program change cannot
-	// delete a file the scene may still be rendering from.
-	if !contains(body, "keepPrev") {
-		t.Error("wvTrimContentCache does not protect the previous Lease's assets: a program change can delete the file a Video node is still decoding")
+	if h.holds("video:a") {
+		t.Error("the oldest clip survived a cache that is over its byte budget")
+	}
+	if !h.holds("video:c") {
+		t.Error("the trim evicted the clip THIS Lease is about to play")
+	}
+	if len(h.in.deleted) != 1 || h.in.deleted[0] != "cachefs:/wv_video:a.bin" {
+		t.Errorf("deleted %v, want exactly the oldest clip's file", h.in.deleted)
+	}
+}
+
+// TestTheTrimGrantsExactlyOneGenerationOfGrace is the defect, stated directly.
+//
+// The previous Lease's assets are protected because the scene may still be
+// rendering the outgoing program — a Video node decoding from a file — so a
+// program change must not delete under it. That grace is ONE generation. If
+// `keepPrev` is fed the protected set rather than this Lease's own keys it
+// becomes the union of every key ever kept, every entry is protected forever,
+// and both caps stop existing: the shipped bug, which no structural guard could
+// see.
+//
+// The sizes are chosen so the cap is ALREADY exceeded at the second poll: two
+// 60 MiB clips are 24 MiB over budget, so a trim with no grace would evict the
+// outgoing program's clip right there, and a trim with a running-union keepPrev
+// never evicts anything at the third. Both halves are therefore load-bearing —
+// the outgoing program's clip SURVIVES, and the one before it does NOT.
+func TestTheTrimGrantsExactlyOneGenerationOfGrace(t *testing.T) {
+	h := newCacheHarness(t)
+	maxBytes := h.in.call("wvContentCacheMaxBytes").(int)
+
+	h.poll(t, 60*mib, "video:gen1")
+	h.poll(t, 60*mib, "video:gen2")
+	if h.totalBytes() <= maxBytes {
+		t.Fatal("two clips no longer put the cache over its byte cap, so nothing here is under eviction pressure and the grace is not being tested")
+	}
+	if !h.holds("video:gen1") {
+		t.Fatal("the previous Lease's clip was evicted while the scene may still be decoding from it — the one generation of grace is gone")
+	}
+	h.poll(t, 60*mib, "video:gen3")
+
+	if !h.holds("video:gen3") || !h.holds("video:gen2") {
+		t.Errorf("the current or previous Lease's clip was evicted: entries = %v", h.entries().keyList())
+	}
+	if h.holds("video:gen1") {
+		t.Errorf("two generations back is still protected, so `keepPrev` is accumulating rather than being replaced by THIS Lease's keys — both caps are inert. entries = %v", h.entries().keyList())
+	}
+}
+
+// TestTheCacheStaysBoundedAcrossManyPolls is the property the whole subsystem
+// exists for: an unattended screen that has cycled through hundreds of distinct
+// assets still fits in its caps.
+//
+// The fault this prevents has a months-long fuse — nothing is wrong until
+// cachefs is full, and then wvHttpGetToFile fails, the poll errors, and the
+// screen is frozen on its last program fleet-wide, for a reason nobody connects
+// to a caching change.
+func TestTheCacheStaysBoundedAcrossManyPolls(t *testing.T) {
+	h := newCacheHarness(t)
+	maxEntries := h.in.call("wvContentCacheMaxEntries").(int)
+	maxBytes := h.in.call("wvContentCacheMaxBytes").(int)
+
+	const polls = 200
+	for i := 0; i < polls; i++ {
+		h.poll(t, 8*mib, fmt.Sprintf("image:asset%03d", i))
+		if got := h.entries().count(); got > maxEntries {
+			t.Fatalf("poll %d: %d entries held, cap is %d", i, got, maxEntries)
+		}
+		if got := h.totalBytes(); got > maxBytes {
+			t.Fatalf("poll %d: %d bytes held, cap is %d", i, got, maxBytes)
+		}
+	}
+	if h.entries().count() == polls {
+		t.Fatal("every asset ever fetched is still cached")
+	}
+	if want := polls - h.entries().count(); len(h.in.deleted) != want {
+		t.Errorf("%d files unlinked over %d polls, want %d — entries left the map without their bytes", len(h.in.deleted), polls, want)
+	}
+}
+
+// TestTheTrimNeverEvictsWhatIsOnScreen: over budget is not a licence to delete a
+// file that is being played, and being over budget with nothing evictable must
+// TERMINATE rather than spin.
+//
+// A single program larger than the byte cap must still play — that is why the
+// caps alone could never be the bound — so the trim's last word is the keep-set,
+// not the cap.
+func TestTheTrimNeverEvictsWhatIsOnScreen(t *testing.T) {
+	h := newCacheHarness(t)
+	maxBytes := h.in.call("wvContentCacheMaxBytes").(int)
+
+	// One Lease whose own content exceeds the byte cap on its own.
+	h.poll(t, 60*mib, "video:featureA", "video:featureB")
+
+	if h.totalBytes() <= maxBytes {
+		t.Fatal("this case no longer puts the cache over its byte cap, so it is not testing the over-budget path")
+	}
+	if !h.holds("video:featureA") || !h.holds("video:featureB") {
+		t.Error("the trim evicted content the current Lease is playing to satisfy a cap")
+	}
+	if len(h.in.deleted) != 0 {
+		t.Errorf("the trim deleted %v while every entry was in use", h.in.deleted)
 	}
 }
 

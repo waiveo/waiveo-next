@@ -609,11 +609,26 @@ end function
 ' through it. The caps alone could not promise that (a single program larger
 ' than the byte cap must still play), and the keep-sets alone could not either
 ' (a screen cycling through hundreds of assets would keep every one).
+'
+' The two key-sets below are DIFFERENT sets and must stay different, which is
+' the one thing this routine got wrong: `thisKeep` is what the NEXT trim
+' inherits as its single generation of grace, and `protectedKeys` is what THIS
+' trim may not evict (thisKeep plus the previous generation). Handing
+' protectedKeys forward instead makes keepPrev the running UNION of every key
+' ever kept — and since a key enters `entries` during the very poll that puts it
+' in `keep`, every entry would be protected forever, `oldestKey` would always be
+' "", and both caps would be inert for the life of the thread. That is a bound
+' that reads as enforced, tests as present, and reclaims nothing.
 sub wvTrimContentCache(keep as Object)
     cache = wvContentCache()
 
+    ' `thisKeep` is a COPY rather than `keep` itself: it outlives this call by
+    ' one generation, and a set the caller still owns could be mutated (or
+    ' reused) after we have stored it.
+    thisKeep = {}
     protectedKeys = {}
     for each k in keep
+        thisKeep[k] = true
         protectedKeys[k] = true
     end for
     for each k in cache.keepPrev
@@ -649,7 +664,8 @@ sub wvTrimContentCache(keep as Object)
         print "[player-v3] content cache: evicted " + victim.path + " (" + victim.sizeBytes.toStr() + " bytes)"
     end while
 
-    cache.keepPrev = protectedKeys
+    ' ONE generation of grace, not a running union: see this routine's doc.
+    cache.keepPrev = thisKeep
 end sub
 
 ' wvContentCacheMaxEntries and wvContentCacheMaxBytes are the cache's two caps.

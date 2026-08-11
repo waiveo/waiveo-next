@@ -98,15 +98,16 @@ function nextMidnightMs(nowMs: number): number {
 
 /** A freshly inserted layer of `kind`, placed somewhere visible and valid.
  *
- * Every kind but `image` and `entity` lands VALID: it has the fields
- * wire.ValidateSlideLayers requires, so inserting it and saving immediately
- * produces a slide that renders. Those two cannot — an image's bytes must be
- * chosen from the content origin and an entity's subject from the device plane —
- * so each lands deliberately incomplete and the properties panel asks for the
- * one missing thing rather than the editor inventing an `asset_ref` or an
- * `entity_id` that resolves to nothing. The save gate holds until it is chosen,
- * which is the honest sequence: a slide referencing a nonexistent entity would
- * be accepted by the server and then draw a dash forever.
+ * Every kind but the two content-bearing ones and `entity` lands VALID: it has
+ * the fields wire.ValidateAuthoredSlideLayers requires, so inserting it and
+ * saving immediately produces a slide that renders. Those three cannot — an
+ * image's or a video's bytes must be chosen from the content origin and an
+ * entity's subject from the device plane — so each lands deliberately incomplete
+ * and the properties panel asks for the one missing thing rather than the editor
+ * inventing an `asset_ref` or an `entity_id` that resolves to nothing. The save
+ * gate holds until it is chosen, which is the honest sequence: a slide
+ * referencing a nonexistent entity would be accepted by the server and then draw
+ * a dash forever.
  *
  * `nowMs` is a PARAMETER rather than a `Date.now()` read inside, for the same
  * reason `newSlide` takes its id: it is the one input here that is not a
@@ -121,6 +122,12 @@ export function defaultLayer(kind: LayerKind, nowMs: number = Date.now()): Slide
     case "clock":
       return { kind, x: 1160, y: 120, w: 600, h: 200, text: "3:04 PM", font_px: 120, color: "#FFFFFF", align: "right" };
     case "image":
+      return { kind, x: 240, y: 200, w: 960, h: 540 };
+    case "video":
+      // The same 16:9 box an image lands in, and for the same reason: it is the
+      // shape the content almost always is, so the first thing the operator does
+      // is position it rather than reshape it. Like an image it lands with no
+      // asset_ref — bytes are chosen, never invented.
       return { kind, x: 240, y: 200, w: 960, h: 540 };
     case "date":
       // Same formatter and same layout grammar as the clock — a date IS a time

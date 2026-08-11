@@ -32,15 +32,31 @@
 // So these tests parse the REAL shipped files — not a copy, which would drift —
 // and assert the structure those behaviours are made of.
 //
-// # What this can and cannot see
+// # Two instruments, and why both
 //
-// It is a STRUCTURAL guard, in the sense brsparse_test.go's half of
-// internal/tools/playerbootretry is: it answers "does this function call that
+// Most of these guards are STRUCTURAL, in the sense brsparse_test.go's half of
+// internal/tools/playerbootretry is: they answer "does this function call that
 // one, and in what order relative to this other call", not "what does control
-// do under these conditions". That is the right instrument for these particular
-// properties — each of them is a call that must exist, in a function, on one
-// side of another call — but it is worth being plain that a sufficiently
-// creative rewrite could satisfy the structure and lose the behaviour.
+// do under these conditions". That is the right instrument for a property that
+// IS a call — the trim happens once, after the last fetch, before the Lease is
+// published — but it is worth being plain that a sufficiently creative rewrite
+// could satisfy the structure and lose the behaviour.
+//
+// The cache's BOUND is not a property of that shape, and asserting it
+// structurally is how it shipped broken. The trim mentioned both caps, called
+// wvDeleteCachedFile, deleted from its map and named keepPrev — every structural
+// fact held — while a single mis-assignment (`cache.keepPrev = protectedKeys`)
+// made the protected set the running union of every key ever kept, so nothing
+// was ever evictable and both caps were inert from the second poll onward. A
+// reviewer confirmed the blindness by making the trim provably incapable of
+// eviction and watching this package stay green.
+//
+// So the bound is now EXECUTED. brsrun_test.go is a small interpreter for the
+// BrightScript subset these routines are written in; it runs the real shipped
+// wvTrimContentCache over a real cache, poll after poll, and the tests assert
+// what the cache CONTAINS and which files were unlinked. It fails loudly on any
+// construct it cannot model, so a player edit it cannot read is a red test
+// naming the line rather than a silent pass.
 //
 // What it deliberately does NOT assert is wording, log text, comments, or
 // formatting. Those change constantly and none of them is the property.
