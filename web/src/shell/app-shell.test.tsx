@@ -124,7 +124,11 @@ describe("AppShell — locked-left responsive shell", () => {
       {
         group: "Platform",
         expanded: true,
-        children: ["Activity", "System", "Backup", "Pages", "Design kit"],
+        // Settings leads the group and is INSIDE it: it edits where the box is
+        // and what local time it keeps, which is the same subject the other
+        // four report on or act on. It is first because it is the only member
+        // that CONFIGURES — the rest read a deployment this page describes.
+        children: ["Settings", "Activity", "System", "Backup", "Pages", "Design kit"],
       },
     ]);
   });
@@ -141,7 +145,7 @@ describe("AppShell — locked-left responsive shell", () => {
     // Overview alone. It is the only page that belongs to no area — it
     // summarizes all of them.
     expect(topLevelLeaves).toEqual(["Overview"]);
-    for (const scattered of ["Casts", "Screens", "Media", "Upload", "System", "Backup"]) {
+    for (const scattered of ["Casts", "Screens", "Media", "Upload", "System", "Backup", "Settings"]) {
       expect(topLevelLeaves).not.toContain(scattered);
     }
   });

@@ -12,6 +12,7 @@ import {
   Presentation,
   Radio,
   Server,
+  Settings,
   Tv,
   Upload,
   Variable,
@@ -246,6 +247,28 @@ export const NAV_TREE: NavNode[] = [
     label: "Platform",
     icon: Server,
     children: [
+      // Settings leads the group, and it is a CHILD of it rather than a
+      // top-level leaf.
+      //
+      // Not top-level: this rail reserves those for pages belonging to no area
+      // (Overview), and Settings plainly belongs with the machine — it edits
+      // where the box is and what local time it keeps, which is the same
+      // subject Activity, System and Backup report on. Two tracks have already
+      // filed a page loose at the top level (Roku, Variables) and both were
+      // corrected on merge, for the reason this file states: admitting a second
+      // top-level leaf makes "top level" mean "no obvious home".
+      //
+      // Not under Slidecast, which is the other plausible home, because a
+      // site's clock is not a property of the signage — it is what the box
+      // resolves every schedule, sunrise rule and forecast against, product
+      // area or not.
+      //
+      // First within the group because it is the only member that CONFIGURES.
+      // Activity and System report on a box, and Backup acts on one; all three
+      // are reading or acting on a deployment that this page describes. Legacy
+      // buried Settings third in a flat CORE list between Backups and Jobs,
+      // which is exactly the interleaving the owner objected to.
+      { kind: "leaf", to: "/settings", label: "Settings", icon: Settings },
       { kind: "leaf", to: "/activity", label: "Activity", icon: Activity },
       { kind: "leaf", to: "/system", label: "System", icon: HeartPulse },
       { kind: "leaf", to: "/backup", label: "Backup", icon: DatabaseBackup },

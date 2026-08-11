@@ -1,0 +1,110 @@
+{
+  "pageType": "list-detail",
+  "context": {
+    "timezones": { "collection": "timezones" }
+  },
+  "list": {
+    "source": "sites",
+    "display": {
+      "type": "table",
+      "id": "Sites",
+      "props": {
+        "source": "sites",
+        "columns": [
+          { "headerMsg": "msg:settings.col.name", "cell": "item.name" },
+          { "headerMsg": "msg:settings.col.tz", "cell": "item.tz" },
+          { "headerMsg": "msg:settings.col.coords", "cell": "item.coords" }
+        ]
+      },
+      "on": { "rowPress": { "verb": "set", "target": "$ui.selected", "value": "item.id" } }
+    }
+  },
+  "detail": {
+    "source": "sites[id=$ui.selected]",
+    "emptyMsg": "msg:settings.detail.empty",
+    "root": {
+      "type": "section",
+      "props": { "titleMsg": "msg:settings.detail.title" },
+      "children": [
+        {
+          "type": "text",
+          "props": { "value": { "compute": "msg", "args": ["msg:settings.detail.lead"] } }
+        },
+        {
+          "type": "text-input",
+          "bind": "name",
+          "props": { "labelMsg": "msg:settings.detail.name", "maxLength": 200 }
+        },
+        {
+          "type": "select",
+          "bind": "tz",
+          "props": {
+            "labelMsg": "msg:settings.detail.tz",
+            "placeholderMsg": "msg:settings.detail.tzPlaceholder",
+            "options": {
+              "kind": "data",
+              "source": "$context.timezones",
+              "valuePath": "id",
+              "labelPath": "id"
+            }
+          }
+        },
+        {
+          "type": "number-input",
+          "bind": "lat",
+          "props": { "labelMsg": "msg:settings.detail.lat", "min": -90, "max": 90, "step": 0.0001 }
+        },
+        {
+          "type": "number-input",
+          "bind": "long",
+          "props": { "labelMsg": "msg:settings.detail.long", "min": -180, "max": 180, "step": 0.0001 }
+        },
+
+        {
+          "type": "button",
+          "id": "save-site",
+          "props": {
+            "labelMsg": "msg:settings.detail.save",
+            "style": "primary",
+            "disabledIf": { "compute": "eq", "args": ["$ui.save.status", { "lit": "pending" }] }
+          },
+          "on": { "press": { "verb": "submit", "outcomeTo": "$ui.save" } }
+        },
+
+        {
+          "type": "text",
+          "id": "save-pending",
+          "visibleIf": {
+            "compute": "and",
+            "args": [
+              { "compute": "eq", "args": ["$ui.save.status", { "lit": "pending" }] },
+              { "compute": "eq", "args": ["$ui.save.result.id", "$ui.selected"] }
+            ]
+          },
+          "props": {
+            "announce": "polite",
+            "value": { "compute": "msg", "args": ["msg:settings.detail.saving"] }
+          }
+        },
+        {
+          "type": "text",
+          "id": "save-ok",
+          "visibleIf": {
+            "compute": "and",
+            "args": [
+              { "compute": "eq", "args": ["$ui.save.status", { "lit": "ok" }] },
+              { "compute": "eq", "args": ["$ui.save.result.id", "$ui.selected"] }
+            ]
+          },
+          "props": {
+            "announce": "polite",
+            "value": {
+              "compute": "msg",
+              "args": ["msg:settings.detail.saved", "$ui.save.result.tz"]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

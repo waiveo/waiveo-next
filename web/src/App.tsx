@@ -26,6 +26,7 @@ import PackPageRoute from "@/routes/packs/pack-page-route";
 import ExtensionsRoute from "@/routes/extensions/extensions-route";
 import SecurityRoute from "@/routes/security/security-route";
 import SystemRoute from "@/routes/system/system-route";
+import SettingsRoute from "@/routes/settings/settings-route";
 import BackupRoute from "@/routes/backup/backup-route";
 
 // The application root. The ThemeProvider owns the Dusk/Daybreak theme for the
@@ -156,6 +157,15 @@ export default function App() {
                 the page renders that refusal as an explanation rather than as a
                 blank panel. */}
             <Route path="/system" element={<SystemRoute />} />
+            {/* The box's own configuration. Scoped hard on purpose: five of the
+                six settings the parity diff attributes to this absence have
+                nothing in this build to write to (no log level exists, the log
+                buffer's capacity is a compile-time constant, browser sessions
+                carry no expiry, the weather provider is keyless by design), and
+                the sixth — restart — already lives on /system. What is left is
+                the one platform setting everything reads: where a site is and
+                what local time it keeps. See the route's docstring. */}
+            <Route path="/settings" element={<SettingsRoute />} />
             {/* Workspace backup (parity row 7.5): export to one encrypted
                 portable container, get it OFF the box, and restore from it.
                 Separate from /system because it is an act on the workspace, not
