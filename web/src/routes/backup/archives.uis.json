@@ -1,0 +1,139 @@
+{
+  "pageType": "list-detail",
+  "list": {
+    "source": "archives",
+    "display": {
+      "type": "table",
+      "id": "Backups on this box",
+      "props": {
+        "source": "archives",
+        "columns": [
+          { "headerMsg": "msg:backup.col.name", "cell": "item.name" },
+          { "headerMsg": "msg:backup.col.created", "cell": "item.created_display" },
+          { "headerMsg": "msg:backup.col.size", "cell": "item.size_display" }
+        ]
+      },
+      "on": { "rowPress": { "verb": "set", "target": "$ui.selected", "value": "item.name" } }
+    }
+  },
+  "detail": {
+    "source": "archives[name=$ui.selected]",
+    "emptyMsg": "msg:backup.detail.empty",
+    "root": {
+      "type": "section",
+      "props": { "titleMsg": "msg:backup.detail.title" },
+      "children": [
+        { "type": "text", "id": "archive-name", "props": { "value": "name" } },
+        {
+          "type": "text",
+          "id": "archive-facts",
+          "props": { "value": { "compute": "msg", "args": ["msg:backup.detail.facts", "size_display", "created_display"] } }
+        },
+
+        {
+          "type": "text",
+          "id": "archive-newest",
+          "visibleIf": "is_newest",
+          "props": { "value": { "compute": "msg", "args": ["msg:backup.detail.newest"] } }
+        },
+
+        { "type": "slot", "props": { "name": "download" } },
+
+        {
+          "type": "button",
+          "id": "delete-archive",
+          "props": {
+            "labelMsg": "msg:backup.detail.delete",
+            "style": "destructive",
+            "disabledIf": { "compute": "eq", "args": ["$ui.del.status", { "lit": "pending" }] }
+          },
+          "on": {
+            "press": {
+              "verb": "delete",
+              "target": "$root",
+              "outcomeTo": "$ui.del",
+              "confirm": {
+                "titleMsg": "msg:backup.delete.confirm.title",
+                "bodyMsg": "msg:backup.delete.confirm.body",
+                "confirmLabelMsg": "msg:backup.delete.confirm.ok",
+                "cancelLabelMsg": "msg:backup.delete.confirm.cancel",
+                "destructive": true
+              }
+            }
+          }
+        },
+
+        {
+          "type": "text",
+          "id": "delete-pending",
+          "visibleIf": { "compute": "eq", "args": ["$ui.del.status", { "lit": "pending" }] },
+          "props": { "announce": "polite", "value": { "compute": "msg", "args": ["msg:backup.delete.pending"] } }
+        },
+
+        {
+          "type": "switch",
+          "id": "delete-refusal",
+          "visibleIf": { "compute": "eq", "args": ["$ui.del.status", { "lit": "error" }] },
+          "props": {
+            "discriminant": "$ui.del.code",
+            "cases": [
+              {
+                "when": "ARCHIVE_IN_USE",
+                "render": {
+                  "type": "text",
+                  "props": {
+                    "announce": "assertive",
+                    "value": { "compute": "msg", "args": ["msg:backup.delete.inUse", "$ui.del.detail"] }
+                  }
+                }
+              },
+              {
+                "when": "REVISION_CONFLICT",
+                "render": {
+                  "type": "text",
+                  "props": {
+                    "announce": "assertive",
+                    "value": { "compute": "msg", "args": ["msg:backup.delete.changed"] }
+                  }
+                }
+              },
+              {
+                "when": "NOT_FOUND",
+                "render": {
+                  "type": "text",
+                  "props": {
+                    "announce": "assertive",
+                    "value": { "compute": "msg", "args": ["msg:backup.delete.gone"] }
+                  }
+                }
+              },
+              {
+                "when": "FORBIDDEN",
+                "render": {
+                  "type": "text",
+                  "props": {
+                    "announce": "assertive",
+                    "value": { "compute": "msg", "args": ["msg:backup.delete.forbidden"] }
+                  }
+                }
+              }
+            ],
+            "default": {
+              "type": "text",
+              "props": {
+                "announce": "assertive",
+                "value": { "compute": "msg", "args": ["msg:backup.delete.failed", "$ui.del.detail"] }
+              }
+            }
+          }
+        },
+        {
+          "type": "text",
+          "id": "delete-trace",
+          "visibleIf": "$ui.del.traceId",
+          "props": { "value": { "compute": "msg", "args": ["msg:backup.delete.trace", "$ui.del.traceId"] } }
+        }
+      ]
+    }
+  }
+}

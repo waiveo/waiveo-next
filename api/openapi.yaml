@@ -1177,6 +1177,13 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
   /workspace/archives/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: The container's file name, exactly as `listWorkspaceArchives` published it.
     get:
       operationId: downloadWorkspaceArchive
       summary: Download one archive container
@@ -1196,12 +1203,6 @@ paths:
         path. Anything else is `404`, not a traversal.
       tags: [workspace, "mcp:read"]
       parameters:
-        - name: name
-          in: path
-          required: true
-          schema:
-            type: string
-          description: The container's file name, exactly as `listWorkspaceArchives` published it.
         - $ref: "#/components/parameters/TraceIdParam"
       responses:
         "200":
@@ -1220,6 +1221,66 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      operationId: deleteWorkspaceArchive
+      summary: Delete one archive container from this box
+      description: >-
+        Unlinks the container. This is IRREVERSIBLE and it is the whole backup:
+        the bytes are encrypted under a passphrase this box does not keep, so
+        nothing here or anywhere else can reconstruct them. A client that has not
+        downloaded the container first is destroying the only copy.
+
+
+        It exists because the box already instructs an operator to do this and
+        gave them no way to. `GET /system-health` grades disk headroom `low` and
+        its detail says to prune old images and archives; until this operation
+        there was no archive-side prune to perform, so the advice ended at a dead
+        end — and a full disk is the failure mode that has taken this appliance's
+        predecessor down for real.
+
+
+        Requires `If-Match` against the container's current `etag`, exactly as
+        every other delete on this surface conditions on what the client last
+        saw. There is no unconditional path (API-022).
+
+
+        Refuses `409 ARCHIVE_IN_USE` while an accepted export is still writing
+        this container or an accepted restore is still reading it. Deleting
+        either would otherwise be a race whose outcome the operator cannot see:
+        an unlink lands before or after the reader opened its descriptor, so the
+        same request either does nothing observable or fails somebody else's job
+        with a message about a file they did not touch.
+
+
+        An in-flight DOWNLOAD is not a conflict and does not refuse. It holds an
+        open descriptor, so its bytes are delivered whole; only a download
+        started after the unlink sees the ordinary `404`.
+      tags: [workspace, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IfMatchParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "204":
+          description: The container is gone from this box.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         "503":
@@ -4173,6 +4234,7 @@ components:
         - RESTART_UNSUPPORTED
         - RESTART_IN_PROGRESS
         - RESTART_BLOCKED
+        - ARCHIVE_IN_USE
         - CREDENTIAL_LOCKED
         - GRANT_EXPIRED
         - GRANT_ALREADY_REDEEMED
@@ -5881,7 +5943,7 @@ components:
     WorkspaceArchive:
       type: object
       description: One archive/1 container present in this deployment's archive directory.
-      required: [name, size_bytes, created_at_ms, download_path]
+      required: [name, size_bytes, created_at_ms, download_path, etag]
       additionalProperties: false
       properties:
         name:
@@ -5900,6 +5962,21 @@ components:
             left for a client to compose: a client building the URL itself would
             be re-encoding a file name into a path, which is the one part of this
             family with a traversal question attached.
+        etag:
+          type: string
+          description: >-
+            This container's entity-tag, as the `If-Match` value
+            `deleteWorkspaceArchive` requires — quoted, e.g. `"4194304-1752537600000"`.
+
+
+            A container is a FILE, not a row: it has no `revision` to derive a
+            validator from, so this one is derived from the bytes' own identity
+            (size and last-modified instant). Its purpose is the same as every
+            other ETag on this surface — a delete conditions on what the client
+            last saw — and it earns its keep on the disaster-recovery path, where
+            an operator copies a container BACK into the directory under a name
+            that may already have been listed. Without it, a delete aimed at the
+            container in the console's list could unlink the one that replaced it.
 
     WorkspaceArchiveList:
       type: object

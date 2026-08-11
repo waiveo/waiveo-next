@@ -300,6 +300,7 @@ func (e EntityCommandErrorCode) Valid() bool {
 
 // Defines values for ErrorCode.
 const (
+	ErrorCodeARCHIVEINUSE             ErrorCode = "ARCHIVE_IN_USE"
 	ErrorCodeCREDENTIALLOCKED         ErrorCode = "CREDENTIAL_LOCKED"
 	ErrorCodeCURSORINVALID            ErrorCode = "CURSOR_INVALID"
 	ErrorCodeEXTERNALIDCONFLICT       ErrorCode = "EXTERNAL_ID_CONFLICT"
@@ -332,6 +333,8 @@ const (
 // Valid indicates whether the value is a known member of the ErrorCode enum.
 func (e ErrorCode) Valid() bool {
 	switch e {
+	case ErrorCodeARCHIVEINUSE:
+		return true
 	case ErrorCodeCREDENTIALLOCKED:
 		return true
 	case ErrorCodeCURSORINVALID:
@@ -2890,6 +2893,11 @@ type WorkspaceArchive struct {
 	// DownloadPath Where this container's bytes are served from, published rather than left for a client to compose: a client building the URL itself would be re-encoding a file name into a path, which is the one part of this family with a traversal question attached.
 	DownloadPath string `json:"download_path"`
 
+	// Etag This container's entity-tag, as the `If-Match` value `deleteWorkspaceArchive` requires — quoted, e.g. `"4194304-1752537600000"`.
+	//
+	// A container is a FILE, not a row: it has no `revision` to derive a validator from, so this one is derived from the bytes' own identity (size and last-modified instant). Its purpose is the same as every other ETag on this surface — a delete conditions on what the client last saw — and it earns its keep on the disaster-recovery path, where an operator copies a container BACK into the directory under a name that may already have been listed. Without it, a delete aimed at the container in the console's list could unlink the one that replaced it.
+	Etag string `json:"etag"`
+
 	// Name The file name — and the exact value `POST /workspace/restore` takes as its `archive`.
 	Name      string `json:"name"`
 	SizeBytes int64  `json:"size_bytes"`
@@ -3854,6 +3862,15 @@ type ListWorkspaceArchivesParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// DeleteWorkspaceArchiveParams defines parameters for DeleteWorkspaceArchive.
+type DeleteWorkspaceArchiveParams struct {
+	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
+	IfMatch IfMatchParam `json:"If-Match"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // DownloadWorkspaceArchiveParams defines parameters for DownloadWorkspaceArchive.
 type DownloadWorkspaceArchiveParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
@@ -4418,6 +4435,9 @@ type ClientInterface interface {
 
 	// ListWorkspaceArchives request
 	ListWorkspaceArchives(ctx context.Context, params *ListWorkspaceArchivesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteWorkspaceArchive request
+	DeleteWorkspaceArchive(ctx context.Context, name string, params *DeleteWorkspaceArchiveParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// DownloadWorkspaceArchive request
 	DownloadWorkspaceArchive(ctx context.Context, name string, params *DownloadWorkspaceArchiveParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5964,6 +5984,18 @@ func (c *Client) RotateWebhookSigningSecret(ctx context.Context, webhookEndpoint
 
 func (c *Client) ListWorkspaceArchives(ctx context.Context, params *ListWorkspaceArchivesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListWorkspaceArchivesRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DeleteWorkspaceArchive(ctx context.Context, name string, params *DeleteWorkspaceArchiveParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteWorkspaceArchiveRequest(c.Server, name, params)
 	if err != nil {
 		return nil, err
 	}
@@ -12341,6 +12373,64 @@ func NewListWorkspaceArchivesRequest(server string, params *ListWorkspaceArchive
 	return req, nil
 }
 
+// NewDeleteWorkspaceArchiveRequest generates requests for DeleteWorkspaceArchive
+func NewDeleteWorkspaceArchiveRequest(server string, name string, params *DeleteWorkspaceArchiveParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/workspace/archives/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("If-Match", headerParam0)
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewDownloadWorkspaceArchiveRequest generates requests for DownloadWorkspaceArchive
 func NewDownloadWorkspaceArchiveRequest(server string, name string, params *DownloadWorkspaceArchiveParams) (*http.Request, error) {
 	var err error
@@ -12981,6 +13071,9 @@ type ClientWithResponsesInterface interface {
 
 	// ListWorkspaceArchivesWithResponse request
 	ListWorkspaceArchivesWithResponse(ctx context.Context, params *ListWorkspaceArchivesParams, reqEditors ...RequestEditorFn) (*ListWorkspaceArchivesResponse, error)
+
+	// DeleteWorkspaceArchiveWithResponse request
+	DeleteWorkspaceArchiveWithResponse(ctx context.Context, name string, params *DeleteWorkspaceArchiveParams, reqEditors ...RequestEditorFn) (*DeleteWorkspaceArchiveResponse, error)
 
 	// DownloadWorkspaceArchiveWithResponse request
 	DownloadWorkspaceArchiveWithResponse(ctx context.Context, name string, params *DownloadWorkspaceArchiveParams, reqEditors ...RequestEditorFn) (*DownloadWorkspaceArchiveResponse, error)
@@ -16206,6 +16299,43 @@ func (r ListWorkspaceArchivesResponse) ContentType() string {
 	return ""
 }
 
+type DeleteWorkspaceArchiveResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON412 *PreconditionFailed
+	ApplicationproblemJSON428 *PreconditionRequired
+	ApplicationproblemJSON429 *TooManyRequests
+	ApplicationproblemJSON503 *ServiceUnavailable
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteWorkspaceArchiveResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteWorkspaceArchiveResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteWorkspaceArchiveResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type DownloadWorkspaceArchiveResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
@@ -17463,6 +17593,15 @@ func (c *ClientWithResponses) ListWorkspaceArchivesWithResponse(ctx context.Cont
 		return nil, err
 	}
 	return ParseListWorkspaceArchivesResponse(rsp)
+}
+
+// DeleteWorkspaceArchiveWithResponse request returning *DeleteWorkspaceArchiveResponse
+func (c *ClientWithResponses) DeleteWorkspaceArchiveWithResponse(ctx context.Context, name string, params *DeleteWorkspaceArchiveParams, reqEditors ...RequestEditorFn) (*DeleteWorkspaceArchiveResponse, error) {
+	rsp, err := c.DeleteWorkspaceArchive(ctx, name, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteWorkspaceArchiveResponse(rsp)
 }
 
 // DownloadWorkspaceArchiveWithResponse request returning *DownloadWorkspaceArchiveResponse
@@ -22460,6 +22599,81 @@ func ParseListWorkspaceArchivesResponse(rsp *http.Response) (*ListWorkspaceArchi
 			return nil, err
 		}
 		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ServiceUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteWorkspaceArchiveResponse parses an HTTP response from a DeleteWorkspaceArchiveWithResponse call
+func ParseDeleteWorkspaceArchiveResponse(rsp *http.Response) (*DeleteWorkspaceArchiveResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteWorkspaceArchiveResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
+		var dest PreconditionFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON412 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 428:
+		var dest PreconditionRequired
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON428 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
 		var dest TooManyRequests

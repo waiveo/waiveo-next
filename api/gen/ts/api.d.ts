@@ -378,7 +378,10 @@ export interface paths {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                /** @description The container's file name, exactly as `listWorkspaceArchives` published it. */
+                name: string;
+            };
             cookie?: never;
         };
         /**
@@ -392,7 +395,19 @@ export interface paths {
         get: operations["downloadWorkspaceArchive"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete one archive container from this box
+         * @description Unlinks the container. This is IRREVERSIBLE and it is the whole backup: the bytes are encrypted under a passphrase this box does not keep, so nothing here or anywhere else can reconstruct them. A client that has not downloaded the container first is destroying the only copy.
+         *
+         *     It exists because the box already instructs an operator to do this and gave them no way to. `GET /system-health` grades disk headroom `low` and its detail says to prune old images and archives; until this operation there was no archive-side prune to perform, so the advice ended at a dead end — and a full disk is the failure mode that has taken this appliance's predecessor down for real.
+         *
+         *     Requires `If-Match` against the container's current `etag`, exactly as every other delete on this surface conditions on what the client last saw. There is no unconditional path (API-022).
+         *
+         *     Refuses `409 ARCHIVE_IN_USE` while an accepted export is still writing this container or an accepted restore is still reading it. Deleting either would otherwise be a race whose outcome the operator cannot see: an unlink lands before or after the reader opened its descriptor, so the same request either does nothing observable or fails somebody else's job with a message about a file they did not touch.
+         *
+         *     An in-flight DOWNLOAD is not a conflict and does not refuse. It holds an open descriptor, so its bytes are delivered whole; only a download started after the unlink sees the ordinary `404`.
+         */
+        delete: operations["deleteWorkspaceArchive"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1529,7 +1544,7 @@ export interface components {
          * @description The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`), plus the codes a sibling contract owns for operations that ride this same `/api/v1` binding. api/1's own registry governs API-011 for api/1's own rules; a sibling contract's Problem carries a `code` from ITS registry, by name — the same reuse-by-name discipline `player/1` PLY-007 applies. The trailing values below belong to sibling contracts: four to `security-model.md`'s Error taxonomy, appearing only on the `auth` operations; three to `data-model-1.md`'s, appearing only on the scope-node delete; and two to `marketplace-1.md`'s, appearing on the pack operations.
          * @enum {string}
          */
-        ErrorCode: "VALIDATION_FAILED" | "UNAUTHENTICATED" | "FORBIDDEN" | "NOT_FOUND" | "REVISION_CONFLICT" | "IF_MATCH_REQUIRED" | "CURSOR_INVALID" | "SELECTOR_INVALID" | "IDEMPOTENCY_KEY_REUSED" | "IDEMPOTENCY_KEY_IN_PROGRESS" | "EXTERNAL_ID_CONFLICT" | "ID_SERVER_ASSIGNED" | "RATE_LIMITED" | "INTERNAL" | "UNAVAILABLE" | "RESTART_UNSUPPORTED" | "RESTART_IN_PROGRESS" | "RESTART_BLOCKED" | "CREDENTIAL_LOCKED" | "GRANT_EXPIRED" | "GRANT_ALREADY_REDEEMED" | "GRANT_PURPOSE_MISMATCH" | "SCOPE_NODE_NOT_EMPTY" | "SCOPE_NODE_IN_USE" | "SCOPE_NODE_ORG_UNDELETABLE" | "MARKETPLACE_REF_INVALID" | "REQUIRED_PACK_FLOOR";
+        ErrorCode: "VALIDATION_FAILED" | "UNAUTHENTICATED" | "FORBIDDEN" | "NOT_FOUND" | "REVISION_CONFLICT" | "IF_MATCH_REQUIRED" | "CURSOR_INVALID" | "SELECTOR_INVALID" | "IDEMPOTENCY_KEY_REUSED" | "IDEMPOTENCY_KEY_IN_PROGRESS" | "EXTERNAL_ID_CONFLICT" | "ID_SERVER_ASSIGNED" | "RATE_LIMITED" | "INTERNAL" | "UNAVAILABLE" | "RESTART_UNSUPPORTED" | "RESTART_IN_PROGRESS" | "RESTART_BLOCKED" | "ARCHIVE_IN_USE" | "CREDENTIAL_LOCKED" | "GRANT_EXPIRED" | "GRANT_ALREADY_REDEEMED" | "GRANT_PURPOSE_MISMATCH" | "SCOPE_NODE_NOT_EMPTY" | "SCOPE_NODE_IN_USE" | "SCOPE_NODE_ORG_UNDELETABLE" | "MARKETPLACE_REF_INVALID" | "REQUIRED_PACK_FLOOR";
         /** @description The credentials a login authenticates from (API-091 — carried in the BODY, never as a precondition session). */
         LoginRequest: {
             /** @description The login handle the `password` credential is registered under. */
@@ -2147,6 +2162,12 @@ export interface components {
             created_at_ms: number;
             /** @description Where this container's bytes are served from, published rather than left for a client to compose: a client building the URL itself would be re-encoding a file name into a path, which is the one part of this family with a traversal question attached. */
             download_path: string;
+            /**
+             * @description This container's entity-tag, as the `If-Match` value `deleteWorkspaceArchive` requires — quoted, e.g. `"4194304-1752537600000"`.
+             *
+             *     A container is a FILE, not a row: it has no `revision` to derive a validator from, so this one is derived from the bytes' own identity (size and last-modified instant). Its purpose is the same as every other ETag on this surface — a delete conditions on what the client last saw — and it earns its keep on the disaster-recovery path, where an operator copies a container BACK into the directory under a name that may already have been listed. Without it, a delete aimed at the container in the console's list could unlink the one that replaced it.
+             */
+            etag: string;
         };
         WorkspaceArchiveList: {
             items: components["schemas"]["WorkspaceArchive"][];
@@ -3859,6 +3880,41 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    deleteWorkspaceArchive: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists. */
+                "If-Match": components["parameters"]["IfMatchParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                /** @description The container's file name, exactly as `listWorkspaceArchives` published it. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The container is gone from this box. */
+            204: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            412: components["responses"]["PreconditionFailed"];
+            428: components["responses"]["PreconditionRequired"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["ServiceUnavailable"];
         };

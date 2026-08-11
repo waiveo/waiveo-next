@@ -647,6 +647,36 @@ func humanBytes(n int64) string {
 	return strconv.FormatInt(whole, 10) + "." + strconv.FormatInt(tenths, 10) + " " + [...]string{"KiB", "MiB", "GiB", "TiB"}[exp]
 }
 
+// archiveAdvice quantifies the half of the disk advice this platform can
+// actually act on, or returns "" when there is nothing to say.
+//
+// The advice above says "prune old images and archives", and half of it was a
+// dead end for as long as it has existed: images are the host's business, and
+// nothing on this box could delete an archive at all. That half now has an
+// operation (DELETE /workspace/archives/{name}) and a console control, and this
+// sentence is what connects the grade to them — it names how much the backups
+// are actually holding and where to go, so an operator reading a `low` disk does
+// not have to guess whether archives are even part of their problem.
+//
+// It is deliberately SILENT when there are no containers. "0 backups are using
+// 0 B" on a box with none would send an operator to a page that cannot help
+// them, which is the same defect as the advice it replaces, one step along.
+func (srv *server) archiveAdvice() string {
+	if srv.workspaceArchive == nil {
+		return ""
+	}
+	count, bytes := archiveFootprint(srv.workspaceArchive.Dir)
+	if count == 0 {
+		return ""
+	}
+	noun := " backups are"
+	if count == 1 {
+		noun = " backup is"
+	}
+	return " " + strconv.Itoa(count) + noun + " using " + humanBytes(bytes) +
+		" here; delete the ones you have already copied off this box on the Backup page."
+}
+
 // storageHealth measures the filesystem the workspace's own data lives on.
 func (srv *server) storageHealth() storageHealth {
 	if srv.health == nil || srv.health.DataDir == "" {
@@ -665,9 +695,9 @@ func (srv *server) storageHealth() storageHealth {
 	detail := humanBytes(free) + " available of " + humanBytes(total) + "."
 	switch grade {
 	case diskspace.StatusCritical:
-		detail += " Ordinary operation (an upload, a snapshot, an export) can now fail."
+		detail += " Ordinary operation (an upload, a snapshot, an export) can now fail." + srv.archiveAdvice()
 	case diskspace.StatusLow:
-		detail += " An image deploy is getting tight; prune old images and archives."
+		detail += " An image deploy is getting tight; prune old images and archives." + srv.archiveAdvice()
 	}
 	return storageHealth{Path: path, Status: string(grade),
 		TotalBytes: &total, FreeBytes: &free, UsedPercent: &pct, Detail: detail}

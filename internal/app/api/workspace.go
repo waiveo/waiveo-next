@@ -196,10 +196,21 @@ func (srv *server) exportWorkspaceExec(w http.ResponseWriter, r *http.Request, b
 	if !ok {
 		return
 	}
+	// The container this export will write is named by the Job that produces it
+	// (workspacerun.go), so its name is known HERE, at acceptance, and the claim
+	// is taken here rather than when the execution starts. The window between the
+	// two is real — the Job runner may queue this work behind another export's
+	// argon2id pass — and a delete arriving inside it would unlink the container
+	// the moment after it appeared, leaving an export that reported success and
+	// produced nothing. Claiming at acceptance closes the whole accepted lifetime.
+	release := srv.workspaceArchive.claimArchive(exportedArchiveName(job.ID),
+		"An export accepted as job "+job.ID+" is still writing this container.")
+
 	writeJSONValue(w, http.StatusAccepted, job.Resource())
 
 	passphrase := *req.Passphrase
 	srv.jobs.submit(func(ctx context.Context) {
+		defer release()
 		srv.runWorkspaceExport(ctx, job.ID, workspaceID, passphrase)
 	})
 }

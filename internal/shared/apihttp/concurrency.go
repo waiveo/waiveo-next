@@ -46,6 +46,37 @@ type ConcurrencyOutcome struct {
 // the header carries an entity-tag, but the quoted and bare-decimal forms name
 // the same revision). A non-OK outcome NEVER authorizes a write.
 func CheckIfMatch(ifMatchHeader string, headerPresent bool, currentRevision int64) ConcurrencyOutcome {
+	out := CheckIfMatchTag(ifMatchHeader, headerPresent, strconv.FormatInt(currentRevision, 10))
+	if out.OK || out.Status != http.StatusPreconditionFailed {
+		return out
+	}
+	// A revision-backed resource can say more than a tag-backed one: the
+	// mismatch Problem carries `current_revision` (API-023) so a client re-reads
+	// with a number rather than an opaque validator, and the detail names the
+	// revision rather than the tag that encodes it.
+	rev := currentRevision
+	out.Detail = fmt.Sprintf("If-Match %q does not match the current revision, %d.",
+		unquoteETag(ifMatchHeader), currentRevision)
+	out.CurrentRevision = &rev
+	return out
+}
+
+// CheckIfMatchTag is CheckIfMatch for a resource whose entity-tag is NOT derived
+// from a `revision` column — the archive containers on disk, whose validator is
+// computed from the bytes themselves (there is no row and no revision to bump).
+//
+// It exists so there is exactly ONE implementation of API-021–023's decision
+// procedure. The alternative — a second precondition check written inline in the
+// one handler that needed it — is how a surface ends up with one resource whose
+// missing-header case answers 409, or 400, or nothing at all, while every other
+// answers 428. CheckIfMatch delegates here and then adds only what a revision
+// makes sayable, so the two can never disagree about WHETHER a request passes,
+// only about how richly a failure is described.
+//
+// currentTag is the tag's raw value WITHOUT surrounding quotes, exactly as
+// ETag()'s argument is the raw revision; the comparison unquotes the supplied
+// header for the same reason CheckIfMatch does.
+func CheckIfMatchTag(ifMatchHeader string, headerPresent bool, currentTag string) ConcurrencyOutcome {
 	if !headerPresent {
 		return ConcurrencyOutcome{
 			Status: http.StatusPreconditionRequired, // 428
@@ -56,20 +87,24 @@ func CheckIfMatch(ifMatchHeader string, headerPresent bool, currentRevision int6
 	}
 
 	supplied := unquoteETag(ifMatchHeader)
-	current := strconv.FormatInt(currentRevision, 10)
-	if supplied != current {
-		rev := currentRevision
+	if supplied != currentTag {
 		return ConcurrencyOutcome{
-			Status:          http.StatusPreconditionFailed, // 412
-			Code:            "REVISION_CONFLICT",
-			Title:           "Precondition Failed",
-			Detail:          fmt.Sprintf("If-Match %q does not match the current revision, %d.", supplied, currentRevision),
-			CurrentRevision: &rev,
+			Status: http.StatusPreconditionFailed, // 412
+			Code:   "REVISION_CONFLICT",
+			Title:  "Precondition Failed",
+			Detail: fmt.Sprintf("If-Match %q does not match this resource's current entity-tag, %q.", supplied, currentTag),
 		}
 	}
 
 	return ConcurrencyOutcome{OK: true}
 }
+
+// TagETag returns the strong entity-tag for a resource whose validator is a raw
+// string rather than a revision: the value in double quotes, the same shape
+// ETag() produces for a revision. Paired with CheckIfMatchTag so the value a
+// response publishes and the value a precondition compares are produced by one
+// function each, in one place.
+func TagETag(tag string) string { return `"` + tag + `"` }
 
 // unquoteETag strips one layer of surrounding double-quotes from an entity-tag
 // so `"3"` and `3` compare equal against a revision's canonical decimal form.

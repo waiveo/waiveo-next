@@ -110,6 +110,21 @@ func (srv *server) restoreWorkspaceExec(w http.ResponseWriter, r *http.Request, 
 	if !ok {
 		return
 	}
+	// This container is now off-limits to the delete for as long as the restore
+	// is accepted (workspacearchives.go's claimArchive).
+	//
+	// The claim is taken at ACCEPTANCE rather than when stageRestore opens the
+	// file, and the gap between the two is the whole reason. Unlinking a file
+	// somebody holds open is safe on this platform, so a delete landing AFTER the
+	// open is invisible and the restore finishes; one landing BEFORE it fails the
+	// restore with "no archive of that name", a sentence about a container the
+	// operator did have and did choose to delete, in a job they may not connect
+	// to the button they pressed. Which of the two happens is a scheduler race
+	// nobody can observe. Refusing across the whole accepted lifetime replaces a
+	// coin-flip with one answer.
+	release := srv.workspaceArchive.claimArchive(name,
+		"A restore accepted as job "+job.ID+" is still reading this container.")
+
 	writeJSONValue(w, http.StatusAccepted, job.Resource())
 
 	passphrase := *req.Passphrase
@@ -117,6 +132,7 @@ func (srv *server) restoreWorkspaceExec(w http.ResponseWriter, r *http.Request, 
 	// resumable across a restart on the same terms (API-116) rather than being
 	// a goroutine whose loss nothing records.
 	srv.jobs.submit(func(ctx context.Context) {
+		defer release()
 		srv.runWorkspaceRestore(ctx, job.ID, workspaceID, name, passphrase)
 	})
 }

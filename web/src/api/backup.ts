@@ -32,7 +32,7 @@
 // browser can stream it straight to disk from a plain link. The session cookie
 // rides a same-origin navigation exactly as it rides a fetch.
 
-import { ApiClient } from "./client";
+import { API_BASE, ApiClient } from "./client";
 import type { components } from "../../../api/gen/ts/api";
 
 /** The async Job an export or a restore is tracked by (API-111/112). */
@@ -91,6 +91,17 @@ export interface BackupModule {
   /** Start a restore from a named container. Returns the Job to poll; its
    * success means STAGED, and the swap happens at the next boot. */
   restore(archive: string, passphrase: string): Promise<Job>;
+  /** Delete one container from the box, IRREVERSIBLY.
+   *
+   * Synchronous, unlike the other two mutations here: an unlink completes inside
+   * its own request, so a 202 + Job would be ceremony over an operation that has
+   * already finished by the time the response is written.
+   *
+   * `etag` is the container's own `etag` from the listing — the If-Match this
+   * conditions on (API-022 admits no unconditional delete). It is the archive's
+   * value verbatim, never composed here: a client that built its own validator
+   * would be asserting something about bytes it has not seen. */
+  remove(archive: WorkspaceArchive): Promise<void>;
 }
 
 export function createBackupModule(client: ApiClient): BackupModule {
@@ -113,6 +124,20 @@ export function createBackupModule(client: ApiClient): BackupModule {
     },
     restore(archive, passphrase) {
       return client.action<Job>("/workspace/restore", { archive, passphrase });
+    },
+    remove(archive) {
+      // The server's OWN published path, for the reason downloadUrl gives: the
+      // name is the one part of this family with a traversal question attached,
+      // and the listing already encoded it once. `download_path` and the delete
+      // path are the same resource — a GET and a DELETE on one URL — so reusing
+      // it is not a coincidence being exploited, it is the resource identity.
+      //
+      // The listing publishes it rooted at the API base and the client prefixes
+      // its own base, so the shared prefix comes off exactly once.
+      const path = archive.download_path.startsWith(API_BASE)
+        ? archive.download_path.slice(API_BASE.length)
+        : archive.download_path;
+      return client.remove(path, archive.etag);
     },
   };
 }

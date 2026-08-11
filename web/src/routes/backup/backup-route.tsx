@@ -2,14 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download, Upload } from "lucide-react";
 import {
   Button,
-  DataTable,
-  EmptyState,
   FormField,
   PageHeader,
   StatusBadge,
   toast,
-  type ColumnDef,
 } from "@/components/kit";
+import { PageRenderer, type ActionHandler } from "@/renderer";
 import {
   ApiError,
   createApi,
@@ -19,6 +17,7 @@ import {
   type WaiveoApi,
   type WorkspaceArchive,
 } from "@/api";
+import archivesDoc from "./archives.uis.json";
 
 /**
  * The Backup route ("/backup") — parity row 7.5. A daily driver with no backup
@@ -51,6 +50,34 @@ import {
  * BOTH OPERATIONS ARE ASYNC AND ARE POLLED. Each answers 202 with a Job; the
  * page polls until the state is terminal and reports the per-target failure
  * detail when there is one, rather than showing a spinner that never resolves.
+ *
+ * A DELETE IS FOREVER, AND IT IS CONFIRMED BY NAME. A container is encrypted
+ * under a passphrase this box does not keep, so deleting one is not recoverable
+ * by anybody — not by support, not by the author. The confirmation therefore
+ * names the container, its size and its date, and says in as many words that the
+ * bytes cannot be got back. A failed delete says the backup is still there,
+ * using the server's own refusal code.
+ *
+ * ── The archive list is a ui-schema/1 DOCUMENT, not React ───────────────────
+ *
+ * `archives.uis.json` is the table, the detail panel, the destructive button,
+ * its confirmation, and every sentence a refusal can produce — rendered through
+ * the same PageRenderer an extension page goes through (parity-loop Step 1.5).
+ * What stays here is the seam: the rows are PROJECTED into the fields the
+ * document binds, and the `delete` verb resolves onto the typed api/1 client.
+ *
+ * Two things the host does that the grammar cannot, both recorded as gaps rather
+ * than worked around silently:
+ *
+ *   • A ConfirmSpec's labels are plain `msg:` references with no argument list
+ *     (UIS-165), so a confirmation cannot interpolate the record it is about to
+ *     destroy. Naming the container is not optional on an irreversible act, so
+ *     the HOST recomputes the message catalog per selection — the same class of
+ *     host projection the Variables page uses for a polymorphic scalar.
+ *   • The catalog has no link widget, so "Download" is a host `slot` (UIS-185)
+ *     holding a real `<a href download>`. A `button` + `navigate` would have
+ *     been in-grammar and would have thrown away what an anchor is for: a URL
+ *     the browser streams straight to disk, right-clickable, needing no script.
  */
 
 /** How often an in-flight Job is polled. An export of a real workspace takes
@@ -76,6 +103,31 @@ function apiFailure(err: unknown): JobState {
   }
   return { status: "failed", detail: "The service is unreachable.", traceId: null };
 }
+
+/** One container projected into the fields `archives.uis.json` binds.
+ *
+ * The document renders three columns and a facts line; a table cell binds ONE
+ * path and the grammar has no formatter for bytes, so the rendered forms are
+ * computed here rather than bent into the document. `is_newest` is the same
+ * story from the other side — see the note on it below. */
+type ArchiveViewRow = WorkspaceArchive & {
+  size_display: string;
+  created_display: string;
+  /** Whether this is the most recent container on the box.
+   *
+   * A HOST projection because the grammar has no ordinal or comparison compute
+   * (UIS-140's list is eq/not/and/or/count/isEmpty/join/label/msg/format*), so
+   * "is this the first row of a newest-first list" cannot be expressed.
+   *
+   * It exists to WARN, never to refuse. Deleting your newest backup is a real
+   * mistake and the confirmation says so; making it impossible would be worse,
+   * because an operator who has copied the container off the box (the thing this
+   * page tells them to do) would then be unable to reclaim its space, and a
+   * container exported under a mistyped passphrase — useless bytes — would be
+   * undeletable forever. The operator owns the workspace; the page's job is to
+   * make sure they know what they are about to lose, not to keep it from them. */
+  is_newest: boolean;
+};
 
 export function formatBytes(n: number): string {
   if (!Number.isFinite(n) || n < 0) return "—";
@@ -117,6 +169,51 @@ function JobBanner({ state }: { state: JobState }) {
   );
 }
 
+/** The sentences `archives.uis.json` resolves, with the two that name a specific
+ * container filled in from the CURRENT selection.
+ *
+ * The interpolation is the host's because UIS-165's ConfirmSpec carries plain
+ * `msg:` references and no argument list, so the dialog cannot say "delete
+ * workspace-01J8….waiveo-archive (4 MiB)" from the document alone. On an
+ * irreversible act that is not a cosmetic loss: a confirmation that describes a
+ * class rather than a thing is one an operator dismisses out of habit and later
+ * discovers destroyed the wrong backup. */
+function archiveMessages(selected: ArchiveViewRow | null): Record<string, string> {
+  const named = selected
+    ? `“${selected.name}” — ${selected.size_display}, taken ${selected.created_display}`
+    : "this backup";
+  return {
+    "msg:backup.col.name": "Container",
+    "msg:backup.col.created": "Created",
+    "msg:backup.col.size": "Size",
+    "msg:backup.detail.title": "Backup",
+    "msg:backup.detail.empty": "Choose a backup to download or delete it.",
+    "msg:backup.detail.facts": "{0}, taken {1}.",
+    "msg:backup.detail.newest":
+      "This is the most recent backup on this box. If you delete it, the newest one you have is whatever is left.",
+    "msg:backup.detail.delete": "Delete this backup",
+    "msg:backup.delete.confirm.title": "Delete this backup for good?",
+    "msg:backup.delete.confirm.body":
+      `This permanently deletes ${named} from this box. It is encrypted with the passphrase you chose when ` +
+      "you exported it, and this box keeps no copy of that passphrase — so nothing here, and nobody at all, " +
+      "can bring these bytes back. If you have not already downloaded this container somewhere else, " +
+      "cancel and download it first.",
+    "msg:backup.delete.confirm.ok": "Delete for good",
+    "msg:backup.delete.confirm.cancel": "Keep it",
+    "msg:backup.delete.pending": "Deleting…",
+    "msg:backup.delete.inUse":
+      "Not now — this backup is being used by a job that is still running, so it was not deleted. {0}",
+    "msg:backup.delete.changed":
+      "This backup changed on the box since this page read it, so nothing was deleted. Refresh the list and " +
+      "look again before deleting — the container under that name may not be the one you were looking at.",
+    "msg:backup.delete.gone": "That backup is no longer on this box. Refresh the list.",
+    "msg:backup.delete.forbidden":
+      "Only the workspace owner can delete a backup. Nothing was deleted. Ask an owner.",
+    "msg:backup.delete.failed": "The backup was not deleted. {0}",
+    "msg:backup.delete.trace": "trace {0}",
+  };
+}
+
 export default function BackupRoute({ api }: { api?: WaiveoApi }) {
   const client = useMemo(() => api ?? createApi(), [api]);
 
@@ -131,6 +228,17 @@ export default function BackupRoute({ api }: { api?: WaiveoApi }) {
   const [selected, setSelected] = useState("");
   const [restorePassphrase, setRestorePassphrase] = useState("");
   const [restoreState, setRestoreState] = useState<JobState>({ status: "idle" });
+
+  // Which container the ARCHIVE PANEL has selected, learned from the renderer's
+  // own `$ui` (onUiChange) rather than kept in parallel with it — the document
+  // owns the selection and this is a read of it.
+  const [inspecting, setInspecting] = useState<string | null>(null);
+  // Bumped to REMOUNT the renderer after a successful delete: the store seeds
+  // from `data` once, at mount, so a refreshed list is only visible across a
+  // remount. Deliberately NOT bumped on a failure — a remount would clear the
+  // ActionOutcome carrying the refusal, and the operator would be left with a
+  // backup that is still there and no sentence saying why.
+  const [archiveEpoch, setArchiveEpoch] = useState(0);
 
   // Every in-flight poll is cancelled on unmount, so a page left during a long
   // export does not keep a timer (and a setState) alive behind it.
@@ -237,26 +345,57 @@ export default function BackupRoute({ api }: { api?: WaiveoApi }) {
     passphrase.length >= MIN_PASSPHRASE && passphrase === confirm && exportState.status !== "running";
   const restoreReady = selected !== "" && restorePassphrase !== "" && restoreState.status !== "running";
 
-  const columns: ColumnDef<WorkspaceArchive>[] = [
-    {
-      id: "name",
-      header: "Container",
-      accessorFn: (a) => a.name,
-      cell: ({ row }) => <span className="font-mono text-xs break-all">{row.original.name}</span>,
-    },
-    {
-      id: "created",
-      header: "Created",
-      accessorFn: (a) => a.created_at_ms,
-      cell: ({ row }) => new Date(row.original.created_at_ms).toLocaleString(),
-    },
-    {
-      id: "size",
-      header: "Size",
-      accessorFn: (a) => a.size_bytes,
-      cell: ({ row }) => formatBytes(row.original.size_bytes),
-    },
-  ];
+  // The rows the document binds. `is_newest` reads off the FIRST row because the
+  // server sorts newest-first (workspacearchives.go) — the one ordering fact this
+  // page depends on, taken from the one place that decides it rather than
+  // re-derived here from timestamps that would disagree on a tie.
+  const viewRows: ArchiveViewRow[] = useMemo(
+    () =>
+      archives.map((a, i) => ({
+        ...a,
+        size_display: formatBytes(a.size_bytes),
+        created_display: new Date(a.created_at_ms).toLocaleString(),
+        is_newest: i === 0,
+      })),
+    [archives],
+  );
+  const inspected = useMemo(
+    () => viewRows.find((a) => a.name === inspecting) ?? null,
+    [viewRows, inspecting],
+  );
+  const archiveCatalog = useMemo(() => archiveMessages(inspected), [inspected]);
+
+  const onArchiveUiChange = useCallback((ui: Record<string, unknown>) => {
+    setInspecting(typeof ui.selected === "string" ? ui.selected : null);
+  }, []);
+
+  /**
+   * The delete seam — the ONE verb the archive document dispatches.
+   *
+   * It RETHROWS a refusal rather than swallowing it into a toast. That is the
+   * whole point of the outcome binding: the document renders each published code
+   * as its own sentence ("a job is using it", "it changed on the box", "you are
+   * not the owner"), and a handler that caught the error would leave the page
+   * saying nothing while the backup quietly survived.
+   *
+   * The list is refreshed only on SUCCESS, and the remount that makes the
+   * refreshed rows visible is the same event — so a failure leaves the operator
+   * looking at the container that is still there, with the refusal beside it.
+   */
+  const archiveHandler = useMemo<ActionHandler>(
+    () => ({
+      remove: async (_target, resource) => {
+        const row = resource as ArchiveViewRow | null;
+        if (!row?.name) return;
+        await client.backup.remove(row);
+        toast.success(`Deleted ${row.name}`);
+        setInspecting(null);
+        await refreshArchives();
+        setArchiveEpoch((n) => n + 1);
+      },
+    }),
+    [client, refreshArchives],
+  );
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -347,28 +486,36 @@ export default function BackupRoute({ api }: { api?: WaiveoApi }) {
             <p className="text-sm text-[color:var(--wv-err)]" role="alert">
               {listError}
             </p>
+          ) : archives.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No backups yet. Export the workspace above, then download the container and keep it
+              somewhere other than this box.
+            </p>
           ) : (
-            <DataTable
-              label="Backups on this box"
-              columns={columns}
-              data={archives}
-              rowActions={(a) => (
-                <a
-                  className="inline-flex items-center gap-1 text-sm underline"
-                  href={client.backup.downloadUrl(a)}
-                  download={a.name}
-                  aria-label={`Download ${a.name}`}
-                >
-                  <Download aria-hidden className="size-4" />
-                  Download
-                </a>
-              )}
-              emptyState={
-                <EmptyState
-                  title="No backups yet"
-                  description="Export the workspace above, then download the container and keep it somewhere other than this box."
-                />
-              }
+            <PageRenderer
+              key={archiveEpoch}
+              doc={archivesDoc}
+              data={{ archives: viewRows }}
+              initialUi={{ selected: inspecting }}
+              messages={archiveCatalog}
+              handler={archiveHandler}
+              onUiChange={onArchiveUiChange}
+              slots={{
+                // The `download` slot the document declares (UIS-185): a real
+                // anchor, because a download is a URL the browser streams to
+                // disk and a scripted click would only take that away.
+                download: inspected ? (
+                  <a
+                    className="inline-flex w-fit items-center gap-1 text-sm underline"
+                    href={client.backup.downloadUrl(inspected)}
+                    download={inspected.name}
+                    aria-label={`Download ${inspected.name}`}
+                  >
+                    <Download aria-hidden className="size-4" />
+                    Download
+                  </a>
+                ) : null,
+              }}
             />
           )}
         </section>

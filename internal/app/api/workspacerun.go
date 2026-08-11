@@ -67,6 +67,16 @@ type WorkspaceArchive struct {
 	// export reaches `succeeded` a little later rather than not at all. What it
 	// buys is a memory ceiling that does not scale with request count.
 	exporting sync.Mutex
+
+	// dir guards the archive DIRECTORY's contents against the one pair of
+	// operations that can disagree about a file: a delete, and a job that is
+	// mid-way through the same file. See claimArchive / Delete in
+	// workspacearchives.go for the whole argument; the lock lives here because
+	// it guards this struct's Dir.
+	dir sync.Mutex
+	// busy is the set of container names an ACCEPTED job is writing or reading.
+	// Held under dir; see claimArchive.
+	busy map[string]*archiveClaim
 }
 
 // WithWorkspaceArchive wires the export operation's archive destination and
@@ -75,6 +85,14 @@ type WorkspaceArchive struct {
 func WithWorkspaceArchive(a *WorkspaceArchive) Option {
 	return func(srv *server) { srv.workspaceArchive = a }
 }
+
+// exportedArchiveName is the container an export Job writes.
+//
+// One function rather than the same concatenation in two places: the acceptance
+// claims this name against deletion (workspace.go) and the execution writes it,
+// and a claim taken over a name that is one character off the file that appears
+// is a guard that reports success while protecting nothing.
+func exportedArchiveName(jobID string) string { return "workspace-" + jobID + archiveSuffix }
 
 // runWorkspaceExport executes one accepted export Job: it drives the single
 // target (the workspace itself) through API-113's progression and, in between,
@@ -178,7 +196,7 @@ func (srv *server) writeWorkspaceArchive(ctx context.Context, jobID, workspaceID
 	// A single file, named by the Job that produced it, so the artifact an
 	// operator finds on disk is traceable back to the request that asked for it
 	// and two exports can never collide.
-	outPath := filepath.Join(cfg.Dir, "workspace-"+jobID+".waiveo-archive")
+	outPath := filepath.Join(cfg.Dir, exportedArchiveName(jobID))
 	out, err := os.OpenFile(outPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return "INTERNAL", "The archive file could not be created."

@@ -30,6 +30,7 @@ function archive(over: Partial<WorkspaceArchive> = {}): WorkspaceArchive {
     size_bytes: 4 * 1024 * 1024,
     created_at_ms: 1_752_537_600_000,
     download_path: `/api/v1/workspace/archives/${name}`,
+    etag: `"4194304-1752537600000"`,
     ...over,
   };
 }
@@ -149,6 +150,8 @@ describe("BackupRoute — export", () => {
     expect(sent).toEqual([{ passphrase: "correct horse battery" }]);
     // The list was re-read, so the container the operator just made is on screen
     // and downloadable without a manual refresh.
+    const table = await screen.findByRole("table", { name: /backups on this box/i });
+    await userEvent.click(within(table).getByText(/^workspace-/));
     await waitFor(() =>
       expect(screen.getByRole("link", { name: /download workspace-/i })).toBeInTheDocument(),
     );
@@ -211,7 +214,8 @@ describe("BackupRoute — the containers on this box", () => {
     expect(within(table).getByText(a.name)).toBeInTheDocument();
     expect(within(table).getByText("4.0 MiB")).toBeInTheDocument();
 
-    const link = screen.getByRole("link", { name: `Download ${a.name}` });
+    await userEvent.click(within(table).getByText(a.name));
+    const link = await screen.findByRole("link", { name: `Download ${a.name}` });
     // The href is the server's own published path — a client composing it would
     // be re-encoding a file name into a URL, which is the one part of this
     // family with a traversal question attached.
@@ -224,6 +228,217 @@ describe("BackupRoute — the containers on this box", () => {
     render(<BackupRoute />);
     await waitFor(() => expect(screen.getByText("/var/lib/waiveo/archive")).toBeInTheDocument());
     expect(screen.getByText(/No backups yet/)).toBeInTheDocument();
+  });
+});
+
+// ── Delete ───────────────────────────────────────────────────────────────────
+//
+// The page's only irreversible control. Every case here asserts what the page
+// SAYS as well as what it sent, because on an operation nobody can undo the
+// sentence is half the product: an operator who dismisses a vague confirmation
+// out of habit and destroys the wrong backup has been failed by the page, not by
+// themselves.
+
+/** Select a container in the list and return its detail panel's Delete button. */
+async function openArchive(name: string) {
+  const table = await screen.findByRole("table", { name: /backups on this box/i });
+  await userEvent.click(within(table).getByText(name));
+  return screen.findByRole("button", { name: /delete this backup/i });
+}
+
+describe("BackupRoute — deleting a backup", () => {
+  it("names the container, its size and its date in the confirmation, and says the bytes cannot come back", async () => {
+    const a = archive();
+    serve({ archives: [a] });
+    render(<BackupRoute />);
+
+    await userEvent.click(await openArchive(a.name));
+
+    const dialog = await screen.findByRole("dialog");
+    // The container is NAMED. A confirmation that describes a class rather than
+    // a thing is one an operator agrees to without reading.
+    expect(within(dialog).getByText(new RegExp(a.name))).toBeInTheDocument();
+    expect(within(dialog).getByText(/4\.0 MiB/)).toBeInTheDocument();
+    // And it says plainly that this is not recoverable, and what to do instead.
+    expect(within(dialog).getByText(/nobody at all, can bring these bytes back/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/download it first/i)).toBeInTheDocument();
+  });
+
+  it("deletes NOTHING when the confirmation is dismissed", async () => {
+    const a = archive();
+    let deletes = 0;
+    serve({ archives: [a] });
+    server.use(
+      http.delete("*/api/v1/workspace/archives/:name", () => {
+        deletes += 1;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    render(<BackupRoute />);
+
+    await userEvent.click(await openArchive(a.name));
+    await userEvent.click(await screen.findByRole("button", { name: /keep it/i }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(deletes).toBe(0);
+    expect(within(await screen.findByRole("table", { name: /backups on this box/i })).getByText(a.name))
+      .toBeInTheDocument();
+  });
+
+  it("sends the container's OWN etag as If-Match, and the row is gone afterwards", async () => {
+    const a = archive();
+    let remaining = [a];
+    const seen: { path: string; ifMatch: string | null }[] = [];
+    serve({ archives: [] });
+    server.use(
+      http.get("*/api/v1/workspace/archives", () =>
+        HttpResponse.json({ items: remaining, directory: "/var/lib/waiveo/archive" }),
+      ),
+      http.delete("*/api/v1/workspace/archives/:name", ({ request, params }) => {
+        seen.push({ path: String(params.name), ifMatch: request.headers.get("If-Match") });
+        remaining = [];
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    render(<BackupRoute />);
+
+    await userEvent.click(await openArchive(a.name));
+    await userEvent.click(await screen.findByRole("button", { name: /delete for good/i }));
+
+    await waitFor(() => expect(seen).toHaveLength(1));
+    expect(seen[0]!.path).toBe(a.name);
+    // Verbatim — a client that composed its own validator would be asserting
+    // something about bytes it has not seen.
+    expect(seen[0]!.ifMatch).toBe(a.etag);
+    // And the list is re-read, so the operator sees the box as it now is.
+    await waitFor(() => expect(screen.getByText(/No backups yet/)).toBeInTheDocument());
+  });
+
+  it("drops the deleted row from the table and keeps the others", async () => {
+    // The case the "no backups yet" assertion above cannot make. That empty
+    // state is the host's own branch on `archives.length`, so it appears whether
+    // or not the RENDERER was given the refreshed rows — and the renderer seeds
+    // its store once, at mount. With two containers, a delete that does not
+    // remount leaves the destroyed one sitting in the table, still selectable,
+    // still offering a Delete button for bytes that are gone.
+    const keep = archive({ name: "workspace-KEEP.waiveo-archive" });
+    const drop = archive({ name: "workspace-DROP.waiveo-archive" });
+    let remaining = [drop, keep];
+    serve({ archives: [] });
+    server.use(
+      http.get("*/api/v1/workspace/archives", () =>
+        HttpResponse.json({ items: remaining, directory: "/var/lib/waiveo/archive" }),
+      ),
+      http.delete("*/api/v1/workspace/archives/:name", ({ params }) => {
+        remaining = remaining.filter((a) => a.name !== String(params.name));
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    render(<BackupRoute />);
+
+    await userEvent.click(await openArchive(drop.name));
+    await userEvent.click(await screen.findByRole("button", { name: /delete for good/i }));
+
+    const table = await screen.findByRole("table", { name: /backups on this box/i });
+    await waitFor(() => expect(within(table).queryByText(drop.name)).not.toBeInTheDocument());
+    expect(within(screen.getByRole("table", { name: /backups on this box/i })).getByText(keep.name))
+      .toBeInTheDocument();
+  });
+
+  it("disarms the button while the delete is in flight, so a second click cannot land", async () => {
+    const a = archive();
+    let deletes = 0;
+    let release!: () => void;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    serve({ archives: [a] });
+    server.use(
+      http.delete("*/api/v1/workspace/archives/:name", async () => {
+        deletes += 1;
+        await held;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    render(<BackupRoute />);
+
+    const button = await openArchive(a.name);
+    await userEvent.click(button);
+    await userEvent.click(await screen.findByRole("button", { name: /delete for good/i }));
+
+    // In flight: the control is present and un-pressable (UIS-076 bound to the
+    // outcome's own `pending`), and it SAYS what is happening rather than going
+    // silently grey.
+    await waitFor(() => expect(screen.getByRole("button", { name: /delete this backup/i })).toBeDisabled());
+    expect(screen.getByText(/Deleting…/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /delete this backup/i }));
+    expect(deletes).toBe(1);
+
+    release();
+    await waitFor(() => expect(deletes).toBe(1));
+  });
+
+  it("renders a REFUSAL as its own sentence and leaves the backup on the page", async () => {
+    const a = archive();
+    serve({ archives: [a] });
+    server.use(
+      http.delete("*/api/v1/workspace/archives/:name", () =>
+        problem(
+          409,
+          "ARCHIVE_IN_USE",
+          "A restore accepted as job 01J8ZJOB000000000000000009 is still reading this container.",
+        ),
+      ),
+    );
+    render(<BackupRoute />);
+
+    await userEvent.click(await openArchive(a.name));
+    await userEvent.click(await screen.findByRole("button", { name: /delete for good/i }));
+
+    // The code's own sentence, not a generic failure — "a job is using it" and
+    // "you are not the owner" send an operator to different places.
+    const alert = await screen.findByText(/being used by a job that is still running/i);
+    expect(alert).toBeInTheDocument();
+    expect(alert).toHaveAttribute("role", "alert");
+    expect(screen.getByText(/01J8ZJOB000000000000000009/)).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(TRACE_ID))).toBeInTheDocument();
+    // The backup survived the refusal, and is still on screen with it.
+    expect(within(await screen.findByRole("table", { name: /backups on this box/i })).getByText(a.name))
+      .toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /delete this backup/i })).toBeInTheDocument();
+  });
+
+  it("says a stale etag means the bytes changed, not that the delete failed", async () => {
+    const a = archive();
+    serve({ archives: [a] });
+    server.use(
+      http.delete("*/api/v1/workspace/archives/:name", () =>
+        problem(412, "REVISION_CONFLICT", "mismatch"),
+      ),
+    );
+    render(<BackupRoute />);
+
+    await userEvent.click(await openArchive(a.name));
+    await userEvent.click(await screen.findByRole("button", { name: /delete for good/i }));
+
+    expect(await screen.findByText(/may not be the one you were looking at/i)).toBeInTheDocument();
+  });
+
+  it("warns when the container is the most recent one on the box", async () => {
+    const newest = archive({ name: "workspace-NEW.waiveo-archive" });
+    const older = archive({ name: "workspace-OLD.waiveo-archive", created_at_ms: 1_752_000_000_000 });
+    serve({ archives: [newest, older] });
+    render(<BackupRoute />);
+
+    await openArchive(newest.name);
+    expect(screen.getByText(/most recent backup on this box/i)).toBeInTheDocument();
+
+    // …and does NOT cry wolf on the older one. A warning that appears on every
+    // row is a warning nobody reads by the third time they see it.
+    await openArchive(older.name);
+    await waitFor(() =>
+      expect(screen.queryByText(/most recent backup on this box/i)).not.toBeInTheDocument(),
+    );
   });
 });
 
