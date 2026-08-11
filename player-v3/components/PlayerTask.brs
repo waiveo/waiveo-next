@@ -152,12 +152,35 @@ sub runPhoton()
             if prog.items <> invalid
                 for i = 0 to prog.items.Count() - 1
                     it = prog.items[i]
-                    if it.contentType = "composed"
+                    ' LAYER-BEARING kinds carry `layers` and NO `contentUri`.
+                    ' Both `composed` and `slide` are such kinds, and omitting
+                    ' `slide` here was not a cosmetic logging bug: the else
+                    ' branch concatenates it.contentUri, which is `invalid` for
+                    ' a layer-bearing item, and "string" + invalid is a TYPE
+                    ' MISMATCH that terminates this Task. The render loop lives
+                    ' in this Task, so a single slide anywhere in a playlist
+                    ' killed the whole player — after a successful pair and
+                    ' pull, which is what made it look like a delivery fault
+                    ' rather than a crash. Found on real hardware; the
+                    ' brighterscript compiler cannot see it because the type is
+                    ' only known at runtime.
+                    if it.contentType = "composed" or it.contentType = "slide"
                         layerCount = 0
                         if it.layers <> invalid then layerCount = it.layers.Count()
-                        print "[player-v3]   item " + i.toStr() + ": composed (" + layerCount.toStr() + " layers)"
+                        print "[player-v3]   item " + i.toStr() + ": " + it.contentType + " (" + layerCount.toStr() + " layers)"
                     else
-                        print "[player-v3]   item " + i.toStr() + ": " + it.contentType + " durationMs=" + it.durationMs.toStr() + " " + it.contentUri
+                        ' Defensive even on the single-asset path: this line is
+                        ' DIAGNOSTIC, and a diagnostic must never be the thing
+                        ' that takes the player down. A future content kind that
+                        ' carries neither field logs as unknown instead of
+                        ' crashing the Task that renders every screen.
+                        uri = ""
+                        if it.contentUri <> invalid then uri = it.contentUri
+                        durMs = 0
+                        if it.durationMs <> invalid then durMs = it.durationMs
+                        kind = ""
+                        if it.contentType <> invalid then kind = it.contentType
+                        print "[player-v3]   item " + i.toStr() + ": " + kind + " durationMs=" + durMs.toStr() + " " + uri
                     end if
                 end for
             end if
