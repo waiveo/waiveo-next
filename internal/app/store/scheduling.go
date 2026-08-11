@@ -128,14 +128,33 @@ func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind, scopeNode st
 			return err
 		}
 		_, errs := datamodel.ValidateRows(raw)
-		return withPlacement(errs)
+		// Deleting a cast an active screen override names must be refused just
+		// as deleting one a playlist item names is (checkScreenOverrideTargets).
+		// It rides the SCHEDULING arm because the cast table is what a cast
+		// delete revalidates — the screen rows it has to consult are simply not
+		// in this arm's own row set, which is precisely why the rule cannot live
+		// in datamodel.ValidateRows.
+		refErrs, err := checkScreenOverrideTargets(ctx, tx)
+		if err != nil {
+			return err
+		}
+		return withPlacement(append(errs, refErrs...))
 	case identityKinds[kind]:
 		raw, err := readIdentityRows(ctx, tx)
 		if err != nil {
 			return err
 		}
 		_, errs := datamodel.ValidateIdentityRows(raw)
-		return withPlacement(errs)
+		// The same rule from the other end: a screen write whose override names
+		// no cast row. DAT-004c places the operator-facing refusal on the surface
+		// imposing the override (which produces a message about the request);
+		// this is the invariant itself, held for every writer including the ones
+		// that do not go through that surface.
+		refErrs, err := checkScreenOverrideTargets(ctx, tx)
+		if err != nil {
+			return err
+		}
+		return withPlacement(append(errs, refErrs...))
 	case kind == KindAutomation:
 		// Automations are gated by the rules compiler (compile.Compile) at the top
 		// of Create/Update, not by datamodel.ValidateRows — a compile failure has
@@ -267,4 +286,104 @@ func readIDs(ctx context.Context, q queryer, table string) ([]string, error) {
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+// checkScreenOverrideTargets refuses any resulting state in which a screen row's
+// program override (data-model/1 DAT-004c) names a cast that does not exist.
+//
+// # Why this lives in the STORE and not in a datamodel validator
+//
+// It is the one override rule neither per-family validator can express, and
+// DAT-004c says so in as many words: the screen row's own validator sees screens
+// and devices, `ValidateRows` sees the scheduling core, and this rule spans the
+// two. The store is the layer that holds both tables at once, in one
+// transaction, which is exactly what the check needs — so it is here rather than
+// hidden as a second responsibility of either validator.
+//
+// # Why it runs on the DELETE side, which is what was missing
+//
+// The write side was already guarded (the surface imposing an override refuses a
+// cast_id naming nothing, DAT-004c) — and that guard was FALSE ASSURANCE on its
+// own, because the invariant it establishes was trivially violable by the very
+// next DELETE. Deleting a cast an active override named succeeded, and the
+// screen was then served a program with `display: content`, ZERO content items
+// and `pinned: true`: a black wall with its schedule suppressed and no error
+// anywhere. The identical delete IS refused when a PLAYLIST names the cast
+// (DAT-043) — the asymmetry existed only because an override used to live in a
+// side table that the full-row-set revalidation could not see. Now that it lives
+// on the screen row, the same discipline applies to it.
+//
+// # Refuse the delete, rather than clear the override
+//
+// Both were available and the choice is deliberate. Refusing matches what this
+// store already does for the identical shape one row over (a cast a playlist
+// item names cannot be deleted), so an operator learns ONE rule about deleting
+// referenced content instead of two that differ by which thing referenced it.
+// Clearing would make a content cleanup silently change what a physical display
+// is showing — the operator asked to delete a cast, not to take an emergency
+// notice off a wall — and it would destroy state (which screen was overridden,
+// with what, since when) that nothing else records. A refusal costs one extra
+// click and names exactly which screens to clear first; the alternative is
+// undoable.
+//
+// # Why lapsed overrides count too
+//
+// An override past its `expires_at` no longer governs any screen, so in principle
+// deleting its cast harms nothing. It still refuses, because the alternative is a
+// validation rule whose answer depends on the millisecond it is asked at: the
+// same delete succeeding or failing depending on the clock is not something an
+// operator can reason about or a test can pin, and it would leave rows behind
+// referencing ids that no longer resolve. The remedy is the same either way and
+// the message says it — clear the override on the named screens first.
+func checkScreenOverrideTargets(ctx context.Context, tx *sql.Tx) ([]datamodel.Error, error) {
+	screens, err := readBodies(ctx, tx, string(KindScreen))
+	if err != nil {
+		return nil, err
+	}
+
+	type overridden struct{ screenID, castID string }
+	var refs []overridden
+	for _, body := range screens {
+		var row struct {
+			ID       string `json:"id"`
+			Override *struct {
+				CastID string `json:"cast_id"`
+			} `json:"override"`
+		}
+		if err := json.Unmarshal(body, &row); err != nil {
+			// A body this store wrote that no longer decodes is a different
+			// fault, already reported by the row validator that ran alongside
+			// this one. Skipped rather than double-reported.
+			continue
+		}
+		if row.Override != nil && row.Override.CastID != "" {
+			refs = append(refs, overridden{screenID: row.ID, castID: row.Override.CastID})
+		}
+	}
+	if len(refs) == 0 {
+		return nil, nil
+	}
+
+	casts, err := readIDs(ctx, tx, string(KindCast))
+	if err != nil {
+		return nil, err
+	}
+	have := make(map[string]bool, len(casts))
+	for _, id := range casts {
+		have[id] = true
+	}
+
+	var errs []datamodel.Error
+	for _, r := range refs {
+		if have[r.castID] {
+			continue
+		}
+		errs = append(errs, datamodel.Error{
+			Field: "override.cast_id",
+			Code:  "REFERENCE_INVALID",
+			Message: "cast " + r.castID + " is named by the program override on screen " + r.screenID +
+				" and cannot be deleted while it is; clear that screen's override first (DAT-004c)",
+		})
+	}
+	return errs, nil
 }

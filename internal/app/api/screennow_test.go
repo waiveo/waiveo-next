@@ -377,3 +377,135 @@ func TestPushNowIsScopedToTheScreensOwnPlacement(t *testing.T) {
 		t.Errorf("stored override = %+v, want the pushed cast", got)
 	}
 }
+
+// TestAnOverrideNamingNoCastIsRefusedAtEverySurfaceThatCouldImposeOne is
+// DAT-004c's reference check, driven at each surface that could impose an
+// override rather than at the one that happens to be convenient.
+//
+// The observable failure this prevents is worse than a 422: an override naming a
+// deleted cast projects to `display: content` with ZERO content items, marked
+// Pinned so the relay will not re-resolve it — a dark screen, its schedule
+// suppressed, with no error anywhere in the system for an operator to find. It
+// 200'd before this.
+//
+// The `override` member is gone from ScreenCreate/ScreenUpdate as part of the
+// wave-2 override decision, so the second and third cases below are checking a
+// refusal by ABSENCE. That is exactly why they are here: "additionalProperties:
+// false is enforced" is a claim this repo has been wrong about before, and a
+// screens PATCH that quietly accepted `override` would reopen the whole hole
+// behind the surface that does check.
+func TestAnOverrideNamingNoCastIsRefusedAtEverySurfaceThatCouldImposeOne(t *testing.T) {
+	e := newEnv(t)
+	screenID, castID, node := snFixture(t, e)
+	const noSuchCast = "01J8ZN0SUCHCASTR0W00000001"
+
+	t.Run("PUT /now — the surface that imposes one", func(t *testing.T) {
+		resp, raw := e.do(t, http.MethodPut, "/api/v1/screens/"+screenID+"/now",
+			mustJSON(t, map[string]any{"mode": "play", "cast_id": noSuchCast}), nil)
+		if resp.StatusCode != http.StatusUnprocessableEntity {
+			t.Fatalf("push naming a missing cast = %d, want 422 (%s)", resp.StatusCode, raw)
+		}
+		if got := storedOverride(t, e, screenID); got != nil {
+			t.Fatalf("a refused push still wrote %+v — the screen is now pinned to nothing", got)
+		}
+	})
+
+	t.Run("PATCH /screens — cannot impose one at all", func(t *testing.T) {
+		resp, raw := e.do(t, http.MethodPatch, "/api/v1/screens/"+screenID,
+			mustJSON(t, map[string]any{"override": map[string]any{"mode": "play", "cast_id": castID}}), nil)
+		if resp.StatusCode < 400 {
+			t.Fatalf("PATCH carrying an override = %d, want a refusal (%s) — imposing an override is an imperative act on a physical display, not a member of a resource edit, and a PATCH that accepts it bypasses the reference check the /now route performs",
+				resp.StatusCode, raw)
+		}
+		if got := storedOverride(t, e, screenID); got != nil {
+			t.Fatalf("a PATCH wrote an override anyway: %+v", got)
+		}
+	})
+
+	t.Run("POST /screens — cannot create one carrying an override", func(t *testing.T) {
+		resp, raw := e.do(t, http.MethodPost, "/api/v1/screens", mustJSON(t, map[string]any{
+			"name": "Smuggled", "scope_node": node,
+			"override": map[string]any{"mode": "play", "cast_id": noSuchCast},
+		}), nil)
+		if resp.StatusCode < 400 {
+			t.Fatalf("POST carrying an override = %d, want a refusal (%s)", resp.StatusCode, raw)
+		}
+	})
+
+	// And the control: the SAME push naming a real cast succeeds, so every
+	// refusal above is the reference check and not a route that refuses
+	// everything.
+	if resp, raw := e.do(t, http.MethodPut, "/api/v1/screens/"+screenID+"/now",
+		mustJSON(t, pushBody(castID)), nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("push naming a REAL cast = %d, want 200 (%s)", resp.StatusCode, raw)
+	}
+}
+
+// TestDeletingACastAnOverrideNamesIsRefused is DAT-004c's delete-side half —
+// the other end of the reference check above, and the one whose absence made the
+// write-side check false assurance.
+//
+// The failure it prevents was verified as reachable before the fix: the DELETE
+// succeeded, and the screen was then served `priority=preempt display=content`
+// with ZERO content items and `pinned: true` — a black wall, schedule
+// suppressed, no error anywhere, and the only remedy a human noticing.
+//
+// The refusal is deliberate rather than clearing the override in the same
+// transaction: this store already refuses the identical delete when a PLAYLIST
+// names the cast (DAT-043), so refusing here means one rule about deleting
+// referenced content rather than two that differ by who referenced it — and
+// silently clearing would change what a physical display shows as a side effect
+// of a content cleanup. checkScreenOverrideTargets' own doc carries the full
+// reasoning.
+func TestDeletingACastAnOverrideNamesIsRefused(t *testing.T) {
+	e := newEnv(t)
+	screenID, castID, _ := snFixture(t, e)
+
+	// Control FIRST: with no override on it, the cast deletes cleanly. Without
+	// this the refusal below could be any unrelated reason a delete fails.
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/casts", mustJSON(t, map[string]any{
+		"name": "Unreferenced", "scope_node": e.placementNode(t),
+		"slides": []map[string]any{{"id": "s1", "layers": []map[string]any{
+			{"kind": "rect", "x": 0, "y": 0, "w": 1920, "h": 1080, "color": "#000000"},
+		}}},
+	}), nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create the control cast: %d %s", resp.StatusCode, raw)
+	}
+	free := decodeID(t, raw)
+	if resp, raw := e.do(t, http.MethodDelete, "/api/v1/casts/"+free, nil,
+		map[string]string{"If-Match": e.castETag(t, free)}); resp.StatusCode >= 400 {
+		t.Fatalf("deleting an UNREFERENCED cast = %d, want a success (%s)", resp.StatusCode, raw)
+	}
+
+	// Now push the other cast to the screen and try the same delete.
+	if resp, raw := e.do(t, http.MethodPut, "/api/v1/screens/"+screenID+"/now",
+		mustJSON(t, pushBody(castID)), nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("push: %d %s", resp.StatusCode, raw)
+	}
+
+	resp, raw = e.do(t, http.MethodDelete, "/api/v1/casts/"+castID, nil,
+		map[string]string{"If-Match": e.castETag(t, castID)})
+	if resp.StatusCode < 400 {
+		t.Fatalf("deleting a cast an ACTIVE override names = %d, want a refusal (%s) — the screen would be pinned to an empty content array with its schedule suppressed and no error anywhere",
+			resp.StatusCode, raw)
+	}
+	if !strings.Contains(string(raw), screenID) {
+		t.Errorf("the refusal does not name the screen holding the override: %s — an operator cannot act on 'something references this'", raw)
+	}
+	// The cast is still there, so the refusal aborted the whole transaction
+	// rather than half-deleting.
+	if resp, _ := e.do(t, http.MethodGet, "/api/v1/casts/"+castID, nil, nil); resp.StatusCode != http.StatusOK {
+		t.Errorf("after the refused delete the cast reads %d, want 200 — the delete was refused but happened anyway", resp.StatusCode)
+	}
+
+	// And clearing the override is the stated remedy, so it must actually work.
+	if resp, raw := e.do(t, http.MethodDelete, "/api/v1/screens/"+screenID+"/now", nil, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("clear the override: %d %s", resp.StatusCode, raw)
+	}
+	if resp, raw := e.do(t, http.MethodDelete, "/api/v1/casts/"+castID, nil,
+		map[string]string{"If-Match": e.castETag(t, castID)}); resp.StatusCode >= 400 {
+		t.Fatalf("deleting the cast AFTER clearing the override = %d, want a success (%s) — the refusal must be releasable, or it is a cast that can never be deleted",
+			resp.StatusCode, raw)
+	}
+}
