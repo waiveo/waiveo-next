@@ -555,6 +555,216 @@ func TestSignageActionDeclaringNoContentIsRefusedAtAuthoring(t *testing.T) {
 	}
 }
 
+// TestASignageMemberAtTheWrongTypeIsRefusedAtAuthoring is the other half of the
+// test above, and the half that half could not see.
+//
+// The required-member gate read `cast_id`/`message` through a probe struct of Go
+// strings and treated a decode failure as none of its business. A member written
+// at the WRONG type fails exactly that decode, so it passed the gate by breaking
+// it: `{"cast_id": 5}` was stored 201 and then ran to `{"disposition":"ran",
+// "signage":[]}` against an unchanged screen — the same 201-then-silence
+// signature, one type error away from the shape that was just closed.
+//
+// The refusal is at authoring for the same reason: it is the moment the person
+// who typed it is still looking at it.
+func TestASignageMemberAtTheWrongTypeIsRefusedAtAuthoring(t *testing.T) {
+	e := newEnv(t)
+	node := e.placementNode(t)
+	screenID := mintSignageScreen(t, e, node, "Lobby A")
+
+	cases := []struct {
+		name   string
+		action map[string]any
+		field  string
+	}{
+		{
+			"play_cast whose cast_id is a number",
+			map[string]any{"type": "play_cast", "screen_id": screenID, "cast_id": 5},
+			"actions[0].cast_id",
+		},
+		{
+			"show_alert whose message is an object",
+			map[string]any{"type": "show_alert", "screen_id": screenID, "message": map[string]any{"text": "evacuate"}},
+			"actions[0].message",
+		},
+		{
+			// The case that shows why a wrong-typed member cannot be read as
+			// absent: doing that would store this as a legal message-only alert
+			// with the author's own cast_id silently discarded.
+			"show_alert whose cast_id is a number beside a legal message",
+			map[string]any{"type": "show_alert", "screen_id": screenID, "cast_id": 5, "message": "evacuate"},
+			"actions[0].cast_id",
+		},
+		{
+			"play_cast whose screen_id is a number",
+			map[string]any{"type": "play_cast", "screen_id": 7, "cast_id": "01J8Z0C0000000000000000000"},
+			"actions[0].screen_id",
+		},
+		{
+			"show_alert whose ttl_seconds is a string",
+			map[string]any{"type": "show_alert", "screen_id": screenID, "message": "evacuate", "ttl_seconds": "60"},
+			"actions[0].ttl_seconds",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", mustJSON(t, map[string]any{
+				"name": "Wrong-Typed Signage", "scope_node": node, "enabled": true, "mode": "single",
+				"triggers": []any{map[string]any{"type": "state", "entity_id": autoScreenEntity, "to": []string{"on"}}},
+				"actions":  []any{tc.action},
+			}), nil)
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want 422 (body %s)", resp.StatusCode, raw)
+			}
+			var p map[string]any
+			if err := json.Unmarshal(raw, &p); err != nil {
+				t.Fatalf("decode problem: %v", err)
+			}
+			errsAny, _ := p["errors"].([]any)
+			if len(errsAny) != 1 {
+				t.Fatalf("problem carries %d field error(s), want 1: %s", len(errsAny), raw)
+			}
+			fe, _ := errsAny[0].(map[string]any)
+			if fe["code"] != "MEMBER_TYPE_INVALID" {
+				t.Errorf("field error code = %v, want MEMBER_TYPE_INVALID (body %s)", fe["code"], raw)
+			}
+			if fe["field"] != tc.field {
+				t.Errorf("field error field = %v, want %q", fe["field"], tc.field)
+			}
+		})
+	}
+}
+
+// TestAnEntityIdThatIsNotAULIDIsRefusedAtAuthoring closes the THIRD schema
+// violation of the class the two above closed, in the same response body, and it
+// is closed at the only place that can promise the declared type.
+//
+// `AutomationRunResult.commands[].entity_id` is required and `$ref: Ulid`
+// (`^[0-9A-HJKMNP-TV-Z]{26}$`). Every id in that array comes from one of two
+// sources: the device registry, which validates its own (app/devices.PutEntity
+// refuses a non-canonical ULID), or the AUTHORED rule, which validated nothing —
+// RUL-010's arity check says which EntityRef member is declared and nothing
+// about what is in it. So `{"entity_id":"kitchen-tv","command":"launch"}` was
+// accepted 201 and the run report served
+// `{"entity_id":"kitchen-tv","ok":false,...}`: a generated typed client handed a
+// value its own type says cannot exist, on the ERROR path — which is the path
+// such an id always takes, since an id naming no entity is exactly the one that
+// fails to dispatch.
+//
+// The run-report half of the guard is the test below this one: with the id
+// refused here, every entity_id the report can emit is a canonical ULID by
+// construction, and that is asserted against the whole declared schema on the
+// path that used to violate it.
+func TestAnEntityIdThatIsNotAULIDIsRefusedAtAuthoring(t *testing.T) {
+	e := newEnv(t)
+	node := e.placementNode(t)
+
+	cases := []struct {
+		name    string
+		trigger map[string]any
+		action  map[string]any
+		field   string
+	}{
+		{
+			"an action target",
+			map[string]any{"type": "state", "entity_id": autoScreenEntity, "to": []string{"on"}},
+			map[string]any{"type": "device_command", "entity_id": "kitchen-tv", "command": "launch"},
+			"actions[0].entity_id",
+		},
+		{
+			"a trigger subject",
+			map[string]any{"type": "state", "entity_id": "lobby tv", "to": []string{"on"}},
+			map[string]any{"type": "device_command", "entity_id": autoScreenEntity, "command": "launch"},
+			"triggers[0].entity_id",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, raw := e.do(t, http.MethodPost, "/api/v1/automations", mustJSON(t, map[string]any{
+				"name": "Bad Entity Reference", "scope_node": node, "enabled": true, "mode": "single",
+				"triggers": []any{tc.trigger},
+				"actions":  []any{tc.action},
+			}), nil)
+			if resp.StatusCode == http.StatusCreated {
+				// Not merely "the gate is missing": show what the gate is FOR.
+				// The rule that was just accepted is run, and its report is put
+				// against the whole declared AutomationRunResult — which is where
+				// the authored id lands, in a member the document types as a
+				// ULID. This branch exists so that a regression here fails with
+				// the schema violation itself rather than with a bare status
+				// mismatch a reader has to go and interpret.
+				id := decodeID(t, raw)
+				_, runRaw := e.do(t, http.MethodPost, "/api/v1/automations/"+id+"/run", nil, nil)
+				assertMatchesDeclaredSchema(t, "AutomationRunResult", runRaw)
+				t.Fatalf("a non-ULID entity_id was accepted at authoring (201) and reached the store: %s", raw)
+			}
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want 422 — a non-ULID entity_id must never reach the store (body %s)",
+					resp.StatusCode, raw)
+			}
+			var p map[string]any
+			if err := json.Unmarshal(raw, &p); err != nil {
+				t.Fatalf("decode problem: %v", err)
+			}
+			errsAny, _ := p["errors"].([]any)
+			if len(errsAny) != 1 {
+				t.Fatalf("problem carries %d field error(s), want 1: %s", len(errsAny), raw)
+			}
+			fe, _ := errsAny[0].(map[string]any)
+			if fe["code"] != "MEMBER_TYPE_INVALID" {
+				t.Errorf("field error code = %v, want MEMBER_TYPE_INVALID (body %s)", fe["code"], raw)
+			}
+			if fe["field"] != tc.field {
+				t.Errorf("field error field = %v, want %q", fe["field"], tc.field)
+			}
+		})
+	}
+}
+
+// TestTheCommandErrorPathConformsToTheDeclaredRunResultSchema is the run-report
+// half of the guard above: the ERROR path of the `commands` array, validated
+// against the whole declared AutomationRunResult — pattern included.
+//
+// This is the assertion that was missing when the same class of violation was
+// found twice already. responseschema_test.go sweeps every operation but drives
+// happy paths and checks presence only, so it cannot see a member that is
+// present, correctly typed as a string, and still not the ULID the document
+// declares. The signage array's error path got this assertion when its own
+// violation was fixed; the commands array's did not, and that is where the third
+// one was hiding.
+func TestTheCommandErrorPathConformsToTheDeclaredRunResultSchema(t *testing.T) {
+	e := newEnv(t)
+	node := e.placementNode(t)
+
+	// A rule whose command cannot be dispatched: no device plane is wired, so
+	// the target resolves to nothing this peer knows and the run reports a failed
+	// command rather than an empty list.
+	automationID := mintSignageAutomation(t, e, node, map[string]any{
+		"type": "device_command", "entity_id": autoScreenEntity, "command": "launch",
+	})
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations/"+automationID+"/run", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("run: %d %s", resp.StatusCode, raw)
+	}
+	assertMatchesDeclaredSchema(t, "AutomationRunResult", raw)
+
+	var out struct {
+		Commands []struct {
+			EntityID string `json:"entity_id"`
+			OK       bool   `json:"ok"`
+			Error    string `json:"error"`
+		} `json:"commands"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// The failure is still REPORTED — a schema-conformant empty report would be
+	// the silence this whole track exists to remove.
+	if len(out.Commands) != 1 || out.Commands[0].OK || out.Commands[0].Error == "" {
+		t.Fatalf("run report = %+v, want the one command the rule declared, reported as a named failure", out.Commands)
+	}
+}
+
 // TestAnUnresolvableScreenRefIsReportedWithoutFakingAScreenId drives the run
 // report's ERROR path and validates the whole response against the schema the
 // document declares for it — pattern included.

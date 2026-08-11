@@ -99,6 +99,45 @@ describe("the canvas preview of each LIVE widget kind", () => {
     // could not be found again on the canvas.
     expect(draw(layer({ kind: "image" }), "layer-image-empty")).not.toBeNull();
   });
+
+  // ── video ────────────────────────────────────────────────────────────────
+  // The kind whose canvas rendering had NO assertion at all: the layer list and
+  // the PATCH body were covered, so reverting the content-kind branch to
+  // `layer.kind === "image"` — which drops a video straight through to the
+  // Label/text branch and paints an empty div where the clip should be — left
+  // the whole suite green. What a WYSIWYG canvas DRAWS is the thing the editor
+  // exists for, so it is asserted here for video exactly as it is for image.
+  it("draws a video layer as a real video element, never as a Label or an <img>", () => {
+    const el = draw(layer({ kind: "video", url: "blob:clip" }));
+    expect(el).not.toBeNull();
+    expect(el.tagName).toBe("VIDEO");
+    expect(el).toHaveAttribute("src", "blob:clip");
+    // The still-frame posture: the filmstrip draws every slide through this same
+    // component, so a canvas that autoplayed would start one decoder per slide
+    // the moment a cast is opened.
+    expect(el).not.toHaveAttribute("autoplay");
+    expect(el).toHaveAttribute("preload", "metadata");
+    // Placed in CANVAS pixels like every other kind.
+    expect(el).toHaveStyle({ left: "100px", top: "200px", width: "400px", height: "120px" });
+
+    // …and it is NOT drawn through either of the two branches that would swallow
+    // it silently: the image element, or the Label branch's own div.
+    const { container } = render(<LayerView layer={layer({ kind: "video", url: "blob:clip" })} now={NOW} />);
+    expect(container.querySelector('[data-slot="layer-image"]')).toBeNull();
+    expect(container.querySelector("div[data-slot='layer-video']")).toBeNull();
+  });
+
+  it("marks a video layer with no clip chosen with its OWN placeholder, not the image one", () => {
+    const empty = draw(layer({ kind: "video" }), "layer-video-empty");
+    expect(empty).not.toBeNull();
+    // The VideoOff glyph, not ImageOff: the two placeholders are the only thing
+    // telling an operator which unfinished box is which.
+    expect(empty.querySelector("svg.lucide-video-off")).not.toBeNull();
+    expect(empty.querySelector("svg.lucide-image-off")).toBeNull();
+    // An unfinished video draws no <video> — there is no src to give it.
+    const { container } = render(<LayerView layer={layer({ kind: "video" })} now={NOW} />);
+    expect(container.querySelector('[data-slot="layer-video"]')).toBeNull();
+  });
 });
 
 describe("the stage as a whole", () => {
@@ -167,7 +206,7 @@ describe("describeLayer — the accessible name of every kind", () => {
     // The trap: an exhaustive switch with no default returns `undefined` for any
     // kind added to the wire but not to it, and `aria-label` then reads
     // "Layer 1: undefined".
-    for (const kind of ["text", "rect", "image", "clock", "date", "countdown", "weather", "entity"] as const) {
+    for (const kind of ["text", "rect", "image", "video", "clock", "date", "countdown", "weather", "entity"] as const) {
       expect(typeof describeLayer(layer({ kind }))).toBe("string");
     }
   });

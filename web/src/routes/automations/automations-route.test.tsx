@@ -885,6 +885,103 @@ describe("Automations — the JSON hatch mirrors the BUILDER, not the last serve
   });
 });
 
+describe("Automations — closing the JSON hatch is a fold, not a discard", () => {
+  /** One automation whose single action is a log, the shape both directions below
+   * assert through (the builder paints its message as an editable field). */
+  function oneLogRule() {
+    return liveLists(
+      [automation({ id: ULID_A, name: "Open the doors", revision: 3, actions: [{ type: "log", message: "original" }] })],
+      HQ,
+    );
+  }
+
+  it("keeps an unapplied JSON draft across Hide JSON → Edit as JSON", async () => {
+    // The loss this closes is the MIRROR of the one the hatch's builder-mirroring
+    // fixed: seeding on every open threw away text the operator had typed and not
+    // yet applied, with no warning and no undo. "Hide JSON" reads as folding a
+    // panel away, and a fold that deletes work is the same silent-discard defect
+    // seen from the other surface.
+    server.use(...oneLogRule());
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+
+    await user.click(screen.getByRole("button", { name: "Edit as JSON" }));
+    const editor = screen.getByLabelText("Rule body (JSON)");
+    await user.clear(editor);
+    await user.click(editor);
+    await user.paste(JSON.stringify({ actions: [{ type: "log", message: "TYPED BY THE OPERATOR" }] }));
+
+    await user.click(screen.getByRole("button", { name: "Hide JSON" }));
+    expect(screen.queryByLabelText("Rule body (JSON)")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Edit as JSON" }));
+
+    const reopened = screen.getByLabelText("Rule body (JSON)") as HTMLTextAreaElement;
+    expect(reopened.value).toContain("TYPED BY THE OPERATOR");
+
+    // …and the draft that came back is LIVE, not a fossil: applying it still
+    // reaches the builder, which is the only thing that makes preserving it worth
+    // anything.
+    await user.click(screen.getByRole("button", { name: "Apply to builder" }));
+    await waitFor(() => expect(screen.getByLabelText("Message")).toHaveValue("TYPED BY THE OPERATOR"));
+  });
+
+  it("still re-mirrors the BUILDER on reopen when the hatch was left untouched", async () => {
+    // The other direction, which must not be traded away for the one above: an
+    // UNTOUCHED hatch is a view, and a view that reopens onto the record the
+    // server last sent is how "Apply to builder" destroys work that was never on
+    // screen (the original defect). The operator typed nothing here, so they own
+    // nothing — the builder does.
+    server.use(...oneLogRule());
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+
+    await user.click(screen.getByRole("button", { name: "Edit as JSON" }));
+    expect((screen.getByLabelText("Rule body (JSON)") as HTMLTextAreaElement).value).toContain("original");
+    await user.click(screen.getByRole("button", { name: "Hide JSON" }));
+
+    // Build while the hatch is folded away.
+    const message = screen.getByLabelText("Message");
+    await user.clear(message);
+    await user.type(message, "edited while the hatch was closed");
+
+    await user.click(screen.getByRole("button", { name: "Edit as JSON" }));
+    const reopened = screen.getByLabelText("Rule body (JSON)") as HTMLTextAreaElement;
+    expect(JSON.parse(reopened.value).actions).toEqual([
+      { type: "log", message: "edited while the hatch was closed" },
+    ]);
+    // Nothing diverged: both surfaces show the same rule.
+    expect(screen.queryByTestId("json-diverged")).toBeNull();
+  });
+
+  it("warns on reopen when BOTH surfaces moved while the hatch was closed", async () => {
+    // Preserving the draft cannot mean hiding that the builder went somewhere
+    // else in the meantime — an Apply would overwrite those edits. The same
+    // warning a divergence gets while the hatch is open is owed to one that
+    // happened while it was shut.
+    server.use(...oneLogRule());
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+
+    await user.click(screen.getByRole("button", { name: "Edit as JSON" }));
+    const editor = screen.getByLabelText("Rule body (JSON)");
+    await user.clear(editor);
+    await user.click(editor);
+    await user.paste(JSON.stringify({ actions: [{ type: "log", message: "from the json" }] }));
+    await user.click(screen.getByRole("button", { name: "Hide JSON" }));
+
+    const message = screen.getByLabelText("Message");
+    await user.clear(message);
+    await user.type(message, "later builder edit");
+
+    await user.click(screen.getByRole("button", { name: "Edit as JSON" }));
+    expect((screen.getByLabelText("Rule body (JSON)") as HTMLTextAreaElement).value).toContain("from the json");
+    expect(await screen.findByTestId("json-diverged")).toHaveTextContent(/will replace those builder edits/i);
+  });
+});
+
 describe("Automations — save conventions over api/1", () => {
   it("on a 422, surfaces the compiler's message naming the rule member it rejected", async () => {
     server.use(

@@ -246,6 +246,172 @@ func TestValidateAcceptsAWellFormedSignageAction(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsAWrongTypedSignageMember is the other half of RUL-234/235's
+// required members, and it is the same defect entering through a different door.
+//
+// The required-member check read `cast_id` and `message` out of a probe struct
+// of Go strings and returned nil on a decode failure ("malformed JSON is not
+// this check's concern"). A member written at the WRONG TYPE — `cast_id` as a
+// number, `message` as an object — fails exactly that decode, so it satisfied
+// the check by breaking it: stored 201, then run as a completely silent no-op,
+// `{"disposition":"ran","signage":[]}` against an unchanged screen. Presence was
+// enforced; type was not, and to an author the two are one requirement.
+//
+// The `{"cast_id": 5, "message": "…"}` case is the reason a wrong-typed member
+// cannot simply be READ AS ABSENT: doing that would compile it as a perfectly
+// legal message-only alert with the author's own cast_id silently discarded.
+func TestValidateRejectsAWrongTypedSignageMember(t *testing.T) {
+	cases := []struct {
+		name   string
+		action string
+		field  string
+	}{
+		{
+			"play_cast whose cast_id is a number",
+			`{"type":"play_cast","screen_id":"01J8Z0D0000000000000000000","cast_id":5}`,
+			"actions[0].cast_id",
+		},
+		{
+			"show_alert whose message is an object",
+			`{"type":"show_alert","screen_id":"01J8Z0D0000000000000000000","message":{"text":"evacuate"}}`,
+			"actions[0].message",
+		},
+		{
+			"show_alert whose message is a number",
+			`{"type":"show_alert","screen_id":"01J8Z0D0000000000000000000","message":42}`,
+			"actions[0].message",
+		},
+		{
+			"show_alert naming a wrong-typed cast_id ALONGSIDE a legal message",
+			`{"type":"show_alert","screen_id":"01J8Z0D0000000000000000000","cast_id":5,"message":"evacuate"}`,
+			"actions[0].cast_id",
+		},
+		{
+			"play_cast whose screen_id is a number",
+			`{"type":"play_cast","screen_id":7,"cast_id":"01J8Z0C0000000000000000000"}`,
+			"actions[0].screen_id",
+		},
+		// `selector` is not listed here on purpose: it IS a member of the shared
+		// leaf decode (model.decodeMember), so a wrong-typed one never reaches
+		// Validate at all — ParseRule refuses the whole rule first. `screen_id`,
+		// `cast_id`, `message` and `ttl_seconds` are the members that decode
+		// carries no knowledge of, which is exactly why they were the ones that
+		// slipped through.
+		{
+			"show_alert whose ttl_seconds is a string",
+			`{"type":"show_alert","screen_id":"01J8Z0D0000000000000000000","message":"evacuate","ttl_seconds":"60"}`,
+			"actions[0].ttl_seconds",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := Validate(signageRule(t, tc.action))
+			if e == nil {
+				t.Fatalf("%s compiled clean, want MEMBER_TYPE_INVALID", tc.name)
+			}
+			if e.Code != "MEMBER_TYPE_INVALID" {
+				t.Fatalf("code = %q, want MEMBER_TYPE_INVALID (%+v)", e.Code, e)
+			}
+			if e.Field != tc.field {
+				t.Errorf("field = %q, want %q — a refusal that does not name the member makes the author hunt for it", e.Field, tc.field)
+			}
+		})
+	}
+}
+
+// TestValidateReachesAWrongTypedSignageMemberInsideAChooseBranch: the type check
+// walks wherever an action can appear, exactly as the required-member check does
+// — a `choose` branch is where a real fleet rule puts its signage.
+func TestValidateReachesAWrongTypedSignageMemberInsideAChooseBranch(t *testing.T) {
+	r := signageRule(t, `{"type":"choose","branches":[{"condition":{"type":"state","entity_id":"01J8Z3K4N5P6Q7R8S9T0V1W2Z2","state":"on"},"actions":[{"type":"play_cast","screen_id":"01J8Z0D0000000000000000000","cast_id":5}]}],"default":[]}`)
+	e := Validate(r)
+	if e == nil || e.Code != "MEMBER_TYPE_INVALID" {
+		t.Fatalf("got %+v, want MEMBER_TYPE_INVALID", e)
+	}
+	if e.Field != "actions[0].branches[0].actions[0].cast_id" {
+		t.Errorf("field = %q, want the branch action's own address", e.Field)
+	}
+}
+
+// TestValidateRejectsAnEntityIDThatIsNotAULID pins RUL-010's TYPE half: the
+// entity_id form is "a single `entity_id` (ULID)", and the arity check next to
+// this one says which member is declared while saying nothing about what is in
+// it.
+//
+// The consequence was not confined to the rule: a manual run reports every
+// target it dispatched to, and api/1 declares AutomationRunCommand.entity_id as
+// a `Ulid` (`^[0-9A-HJKMNP-TV-Z]{26}$`, required). An authored "kitchen-tv"
+// travelled verbatim into that member, so the run report violated its own
+// declared schema on the error path — the path such an id inevitably takes,
+// since an id that names no entity is precisely the one that fails to dispatch.
+// Every other id in that report comes from the device registry, which validates
+// its own; this was the only unvalidated source.
+func TestValidateRejectsAnEntityIDThatIsNotAULID(t *testing.T) {
+	cases := []struct {
+		name  string
+		rule  string
+		field string
+	}{
+		{
+			"an action target",
+			`{"id":"01J8Z3K4N5P6Q7R8S9T0V1RUL1","mode":"single","triggers":[{"type":"state","entity_id":"01J8Z3K4N5P6Q7R8S9T0V1W2Z2"}],"conditions":[],"actions":[{"type":"device_command","entity_id":"kitchen-tv","command":"launch"}]}`,
+			"actions[0].entity_id",
+		},
+		{
+			"a trigger subject",
+			`{"id":"01J8Z3K4N5P6Q7R8S9T0V1RUL1","mode":"single","triggers":[{"type":"state","entity_id":"lobby tv"}],"conditions":[],"actions":[{"type":"log","message":"x"}]}`,
+			"triggers[0].entity_id",
+		},
+		{
+			"a nested condition leaf",
+			`{"id":"01J8Z3K4N5P6Q7R8S9T0V1RUL1","mode":"single","triggers":[{"type":"state","entity_id":"01J8Z3K4N5P6Q7R8S9T0V1W2Z2"}],"conditions":[{"and":[{"type":"state","entity_id":"01J8Z3K4N5P6Q7R8S9T0V1W2Z2","state":"on"},{"type":"state","entity_id":"nope","state":"on"}]}],"actions":[{"type":"log","message":"x"}]}`,
+			"conditions[0].and[1].entity_id",
+		},
+		{
+			// 26 characters, so a length check alone passes it — but I/L/O/U are
+			// not Crockford symbols, and the api/1 Ulid pattern excludes them too.
+			"a 26-character id using a non-Crockford symbol",
+			`{"id":"01J8Z3K4N5P6Q7R8S9T0V1RUL1","mode":"single","triggers":[{"type":"state","entity_id":"01J8Z3K4N5P6Q7R8S9T0SCHEDU"}],"conditions":[],"actions":[{"type":"log","message":"x"}]}`,
+			"triggers[0].entity_id",
+		},
+		{
+			"a lowercase id",
+			`{"id":"01J8Z3K4N5P6Q7R8S9T0V1RUL1","mode":"single","triggers":[{"type":"state","entity_id":"01j8z3k4n5p6q7r8s9t0v1w2z2"}],"conditions":[],"actions":[{"type":"log","message":"x"}]}`,
+			"triggers[0].entity_id",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := Validate(mustRule(t, tc.rule))
+			if e == nil {
+				t.Fatalf("%s compiled clean, want MEMBER_TYPE_INVALID", tc.name)
+			}
+			if e.Code != "MEMBER_TYPE_INVALID" {
+				t.Fatalf("code = %q, want MEMBER_TYPE_INVALID (%+v)", e.Code, e)
+			}
+			if e.Field != tc.field {
+				t.Errorf("field = %q, want %q", e.Field, tc.field)
+			}
+		})
+	}
+}
+
+// TestValidateAcceptsTheOtherTwoEntityRefForms is the guard against a ULID check
+// that refuses everything: `selector` and `device_class` name no id at all and
+// must not be held to a ULID rule, and a canonical entity_id still compiles.
+func TestValidateAcceptsTheOtherTwoEntityRefForms(t *testing.T) {
+	for _, ref := range []string{
+		`"entity_id":"01J8Z3K4N5P6Q7R8S9T0V1W2Z2"`,
+		`"selector":"zone=lobby"`,
+		`"device_class":"media-player"`,
+	} {
+		r := mustRule(t, `{"id":"01J8Z3K4N5P6Q7R8S9T0V1RUL1","mode":"single","triggers":[{"type":"state","entity_id":"01J8Z3K4N5P6Q7R8S9T0V1W2Z2"}],"conditions":[],"actions":[{"type":"device_command",`+ref+`,"command":"launch"}]}`)
+		if e := Validate(r); e != nil {
+			t.Errorf("%s was refused: %+v", ref, e)
+		}
+	}
+}
+
 // TestValidateReachesASignageActionInsideAChooseBranch: the content check runs
 // wherever an action can appear, not only at the top of the sequence. A `choose`
 // branch is where a real fleet rule puts its signage ("if the alarm is on, show

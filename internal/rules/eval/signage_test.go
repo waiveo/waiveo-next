@@ -2,6 +2,7 @@ package eval
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/rules/model"
@@ -149,6 +150,59 @@ func TestMalformedSignageActionPerformsNoWorkAndSaysSo(t *testing.T) {
 		}
 		if len(got.Screens) != 0 {
 			t.Errorf("%s reported screens %+v; no screen was attempted, and a fabricated entry would carry an empty screen_id", tc.raw, got.Screens)
+		}
+	}
+}
+
+// TestWrongTypedSignageMemberPerformsNoWorkAndSaysSo is the same requirement as
+// the test above, for the half it could not see.
+//
+// runSignage decoded the action into a struct of Go strings and returned on any
+// decode error. A member written at the WRONG TYPE fails exactly that decode, so
+// it took the silent-return path: no sink call, no recorded outcome, and a run
+// that answered `{"disposition":"ran","signage":[]}` with an unchanged screen —
+// the identical signature the missing-member case had before it was closed, and
+// invisible to the tests that closed it because every one of them wrote a member
+// of the right type.
+//
+// A wrong-typed member is reported the way a missing one is: a FAILED outcome
+// naming the member, never a skip, and never coerced to the zero value (which
+// would run the fourth case below as a legal message-only alert with the
+// author's own cast_id thrown away).
+func TestWrongTypedSignageMemberPerformsNoWorkAndSaysSo(t *testing.T) {
+	cases := []struct {
+		raw    string
+		action string
+		member string
+	}{
+		{`{"type":"play_cast","screen_id":"SCR1","cast_id":5}`, "play_cast", "cast_id"},
+		{`{"type":"show_alert","screen_id":"SCR1","message":{"text":"hi"}}`, "show_alert", "message"},
+		{`{"type":"show_alert","screen_id":"SCR1","cast_id":true,"message":"evacuate"}`, "show_alert", "cast_id"},
+		{`{"type":"show_alert","screen_id":"SCR1","message":"evacuate","ttl_seconds":"60"}`, "show_alert", "ttl_seconds"},
+		{`{"type":"dismiss_alert","screen_id":42}`, "dismiss_alert", "screen_id"},
+	}
+	for _, tc := range cases {
+		sink := &recordingSignage{}
+		var outcomes []SignageOutcome
+		ctx := ActionContext{Signage: sink, SignageOutcomes: &outcomes}
+		if err := RunActions(ctx, []model.Member{signageAction(t, tc.raw)}); err != nil {
+			t.Fatalf("RunActions: %v", err)
+		}
+		if len(sink.calls) != 0 {
+			t.Fatalf("%s reached the sink as %+v; a member that cannot be read must not be guessed at", tc.raw, sink.calls)
+		}
+		if len(outcomes) != 1 {
+			t.Fatalf("%s recorded %d outcome(s), want exactly 1 — a silent skip reports the run as having done nothing wrong", tc.raw, len(outcomes))
+		}
+		got := outcomes[0]
+		if got.Action != tc.action || got.Outcome != "failed" {
+			t.Errorf("%s recorded %+v, want a failed %s", tc.raw, got, tc.action)
+		}
+		if !strings.Contains(got.Error, tc.member) {
+			t.Errorf("%s reason = %q, want it to name the member %q", tc.raw, got.Error, tc.member)
+		}
+		if len(got.Screens) != 0 {
+			t.Errorf("%s reported screens %+v; no screen was attempted", tc.raw, got.Screens)
 		}
 	}
 }

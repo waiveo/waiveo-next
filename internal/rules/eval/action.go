@@ -450,14 +450,21 @@ func runSignage(ctx ActionContext, m model.Member) {
 	if ctx.Signage == nil {
 		return
 	}
-	var spec struct {
-		ScreenID   string `json:"screen_id"`
-		Selector   string `json:"selector"`
-		CastID     string `json:"cast_id"`
-		Message    string `json:"message"`
-		TTLSeconds int    `json:"ttl_seconds"`
-	}
-	if err := json.Unmarshal(m.Raw, &spec); err != nil {
+	// The members are decoded through the SAME type-aware reader the compile
+	// gate uses (model.DecodeSignage), so the executor and the gate cannot
+	// disagree about what this action declares.
+	//
+	// A member at the wrong type is REPORTED, not skipped. The struct decode this
+	// replaced treated encoding/json's type error as "nothing to do here" and
+	// returned, so a `cast_id` written as a number ran as a completely silent
+	// no-op: `{"disposition":"ran","signage":[]}` and an unchanged screen, which
+	// is indistinguishable from a run that worked. Same shape, same silence, as
+	// the missing-member case immediately below — and it is answered the same
+	// way.
+	spec, terr := model.DecodeSignage(m.Raw)
+	if terr != nil {
+		recordSignage(ctx, FailedSignageOutcome(m.Type,
+			"a signage action's "+terr.Error()+" (rules/1 RUL-233/RUL-234/RUL-235)"))
 		return
 	}
 	ref := ScreenRef{ScreenID: spec.ScreenID, Selector: spec.Selector}
@@ -497,9 +504,18 @@ func runSignage(ctx ActionContext, m model.Member) {
 	default:
 		return
 	}
-	if ctx.SignageOutcomes != nil {
-		*ctx.SignageOutcomes = append(*ctx.SignageOutcomes, out)
+	recordSignage(ctx, out)
+}
+
+// recordSignage appends one signage outcome into ctx.SignageOutcomes, when the
+// caller supplied one to observe (RUL-236) — the signage counterpart of
+// recordOutcome, and the one place an outcome is published, so a refusal cannot
+// be added without reaching the operator's report.
+func recordSignage(ctx ActionContext, out SignageOutcome) {
+	if ctx.SignageOutcomes == nil {
+		return
 	}
+	*ctx.SignageOutcomes = append(*ctx.SignageOutcomes, out)
 }
 
 // SignageOutcomeFor computes RUL-236's three-value outcome from a per-screen

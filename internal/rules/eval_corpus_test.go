@@ -1433,7 +1433,7 @@ func runRUL321Suspend(t *testing.T, path string) {
 // corpus handlers' device_command action targets, primed into the engine's
 // snapshot so RUL-160's command-vocabulary check (against a real
 // registry.FixtureRegistry) resolves rather than failing closed.
-const scheduleCorpusEntity = "01J8Z3K4N5P6Q7R8S9T0SCHEDU"
+const scheduleCorpusEntity = "01J8Z3K4N5P6Q7R8S9T0SCHED0"
 
 // loadScheduleCorpusRule builds and loads an edge rule wrapping a corpus
 // case's own raw `time`/`time_pattern` trigger declaration with a
@@ -2453,7 +2453,7 @@ type rul380Case struct {
 // driver's own minimal fixture, driving both rules' runs in-flight together
 // exactly as the corpus's "both runs belong to the same generation swap"
 // framing describes.
-const rul380Entity = "01J8Z3K4N5P6Q7R8S9T0V1RL380"
+const rul380Entity = "01J8Z3K4N5P6Q7R8S9T0V1R380"
 
 // compileRUL380Rule wraps one generation-declared rule_id + actions (the
 // corpus's own JSON, verbatim — including its actual delay duration) with a

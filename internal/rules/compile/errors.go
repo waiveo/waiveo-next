@@ -30,6 +30,7 @@ const (
 	codeEntityRefAmbiguous        = "ENTITY_REF_AMBIGUOUS"
 	codeScreenRefAmbiguous        = "SCREEN_REF_AMBIGUOUS"
 	codeSignageContentAmbiguous   = "SIGNAGE_CONTENT_AMBIGUOUS"
+	codeMemberTypeInvalid         = "MEMBER_TYPE_INVALID"
 	codeModeMaxMissing            = "MODE_MAX_MISSING"
 	codeModeMaxNotApplicable      = "MODE_MAX_NOT_APPLICABLE"
 	codeMisfireInvalid            = "MISFIRE_INVALID"

@@ -7,6 +7,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/rules/model"
 	"github.com/maaxton/waiveo-next/internal/rules/schedule"
 	"github.com/maaxton/waiveo-next/internal/rules/vocab"
+	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 )
 
 // Validate returns the FIRST structural violation in r, or nil. It checks, in
@@ -76,11 +77,34 @@ func validateMember(m model.Member, kind vocab.Kind, path string) *CompileError 
 		}
 	}
 
-	if m.EntityRef != nil && m.EntityRef.Present() != 1 {
-		return &CompileError{
-			Code:    codeEntityRefAmbiguous,
-			Field:   path,
-			Message: "an EntityRef MUST declare exactly one of entity_id/selector/device_class",
+	if m.EntityRef != nil {
+		if m.EntityRef.Present() != 1 {
+			return &CompileError{
+				Code:    codeEntityRefAmbiguous,
+				Field:   path,
+				Message: "an EntityRef MUST declare exactly one of entity_id/selector/device_class",
+			}
+		}
+		// RUL-010 types the entity_id form: "a single `entity_id` (ULID)". The
+		// arity check above says one member is declared, and says nothing about
+		// what is IN it — so an `entity_id` of "kitchen-tv" compiled, stored,
+		// and then travelled verbatim into a manual run's effect report, where
+		// api/1 declares AutomationRunCommand.entity_id as a `Ulid`. A generated
+		// typed client is handed a value its own type says cannot exist, on the
+		// error path (an id that names no entity is exactly the id that fails to
+		// dispatch), and the run report is only schema-conformant while nothing
+		// goes wrong.
+		//
+		// Refused HERE because this is the moment the person who typed it is
+		// still looking at it, and because it is the only place that can promise
+		// the report's declared type: every other id in that report comes from
+		// the device registry, which validates its own (app/devices.PutEntity).
+		if id := m.EntityRef.EntityID; id != "" && !ulid.Valid(id) {
+			return &CompileError{
+				Code:    codeMemberTypeInvalid,
+				Field:   path + ".entity_id",
+				Message: fmt.Sprintf("an EntityRef's entity_id MUST be a canonical ULID (RUL-010); %q is not", id),
+			}
 		}
 	}
 
@@ -92,10 +116,24 @@ func validateMember(m model.Member, kind vocab.Kind, path string) *CompileError 
 	// passes — the exact ambiguity RUL-233 refuses, reaching the executor as a
 	// silent pick of one of the two targets the author named.
 	if kind == vocab.ActionKind && vocab.IsSignageAction(m.Type) {
-		if e := validateScreenRef(m, path); e != nil {
+		// One decode for both checks, and it is TYPE-AWARE (model.DecodeSignage).
+		// The two probes this replaced each unmarshalled into a struct of Go
+		// strings and returned nil on a decode error, so a `cast_id` written as a
+		// number — or a `screen_id` as an object — satisfied both by failing to
+		// parse: authored 201, then run as a silent no-op. A member present at
+		// the wrong type is refused naming itself, never read as absent.
+		members, terr := model.DecodeSignage(m.Raw)
+		if terr != nil {
+			return &CompileError{
+				Code:    codeMemberTypeInvalid,
+				Field:   path + "." + terr.Member,
+				Message: "a signage action's " + terr.Error() + " (RUL-233/RUL-234/RUL-235)",
+			}
+		}
+		if e := validateScreenRef(members, path); e != nil {
 			return e
 		}
-		if e := validateSignageContent(m, path); e != nil {
+		if e := validateSignageContent(m.Type, members, path); e != nil {
 			return e
 		}
 	}
@@ -138,22 +176,15 @@ func validateMember(m model.Member, kind vocab.Kind, path string) *CompileError 
 // today (a selector matching zero screens IS legal, and is the way to express
 // "whatever currently matches", RUL-233).
 //
-// The probe reads the action's raw JSON rather than model.Member.EntityRef
-// because `screen_id` is not an EntityRef member: the decoder never sees it, so
-// the EntityRef arity check cannot speak to this at all.
-func validateScreenRef(m model.Member, path string) *CompileError {
-	var probe struct {
-		ScreenID string `json:"screen_id"`
-		Selector string `json:"selector"`
-	}
-	if err := json.Unmarshal(m.Raw, &probe); err != nil {
-		return nil // malformed JSON is not this check's concern (parse handled it)
-	}
+// It reads model.DecodeSignage's members rather than model.Member.EntityRef
+// because `screen_id` is not an EntityRef member: the Member decoder never sees
+// it, so the EntityRef arity check cannot speak to this at all.
+func validateScreenRef(members model.SignageMembers, path string) *CompileError {
 	n := 0
-	if probe.ScreenID != "" {
+	if members.ScreenID != "" {
 		n++
 	}
-	if probe.Selector != "" {
+	if members.Selector != "" {
 		n++
 	}
 	if n == 1 {
@@ -179,25 +210,20 @@ func validateScreenRef(m model.Member, path string) *CompileError {
 // is told", and it was not: nothing on the authoring path looked at these
 // members at all.
 //
-// Like validateScreenRef, it reads the action's raw JSON: `cast_id` and
+// Like validateScreenRef, it reads model.DecodeSignage's members: `cast_id` and
 // `message` are per-action-type members that the shared model.Member decode does
-// not carry, so there is nothing else to check them from.
+// not carry, so there is nothing else to check them from. A member written at
+// the wrong TYPE never reaches here — DecodeSignage refuses it first — which is
+// what keeps "declared" from meaning "the key is present".
 //
 // `dismiss_alert` declares neither member (it clears whatever is there), so it
 // is deliberately not checked here — the switch names the two types the
 // contract's requirements name, rather than treating "signage action" as one
 // shape.
-func validateSignageContent(m model.Member, path string) *CompileError {
-	var probe struct {
-		CastID  string `json:"cast_id"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(m.Raw, &probe); err != nil {
-		return nil // malformed JSON is not this check's concern (parse handled it)
-	}
-	switch m.Type {
+func validateSignageContent(actionType string, members model.SignageMembers, path string) *CompileError {
+	switch actionType {
 	case vocab.ActionPlayCast:
-		if probe.CastID == "" {
+		if members.CastID == "" {
 			return &CompileError{
 				Code:    codeSignageContentAmbiguous,
 				Field:   path + ".cast_id",
@@ -205,10 +231,10 @@ func validateSignageContent(m model.Member, path string) *CompileError {
 			}
 		}
 	case vocab.ActionShowAlert:
-		if (probe.CastID == "") == (probe.Message == "") {
+		if (members.CastID == "") == (members.Message == "") {
 			field := path + ".cast_id"
 			detail := "neither is declared"
-			if probe.CastID != "" {
+			if members.CastID != "" {
 				detail = "both are declared"
 			}
 			return &CompileError{

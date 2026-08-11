@@ -704,15 +704,28 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
     }
   }, [client, selected, reload]);
 
-  /** Open/close the hatch. Opening ALWAYS re-mirrors the live builder: the hatch
-   * is a view of the record being edited, and a view that opens onto anything else
-   * is how an Apply destroys work that was never on screen. */
+  /** Open/close the hatch.
+   *
+   * Opening re-mirrors the live builder — the hatch is a view of the record being
+   * edited, and a view that opens onto anything else is how an Apply destroys
+   * work that was never on screen — but ONLY when the hatch holds no unapplied
+   * draft. An operator who has typed into the textarea owns it, closed or open:
+   * re-seeding on every open throws that text away silently, which is the same
+   * loss in the other direction, and "Hide JSON" is a fold, not a discard.
+   *
+   * There is no third case to decide between: a draft the operator has NOT
+   * touched (`jsonDraft === jsonSeed`) is already tracking the builder through
+   * the seed effect above, and a draft they HAVE touched survives the fold with
+   * the divergence warning (`builderDiverged`) telling them the builder moved on
+   * while it was closed — which is the same warning, for the same reason, as one
+   * that moves while it is open. */
   const toggleJson = useCallback(() => {
     const opening = !jsonOpen;
     setJsonOpen(opening);
     if (!opening) return;
+    if (jsonDraft !== jsonSeed) return;
     seedJson(builderJson ?? (selected ? ruleBodyJson(selOverride ?? selected) : ""));
-  }, [jsonOpen, builderJson, selected, selOverride, seedJson]);
+  }, [jsonOpen, jsonDraft, jsonSeed, builderJson, selected, selOverride, seedJson]);
 
   /** "Apply to builder": parse the hatch's JSON and stage it as the record the
    * builder is seeded with, then remount the renderer so the builder shows it. No
