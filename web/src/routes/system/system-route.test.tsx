@@ -71,6 +71,7 @@ function healthBody(over: Partial<SystemHealth> = {}): SystemHealth {
       total: 2,
       live: 2,
       fetching: 0,
+    rejected: 0,
       stale: 0,
       never_seen: 0,
       paired: 2,

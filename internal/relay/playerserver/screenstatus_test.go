@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
@@ -466,5 +468,212 @@ func TestScreenStatusesAreOrderedAndPerScreen(t *testing.T) {
 	}
 	if got[0].Priority != PriorityPreempt || got[1].Priority != PriorityScheduled {
 		t.Errorf("priorities crossed between screens: %q / %q", got[0].Priority, got[1].Priority)
+	}
+}
+
+// ── What the screen ACCEPTED, as distinct from what it was handed ───────────
+//
+// The four cases below are one finding, driven from The Hanger on 2026-08-11:
+// this record described the platform's INTENT for a screen and nothing else, so
+// a console rendering it told an operator that a wall was showing a program the
+// player was refusing — for a whole session, while the wall drew an hour-old
+// slide. The acknowledgement is where the screen answers, and PLY-091 has
+// carried that answer (`accepted`, and a `reason` when it is no) the whole time.
+
+// TestTheAckedProgramIsTheOneTheScreenConfirmedNotTheOneItWasHanded is the
+// central case. A screen accepts one program and is then handed a second it
+// never acknowledges: the handed facts must move and the confirmed facts must
+// not, because what is on the glass is still the first one (never-wipe keeps it
+// there for exactly as long as the second is not taken).
+func TestTheAckedProgramIsTheOneTheScreenConfirmedNotTheOneItWasHanded(t *testing.T) {
+	clk := &statusClock{}
+	clk.set(1_700_000_000_000)
+	srv, ts, grant := newStatusServer(t, clk)
+	token, screenID := statusPair(t, ts, grant)
+
+	srv.SetProgram(1, screenID, "rev-accepted", PriorityScheduled, DisplayContent, []wire.LeaseContent{
+		{Type: "image", AssetRef: "sha256:aa", URL: "https://origin.example/content/aa"},
+		{Type: "image", AssetRef: "sha256:bb", URL: "https://origin.example/content/bb"},
+	})
+	clk.set(1_700_000_010_000)
+	first := statusPull(t, ts, token)
+	statusPost(t, ts, token, "/player/v1/lease/ack", LeaseAckRequest{LeaseID: first.LeaseID, Accepted: true})
+
+	// A new program is assigned and collected. The player never acknowledges it
+	// — the shape of every content-fetch failure the shipped player has, which
+	// returns before wvAckLease and retries.
+	srv.SetProgram(2, screenID, "rev-unconfirmed", PriorityPreempt, DisplayBlank, nil)
+	clk.set(1_700_000_020_000)
+	statusPull(t, ts, token)
+
+	got := statusOf(t, srv, screenID)
+	if got.ProgramRevision != "rev-unconfirmed" || got.Display != DisplayBlank {
+		t.Errorf("handed program = %q/%q, want rev-unconfirmed/blank — the intent fields must still report what was sent",
+			got.ProgramRevision, got.Display)
+	}
+	if got.AckedProgramRevision != "rev-accepted" {
+		t.Errorf("acked_program_revision = %q, want rev-accepted — the screen has confirmed nothing since, so this is what it is showing",
+			got.AckedProgramRevision)
+	}
+	if got.AckedDisplay != DisplayContent || got.AckedContentCount != 2 {
+		t.Errorf("acked display/count = %q/%d, want content/2 — reporting the UNCONFIRMED blank program here is the defect: it says a wall showing two slides is dark",
+			got.AckedDisplay, got.AckedContentCount)
+	}
+}
+
+// TestARefusalIsRecordedAsARefusalAndNotAsAnAcknowledgement: PLY-091's
+// `accepted: false` is an answer, and it is the opposite of the one every
+// arriving ack used to be read as. A refusal must not stamp the acknowledgement
+// instant, must not clear the outstanding-pull count, and must not promote the
+// refused program to the confirmed set.
+func TestARefusalIsRecordedAsARefusalAndNotAsAnAcknowledgement(t *testing.T) {
+	clk := &statusClock{}
+	clk.set(1_700_000_000_000)
+	srv, ts, grant := newStatusServer(t, clk)
+	token, screenID := statusPair(t, ts, grant)
+
+	srv.SetProgram(1, screenID, "rev-403", PriorityScheduled, DisplayContent, []wire.LeaseContent{
+		{Type: "image", AssetRef: "sha256:aa", URL: "https://origin.example/content/aa"},
+	})
+	clk.set(1_700_000_010_000)
+	lease := statusPull(t, ts, token)
+
+	clk.set(1_700_000_011_000)
+	statusPost(t, ts, token, "/player/v1/lease/ack", LeaseAckRequest{
+		LeaseID: lease.LeaseID, Accepted: false,
+		Reason: "cast item 1 slide layer 3 (image): content fetch failed: HTTP 403 Forbidden",
+	})
+
+	got := statusOf(t, srv, screenID)
+	if got.LastAckAgeMs != neverObserved {
+		t.Errorf("last_ack age = %d after a REFUSAL, want %d (never) — a screen that said no has acknowledged nothing, and stamping this makes every judgement built on it read the refusal as a confirmation",
+			got.LastAckAgeMs, neverObserved)
+	}
+	if got.UnackedPulls != 1 {
+		t.Errorf("unacked_pulls = %d after a refusal, want 1 — the pull is still outstanding; clearing it on a refusal is what let a screen refusing everything read as up to date", got.UnackedPulls)
+	}
+	if !got.Rejected {
+		t.Fatal("rejected = false after the screen refused its Lease in as many words")
+	}
+	if got.RejectedProgramRevision != "rev-403" {
+		t.Errorf("rejected_program_revision = %q, want rev-403", got.RejectedProgramRevision)
+	}
+	if !strings.Contains(got.RejectReason, "403") {
+		t.Errorf("reject_reason = %q, want the player's own reason — PLY-091 requires it with a refusal and it is the whole actionable content of this state", got.RejectReason)
+	}
+	if got.AckedProgramRevision != "" || got.AckedContentCount != 0 {
+		t.Errorf("a refused program was promoted to the confirmed set (%q, %d items)", got.AckedProgramRevision, got.AckedContentCount)
+	}
+}
+
+// TestAcceptingClearsAnEarlierRefusal: the refusal is a STANDING fact, and the
+// one event that ends it is the screen taking something. A refusal that outlived
+// a subsequent acceptance would pin a recovered wall in a fault state forever —
+// the mirror of the defect this whole record was corrected for.
+func TestAcceptingClearsAnEarlierRefusal(t *testing.T) {
+	clk := &statusClock{}
+	clk.set(1_700_000_000_000)
+	srv, ts, grant := newStatusServer(t, clk)
+	token, screenID := statusPair(t, ts, grant)
+
+	srv.SetProgram(1, screenID, "rev-bad", PriorityScheduled, DisplayContent, []wire.LeaseContent{
+		{Type: "image", AssetRef: "sha256:aa", URL: "https://origin.example/content/aa"},
+	})
+	clk.set(1_700_000_010_000)
+	bad := statusPull(t, ts, token)
+	statusPost(t, ts, token, "/player/v1/lease/ack", LeaseAckRequest{LeaseID: bad.LeaseID, Accepted: false, Reason: "content fetch failed"})
+	if !statusOf(t, srv, screenID).Rejected {
+		t.Fatal("the fixture did not reach a refused state")
+	}
+
+	srv.SetProgram(2, screenID, "rev-good", PriorityScheduled, DisplayContent, []wire.LeaseContent{
+		{Type: "image", AssetRef: "sha256:cc", URL: "https://origin.example/content/cc"},
+	})
+	clk.set(1_700_000_020_000)
+	good := statusPull(t, ts, token)
+	statusPost(t, ts, token, "/player/v1/lease/ack", LeaseAckRequest{LeaseID: good.LeaseID, Accepted: true})
+
+	got := statusOf(t, srv, screenID)
+	if got.Rejected || got.RejectReason != "" || got.RejectedProgramRevision != "" {
+		t.Errorf("the refusal survived a later acceptance: rejected=%v reason=%q program=%q", got.Rejected, got.RejectReason, got.RejectedProgramRevision)
+	}
+	if got.AckedProgramRevision != "rev-good" || got.AckedContentCount != 1 {
+		t.Errorf("acked program = %q with %d item(s), want rev-good with 1", got.AckedProgramRevision, got.AckedContentCount)
+	}
+	if got.UnackedPulls != 0 {
+		t.Errorf("unacked_pulls = %d after an accepted ack, want 0", got.UnackedPulls)
+	}
+}
+
+// TestAnAckForAnOlderLeaseDoesNotPromoteTheCurrentProgram: the acknowledgement
+// names a lease_id, and the confirmed set is built from it rather than from
+// whatever this server handed over most recently. A player that acknowledges
+// late — which PLY-091 permits and this relay cannot prevent — would otherwise
+// have a brand-new program it has never seen attributed to it.
+func TestAnAckForAnOlderLeaseDoesNotPromoteTheCurrentProgram(t *testing.T) {
+	clk := &statusClock{}
+	clk.set(1_700_000_000_000)
+	srv, ts, grant := newStatusServer(t, clk)
+	token, screenID := statusPair(t, ts, grant)
+
+	srv.SetProgram(1, screenID, "rev-old", PriorityScheduled, DisplayContent, []wire.LeaseContent{
+		{Type: "image", AssetRef: "sha256:aa", URL: "https://origin.example/content/aa"},
+	})
+	clk.set(1_700_000_010_000)
+	old := statusPull(t, ts, token)
+
+	srv.SetProgram(2, screenID, "rev-new", PriorityScheduled, DisplayContent, []wire.LeaseContent{
+		{Type: "image", AssetRef: "sha256:bb", URL: "https://origin.example/content/bb"},
+		{Type: "image", AssetRef: "sha256:cc", URL: "https://origin.example/content/cc"},
+	})
+	clk.set(1_700_000_020_000)
+	statusPull(t, ts, token)
+
+	// The late ack for the FIRST lease.
+	clk.set(1_700_000_021_000)
+	statusPost(t, ts, token, "/player/v1/lease/ack", LeaseAckRequest{LeaseID: old.LeaseID, Accepted: true})
+
+	got := statusOf(t, srv, screenID)
+	if got.AckedProgramRevision == "rev-new" || got.AckedContentCount == 2 {
+		t.Errorf("an ack naming the OLD lease promoted the new program (%q, %d items) — the screen has never confirmed it",
+			got.AckedProgramRevision, got.AckedContentCount)
+	}
+	// The liveness stamp is deliberately NOT correlated (an ack of any kind is a
+	// round trip from that screen), which is what the ages have always meant.
+	if got.LastAckAgeMs != 0 {
+		t.Errorf("last_ack age = %d, want 0 — an ack for any lease is still contact from this screen", got.LastAckAgeMs)
+	}
+}
+
+// TestARefusalReasonIsBoundedBeforeItIsReported: the reason is a PLAYER-authored
+// string, and it is forwarded to the app peer, whose intake refuses a whole
+// report — every screen in it — carrying an over-long field. Bounding it at the
+// producer is what keeps one verbose player from blanking a relay's entire
+// fleet on the console.
+func TestARefusalReasonIsBoundedBeforeItIsReported(t *testing.T) {
+	clk := &statusClock{}
+	clk.set(1_700_000_000_000)
+	srv, ts, grant := newStatusServer(t, clk)
+	token, screenID := statusPair(t, ts, grant)
+
+	srv.SetProgram(1, screenID, "rev-1", PriorityScheduled, DisplayContent, []wire.LeaseContent{
+		{Type: "image", AssetRef: "sha256:aa", URL: "https://origin.example/content/aa"},
+	})
+	clk.set(1_700_000_010_000)
+	lease := statusPull(t, ts, token)
+	statusPost(t, ts, token, "/player/v1/lease/ack", LeaseAckRequest{
+		LeaseID: lease.LeaseID, Accepted: false,
+		Reason: strings.Repeat("é", 4_000),
+	})
+
+	got := statusOf(t, srv, screenID)
+	if len(got.RejectReason) > maxRejectReasonBytes {
+		t.Errorf("reject_reason is %d bytes, want at most %d", len(got.RejectReason), maxRejectReasonBytes)
+	}
+	if !utf8.ValidString(got.RejectReason) {
+		t.Error("reject_reason was cut mid-rune — the report is UTF-8 JSON, and a severed rune can fail the whole frame's decode")
+	}
+	if got.RejectReason == "" {
+		t.Error("reject_reason was emptied rather than truncated: the player's diagnosis is the point of the field")
 	}
 }

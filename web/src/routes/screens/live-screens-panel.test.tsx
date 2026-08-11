@@ -66,6 +66,14 @@ function statusRow(over: Partial<ScreenStatus> = {}): ScreenStatus {
     priority: "scheduled",
     display: "content",
     content_count: 3,
+    // What the screen ACCEPTED, which for a healthy row is the same program it
+    // was handed. They are separate fields because they come apart exactly when
+    // something is wrong, and every "now playing" assertion below reads THESE:
+    // the handed set describes a program a screen may be refusing.
+    acked_program_revision: "rev-1",
+    acked_display: "content",
+    acked_content_count: 3,
+    rejected: false,
     render_asset_ref: "sha256:aa",
     ...over,
   };
@@ -173,17 +181,61 @@ describe("formatAge", () => {
 });
 
 describe("nowPlayingLabel", () => {
-  it("separates rendered from merely sent — only one of them is evidence", () => {
-    expect(nowPlayingLabel(statusRow({ render_asset_ref: "sha256:aa", content_count: 3 }))).toBe(
-      "Rendering 3 items",
-    );
-    expect(nowPlayingLabel(withoutRender({ content_count: 3 }))).toBe("Sent 3 items");
+  it("separates rendered from merely accepted — only one of them is evidence", () => {
+    expect(
+      nowPlayingLabel(statusRow({ render_asset_ref: "sha256:aa", acked_content_count: 3 })),
+    ).toBe("Rendering 3 items");
+    expect(nowPlayingLabel(withoutRender({ acked_content_count: 3 }))).toBe("Accepted 3 items");
+  });
+
+  it("reads what the screen ACCEPTED, never what it was handed", () => {
+    // The Hanger, 2026-08-11: the relay had handed this screen a two-item
+    // program, the player was refusing it, and the wall was drawing the
+    // three-item program it had accepted an hour earlier. Every field below is
+    // exactly what the box reported, and this cell said "Sent 2 items".
+    expect(
+      nowPlayingLabel(
+        withoutRender({
+          reachability: "rejected",
+          program_revision: "rev-refused",
+          display: "content",
+          content_count: 2,
+          acked_program_revision: "rev-accepted",
+          acked_display: "content",
+          acked_content_count: 3,
+          rejected: true,
+          reject_reason: "content fetch failed: HTTP 403 Forbidden",
+        }),
+      ),
+    ).toBe("Accepted 3 items");
+
+    // And the inverse, which happened the same session: a blank program sent to
+    // a TV that was visibly showing content. The screen never took the blank —
+    // reading the handed fields reported the wall as dark.
+    expect(
+      nowPlayingLabel(
+        withoutRender({
+          display: "blank",
+          content_count: 0,
+          acked_display: "content",
+          acked_content_count: 2,
+        }),
+      ),
+    ).toBe("Accepted 2 items");
+  });
+
+  it("says nothing is confirmed when the screen has never acknowledged anything", () => {
+    // `-1` is the never sentinel, and it is the ONLY thing separating this from
+    // an accepted blank program — which is legitimately empty in every acked_*
+    // field. A cell that read the empty count alone would tell an operator a
+    // brand-new screen is deliberately dark.
+    expect(nowPlayingLabel(withoutRender({ last_ack_age_ms: -1 }))).toBe("Nothing confirmed yet");
   });
 
   it("names an intentional blank rather than reporting it as a fault", () => {
-    expect(nowPlayingLabel(statusRow({ display: "blank", content_count: 0 }))).toBe(
-      "Blank (scheduled off)",
-    );
+    expect(
+      nowPlayingLabel(statusRow({ acked_display: "blank", acked_content_count: 0 })),
+    ).toBe("Blank (scheduled off)");
   });
 
   it("says a never-seen screen is waiting, not that it is showing something", () => {
@@ -192,35 +244,45 @@ describe("nowPlayingLabel", () => {
     ).toBe("Waiting to collect its program");
   });
 
-  it("says a transferring screen is downloading, and says nothing about the wall", () => {
-    // Both of these are rows the shipped player can actually produce: the render
-    // fields are at their never values, because player-v3 does not implement
-    // PLY-110 and so never posts /player/v1/render/start.
+  it("keeps reporting the accepted program while a transfer is in flight", () => {
+    // A screen collecting an update is still showing what it last accepted —
+    // that is exactly what never-wipe guarantees — so this cell does not change
+    // during a transfer, and the Status column is where the transfer is
+    // reported. The two columns then say two different true things instead of
+    // competing over one.
     //
-    // A screen collecting its first-ever program and a screen picking up an
-    // update to one it has shown all week are INDISTINGUISHABLE in that row, and
-    // the label must therefore describe the transfer rather than the glass. It
-    // said "Collecting its first content (nothing on screen yet)" for both, which
-    // is a false claim about a physical wall on every ordinary update.
-    //
-    // `content_count` is 3 in the first case deliberately: it is the count of the
-    // Lease being collected RIGHT NOW, so it is at its most positive exactly when
-    // the wall may be blank. It is not evidence either.
-    expect(
-      nowPlayingLabel(
-        asShippedPlayerSends({ reachability: "fetching", unacked_pulls: 1, content_count: 3 }),
-      ),
-    ).toBe("Downloading new content");
+    // `content_count` is 5 here deliberately: it is the Lease being collected
+    // RIGHT NOW, so it is at its most positive exactly when it is least
+    // descriptive of the glass. It is not evidence, and this cell must not read
+    // it.
     expect(
       nowPlayingLabel(
         asShippedPlayerSends({
           reachability: "fetching",
           unacked_pulls: 1,
-          content_count: 3,
-          program_revision: "rev-week-old",
+          program_revision: "rev-incoming",
+          content_count: 5,
+          acked_program_revision: "rev-week-old",
+          acked_content_count: 3,
         }),
       ),
-    ).toBe("Downloading new content");
+    ).toBe("Accepted 3 items");
+
+    // And a screen collecting its FIRST-ever program has confirmed nothing, so
+    // it says so — a statement about this platform's evidence, not about the
+    // wall. The earlier attempt at this distinction ("Collecting its first
+    // content (nothing on screen yet)") claimed the glass was empty from a field
+    // no player sends, and took that branch on every ordinary update.
+    const first = asShippedPlayerSends({
+      reachability: "fetching",
+      unacked_pulls: 1,
+      content_count: 3,
+    });
+    first.last_ack_age_ms = -1;
+    delete first.acked_program_revision;
+    delete first.acked_display;
+    first.acked_content_count = 0;
+    expect(nowPlayingLabel(first)).toBe("Nothing confirmed yet");
   });
 
   it("never claims wall state on a row the shipped player can actually produce", () => {
@@ -241,6 +303,7 @@ describe("nowPlayingLabel", () => {
     const reachabilities: ScreenStatus["reachability"][] = [
       "live",
       "fetching",
+      "rejected",
       "stale",
       "never_seen",
     ];
@@ -273,13 +336,20 @@ describe("nowPlayingLabel", () => {
     }
   });
 
-  it("lets a scheduled blank outrank the transfer state", () => {
-    // `fetching` was checked FIRST and pre-empted this, so a screen whose
-    // program is display:blank was described as downloading content — work a
-    // blank program does not involve.
+  it("lets a confirmed blank outrank the transfer state", () => {
+    // `fetching` was checked FIRST and pre-empted this, so a screen already dark
+    // was described as downloading content — work a blank program does not
+    // involve. The blank that outranks it is the ACCEPTED one: a blank the
+    // screen was merely handed says nothing about whether it went dark, which is
+    // its own hardware finding (a lapsed alert TTL that never left the wall).
     expect(
       nowPlayingLabel(
-        statusRow({ reachability: "fetching", display: "blank", content_count: 0, unacked_pulls: 1 }),
+        statusRow({
+          reachability: "fetching",
+          acked_display: "blank",
+          acked_content_count: 0,
+          unacked_pulls: 1,
+        }),
       ),
     ).toBe("Blank (scheduled off)");
   });
@@ -324,10 +394,59 @@ describe("LiveScreensPanel — status", () => {
     expect(within(table).getByText("Collecting content")).toBeInTheDocument();
     expect(within(table).queryByText("fetching")).not.toBeInTheDocument();
     expect(within(table).queryByText("Not heard from")).not.toBeInTheDocument();
-    // Just the transfer, with no claim attached about what is on the glass —
-    // the row is exactly what real hardware sends, and on one of those the box
-    // has no render evidence in either direction.
-    expect(within(table).getByText("Downloading new content")).toBeInTheDocument();
+    // The Now-playing cell keeps reporting what the screen ACCEPTED throughout —
+    // which is what never-wipe guarantees is on the wall — so the two columns
+    // say two different true things: the Status column reports the transfer, and
+    // this one is unchanged by it.
+    expect(within(table).getByText("Accepted 3 items")).toBeInTheDocument();
+  });
+
+  it("names a screen that is refusing its program, and says why in the player's words", async () => {
+    // The 2026-08-11 wall: pulling every 10 seconds, refusing every program, and
+    // reported `live` beside the refused program's own item count. It is
+    // reachable, and reachable was the only thing this column measured.
+    renderPanel([
+      asShippedPlayerSends({
+        reachability: "rejected",
+        last_pull_age_ms: 4_000,
+        last_ack_age_ms: 3_600_000,
+        unacked_pulls: 31,
+        program_revision: "rev-refused",
+        content_count: 2,
+        acked_program_revision: "rev-hour-old",
+        acked_content_count: 1,
+        rejected: true,
+        reject_reason: "cast item 1 slide layer 3 (image): content fetch failed: HTTP 403 Forbidden",
+      }),
+    ]);
+    const table = await screen.findByRole("table", { name: "Live screens" });
+    expect(within(table).getByText("Refusing its program")).toBeInTheDocument();
+    expect(within(table).queryByText("Live")).not.toBeInTheDocument();
+    expect(within(table).queryByText("rejected")).not.toBeInTheDocument();
+    // The diagnosis, verbatim. Without it the operator moves from "no idea what
+    // is wrong" to "no idea why", which is most of the same trip.
+    expect(within(table).getByText(/HTTP 403 Forbidden/)).toBeInTheDocument();
+    // And the wall is described by what it took, not by what it was sent.
+    expect(within(table).getByText("Accepted 1 item")).toBeInTheDocument();
+  });
+
+  it("says what was observed, not why, when the refusal was inferred rather than stated", async () => {
+    // The shipped player has no `accepted: false` path at all — it abandons the
+    // Lease and retries — so on today's hardware this state is reached by the
+    // pull count with no reason attached. The cell must then report what was
+    // MEASURED and not invent a cause, which is the failure mode of every
+    // "helpful" diagnosis this console has shipped.
+    renderPanel([
+      asShippedPlayerSends({
+        reachability: "rejected",
+        unacked_pulls: 31,
+        acked_content_count: 1,
+        rejected: false,
+      }),
+    ]);
+    const table = await screen.findByRole("table", { name: "Live screens" });
+    expect(within(table).getByText("Refusing its program")).toBeInTheDocument();
+    expect(within(table).getByText("Handed 31 programs it never confirmed")).toBeInTheDocument();
   });
 
   it("never says OFFLINE — the platform cannot tell which failure it is", async () => {

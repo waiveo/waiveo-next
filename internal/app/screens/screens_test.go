@@ -140,8 +140,12 @@ func TestNeverObservedIsPreservedThroughTheArithmetic(t *testing.T) {
 // The `unacked` column is the one added this round, and the two rows at its
 // boundary are the ones that would have caught the 2026-08 case: a screen with a
 // pull inside the transfer window and an ack that never comes reads `fetching`
-// while it has an outstanding Lease it might still be working on, and `stale`
+// while it has an outstanding Lease it might still be working on, and `rejected`
 // once it has abandoned more of them than a single transient failure explains.
+//
+// An explicit PLY-091 refusal is a fourth input and is not in this table, so the
+// three numeric ones can be read at their edges without a boolean crossing every
+// row: TestAScreenThatSaysItRefusedIsNeverCalledLive drives it.
 func TestTheLiveWindowBoundary(t *testing.T) {
 	now, _ := clockAt(1_000_000)
 	r := mustRegistry(t, now)
@@ -160,11 +164,16 @@ func TestTheLiveWindowBoundary(t *testing.T) {
 		{"exactly at the live window", LiveWindowMs, NeverObserved, 1, ReachabilityLive},
 		{"a healthy screen whose ack answered its pull", 3_000, 2_500, 0, ReachabilityLive},
 
-		// The live window is judged on contact alone, so even a screen that has
-		// abandoned pull after pull reads live for as long as one of them is
-		// recent. That is correct and deliberate: it IS reachable. The column
-		// this table pins is reachability, not content health.
-		{"failing every pull, but one just landed", 1_000, NeverObserved, 50, ReachabilityLive},
+		// The live window is judged on contact alone, and this row used to read
+		// `live` on that basis — "it IS reachable; this column pins reachability,
+		// not content health". Driving a real wall on 2026-08-11 is what retired
+		// that argument. A screen pulling every 10 seconds and refusing every
+		// program it was handed is reachable, and reporting it `live` (beside the
+		// refused program, named as what it was showing) told an operator the
+		// opposite of what the glass said for a whole session. Contact is not the
+		// only thing this column can measure, and a screen that keeps asking and
+		// confirms nothing has a state of its own now.
+		{"failing every pull, but one just landed", 1_000, NeverObserved, 50, ReachabilityRejected},
 
 		// The ack is a real round trip from the screen, so a pull that has aged
 		// past the window but was acknowledged INSIDE it is a screen we heard
@@ -188,8 +197,18 @@ func TestTheLiveWindowBoundary(t *testing.T) {
 		// is failing — and an age bound can never say so, because this screen's
 		// age resets on every retry.
 		{"at the outstanding-pull allowance", LiveWindowMs + 1, NeverObserved, maxUnacked, ReachabilityFetching},
-		{"one pull past the allowance", LiveWindowMs + 1, NeverObserved, maxUnacked + 1, ReachabilityStale},
-		{"the 2026-08 wall: pulling forever, acknowledging never", LiveWindowMs + 1, NeverObserved, 40, ReachabilityStale},
+		// Past the allowance is `rejected` rather than `stale`: the same bound,
+		// read on the other side. "Stale" says the platform has not heard from a
+		// screen, and about these two it had — constantly. That mislabel is what
+		// made the 2026-08 wall's timing look like a live-window sizing problem
+		// for a whole round.
+		{"one pull past the allowance", LiveWindowMs + 1, NeverObserved, maxUnacked + 1, ReachabilityRejected},
+		{"the 2026-08 wall: pulling forever, acknowledging never", LiveWindowMs + 1, NeverObserved, 40, ReachabilityRejected},
+		// But only while it is still being heard from. Past the transfer window
+		// the counter says nothing about now — a screen that failed a few pulls
+		// and then lost power presents this forever — and contact itself is the
+		// thing in doubt.
+		{"the same wall, gone quiet past the transfer window", ContentTransferWindowMs + 1, NeverObserved, 40, ReachabilityStale},
 
 		// Acknowledged and then quiet: nothing is in flight, so no grace.
 		{"pull past the window and acknowledged", LiveWindowMs + 1, LiveWindowMs + 1, 0, ReachabilityStale},
@@ -272,25 +291,44 @@ func TestAScreenFailingEveryPullIsNeverCalledFetching(t *testing.T) {
 						"never expires and the console tells an operator a dead wall is downloading. It must read live (a pull did "+
 						"just land) or stale (it has not), never fetching.", unacked, pull)
 				}
-				// And the two it IS allowed to be, so the assertion above cannot
-				// be satisfied by a fourth state appearing.
-				if got != ReachabilityLive && got != ReachabilityStale {
-					t.Fatalf("at pull age %d the screen reads %q, want live or stale", pull, got)
+				// And the one it IS allowed to be, so the assertion above cannot
+				// be satisfied by some other state appearing.
+				//
+				// It used to be "live or stale", which is what this wall read
+				// before it was driven with eyes on the glass: `live` at the
+				// bottom of its sawtooth (a pull had just landed) and `stale` at
+				// the top. Both were derived correctly and both misdescribed it —
+				// "stale" says the platform has not heard from a screen it was
+				// hearing from every few seconds, and "live" says nothing is
+				// wrong. It has abandoned more Leases than a transient failure
+				// explains, at every point in its sawtooth, and that is one fact
+				// that deserves one word.
+				if got != ReachabilityRejected {
+					t.Fatalf("at pull age %d the screen reads %q, want rejected", pull, got)
 				}
 			}
 
-			// The one that matters to the roll-up: at the top of its sawtooth it
-			// must reach STALE, or `live == 0 && fetching == 0` never holds and a
-			// dark site is never graded `down`.
-			if err := r.ApplyScreenStatus("relay-1", 1_000_000, []wire.ScreenStatusEntry{{
-				ScreenID: "screen-403", Paired: true,
-				LastPullAgeMs: worstAgeMs, LastAckAgeMs: ackShape.ack(worstAgeMs),
-				LastRenderStartAgeMs: NeverObserved, UnackedPulls: unacked,
-			}}); err != nil {
-				t.Fatalf("ApplyScreenStatus: %v", err)
-			}
-			if got := statusFor(t, r, "screen-403").Reachability; got != ReachabilityStale {
-				t.Fatalf("at the worst age a broken screen presents (%d ms) it reads %q, want stale — this is the sample the fleet-dark alarm depends on reaching", worstAgeMs, got)
+			// The property that matters to the roll-up, stated as the roll-up
+			// states it rather than as one label: the fleet-dark alarm grades
+			// `down` on `live == 0 && fetching == 0`
+			// (internal/app/api/diagnostics.go), so this screen must be NEITHER at
+			// every point in its sawtooth — including the worst age it presents,
+			// where the old rule reached `stale` and the alarm first became
+			// reachable. Asserting the mechanism rather than the word is what
+			// keeps this test honest across a later renaming of the state.
+			for _, age := range []int64{0, worstAgeMs / 2, worstAgeMs} {
+				if err := r.ApplyScreenStatus("relay-1", 1_000_000, []wire.ScreenStatusEntry{{
+					ScreenID: "screen-403", Paired: true,
+					LastPullAgeMs: age, LastAckAgeMs: ackShape.ack(age),
+					LastRenderStartAgeMs: NeverObserved, UnackedPulls: unacked,
+				}}); err != nil {
+					t.Fatalf("ApplyScreenStatus: %v", err)
+				}
+				got := statusFor(t, r, "screen-403").Reachability
+				if got == ReachabilityLive || got == ReachabilityFetching {
+					t.Fatalf("at pull age %d a screen that has failed %d consecutive pulls reads %q — the fleet roll-up grades a dark site `down` on `live == 0 && fetching == 0`, so either of those keeps the alarm switched off for exactly the failure it exists for",
+						age, unacked, got)
+				}
 			}
 		})
 	}
@@ -739,5 +777,106 @@ func TestLiveWindowIsTheSharedDerivedConstant(t *testing.T) {
 	if LiveWindowMs != wire.ScreenLiveWindowMs {
 		t.Fatalf("screens.LiveWindowMs = %d but wire.ScreenLiveWindowMs = %d; the read model has grown a second, independently-drifting threshold",
 			LiveWindowMs, wire.ScreenLiveWindowMs)
+	}
+}
+
+// TestAScreenThatSaysItRefusedIsNeverCalledLive drives PLY-091's own refusal —
+// the answer a player gives when it will not take what it was handed — through
+// the read model.
+//
+// The screen in this case is CONTACTABLE and pulling on cadence, which is the
+// whole difficulty: every clause that judges contact says it is healthy, and it
+// is not showing what the platform believes it is showing. On real hardware this
+// read `live` beside the refused program's own revision, for a session.
+func TestAScreenThatSaysItRefusedIsNeverCalledLive(t *testing.T) {
+	now, _ := clockAt(1_000_000)
+	r := mustRegistry(t, now)
+
+	apply := func(t *testing.T, e wire.ScreenStatusEntry) Status {
+		t.Helper()
+		e.ScreenID = "screen-refusing"
+		e.LastRenderStartAgeMs = NeverObserved
+		if err := r.ApplyScreenStatus("relay-1", 1_000_000, []wire.ScreenStatusEntry{e}); err != nil {
+			t.Fatalf("ApplyScreenStatus: %v", err)
+		}
+		return statusFor(t, r, "screen-refusing")
+	}
+
+	// A pull a second ago — inside every window there is — with the screen's own
+	// refusal outstanding and only ONE pull unacknowledged, so nothing but the
+	// refusal itself can produce this judgement.
+	got := apply(t, wire.ScreenStatusEntry{
+		Paired: true, LastPullAgeMs: 1_000, LastAckAgeMs: NeverObserved, UnackedPulls: 1,
+		ProgramRevision: "rev-new", ContentCount: 2, Display: "content",
+		Rejected: true, RejectedProgramRevision: "rev-new", RejectReason: "content fetch failed: HTTP 403 Forbidden",
+	})
+	if got.Reachability != ReachabilityRejected {
+		t.Fatalf("a screen that answered `accepted: false` one second ago reads %q, want rejected — it is reachable, and reporting only that is what told an operator a refusing wall was fine", got.Reachability)
+	}
+	if got.RejectReason == "" || got.RejectedProgramRevision != "rev-new" {
+		t.Errorf("the refusal reached the read model without its reason/program (%q / %q) — the state is only actionable with them", got.RejectReason, got.RejectedProgramRevision)
+	}
+
+	// The mirror, and the one this clause could most easily become: the same
+	// screen after it stops talking. A refusal is not evidence about NOW, so past
+	// the transfer window contact itself is the doubt and `stale` is the answer.
+	got = apply(t, wire.ScreenStatusEntry{
+		Paired: true, LastPullAgeMs: ContentTransferWindowMs + 1, LastAckAgeMs: NeverObserved, UnackedPulls: 1,
+		Rejected: true, RejectReason: "content fetch failed: HTTP 403 Forbidden",
+	})
+	if got.Reachability != ReachabilityStale {
+		t.Errorf("a screen that refused and then went quiet reads %q, want stale — `rejected` says a screen is talking to us, and this one has stopped", got.Reachability)
+	}
+
+	// And the other mirror: a screen that accepted. The relay clears the refusal
+	// on acceptance, so this is what a recovered wall reports, and it must be
+	// plain `live` with no residue.
+	got = apply(t, wire.ScreenStatusEntry{
+		Paired: true, LastPullAgeMs: 3_000, LastAckAgeMs: 2_000, UnackedPulls: 0,
+		AckedProgramRevision: "rev-new", AckedDisplay: "content", AckedContentCount: 2,
+	})
+	if got.Reachability != ReachabilityLive {
+		t.Errorf("a screen that accepted its program reads %q, want live", got.Reachability)
+	}
+	if got.AckedProgramRevision != "rev-new" || got.AckedContentCount != 2 {
+		t.Errorf("the confirmed program did not survive the report: %q / %d", got.AckedProgramRevision, got.AckedContentCount)
+	}
+}
+
+// TestARelayTooOldToReportARefusalMakesNoClaim is the rolling-upgrade mirror,
+// and it is the reason this signal is a flag rather than an age.
+//
+// A relay is expected to be upgraded at or before its app peer, so an app
+// reading reports from an OLDER relay — one whose `screen.status` frames carry
+// none of the fields this round added — is the ordinary deployment case, not a
+// corner. Every field it omits decodes to its zero value here, and the judgement
+// must come out as "no claim" rather than as an accusation: an absent numeric
+// age of 0 would have meant "refused just now", and every screen on every
+// pre-upgrade relay in the fleet would have lit up as refusing its program.
+func TestARelayTooOldToReportARefusalMakesNoClaim(t *testing.T) {
+	now, _ := clockAt(1_000_000)
+	r := mustRegistry(t, now)
+
+	// Exactly the entry an older relay produces: the fields it knows, and the
+	// zero value for every one it does not.
+	if err := r.ApplyScreenStatus("relay-old", 1_000_000, []wire.ScreenStatusEntry{{
+		ScreenID: "screen-healthy", Paired: true,
+		LastPullAgeMs: 3_000, LastAckAgeMs: 2_500, LastRenderStartAgeMs: NeverObserved,
+		UnackedPulls: 0, ProgramRevision: "rev-1", Display: "content", ContentCount: 2,
+	}}); err != nil {
+		t.Fatalf("ApplyScreenStatus: %v", err)
+	}
+	got := statusFor(t, r, "screen-healthy")
+	if got.Reachability != ReachabilityLive {
+		t.Fatalf("a healthy screen behind a relay that cannot report acceptance reads %q, want live", got.Reachability)
+	}
+	if got.Rejected {
+		t.Error("a report that says nothing about acceptance was read as a refusal")
+	}
+	// What it does NOT claim, which is the honest half: with no acked* fields
+	// reported, the model must not invent them from the handed ones.
+	if got.AckedProgramRevision != "" || got.AckedContentCount != 0 {
+		t.Errorf("the model filled in a confirmed program (%q, %d items) nobody reported — the handed program is not evidence the screen took it",
+			got.AckedProgramRevision, got.AckedContentCount)
 	}
 }

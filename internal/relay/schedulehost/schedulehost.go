@@ -20,6 +20,8 @@ package schedulehost
 import (
 	"context"
 	"encoding/json"
+	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -878,7 +880,47 @@ func (r *Resolver) FirePreset(fire *datamodel.PresetFire, sink *automation.Comma
 			Error:   errString(err),
 		})
 	}
-	return datamodel.BatchOutcome(results, r.lastResolveMs)
+	out := datamodel.BatchOutcome(results, r.lastResolveMs)
+	logPresetFire(batch.PresetID, out)
+	return out
+}
+
+// logPresetFire writes the one operator-visible line a fired preset batch
+// leaves, carrying its DAT-092 outcome.
+//
+// # Why a fire logs at all, and why this one is not optional either
+//
+// The batch outcome is computed on every fire and was then DISCARDED: Tick and
+// TickBoot both call FirePreset for its effect and drop its return. So a preset
+// that fired and achieved nothing left the resolver's own "resolved/served" line
+// looking exactly like one that worked, and an operator forcing three applies to
+// test a preset saw three successes and no dispatches. The conclusion drawn from
+// that silence — that the preset had not fired — was wrong, and the ONLY way to
+// find out was to read the source.
+//
+// A rising edge is a daypart transition, so this is a handful of lines a day per
+// scope node, not a stream. The successful case is logged too, deliberately: the
+// question this answers first is "did it fire", and a line that appears only on
+// failure cannot answer it — silence would still mean either "nothing fired" or
+// "everything worked", which is the ambiguity that produced the wrong
+// conclusion.
+//
+// Only entity ids, command names and the surface's own refusal text reach the
+// line (REL-114 — the params a command carries are never touched here).
+func logPresetFire(presetID string, out datamodel.PresetBatchOutcome) {
+	if out.Outcome == "complete" {
+		log.Printf("waiveo-relay schedule: preset batch %q fired %d command(s): complete", presetID, len(out.Results))
+		return
+	}
+	var failed []string
+	for _, res := range out.Results {
+		if res.OK {
+			continue
+		}
+		failed = append(failed, res.Target+" "+res.Command+": "+res.Error)
+	}
+	log.Printf("waiveo-relay schedule: preset batch %q fired %d command(s): %s — %d failed: %s",
+		presetID, len(out.Results), out.Outcome, len(failed), strings.Join(failed, "; "))
 }
 
 // presetBatch returns the preset batch identified by presetID (its DAT-090

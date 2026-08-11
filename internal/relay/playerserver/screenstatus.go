@@ -45,6 +45,7 @@ package playerserver
 
 import (
 	"sort"
+	"unicode/utf8"
 
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
@@ -111,9 +112,62 @@ type screenLiveness struct {
 	// program the screen was last given, not the one it would be given if it
 	// asked right now. Those differ for exactly as long as a screen is failing to
 	// poll, which is precisely when the distinction matters.
+	//
+	// They are INTENT, and nothing more. A screen that was handed a program and
+	// refused it has these fields describing the program it refused — which is
+	// what a console reported for a whole session in 2026-08 while the wall drew
+	// something else entirely. What the screen ACCEPTED is the acked* set below,
+	// and the two are separate fields rather than one because they answer two
+	// different operator questions ("what did I send" / "what did it take").
 	lastProgramRevision string
 	lastPriority        string
 	lastDisplay         string
+
+	// lastLeaseID is the lease_id of that most recently handed Lease. It is what
+	// lets an arriving acknowledgement be attributed to a specific Lease rather
+	// than to whatever this server happens to be holding when it lands: an ack
+	// naming this id confirms exactly the facts above, and an ack naming an older
+	// one confirms an older program that is no longer described here.
+	lastLeaseID string
+
+	// ackedProgramRevision / ackedDisplay / ackedContentCount are the same three
+	// facts about the Lease this screen most recently ACCEPTED (PLY-091
+	// `accepted: true`) — copied from the handed set at the moment the ack for
+	// that exact lease_id arrives.
+	//
+	// This is the set a console must render as "what is on that wall", because it
+	// is the only one the screen has confirmed. PLY-091's ack means the player
+	// received, parsed and accepted the Lease; the shipped player additionally
+	// materialises every asset BEFORE acknowledging (Program.brs, and see
+	// unackedPulls above), so an accepted Lease is one whose content the screen
+	// holds. Never-wipe then keeps it on the wall until another is accepted.
+	//
+	// They are deliberately NOT reset when a new Lease is handed over. A screen
+	// that is refusing its new program is still showing the last one it took, and
+	// blanking these on issuance would replace a true statement about the wall
+	// with an empty one at exactly the moment an operator needs it.
+	ackedProgramRevision string
+	ackedDisplay         string
+	ackedContentCount    int
+
+	// rejected / rejectedProgramRevision / rejectReason record a Lease this
+	// screen REFUSED — PLY-091's `accepted: false` and the `reason` that clause
+	// requires with it — and that it has not superseded by accepting anything
+	// since.
+	//
+	// A refusal is not an acknowledgement and is not counted as one: it does not
+	// stamp lastAckMs and does not clear unackedPulls, because the screen has
+	// confirmed nothing. It is kept until the screen accepts something, which is
+	// the one event that makes it no longer true.
+	//
+	// A flag rather than an instant, because the fact is a STANDING one and not a
+	// moment: "has this screen refused what it was given and not taken anything
+	// since". How long ago it happened is already answerable from lastAckMs (how
+	// long since it accepted anything at all), and a second age would be a second
+	// thing to keep in step.
+	rejected                bool
+	rejectedProgramRevision string
+	rejectReason            string
 
 	// lastContentCount and lastRenderAssetRef are the two facts that make
 	// "playing" concrete rather than abstract: how many content items the last
@@ -150,12 +204,43 @@ type ScreenStatus struct {
 	// sentinel: zero is the ordinary healthy answer.
 	UnackedPulls int
 
+	// ProgramRevision/Priority/Display/ContentCount describe the Lease this
+	// screen was last HANDED — the platform's intent for it, not its state.
 	ProgramRevision string
 	Priority        string
 	Display         string
 	ContentCount    int
-	RenderAssetRef  string
+
+	// AckedProgramRevision/AckedDisplay/AckedContentCount describe the Lease this
+	// screen last ACCEPTED (PLY-091). Empty strings and a zero count for a screen
+	// that has never accepted one, which LastAckAgeMs's own never sentinel is the
+	// unambiguous marker of.
+	AckedProgramRevision string
+	AckedDisplay         string
+	AckedContentCount    int
+
+	// Rejected reports that this screen refused a Lease (`accepted: false`) and
+	// has accepted nothing since. RejectedProgramRevision and RejectReason name
+	// what it refused and why — PLY-091 requires the reason accompany the
+	// refusal, and it is the whole operator-actionable content of this state.
+	Rejected                bool
+	RejectedProgramRevision string
+	RejectReason            string
+
+	RenderAssetRef string
 }
+
+// maxRejectReasonBytes bounds the PLY-091 `reason` this server retains and
+// reports upstream.
+//
+// A player writes that string, so its length is not this server's to assume, and
+// the app peer's own intake refuses a report carrying an over-long field
+// (internal/app/screens) — a refusal that would discard the WHOLE report, every
+// screen in it, because one player was verbose. Truncating at the producer is
+// what keeps that unreachable: the field is bounded before it is ever reported,
+// so the intake cap is a check on a malformed relay rather than a fuse a
+// well-behaved player can blow.
+const maxRejectReasonBytes = 200
 
 // neverObserved is the *AgeMs value for a contact this relay has never seen.
 const neverObserved int64 = -1
@@ -201,17 +286,23 @@ func (s *Server) ScreenStatuses() []ScreenStatus {
 		l := s.liveness[id]
 		prog := s.programForLocked(id)
 		st := ScreenStatus{
-			ScreenID:             id,
-			Paired:               s.hasLiveSessionLocked(id, now),
-			LastPullAgeMs:        ageOf(now, l.lastPullMs),
-			LastAckAgeMs:         ageOf(now, l.lastAckMs),
-			LastRenderStartAgeMs: ageOf(now, l.lastRenderStartMs),
-			UnackedPulls:         l.unackedPulls,
-			ProgramRevision:      l.lastProgramRevision,
-			Priority:             l.lastPriority,
-			Display:              l.lastDisplay,
-			ContentCount:         l.lastContentCount,
-			RenderAssetRef:       l.lastRenderAssetRef,
+			ScreenID:                id,
+			Paired:                  s.hasLiveSessionLocked(id, now),
+			LastPullAgeMs:           ageOf(now, l.lastPullMs),
+			LastAckAgeMs:            ageOf(now, l.lastAckMs),
+			LastRenderStartAgeMs:    ageOf(now, l.lastRenderStartMs),
+			UnackedPulls:            l.unackedPulls,
+			ProgramRevision:         l.lastProgramRevision,
+			Priority:                l.lastPriority,
+			Display:                 l.lastDisplay,
+			ContentCount:            l.lastContentCount,
+			AckedProgramRevision:    l.ackedProgramRevision,
+			AckedDisplay:            l.ackedDisplay,
+			AckedContentCount:       l.ackedContentCount,
+			Rejected:                l.rejected,
+			RejectedProgramRevision: l.rejectedProgramRevision,
+			RejectReason:            l.rejectReason,
+			RenderAssetRef:          l.lastRenderAssetRef,
 		}
 		// A screen that has never pulled has been handed nothing, so it has no
 		// "last handed" program to report — but it DOES have a currently served
@@ -304,6 +395,13 @@ func (s *Server) noteProgramPullLocked(screenID string, nowMs int64, lease wire.
 	l.lastPriority = lease.Priority
 	l.lastDisplay = lease.Display
 	l.lastContentCount = len(lease.Content)
+	// The id this Lease's acknowledgement will name. Recorded so an arriving ack
+	// confirms the facts of the Lease it names rather than whatever was handed
+	// over most recently — which is the same Lease for the shipped player, and is
+	// not for one that acknowledges late.
+	l.lastLeaseID = lease.LeaseID
+	// The acked* set is deliberately untouched here. Handing a screen a new
+	// program does not change what it is showing; only its acceptance does.
 	s.liveness[screenID] = l
 }
 
@@ -312,15 +410,16 @@ func (s *Server) noteProgramPullLocked(screenID string, nowMs int64, lease wire.
 // screen asked, while the ack proves it received, parsed and accepted what it
 // was given (PLY-091).
 //
-// # It correlates NOTHING, and every reader downstream depends on knowing that
+// # The TIMING signals still correlate nothing, and readers depend on that
 //
-// This records that AN ack arrived. It does not read the `lease_id` off it and
-// does not check that the acknowledged Lease is the one most recently served.
-// So `lastAckMs` means "the last time this screen acknowledged anything", and
-// the derived judgements built on it mean less than their names suggest:
+// lastAckMs and unackedPulls are stamped and cleared by ANY accepted ack,
+// whatever Lease it names. So `lastAckMs` means "the last time this screen
+// accepted anything", and the derived judgements built on it mean less than
+// their names suggest:
 //
 //   - "this pull is unacknowledged" (internal/app/screens' pullIsUnacknowledged)
-//     is really "the last ack this relay saw predates the last pull it served";
+//     is really "the last accepted ack this relay saw predates the last pull it
+//     served";
 //   - unackedPulls going back to zero means "some ack arrived", not "the
 //     outstanding Lease was confirmed".
 //
@@ -328,16 +427,96 @@ func (s *Server) noteProgramPullLocked(screenID string, nowMs int64, lease wire.
 // order, on one thread, wvAckLease passing the leaseId it was just handed — and
 // wire's TestTheAckFollowsTheContentFetch is what keeps that ordering from
 // changing quietly. A player that retried an old ack, or acknowledged out of
-// order, would reset both signals without having confirmed anything. If that
-// ever becomes possible, correlate here: the `lease_id` is already on the wire
-// in both directions, so this is a place to compare it, not a fact to rediscover.
-func (s *Server) noteLeaseAck(screenID string) {
+// order, would reset both signals without having confirmed anything. The
+// PROGRAM facts below do not have that weakness: they are promoted only for an
+// ack naming the Lease they describe, which is the correlation this file's
+// earlier revision noted as available on the wire and not yet used.
+//
+// # An acknowledgement carries an ANSWER, and this is where it is read
+//
+// PLY-091's body is `{lease_id, accepted, reason?}`, and `accepted` is the only
+// field in the whole player/1 surface that reports what the screen DID with what
+// it was given. It used to be discarded here: every arriving ack — including a
+// refusal — stamped the ack instant, cleared the outstanding-pull count, and
+// left the console reporting the refused program as the screen's state. A
+// refusal is therefore now recorded as a refusal (rejected*), and only
+// `accepted: true` promotes the handed facts to the acked* set.
+func (s *Server) noteLeaseAck(screenID, leaseID string, accepted bool, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l := s.liveness[screenID]
+	if !accepted {
+		// Not an acknowledgement of anything: lastAckMs and unackedPulls are
+		// both "the screen confirmed something", and it did the opposite. The
+		// refused Lease is named from the handed set only when the refusal names
+		// the Lease that set describes — a late refusal of an older Lease is
+		// still a refusal, but it did not refuse THIS program.
+		l.rejected = true
+		l.rejectReason = truncate(reason, maxRejectReasonBytes)
+		l.rejectedProgramRevision = ""
+		if leaseID != "" && leaseID == l.lastLeaseID {
+			l.rejectedProgramRevision = l.lastProgramRevision
+		}
+		s.liveness[screenID] = l
+		return
+	}
+	l.lastAckMs = s.nowMs()
+	l.unackedPulls = 0
+	// Accepting something is what makes an earlier refusal no longer true.
+	l.rejected = false
+	l.rejectedProgramRevision = ""
+	l.rejectReason = ""
+	// Promote the handed facts to the confirmed set only for an ack that names
+	// the Lease those facts describe. An ack for an older lease_id is genuine
+	// liveness (recorded above) but confirms an older program, and copying the
+	// current one under it would attribute a brand-new program to a screen that
+	// has never seen it.
+	if leaseID != "" && leaseID == l.lastLeaseID {
+		l.ackedProgramRevision = l.lastProgramRevision
+		l.ackedDisplay = l.lastDisplay
+		l.ackedContentCount = l.lastContentCount
+	}
+	s.liveness[screenID] = l
+}
+
+// noteScreenContact records a non-Lease arrival from screenID that is
+// nevertheless proof the screen is alive and being served — today, a viewer
+// interaction (PLY's interactive press). It stamps the same liveness instant an
+// acknowledgement does.
+//
+// It deliberately does NOT touch the acked*/rejected* sets: a press says a human
+// touched the wall, not that the screen accepted the program it was last handed,
+// and a press by someone standing in front of a screen that is refusing its new
+// program must not read as that screen having taken it.
+//
+// What it still shares with an accepted ack is the unackedPulls reset, which is
+// a known and separately-booked conflation: a press is liveness evidence but not
+// content-transfer evidence, and clearing a CONTENT-transfer failure count on
+// one is a different fact standing in for the fact the counter measures. It is
+// left exactly as it was here rather than changed under an unrelated fix; the
+// rejected* set above is not cleared by it, so a refusal a screen actually made
+// survives any number of presses.
+func (s *Server) noteScreenContact(screenID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	l := s.liveness[screenID]
 	l.lastAckMs = s.nowMs()
 	l.unackedPulls = 0
 	s.liveness[screenID] = l
+}
+
+// truncate caps s at max bytes, cutting on a rune boundary so the result is
+// still valid UTF-8 (the wire is UTF-8 JSON, and a report carrying a severed
+// rune is a report the app peer's decoder may reject in full).
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 // noteRenderStart records that screenID began presenting assetRef (PLY-110) —

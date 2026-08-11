@@ -205,7 +205,14 @@ func New(store *identity.Store, dc deviceclass.Registry, controller deviceplane.
 		return nil, fmt.Errorf("automationhost: resume durable telemetry buffer: %w", err)
 	}
 
-	surface := deviceplane.NewCommandSurface(controller, dc, resolveEntity)
+	// The source label an unresolved command's log line carries (deviceplane's
+	// logUnresolved). This surface serves BOTH the edge-rules engine and the app
+	// peer's own device.command frames (cmd/waiveo-relay wires the latter onto
+	// ExecuteDeviceCommand), so it names the plane rather than one of its two
+	// callers — a refusal here means the relay could not resolve the entity, and
+	// that is the same fact whichever of them asked.
+	surface := deviceplane.NewCommandSurface(controller, dc, resolveEntity,
+		deviceplane.WithCommandSource("automation"))
 	sink := automation.NewCommandSink(surface, relayID)
 	clk := sysClock{}
 	reg := registry.FromDeviceClass(dc, registry.Overlay{})

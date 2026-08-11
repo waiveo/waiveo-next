@@ -77,6 +77,11 @@ const maxScreenFieldBytes = 256
 //     without having abandoned Lease after Lease in the meantime. See
 //     reachabilityOf for why that is a state of its own and not either of the
 //     neighbours, and for why both bounds are needed.
+//   - Rejected: the relay is being contacted by this screen and the screen is
+//     NOT taking the program it is being handed — it either said so (PLY-091's
+//     `accepted: false`) or it has re-pulled past the progress bound without
+//     confirming anything. See isRejecting for why that is a state of its own
+//     and, in particular, why it is not `live`.
 //   - Stale: contact has been made at some point, but not recently. NOT
 //     "offline" — see the package doc.
 //   - NeverSeen: no relay has ever observed this screen pull a program. Usually
@@ -87,6 +92,7 @@ type Reachability string
 const (
 	ReachabilityLive      Reachability = "live"
 	ReachabilityFetching  Reachability = "fetching"
+	ReachabilityRejected  Reachability = "rejected"
 	ReachabilityStale     Reachability = "stale"
 	ReachabilityNeverSeen Reachability = "never_seen"
 )
@@ -175,11 +181,35 @@ type Status struct {
 	// that every other field here renders identically.
 	ReportAgeMs int64
 
+	// ProgramRevision/Priority/Display/ContentCount are what the relay last
+	// HANDED this screen: the platform's intent for it, and never on their own
+	// evidence of what it is doing.
 	ProgramRevision string
 	Priority        string
 	Display         string
 	ContentCount    int
-	RenderAssetRef  string
+
+	// AckedProgramRevision/AckedDisplay/AckedContentCount are what the screen
+	// last ACCEPTED (PLY-091). These are the fields a console renders as "what is
+	// on that wall": the ones above describe a program a screen may be refusing.
+	//
+	// Empty and zero for a screen that has never accepted a Lease, which
+	// LastAckAgeMs's never sentinel is the unambiguous marker of — an accepted
+	// BLANK program is legitimately empty here too.
+	AckedProgramRevision string
+	AckedDisplay         string
+	AckedContentCount    int
+
+	// Rejected/RejectedProgramRevision/RejectReason describe a Lease the screen
+	// REFUSED and has not superseded by accepting anything since. False for a
+	// screen with no outstanding refusal — and false, too, for one behind a relay
+	// too old to report it, which is why it is a flag and not an age (wire's
+	// ScreenStatusEntry says what an absent age would have claimed).
+	Rejected                bool
+	RejectedProgramRevision string
+	RejectReason            string
+
+	RenderAssetRef string
 }
 
 // NeverObserved is the *AgeMs value for a contact never made. It matches the
@@ -261,7 +291,16 @@ func (r *Registry) ApplyScreenStatus(relayID string, takenAtMs int64, entries []
 			return fmt.Errorf("screens: report names screen %q twice", e.ScreenID)
 		}
 		seen[e.ScreenID] = true
-		for _, f := range [...]string{e.ScreenID, e.ProgramRevision, e.RenderAssetRef, e.Priority, e.Display} {
+		// Every free-form string the entry carries, including the ones a PLAYER
+		// authored (`reject_reason` is the player's own words, forwarded). The
+		// relay bounds that one before reporting it (playerserver's
+		// maxRejectReasonBytes), which is what keeps a verbose player from
+		// tripping this cap and having its whole relay's report refused — the cap
+		// here is a check on a misbehaving relay, not a fuse a screen can blow.
+		for _, f := range [...]string{
+			e.ScreenID, e.ProgramRevision, e.RenderAssetRef, e.Priority, e.Display,
+			e.AckedProgramRevision, e.AckedDisplay, e.RejectedProgramRevision, e.RejectReason,
+		} {
 			if len(f) > maxScreenFieldBytes {
 				return fmt.Errorf("screens: report for screen %q carries a field longer than %d bytes", e.ScreenID, maxScreenFieldBytes)
 			}
@@ -309,21 +348,27 @@ func (r *Registry) Statuses() []Status {
 		reportAge := elapsed(now, rep.takenAtMs)
 		for _, e := range rep.screens {
 			st := Status{
-				ScreenID:             e.ScreenID,
-				RelayID:              relayID,
-				Paired:               e.Paired,
-				LastPullAgeMs:        agePlus(e.LastPullAgeMs, reportAge),
-				LastAckAgeMs:         agePlus(e.LastAckAgeMs, reportAge),
-				LastRenderStartAgeMs: agePlus(e.LastRenderStartAgeMs, reportAge),
-				UnackedPulls:         e.UnackedPulls,
-				ReportAgeMs:          reportAge,
-				ProgramRevision:      e.ProgramRevision,
-				Priority:             e.Priority,
-				Display:              e.Display,
-				ContentCount:         e.ContentCount,
-				RenderAssetRef:       e.RenderAssetRef,
+				ScreenID:                e.ScreenID,
+				RelayID:                 relayID,
+				Paired:                  e.Paired,
+				LastPullAgeMs:           agePlus(e.LastPullAgeMs, reportAge),
+				LastAckAgeMs:            agePlus(e.LastAckAgeMs, reportAge),
+				LastRenderStartAgeMs:    agePlus(e.LastRenderStartAgeMs, reportAge),
+				UnackedPulls:            e.UnackedPulls,
+				ReportAgeMs:             reportAge,
+				ProgramRevision:         e.ProgramRevision,
+				Priority:                e.Priority,
+				Display:                 e.Display,
+				ContentCount:            e.ContentCount,
+				AckedProgramRevision:    e.AckedProgramRevision,
+				AckedDisplay:            e.AckedDisplay,
+				AckedContentCount:       e.AckedContentCount,
+				Rejected:                e.Rejected,
+				RejectedProgramRevision: e.RejectedProgramRevision,
+				RejectReason:            e.RejectReason,
+				RenderAssetRef:          e.RenderAssetRef,
 			}
-			st.Reachability = reachabilityOf(st.LastPullAgeMs, st.LastAckAgeMs, st.UnackedPulls)
+			st.Reachability = reachabilityOf(st.LastPullAgeMs, st.LastAckAgeMs, st.UnackedPulls, st.Rejected)
 			if prev, dup := best[e.ScreenID]; dup && prev.ReportAgeMs <= reportAge {
 				continue
 			}
@@ -427,9 +472,29 @@ func (r *Registry) Statuses() []Status {
 // assigned read `stale` while it downloaded perfectly normally. The counter is
 // the thing that has to be right here: this clause reads a surplus as failure,
 // so anything counted that cannot be acknowledged is a false failure.
-func reachabilityOf(lastPullAgeMs, lastAckAgeMs int64, unackedPulls int) Reachability {
+// # Why Rejected exists, and why it has to be tested BEFORE Live
+//
+// Everything above judges CONTACT. None of it judges whether the contact
+// achieved anything, and that gap is the whole of the 2026-08-11 defect: a wall
+// that pulled every 10 seconds, refused every program it was handed, and drew an
+// hour-old slide throughout was reported `live`, with the program it was
+// refusing named as what it was showing. Both statements were derived correctly
+// and both were false about the thing an operator was looking at.
+//
+// `live` is reached on the freshest contact alone, and a screen that pulls on
+// cadence has a fresh contact no matter what it does with the answer. So a
+// refusal cannot be a case ordered after `live`; it has to be asked first, or the
+// state can never fire for the screens it exists for. Only a screen that would
+// otherwise have read `live` (or `stale`, at the top of a backoff sawtooth) can
+// reach it — a screen that is genuinely mid-transfer takes the Fetching branch
+// below, because the two are decided by the SAME progress bound in opposite
+// directions and cannot both hold.
+func reachabilityOf(lastPullAgeMs, lastAckAgeMs int64, unackedPulls int, rejected bool) Reachability {
 	if lastPullAgeMs == NeverObserved {
 		return ReachabilityNeverSeen
+	}
+	if isRejecting(lastPullAgeMs, unackedPulls, rejected) {
+		return ReachabilityRejected
 	}
 	if freshestContact(lastPullAgeMs, lastAckAgeMs) <= LiveWindowMs {
 		return ReachabilityLive
@@ -438,6 +503,61 @@ func reachabilityOf(lastPullAgeMs, lastAckAgeMs int64, unackedPulls int) Reachab
 		return ReachabilityFetching
 	}
 	return ReachabilityStale
+}
+
+// isRejecting reports whether a screen is in contact and NOT taking what it is
+// being handed. Two independent pieces of evidence, either of which is enough,
+// and one age gate over both.
+//
+// # The evidence
+//
+//   - It SAID SO. PLY-091's acknowledgement carries `accepted`, and a player that
+//     answers `false` has reported a refusal in as many words, with the `reason`
+//     that clause requires. The relay holds that refusal until the screen accepts
+//     something (playerserver's noteLeaseAck), so an outstanding one is current
+//     by construction and needs no tolerance: nothing is being guessed.
+//
+//   - It keeps ASKING and never confirms. unackedPulls past
+//     MaxFetchingUnackedPulls is not a second opinion about the same thing — it
+//     is the SAME bound `fetching` is drawn at, read on the other side. A screen
+//     within the bound is plausibly materialising content and reads `fetching`;
+//     one past it has abandoned Lease after Lease, which is what the shipped
+//     player does when it refuses a program (it returns before `wvAckLease` and
+//     retries on a backoff), and is why the bound exists at all. Deriving both
+//     states from one line is deliberate: two bounds would be two places to
+//     disagree about where "still trying" ends.
+//
+// The second is what actually catches today's player, which has no `accepted:
+// false` path at all (Program.brs acknowledges only success). The first is what
+// catches a conformant one the moment it grows one, and is why this does not wait
+// three pulls to believe a screen that has already told us.
+//
+// # The age gate, which is the mirror this clause could most easily become
+//
+// A screen that failed a few pulls and then LOST POWER presents an unacknowledged
+// count that never decreases, forever. Reporting that `rejected` would be the
+// same defect this state was built to remove, pointed the other way: a dead
+// screen wearing a word that says it is talking to us. So the pull must be recent
+// enough that the screen is still plausibly there — the same
+// ContentTransferWindowMs `fetching` expires on, for the same reason and out of
+// the same constant. Past it, contact itself is the thing in doubt, and `stale`
+// is the honest answer whatever the counters say.
+//
+// # What is deliberately NOT re-checked here
+//
+// pullIsUnacknowledged. It is implied by the count clause (a pull served since
+// the last ack is by definition after it), and asking it again would let any
+// arriving ack-shaped signal — an interaction press stamps the same instant —
+// clear a refusal the screen genuinely made. The refusal record is cleared by
+// exactly one event, at the relay: the screen accepting something.
+func isRejecting(lastPullAgeMs int64, unackedPulls int, rejected bool) bool {
+	if lastPullAgeMs == NeverObserved || lastPullAgeMs > ContentTransferWindowMs {
+		return false
+	}
+	if rejected {
+		return true
+	}
+	return int64(unackedPulls) > MaxFetchingUnackedPulls
 }
 
 // isFetching reports whether a screen past the live window is materialising

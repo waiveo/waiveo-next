@@ -309,9 +309,14 @@ func TestAScreenThatPullsAndNeverAcksReachesANonFetchingState(t *testing.T) {
 			"forever — and while `fetching` captured it the console said 'Collecting content' about a dead screen and the fleet "+
 			"roll-up could never grade a whole site of them `down`.", got.UnackedPulls, got.LastPullAgeMs, screens.ContentTransferWindowMs)
 	}
-	if got.Reachability != screens.ReachabilityStale {
-		t.Fatalf("reachability = %q, want stale: the pull is %dms old, past the %dms live window, with %d pulls outstanding",
-			got.Reachability, got.LastPullAgeMs, screens.LiveWindowMs, got.UnackedPulls)
+	// `rejected`, not `stale`. The screen is answering every poll — nothing about
+	// it is unheard-from — and calling it stale is what sent a whole review round
+	// looking at the live window instead of at the content it kept refusing. Both
+	// keep it out of `live` and `fetching`, which is what the fleet-dark grade
+	// needs; this one also says what to go and fix.
+	if got.Reachability != screens.ReachabilityRejected {
+		t.Fatalf("reachability = %q, want rejected: the pull is %dms old (the screen is in contact) with %d pulls outstanding and nothing ever confirmed",
+			got.Reachability, got.LastPullAgeMs, got.UnackedPulls)
 	}
 	if got.LastPullAgeMs > screens.ContentTransferWindowMs {
 		t.Fatalf("fixture no longer proves the finding: the pull age (%d) is outside the transfer window (%d), so the AGE bound would have expired `fetching` on its own and the count is not what this test is measuring",
