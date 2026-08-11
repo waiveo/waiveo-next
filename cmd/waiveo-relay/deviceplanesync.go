@@ -107,6 +107,36 @@ func (s devicePlaneSync) tick() {
 	}
 }
 
+// startDevicePlaneSync builds the join from the relay's real collaborators and
+// starts it ticking for the life of ctx. It is the ONE place the running binary
+// turns this file's mechanism into a running loop.
+//
+// It exists as a named function, rather than as a composite literal plus a `go`
+// statement inline in main, for the reason the rest of this file exists. Naming
+// the TYPE made the seam testable; it did not make the WIRING testable, and the
+// wiring is the half that was missing. Deleting the two lines from main left
+// every gate green — the extracted unit still had its own passing tests, and
+// nothing anywhere asked whether the binary starts it. The same shape, one level
+// up: the mechanism proven, its use unproven.
+//
+// A named call is the smallest thing a test can pin (deviceplanesync_test.go's
+// TestMainStartsTheDevicePlaneSync, following cmd/waiveo-feeder's
+// TestMainStartsTheConsoleBinding). Its collaborators are positional and
+// explicit for the same reason: passing nil for one of them is how a join
+// silently stops joining, and a positional argument is a thing that test can
+// name.
+func startDevicePlaneSync(
+	ctx context.Context,
+	gate *devicetargets.Registry,
+	poller statePoller,
+	states entityStateSink,
+	ka keepaliveTargets,
+	interval time.Duration,
+) {
+	sync := devicePlaneSync{gate: gate, poller: poller, states: states, keepalive: ka}
+	go sync.run(ctx, interval)
+}
+
 // run ticks every interval until ctx is done. It is separate from tick so a
 // test can assert the WORK without waiting on a clock, and the loop itself
 // stays the two lines there is nothing to get wrong in.

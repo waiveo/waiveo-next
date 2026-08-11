@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"go/ast"
 	"sync"
 	"testing"
 	"time"
@@ -239,5 +240,114 @@ func TestSyncRunTicksUntilTheContextIsDone(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("run did not return after its context was canceled")
+	}
+}
+
+// TestStartDevicePlaneSyncRunsTheJoin covers the production wiring FUNCTION:
+// startDevicePlaneSync is what main calls, and this calls the same function.
+//
+// Its claim over the cases above is narrow and specific — that the function
+// both assembles the join from the collaborators it is handed AND starts it
+// ticking. A startX that built the value and forgot the `go` would satisfy
+// every other case in this file, because every other case drives tick or run
+// directly.
+func TestStartDevicePlaneSyncRunsTheJoin(t *testing.T) {
+	f := newSyncFixture(t)
+	f.store.Observe(sighting(dcNativeID, "192.168.50.31:8060"), 1000)
+	f.gate.SetInventory(adoptionFor(t, dcNativeID, true).Devices)
+
+	entityID := entityIDOf(dcNativeID)
+	f.poller.snapshot = map[string]state.Entity{entityID: {ID: entityID, State: "playing"}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startDevicePlaneSync(ctx, f.gate, f.poller, f.store, f.ka, time.Millisecond)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(f.poller.polled()) > 0 && len(f.ka.watched()) > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, ok := f.poller.polled()[entityID]; !ok {
+		t.Errorf("the state poller was pointed at %v, want it to include %s", f.poller.polled(), entityID)
+	}
+	if _, ok := f.ka.watched()[entityID]; !ok {
+		t.Errorf("keep-alive watches %v, want it to include %s", f.ka.watched(), entityID)
+	}
+
+	// And the observation reached the candidate report, so all three
+	// collaborators the call was handed are genuinely in the loop.
+	cands := f.store.Report().Body.Candidates
+	if len(cands) != 1 || len(cands[0].Entities) != 1 {
+		t.Fatalf("report = %+v, want one candidate with one entity", cands)
+	}
+	if got := cands[0].Entities[0].State; got != "playing" {
+		t.Errorf("reported entity state = %q, want \"playing\" — the started loop is not copying observations onward", got)
+	}
+}
+
+// TestMainStartsTheDevicePlaneSync is the other half of the reachability
+// claim, and is deliberately a check on main's SOURCE rather than on its
+// behavior — the same trade cmd/waiveo-feeder's TestMainStartsTheConsoleBinding
+// records, and made for the same reason.
+//
+// The case above proves startDevicePlaneSync does the right thing. It cannot
+// prove main calls it: this whole join was an anonymous goroutine in main whose
+// body could be deleted with `go build`, `go test ./...` and validate-deadcode
+// all green, and naming the type fixed the first half of that (the mechanism is
+// now covered) without touching the second (nothing asks whether the binary
+// starts it). Extracting the unit moved the untested seam up a level rather
+// than closing it. This is what closes it.
+//
+// The ARGUMENTS are asserted, not just the call, because the failure this
+// guards is not only "the loop is gone". A join handed a nil collaborator still
+// runs, still ticks, and silently stops joining that one thing — which is how
+// keep-alive came to watch a set nobody refreshed. Each position is named with
+// what it costs, so a failure reads as damage rather than as an argument-count
+// mismatch.
+func TestMainStartsTheDevicePlaneSync(t *testing.T) {
+	mainFn := parseRelayMainFunc(t)
+
+	wantArgs := []struct {
+		arg string
+		why string
+	}{
+		{"rootCtx", "the loop must live as long as the binary, and stop with it"},
+		{"deviceTargets", "the adoption gate is where the drivable set is re-derived from; without it nothing re-derives"},
+		{"poller", "the ECP state poller is both the set that gets re-pointed and the source of every observation copied onward"},
+		{"candStore", "the candidate store is what device.candidates — and so GET /api/v1/entities — reports from; unwired, every entity reports no state forever"},
+		{"keepaliveTargetSink", "screen keep-alive's watched set; unwired, keep-alive watches whatever it was constructed with at boot and never follows a device discovered later"},
+		{"cfg.pollInterval", "the join's cadence"},
+	}
+
+	found := 0
+	ast.Inspect(mainFn, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if ident, ok := call.Fun.(*ast.Ident); !ok || ident.Name != "startDevicePlaneSync" {
+			return true
+		}
+		found++
+		if len(call.Args) != len(wantArgs) {
+			t.Errorf("startDevicePlaneSync is called with %d argument(s), want %d", len(call.Args), len(wantArgs))
+			return true
+		}
+		for i, want := range wantArgs {
+			if got := renderExpr(call.Args[i]); got != want.arg {
+				t.Errorf("startDevicePlaneSync argument %d = %s, want %s — %s", i, got, want.arg, want.why)
+			}
+		}
+		return true
+	})
+
+	if found == 0 {
+		t.Fatal("func main never calls startDevicePlaneSync. The device plane then has no periodic join: an adopted device discovered after the last generation apply never becomes drivable, keep-alive never follows the adopted set, and every entity in GET /api/v1/entities reports no state for the life of the process — all while `go build`, the whole test suite and validate-deadcode stay green, which is exactly how this code shipped unwired the first time.")
+	}
+	if found > 1 {
+		t.Errorf("func main calls startDevicePlaneSync %d times; one loop is the point — two would re-point the same pollers against each other", found)
 	}
 }

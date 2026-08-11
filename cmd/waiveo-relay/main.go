@@ -1031,14 +1031,10 @@ func main() {
 	// onto the candidates the device.candidates report is built from. It is a
 	// named unit (deviceplanesync.go) rather than a closure here because it is
 	// the sole mechanism behind two user-facing behaviours and, as a closure,
-	// could be deleted whole with every gate still green.
-	deviceSync := devicePlaneSync{
-		gate:      deviceTargets,
-		poller:    poller,
-		states:    candStore,
-		keepalive: keepaliveTargetSink,
-	}
-	go deviceSync.run(rootCtx, cfg.pollInterval)
+	// could be deleted whole with every gate still green — and it is started
+	// through a named function, rather than assembled and `go`-ed here, so that
+	// deleting THIS line cannot be green either (TestMainStartsTheDevicePlaneSync).
+	startDevicePlaneSync(rootCtx, deviceTargets, poller, candStore, keepaliveTargetSink, cfg.pollInterval)
 
 	// Discovery (REL-110/111): SSDP client sweep + mDNS listener each mint
 	// per-DEVICE candidates into ONE SHARED candidate store when both lanes
