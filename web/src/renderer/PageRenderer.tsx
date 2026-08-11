@@ -246,6 +246,7 @@ export function isCreateDraftUi(ui: Record<string, unknown>): boolean {
   return ui[CREATE_DRAFT_KEY] != null;
 }
 
+
 /**
  * Seed a create draft from the page's `newAction` (the declarative create idiom,
  * UIS-021/164). The draft is a fresh in-memory record the detail form binds to:

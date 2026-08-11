@@ -175,10 +175,16 @@ export default function VariablesRoute({ api }: { api?: WaiveoApi }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
 
-  // The node a new variable is placed under. Defaults to the first readable
-  // node; a variable MUST carry a placement (DAT-006/DAT-130) and the
-  // `newAction` grammar cannot carry a chosen one, so the detail form's own
-  // scope-node select is where it is changed after the row exists.
+  // The FALLBACK placement for a draft saved without a choice. A variable MUST
+  // carry a placement (DAT-006/DAT-130), so there has to be one.
+  //
+  // This used to be the only placement a console-created variable ever got,
+  // because the comment here said `newAction`'s grammar "cannot carry a chosen
+  // one". That reading was wrong and cost the page its primary job: the grammar's
+  // itemDefault is indeed a literal-only seed (UIS-108/109), but the seam is not
+  // handed the seed — on a draft save the renderer passes `scope.root`, the record
+  // the detail form has been editing (actions.tsx:203). The choice was in the
+  // parameter all along.
   const nodesRef = useRef<ScopeNode[]>([]);
   nodesRef.current = nodes;
 
@@ -225,17 +231,45 @@ export default function VariablesRoute({ api }: { api?: WaiveoApi }) {
       create: async (_target, itemDefault) => {
         setFieldErrors({});
         setConflictReview(false);
-        const placement = nodesRef.current[0]?.id;
+        // The DRAFT, not the itemDefault. UIS-108/109 requires itemDefault to be a
+        // literal-only seed, so it is what the form STARTED as and never what the
+        // operator made it. Building the body from it discarded every edit
+        // silently: the form offers scope, type and value, and a create posted a
+        // default-scoped empty string regardless. The scope selection vanishing
+        // also made DAT-134/135 overrides — the same name at a node and its
+        // ancestor — unreachable from the console, and a name collision on the
+        // substituted default then reported DAT-131 "already exists at this scope
+        // node" about a placement the operator never chose.
+        // `itemDefault` IS the live draft on a draft save — the renderer hands the
+        // seam `scope.root`, the record the detail form has been editing
+        // (actions.tsx:203). The previous code read only `.name` from it and
+        // hardcoded the rest, on the strength of a comment in this file claiming
+        // the parameter was the page's static seed. It is the seed only at the
+        // moment the draft is CREATED; by Save it carries every edit.
+        const draftRow = itemDefault as unknown as VariableViewRow;
+        const chosenScope =
+          typeof draftRow.scope_node === "string" && draftRow.scope_node !== ""
+            ? draftRow.scope_node
+            : undefined;
+        // The first readable node stays the FALLBACK, not the answer: a variable
+        // MUST carry a placement (DAT-006/DAT-130), so a draft dismissed without a
+        // choice still has somewhere to land.
+        const placement = chosenScope ?? nodesRef.current[0]?.id;
         if (!placement) {
           toast.error("Add a scope node before adding a variable — a variable is placed at one.");
           return;
         }
+        // Projected through the SAME function submit uses, so a create and an edit
+        // cannot disagree about what "boolean false" or "the number 0" means.
+        const projected = valueFromView(draftRow);
+        if ("error" in projected) {
+          setFieldErrors({ value_number: projected.error });
+          toast.error("Couldn't add the variable — please fix the highlighted field.");
+          return;
+        }
         const body: VariableCreate = {
-          name: typeof itemDefault.name === "string" ? itemDefault.name : "new_variable",
-          // A create's value is the empty string rather than a chosen type: the
-          // `newAction` grammar carries a static itemDefault, and the type is what
-          // the operator picks next in the detail form.
-          value: "",
+          name: typeof draftRow.name === "string" && draftRow.name !== "" ? draftRow.name : "new_variable",
+          value: projected.value,
           scope_node: placement,
         };
         try {

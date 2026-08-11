@@ -7,7 +7,7 @@ import { ThemeProvider } from "@/components/theme/theme-provider";
 import VariablesRoute from "./variables-route";
 import variablesPageDoc from "./page.uis.json";
 import { validatePage } from "@/renderer/validate";
-import { TRACE_ID, ULID_A, ULID_B, ULID_ROOT, scopeNode, ok } from "@/api/test-support";
+import { TRACE_ID, ULID_A, ULID_B, ULID_C, ULID_ROOT, scopeNode, ok } from "@/api/test-support";
 
 // variables-route.test.tsx DRIVES the page — clicks and types — rather than
 // asserting it rendered. Every behaviour below goes through a real userEvent
@@ -345,5 +345,102 @@ describe("Variables — the secrets prohibition is on the page", () => {
     expect(
       await screen.findByText(/Don't put passwords, API keys or tokens here/i),
     ).toBeInTheDocument();
+  });
+});
+
+describe("Variables — a create carries what the operator actually chose (HV-17)", () => {
+  // The regression these pin SHIPPED. `create`'s handler built its body from the
+  // page's `itemDefault`, which UIS-108/109 requires to be a literal-only seed —
+  // so it is what the draft STARTED as, never what the operator made it. Every
+  // edit was discarded silently: choosing Demo Screen / Number / 42 stored an
+  // empty string at the first scope node.
+  //
+  // The existing create test could not catch it, and it is worth naming why: it
+  // clicks New then Save immediately, so the defaults ARE the correct answer for
+  // that case. Only a create with a NON-DEFAULT selection can see the bug.
+  const twoNodes = [
+    scopeNode({ id: ULID_ROOT, name: "Demo Site" }),
+    scopeNode({ id: ULID_C, name: "Demo Screen" }),
+  ];
+
+  async function createWith(fill: (user: ReturnType<typeof userEvent.setup>) => Promise<void>) {
+    const posted: { body?: Record<string, unknown> } = {};
+    server.use(
+      http.get("*/api/v1/variables", () => page([])),
+      http.get("*/api/v1/scope-nodes", () => page(twoNodes)),
+      http.post("*/api/v1/variables", async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>;
+        posted.body = body;
+        return ok(variable({ id: ULID_B, name: String(body.name ?? ""), value: body.value }), {
+          status: 201,
+          revision: 1,
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderVariables();
+    await screen.findByRole("table", { name: "Variables" });
+    await user.click(screen.getByRole("button", { name: "New" }));
+    await screen.findByRole("button", { name: "Save changes" });
+    await fill(user);
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(posted.body).toBeDefined());
+    return posted.body as Record<string, unknown>;
+  }
+
+  it("posts the CHOSEN scope node, not the first one in the list", async () => {
+    const body = await createWith(async (user) => {
+      await user.selectOptions(screen.getByLabelText("Scope node"), "Demo Screen");
+    });
+    // Not ULID_ROOT. Placing at a non-default node is also the only way to author
+    // a DAT-134/135 override — the same name at a node and its ancestor — so this
+    // failing made overrides unreachable from the console entirely.
+    expect(body.scope_node).toBe(ULID_C);
+  });
+
+  it("posts a NUMBER when the operator picked Number, not an empty string", async () => {
+    const body = await createWith(async (user) => {
+      await user.selectOptions(screen.getByLabelText("Type"), "Number");
+      await user.clear(screen.getByLabelText("Value"));
+      await user.type(screen.getByLabelText("Value"), "42");
+    });
+    expect(body.value).toBe(42);
+  });
+
+  it("posts a BOOLEAN when the operator picked True/false", async () => {
+    const body = await createWith(async (user) => {
+      await user.selectOptions(screen.getByLabelText("Type"), "True / false");
+      await user.click(screen.getByRole("switch"));
+    });
+    expect(body.value).toBe(true);
+  });
+
+  it("posts the typed NAME, not the seed", async () => {
+    const body = await createWith(async (user) => {
+      await user.clear(screen.getByLabelText("Name"));
+      await user.type(screen.getByLabelText("Name"), "lobby_open");
+    });
+    expect(body.name).toBe("lobby_open");
+  });
+
+  it("refuses a cleared Number on CREATE the same way it does on edit", async () => {
+    // valueFromView is shared with submit precisely so the two cannot disagree
+    // about what an unset number means; null is not a settable value (DAT-133).
+    server.use(
+      http.get("*/api/v1/variables", () => page([])),
+      http.get("*/api/v1/scope-nodes", () => page(twoNodes)),
+      http.post("*/api/v1/variables", () => {
+        throw new Error("create must not be attempted with an unsendable value");
+      }),
+    );
+    const user = userEvent.setup();
+    renderVariables();
+    await screen.findByRole("table", { name: "Variables" });
+    await user.click(screen.getByRole("button", { name: "New" }));
+    await screen.findByRole("button", { name: "Save changes" });
+    await user.selectOptions(screen.getByLabelText("Type"), "Number");
+    await user.clear(screen.getByLabelText("Value"));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(await screen.findByText(/Enter a number/)).toBeInTheDocument();
   });
 });
