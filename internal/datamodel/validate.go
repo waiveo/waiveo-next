@@ -410,6 +410,22 @@ func checkCastSlides(slides []CastSlide) []Error {
 		}}
 	}
 	var errs []Error
+
+	// The set of slide ids this cast declares, collected in a FIRST pass so a
+	// nav item may target any slide of the cast — including one declared after
+	// the slide the menu sits on, which is the ordinary case for a "next" item
+	// and by far the most common menu there is. Reusing the incremental `seen`
+	// map below would have accepted only BACKWARD jumps, and a forward jump would
+	// have been refused with a message about a slide that plainly exists.
+	// Duplicate ids are reported separately below; here a duplicate simply
+	// resolves, since it is still a slide the player can find.
+	declared := make(map[string]bool, len(slides))
+	for _, s := range slides {
+		if id := strings.TrimSpace(s.ID); id != "" {
+			declared[id] = true
+		}
+	}
+
 	seen := make(map[string]bool, len(slides))
 	for i, s := range slides {
 		switch {
@@ -440,6 +456,45 @@ func checkCastSlides(slides []CastSlide) []Error {
 				Field:   fmt.Sprintf("slides[%d].layers", i),
 				Code:    "CAST_SLIDE_LAYERS_INVALID",
 				Message: err.Error() + " (DAT-043)",
+			})
+		}
+		errs = append(errs, checkNavTargets(i, s.Layers, declared)...)
+	}
+	return errs
+}
+
+// checkNavTargets enforces the one nav rule that CANNOT live in
+// wire.ValidateAuthoredSlideLayers: every `nav` item's target_slide_id must name
+// a slide of THIS cast.
+//
+// The wire validator sees one layer stack at a time and has no idea what other
+// slides exist, so it can only check that a target is well formed. Whether the
+// target resolves is a CAST-level fact, and this is the cast-level validator —
+// the same split `checkCastSlides` already applies to slide-id uniqueness.
+//
+// It is enforced rather than left to the player because an unresolvable target
+// is precisely the defect this project keeps shipping: a menu item that takes
+// focus, highlights, accepts a press and performs nothing, with the failure
+// visible only to whoever is standing in front of the screen. Refusing it at
+// authoring time turns a silent dead end into a 422 naming the exact item.
+func checkNavTargets(slideIndex int, layers []wire.Layer, declared map[string]bool) []Error {
+	var errs []Error
+	for li, l := range layers {
+		if l.Kind != wire.LayerKindNav {
+			continue
+		}
+		for ii, it := range l.Items {
+			if it.TargetSlideID == "" || declared[it.TargetSlideID] {
+				// An empty target is already reported by the wire validator;
+				// reporting it twice would show an operator two errors for one
+				// mistake.
+				continue
+			}
+			errs = append(errs, Error{
+				Field: fmt.Sprintf("slides[%d].layers[%d].items[%d].target_slide_id", slideIndex, li, ii),
+				Code:  "CAST_NAV_TARGET_UNKNOWN",
+				Message: fmt.Sprintf("nav item %q targets slide id %q, which this cast does not declare; a menu item whose target does not exist would accept a press and do nothing (DAT-043)",
+					it.Label, it.TargetSlideID),
 			})
 		}
 	}

@@ -1,0 +1,26 @@
+{
+  "case_id": "EVT-055-valid-screen-interaction",
+  "contract": "events/1",
+  "req_ids": ["EVT-055", "EVT-056", "EVT-057"],
+  "description": "A viewer presses an interactive element on a screen; the relay records a screen.interaction and the app peer reconstructs it into a durable event carrying the authored element name verbatim.",
+  "input": {
+    "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZE",
+    "interaction": "call_service",
+    "lease_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZL",
+    "slide_id": "front-desk",
+    "at": 1752537000000
+  },
+  "expected": {
+    "envelope": {
+      "schema": "screen.interaction",
+      "payload": {
+        "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZE",
+        "interaction": "call_service",
+        "lease_id": "01J8Z3K4N5P6Q7R8S9T0V1W2ZL",
+        "slide_id": "front-desk",
+        "at": 1752537000000
+      }
+    },
+    "delivered": true
+  }
+}

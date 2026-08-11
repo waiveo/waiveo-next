@@ -46,6 +46,48 @@ sub init()
     m.slideClockTimer.observeField("fire", "onSlideClockTick")
     m.slideTicking = []
 
+    ' Interactive slide layers (parity milestones 1.5/3.7). focusTargets is the
+    ' list of D-pad-focusable regions the SHOWING slide carries — one per layer
+    ' that names a ping (wire.LayerIsInteractive) and one per item of every nav
+    ' layer — rebuilt by renderSlide and emptied by clearSlide, exactly like
+    ' slideTicking. focusIndex is which of them the ring is on, -1 for none.
+    '
+    ' The ring itself is four fixed Rectangles (see PhotonScene.xml): allocated
+    ' once for the life of the app and repositioned as focus moves, never created
+    ' per slide.
+    m.focusRing = m.top.findNode("focusRing")
+    m.focusRingTop = m.top.findNode("focusRingTop")
+    m.focusRingBottom = m.top.findNode("focusRingBottom")
+    m.focusRingLeft = m.top.findNode("focusRingLeft")
+    m.focusRingRight = m.top.findNode("focusRingRight")
+    m.focusTargets = []
+    m.focusIndex = -1
+
+    ' The lease the currently-showing content came from, refreshed on every
+    ' successful poll (onPhotonResult). A press reports it so the platform can
+    ' attribute the interaction to exactly what was on screen — the relay refuses
+    ' an interaction naming a lease it did not issue to this screen.
+    m.leaseId = ""
+
+    ' The showing slide's own dwell, remembered so an interaction can RE-ARM it
+    ' (wvRestartDwell): somebody working a menu must not have the slide pulled
+    ' out from under them mid-press.
+    m.currentDwellMs = 0
+
+    ' The one thread a press is posted on. Created here, once, and never again —
+    ' the same rule IdleDefeatTask above states, and the rule the legacy player
+    ' broke by creating a fresh Task per press (Task threads outlive their owning
+    ' node, so a wall panel pressed a few hundred times a day walks into the
+    ' firmware thread cap). The scene steers it by writing its `press` field.
+    m.interactionTask = CreateObject("roSGNode", "InteractionTask")
+    m.interactionTask.control = "RUN"
+
+    ' A Scene receives key events only while it holds focus. Without this the
+    ' D-pad reaches nothing at all and every interactive layer is inert — the
+    ' exact "surface that accepts work it never performs" this player must not
+    ' ship. Asserted by TestPhotonSceneTakesFocusForKeyEvents.
+    m.top.setFocus(true)
+
     m.status = m.top.findNode("statusLabel")
     m.status.text = "Waiveo Player v3 — starting…"
 
@@ -124,6 +166,14 @@ sub onPhotonResult()
     if res = invalid then return
 
     if res.ok
+        ' The lease the content below came from, refreshed on EVERY successful
+        ' poll rather than only on a changed program: a relay mints a fresh
+        ' lease_id per pull (PLY-097) and only accepts an interaction naming one
+        ' it recently issued, so a screen showing an unchanged cast for an hour
+        ' would otherwise report a lease_id long since evicted and have every
+        ' press refused LEASE_UNKNOWN.
+        m.leaseId = castStr(res.leaseId)
+
         ' One or more already-fetched, already-verified cast items (PLY-083a),
         ' each either plain image/video or composed (PLY-015); a single-item
         ' cast is the degenerate case of the exact same cycling logic
@@ -189,6 +239,11 @@ function castSignature(items as Object) as String
         it = items[i]
         sig = sig + "|" + castStr(it.contentType) + ";" + castStr(it.contentUri) + ";"
         if it.durationMs <> invalid then sig = sig + it.durationMs.toStr()
+        ' The item's own cast-local slide id: it is what a nav item's target
+        ' resolves against, so two programs whose slides are identically drawn but
+        ' differently identified genuinely differ — a menu would jump somewhere
+        ' else. Cheap to include and wrong to leave out.
+        sig = sig + ";S" + castStr(it.slideId)
         ' A composed layer contributes only its resolved contentUri; a slide
         ' layer additionally contributes its kind, text, color, and geometry —
         ' two slides that share the same image bytes but differ in a text/clock
@@ -213,6 +268,20 @@ function castSignature(items as Object) as String
             for j = 0 to it.layers.Count() - 1
                 ly = it.layers[j]
                 sig = sig + ";L" + castStr(ly.contentUri) + "," + castStr(ly.kind) + "," + castStr(ly.text) + "," + castStr(ly.color) + "," + castStr(ly.x) + "," + castStr(ly.y) + "," + castStr(ly.w) + "," + castStr(ly.h) + "," + castStr(ly.value) + "," + castStr(ly.target_ms) + "," + castStr(ly.entity_id)
+                ' The INTERACTIVE members. Both are load-bearing in the signature
+                ' for the same reason `value` is: they change what the slide DOES
+                ' without changing a single visible pixel of the other layers, so
+                ' a program that only re-pointed a menu item — or renamed a
+                ' button's ping — would otherwise look identical to the one
+                ' already showing and never re-render. The screen would keep an
+                ' outdated menu wired to the old targets indefinitely.
+                sig = sig + "," + castStr(ly.ping_name)
+                if ly.items <> invalid
+                    for k = 0 to ly.items.Count() - 1
+                        nit = ly.items[k]
+                        sig = sig + ",N" + castStr(nit.label) + ">" + castStr(nit.target_slide_id)
+                    end for
+                end if
             end for
         end if
     end for
@@ -281,6 +350,10 @@ sub renderCastItem()
         renderSlide(item.layers)
 
         durationMs = wvClampCastDurationMs(item.durationMs)
+        ' Remembered so an interaction can RE-ARM the dwell (wvRestartDwell): a
+        ' viewer working a menu must not have the slide advance out from under
+        ' them between two presses.
+        m.currentDwellMs = durationMs
         m.castTimer.duration = durationMs / 1000.0
         m.castTimer.control = "start"
         layerCount = 0
@@ -406,12 +479,21 @@ function shutdown() as Boolean
         m.idleDefeatTask.control = "STOP"
     end if
     if m.idleDefeatHeartbeat <> invalid then m.idleDefeatHeartbeat.control = "stop"
+    ' The interaction thread is stopped on exactly the same terms as the
+    ' idle-defeat one, and for exactly the same reason: it is a Task, so it
+    ' outlives the node that owns it unless it is told to stop. Cooperative flag
+    ' first (honored at its next wake-up, which is at most one wait timeout
+    ' away), then the firmware-level stop.
+    if m.interactionTask <> invalid
+        m.interactionTask.stopFlag = true
+        m.interactionTask.control = "STOP"
+    end if
     if m.task <> invalid then m.task.control = "STOP"
     if m.castTimer <> invalid then m.castTimer.control = "stop"
     ' A slide's clock timer is a repeating Timer; like castTimer it must be
     ' stopped on teardown so it never fires against a torn-down slide.
     if m.slideClockTimer <> invalid then m.slideClockTimer.control = "stop"
-    print "[player-v3] scene shutdown — idle-defeat and player tasks stopped"
+    print "[player-v3] scene shutdown — idle-defeat, interaction and player tasks stopped"
     return true
 end function
 
@@ -542,6 +624,13 @@ sub renderSlide(layers as Object)
 
     for each layer in layers
         kind = wvSlideStr(layer.kind)
+        ' Whether this layer produced anything on screen. Only a DRAWN layer may
+        ' become a focus region: an unrecognized kind is skipped (see this sub's
+        ' doc), and giving one a focus target anyway would put the ring around
+        ' empty space the viewer cannot see, press, or move past without
+        ' understanding why — a focus trap on exactly the forward-compatibility
+        ' path that is supposed to degrade gracefully.
+        drawn = true
         x = wvSlideInt(layer.x)
         y = wvSlideInt(layer.y)
         w = wvSlideInt(layer.w)
@@ -607,13 +696,92 @@ sub renderSlide(layers as Object)
         else if kind = "video"
             m.slideLayers.appendChild(renderSlideVideo(layer, x, y, w, h))
 
+        else if kind = "ping"
+            ' A ping is a BUTTON: its label is drawn exactly as a `text` layer's
+            ' is (same styling path, so font_px/color/align behave identically and
+            ' an author does not learn two rules), and everything that makes it a
+            ' button rather than a caption is the focus region registered below.
+            ' It deliberately draws no background of its own: this model has one
+            ' way to put a colored box behind something — a `rect` layer under it
+            ' — and inventing a second, button-only fill would be a second color
+            ' field with its own defaults to disagree with.
+            lbl = createSlideLabel(wvSlideStr(layer.text), layer, x, y, w, h)
+            m.slideLayers.appendChild(lbl)
+
+        else if kind = "nav"
+            ' Each nav ITEM becomes its own Label and its own focus region, laid
+            ' out inside the layer's box along its longer axis (wvNavItemRects).
+            ' Items are individual focus targets rather than one target with
+            ' internal state, which is what lets the SAME spatial traversal move
+            ' between two menu items, from a menu item to a ping button, and back
+            ' — no per-kind key handling, and no "which control owns the D-pad
+            ' right now?" question to get wrong (the legacy player carried exactly
+            ' that question and answered it with a nav-vs-widget precedence rule).
+            rects = wvNavItemRects(x, y, w, h, layer.items)
+            if layer.items <> invalid
+                for i = 0 to layer.items.Count() - 1
+                    it = layer.items[i]
+                    r = rects[i]
+                    itemLbl = createSlideLabel(wvSlideStr(it.label), layer, r[0], r[1], r[2], r[3])
+                    ' A menu item is centered in its own cell unless the author
+                    ' said otherwise: an item's cell is computed, not authored, so
+                    ' left-aligning by default would pin every label to a boundary
+                    ' the author never drew.
+                    if wvSlideStr(layer.align) = "" then itemLbl.horizAlign = "center"
+                    itemLbl.vertAlign = "center"
+                    m.slideLayers.appendChild(itemLbl)
+                    m.focusTargets.Push({
+                        x: r[0], y: r[1], w: r[2], h: r[3],
+                        action: "nav",
+                        pingName: "",
+                        targetSlideId: wvSlideStr(it.target_slide_id)
+                    })
+                end for
+            end if
+
         else
             ' Unknown kind — skip (see this sub's doc). Nothing is drawn for it.
+            drawn = false
             print "[player-v3] slide layer with unsupported kind '" + kind + "' skipped"
+        end if
+
+        ' A ping name makes ANY layer focusable — that is the whole of the
+        ' interactive-widget mechanism (wire.LayerIsInteractive): a `ping` layer
+        ' requires one, and an `entity` reading, an `image`, or a `rect` used as
+        ' an invisible hotspot may carry one too. Registered OUTSIDE the kind
+        ' chain above, deliberately: putting it in the `ping` branch is the
+        ' half-implementation this codebase keeps shipping — the required
+        ' direction covered and the optional-on-every-other-kind direction
+        ' silently inert, so a widget an author made interactive would draw
+        ' perfectly and never take focus.
+        '
+        ' A nav layer is skipped here even if it somehow carried a ping name: its
+        ' own items are already focus targets, and a whole-layer target on top of
+        ' them would sit over every item and steal their focus.
+        pingName = wvSlideStr(layer.ping_name)
+        if pingName <> "" and kind <> "nav" and drawn
+            m.focusTargets.Push({
+                x: x, y: y, w: w, h: h,
+                action: "ping",
+                pingName: pingName,
+                targetSlideId: ""
+            })
         end if
     end for
 
     m.slideLayers.visible = true
+
+    ' Put focus on the first interactive region this slide carries, if any. First
+    ' in Z-ORDER rather than nearest a corner: the layer stack's order is the one
+    ' thing the author controls directly, so "the first thing I placed" is a
+    ' predictable landing spot, and a slide with exactly one button — by far the
+    ' commonest case — lands on it with certainty.
+    if m.focusTargets.Count() > 0
+        setFocusIndex(0)
+        print "[player-v3] slide has " + m.focusTargets.Count().toStr() + " interactive region(s) — D-pad focus active"
+    else
+        hideFocusRing()
+    end if
 
     ' Start the once-a-second refresh only if the slide actually carries a
     ' self-ticking layer — a slide of static text, images and server-resolved
@@ -724,6 +892,15 @@ end function
 sub clearSlide()
     stopSlideClock()
     m.slideTicking = []
+    ' Drop the focus regions and hide the ring BEFORE the children go: a ring
+    ' left visible over a torn-down slide is an outline around nothing, and a
+    ' stale focus target would let the next OK press dispatch the PREVIOUS
+    ' slide's action — a button the viewer can no longer see firing an automation
+    ' they did not choose. Same ordering rule, and the same reason, as stopping
+    ' the tick timer first.
+    m.focusTargets = []
+    m.focusIndex = -1
+    hideFocusRing()
     for each child in m.slideLayers.getChildren(-1, 0)
         if child.subtype() = "Video" then child.control = "stop"
     end for
@@ -759,6 +936,331 @@ sub onSlideClockTick()
         end if
     end for
 end sub
+
+' ==========================================================================
+' Interactive slide layers: D-pad focus, OK dispatch, nav jumps
+' (parity milestones 1.5/3.7)
+' ==========================================================================
+
+' onKeyEvent is this scene's remote handler, and the ONLY one — the scene takes
+' focus in init so key events reach it at all.
+'
+' It handles keys only while the SHOWING slide carries interactive regions
+' (m.focusTargets), and returns false for everything else. Returning false
+' matters: an unhandled key must stay unhandled so the platform keeps its own
+' meaning for it (Home exits, and a future admin surface can claim a key without
+' first prising it out of this function). A scene that swallowed every key would
+' make a screen unexitable by remote, which on a wall-mounted panel with no
+' keyboard is a genuine field problem.
+'
+' Only key DOWN is acted on. A remote delivers press and release for every key,
+' and acting on both dispatches every interaction twice — two automations run for
+' one human press.
+'
+' Every key this function consumes also RE-ARMS the slide's dwell timer. A slide
+' carrying a menu is still a slide with a dwell time, and without this a viewer
+' three items into a menu has it replaced mid-thought. Re-arming rather than
+' pausing keeps the ordinary case honest: a slide nobody touches still advances
+' exactly on its authored dwell, and one somebody is actively working stays put
+' for as long as they keep working it.
+function onKeyEvent(key as String, press as Boolean) as Boolean
+    if not press then return false
+    if m.focusTargets = invalid or m.focusTargets.Count() = 0 then return false
+
+    if key = "OK"
+        wvRestartDwell()
+        activateFocusedTarget()
+        return true
+    end if
+
+    if key = "up" or key = "down" or key = "left" or key = "right"
+        ' `nextIdx` rather than `next`: `next` is a BrightScript keyword.
+        nextIdx = wvSpatialNeighbor(m.focusIndex, key)
+        if nextIdx < 0
+            ' No target lies that way. Do NOT consume the key: a slide with one
+            ' button must leave left/right free for whatever else the platform or
+            ' a later surface does with them, and swallowing a press that moved
+            ' nothing is indistinguishable to the viewer from the player having
+            ' hung.
+            return false
+        end if
+        wvRestartDwell()
+        setFocusIndex(nextIdx)
+        return true
+    end if
+
+    return false
+end function
+
+' wvRestartDwell re-arms the showing slide's advance timer at its full authored
+' dwell. Guarded on a remembered non-zero dwell so it can never arm the timer
+' with a zero duration (the render-thread-saturating value wvClampCastDurationMs
+' exists to prevent) on an item kind that does not advance on a timer at all.
+sub wvRestartDwell()
+    if m.currentDwellMs = invalid or m.currentDwellMs <= 0 then return
+    m.castTimer.control = "stop"
+    m.castTimer.duration = m.currentDwellMs / 1000.0
+    m.castTimer.control = "start"
+end sub
+
+' activateFocusedTarget performs the focused region's action — the OK press.
+'
+'   ping -> hand the press to InteractionTask, which POSTs it to the relay off
+'           this thread. Fire and forget by design: the render thread must not
+'           block on a network round trip (see InteractionTask.brs), so the
+'           viewer's feedback is immediate and local.
+'   nav  -> jump to the cast item whose slide id the item targets.
+sub activateFocusedTarget()
+    if m.focusIndex < 0 or m.focusIndex >= m.focusTargets.Count() then return
+    t = m.focusTargets[m.focusIndex]
+
+    if t.action = "nav"
+        jumpToSlideId(t.targetSlideId)
+        return
+    end if
+
+    if m.leaseId = ""
+        ' Nothing has been served yet, so there is no lease to attribute the
+        ' press to and the relay would refuse it. Say so rather than post a
+        ' request built to fail.
+        print "[player-v3] press '" + t.pingName + "' NOT sent — no lease is currently held"
+        return
+    end if
+
+    ' A FRESH assoc array per press, never a mutated-and-re-set one: a
+    ' SceneGraph field observer fires on assignment, and re-assigning the same
+    ' reference makes what the Task reads depend on when it happens to run rather
+    ' than on what was published (the same rule PlayerTask states for
+    ' photonResult).
+    press = {
+        lease_id: m.leaseId,
+        interaction: t.pingName,
+        slide_id: currentSlideId()
+    }
+    m.interactionTask.press = press
+    print "[player-v3] press '" + t.pingName + "' -> relay (lease " + m.leaseId + ")"
+end sub
+
+' currentSlideId is the cast-local slide id of the item on screen, or "" for an
+' item that has none (a plain image/video, an inline slide, a generated alert).
+function currentSlideId() as String
+    if m.castItems = invalid or m.castIndex < 0 or m.castIndex >= m.castItems.Count() then return ""
+    return wvSlideStr(m.castItems[m.castIndex].slideId)
+end function
+
+' jumpToSlideId presents the cast item whose cast-local slide id is slideId — a
+' nav item's OK action.
+'
+' The lookup is by ID over the cast's own items, never by an index carried on the
+' wire, because the two are not the same thing: a cast's slides are projected
+' into the SAME content array as whatever else the playlist carries, so an index
+' authored against the cast addresses the wrong item the moment a playlist gains
+' an entry before it. Matching on the id the projection stamped onto the item
+' (LeaseContent.slide_id) is invariant under every such change.
+'
+' A target that resolves to nothing is LOGGED and does nothing else. It should be
+' unreachable — the authoring gate refuses a cast whose nav item targets a slide
+' the cast does not declare (datamodel.checkNavTargets) — so reaching it means
+' either an older relay or a program assembled some other way, and guessing
+' (jumping to slide 0, say) would send a viewer somewhere nobody chose.
+sub jumpToSlideId(slideId as String)
+    if slideId = "" then return
+    if m.castItems = invalid then return
+    for i = 0 to m.castItems.Count() - 1
+        if wvSlideStr(m.castItems[i].slideId) = slideId
+            print "[player-v3] nav -> slide '" + slideId + "' (cast item " + i.toStr() + ")"
+            m.castIndex = i
+            renderCastItem()
+            return
+        end if
+    end for
+    print "[player-v3] nav target '" + slideId + "' matches no item in the current cast — ignored"
+end sub
+
+' setFocusIndex moves focus to target i and repositions the ring around it.
+sub setFocusIndex(i as Integer)
+    if i < 0 or i >= m.focusTargets.Count()
+        hideFocusRing()
+        return
+    end if
+    m.focusIndex = i
+    t = m.focusTargets[i]
+    showFocusRing(t.x, t.y, t.w, t.h)
+end sub
+
+' showFocusRing draws the four-Rectangle outline around a region, inset outward
+' by wvFocusRingPad so the ring frames the target rather than covering its edges.
+'
+' The ring is CLAMPED to the canvas: a target flush against an edge would
+' otherwise place a bar at a negative coordinate, where SceneGraph draws it
+' off-screen and the outline silently becomes three-sided — focus that looks like
+' focus on every layer except the ones at the edges, which is where an author is
+' most likely to put a menu.
+sub showFocusRing(x as Integer, y as Integer, w as Integer, h as Integer)
+    pad = wvFocusRingPad()
+    th = wvFocusRingThickness()
+
+    rx = x - pad
+    ry = y - pad
+    rw = w + pad * 2
+    rh = h + pad * 2
+    if rx < 0
+        rw = rw + rx
+        rx = 0
+    end if
+    if ry < 0
+        rh = rh + ry
+        ry = 0
+    end if
+    if rx + rw > 1920 then rw = 1920 - rx
+    if ry + rh > 1080 then rh = 1080 - ry
+    if rw <= 0 or rh <= 0
+        hideFocusRing()
+        return
+    end if
+
+    m.focusRingTop.translation = [rx, ry]
+    m.focusRingTop.width = rw
+    m.focusRingTop.height = th
+
+    m.focusRingBottom.translation = [rx, ry + rh - th]
+    m.focusRingBottom.width = rw
+    m.focusRingBottom.height = th
+
+    m.focusRingLeft.translation = [rx, ry]
+    m.focusRingLeft.width = th
+    m.focusRingLeft.height = rh
+
+    m.focusRingRight.translation = [rx + rw - th, ry]
+    m.focusRingRight.width = th
+    m.focusRingRight.height = rh
+
+    m.focusRing.visible = true
+end sub
+
+' hideFocusRing hides the outline and clears the focus index, so a later OK can
+' never dispatch against a region nothing is pointing at.
+sub hideFocusRing()
+    if m.focusRing <> invalid then m.focusRing.visible = false
+    m.focusIndex = -1
+end sub
+
+' wvFocusRingPad / wvFocusRingThickness size the outline. Sized for a television
+' seen across a room, not a desk monitor: a 2px hairline is invisible at viewing
+' distance, which makes focus untrackable and the whole D-pad model unusable.
+function wvFocusRingPad() as Integer
+    return 8
+end function
+
+function wvFocusRingThickness() as Integer
+    return 6
+end function
+
+' wvSpatialNeighbor picks the focus target to move to from `from` in direction
+' `key`, or -1 when nothing lies that way.
+'
+' The rule is: consider only targets whose CENTRE is strictly beyond the current
+' target's centre in the pressed direction, and choose the one minimising
+' (distance along the pressed axis) + (perpendicular offset x 2). The
+' perpendicular weight is what makes a grid behave: without it, pressing `right`
+' from a menu item can land on a button two rows down merely because it is a few
+' pixels further right, and the viewer's mental model breaks immediately. It is a
+' weight rather than a hard "must overlap on the other axis" rule because real
+' slides are not grids — a ping button beside a menu is rarely exactly aligned
+' with it, and a strict rule would make it unreachable.
+'
+' Spatial rather than list-order traversal is the point. Order-based movement
+' (next/previous in the layer stack) is trivial to write and wrong on any slide
+' where the author's layout does not match their insertion order — pressing
+' `right` and having focus jump upward is the kind of thing that reads as broken
+' hardware.
+function wvSpatialNeighbor(from as Integer, key as String) as Integer
+    if from < 0 or from >= m.focusTargets.Count() then return -1
+    cur = m.focusTargets[from]
+    cx = cur.x + cur.w / 2
+    cy = cur.y + cur.h / 2
+
+    best = -1
+    bestScore = 0
+    for i = 0 to m.focusTargets.Count() - 1
+        if i <> from
+            t = m.focusTargets[i]
+            tx = t.x + t.w / 2
+            ty = t.y + t.h / 2
+
+            along = 0
+            across = 0
+            ok = false
+            if key = "right"
+                ok = tx > cx
+                along = tx - cx
+                across = Abs(ty - cy)
+            else if key = "left"
+                ok = tx < cx
+                along = cx - tx
+                across = Abs(ty - cy)
+            else if key = "down"
+                ok = ty > cy
+                along = ty - cy
+                across = Abs(tx - cx)
+            else if key = "up"
+                ok = ty < cy
+                along = cy - ty
+                across = Abs(tx - cx)
+            end if
+
+            if ok
+                score = along + across * 2
+                if best < 0 or score < bestScore
+                    best = i
+                    bestScore = score
+                end if
+            end if
+        end if
+    end for
+    return best
+end function
+
+' wvNavItemRects lays a nav layer's items out inside its own box and returns one
+' [x, y, w, h] per item, in item order.
+'
+' It is the on-device TRANSCRIPTION of wire.NavItemRects (internal/shared/wire/
+' lease.go), and it must stay one: the Studio canvas draws the menu from the Go
+' function's rects and this player focuses and hits it with these, so any
+' disagreement puts the focus ring somewhere other than the label it belongs to.
+' BrightScript cannot call Go, so the two are pinned by a test that reads THIS
+' source (TestNavItemRectsMatchesPlayerTranscription) rather than left to drift.
+'
+' The axis follows the box's own aspect — wider than tall is a row, otherwise a
+' column — so the drawn geometry alone decides the orientation and there is no
+' second authored field that could contradict it. The LAST item absorbs the
+' integer-division remainder so the items exactly fill the box.
+function wvNavItemRects(x as Integer, y as Integer, w as Integer, h as Integer, items as Object) as Object
+    out = []
+    if items = invalid then return out
+    n = items.Count()
+    if n <= 0 then return out
+
+    ' `cell` rather than `step`: `step` is a BrightScript keyword (for…step) and
+    ' using it as an identifier is a parse error, not a style preference.
+    if w >= h
+        cell = Int(w / n)
+        for i = 0 to n - 1
+            iw = cell
+            if i = n - 1 then iw = w - cell * (n - 1)
+            out.Push([x + cell * i, y, iw, h])
+        end for
+        return out
+    end if
+
+    cell = Int(h / n)
+    for i = 0 to n - 1
+        ih = cell
+        if i = n - 1 then ih = h - cell * (n - 1)
+        out.Push([x, y + cell * i, w, ih])
+    end for
+    return out
+end function
 
 ' wvNowEpochSeconds is the current UTC instant in Unix epoch SECONDS — the unit a
 ' countdown's target is reduced to. roDateTime is UTC unless told otherwise, and

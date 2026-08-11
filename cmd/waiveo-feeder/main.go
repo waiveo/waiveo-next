@@ -887,7 +887,19 @@ func main() {
 	}
 	eventIDs := ulid.MonotonicFrom(eventHead)
 	eventHub := eventsse.NewHub(eventLog)
-	telemetryIngest := eventingest.New(eventHub, firstPhotonSite.ScopeNode, eventIDs, nowMs,
+	// The app-side `event` TRIGGER path (rules/1 RUL-080/081). Every durable
+	// event the ingest appends is also offered to this dispatcher, which fires
+	// the enabled automations whose `event` trigger names that schema and whose
+	// `match` constraints hold — the hop that makes a viewer's press on an
+	// interactive slide layer (events/1 EVT-055 `screen.interaction`) actually
+	// run an automation instead of merely being recorded.
+	//
+	// It is created EMPTY here and bound below by api.New (api.WithEventTriggers)
+	// because the ingest is constructed before the api handler that owns the rule
+	// store and the executor. Until it is bound it is inert; the binding happens
+	// during this same startup, before anything is served.
+	eventTriggers := &api.EventTriggerDispatcher{}
+	telemetryIngest := eventingest.New(eventTriggerSink{hub: eventHub, dispatch: eventTriggers}, firstPhotonSite.ScopeNode, eventIDs, nowMs,
 		func(relayID, serial string) bool {
 			if _, enrolled := enrollSrv.RelayEnrollmentKey(relayID); !enrolled {
 				return false
@@ -1103,6 +1115,12 @@ func main() {
 		// and reachable from a test — enforces nothing on a real box. That was the
 		// binary's actual state before this line.
 		api.WithRequiredPacks(requiredPacks),
+		// Bind the dispatcher the telemetry ingest already writes through, so an
+		// ingested durable event evaluates this deployment's `event` triggers and
+		// runs the automations that match (rules/1 RUL-080/081). Without this
+		// option every `event` trigger an operator can author, the compiler
+		// accepts and the store persists would fire nothing at all.
+		api.WithEventTriggers(eventTriggers),
 		api.WithWebhookSecrets(webhookSecrets, webhookRotationOverlapMs),
 		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: cfg.archiveDir, Key: wsKey}),
 		// The live store a restore stages beside (archive/1, the offline swap).
@@ -1376,6 +1394,34 @@ func startConsoleBinding(authDir string, authStore *auth.Store, clockFloor *auth
 // from separate figures would let the platform publish a window it does not
 // honour, which is worse than publishing none.
 const webhookRotationOverlapMs = events.DefaultRotationOverlapMs
+
+// eventTriggerSink is the telemetry ingest's append target: it records the
+// envelope through the SSE hub exactly as before, and then offers the SAME
+// envelope to the app-side `event`-trigger evaluator (rules/1 RUL-080/081).
+//
+// The ordering is load-bearing. Appending first means what fires a rule is
+// exactly what the durable log holds — a rule can never run on an event a
+// subsequent reader would not find — and it means a subscriber sees the event
+// even if the rule's own actions fail. Firing first would invert both.
+//
+// It is a named type rather than an inline closure because eventingest.EventSink
+// is an interface with one method and a closure cannot satisfy it; keeping it
+// here, next to the wiring, is what makes the whole chain readable in one place.
+type eventTriggerSink struct {
+	hub      *eventsse.Hub
+	dispatch *api.EventTriggerDispatcher
+}
+
+// Append satisfies eventingest.EventSink.
+//
+// The context is Background rather than a request's: the ingest's EventSink
+// carries none, and the work this starts belongs to the deployment rather than
+// to the HTTP request that happened to deliver the batch — cancelling a rule's
+// device dispatch because a relay hung up mid-push would leave half a rule run.
+func (s eventTriggerSink) Append(env events.Envelope) {
+	s.hub.Append(env)
+	s.dispatch.Deliver(context.Background(), env)
+}
 
 // startWebhookDelivery builds and starts the outbound-webhook delivery loop for
 // this deployment, returning the handle the shutdown path drains.

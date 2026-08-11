@@ -331,14 +331,17 @@ describe("save body + dirty tracking", () => {
 describe("inserting a layer of each kind", () => {
   const NOW = Date.parse("2026-08-10T09:15:00");
 
-  it("lands every kind DRAWABLE except the three that must name something first", () => {
+  it("lands every kind DRAWABLE except the four that must name something first", () => {
     for (const kind of LAYER_KINDS) {
       const problems = validateSlide({ id: "s", layers: [defaultLayer(kind, NOW)] });
-      if (kind === "image" || kind === "video" || kind === "entity") {
+      if (kind === "image" || kind === "video" || kind === "entity" || kind === "nav") {
         // Deliberately incomplete: a content-bearing layer's bytes come from
-        // the content origin and an entity's subject from the device plane, and
-        // inventing either would produce a layer that resolves to nothing on
-        // the wall. Iterating LAYER_KINDS rather than a hand-written list is
+        // the content origin, an entity's subject from the device plane, and a
+        // menu item's target from the cast this layer is being inserted INTO —
+        // none of which defaultLayer can know, and inventing any of them would
+        // produce a layer that resolves to nothing on the wall (for `nav`,
+        // specifically, a menu item that highlights, accepts a press and does
+        // nothing). Iterating LAYER_KINDS rather than a hand-written list is
         // what makes this test see a NEW kind at all — it is how `video` was
         // caught arriving with no default.
         expect(problems, `${kind} must land incomplete, not invalid for some other reason`).toHaveLength(1);

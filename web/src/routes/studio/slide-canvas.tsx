@@ -10,7 +10,15 @@ import {
 } from "react";
 import { ImageOff, VideoOff } from "lucide-react";
 import { KitIcon } from "@/components/kit";
-import { SLIDE_CANVAS_HEIGHT, SLIDE_CANVAS_WIDTH, isContentKind, type CastSlide, type SlideLayer } from "@/api";
+import {
+  SLIDE_CANVAS_HEIGHT,
+  SLIDE_CANVAS_WIDTH,
+  isContentKind,
+  isInteractiveLayer,
+  navItemRects,
+  type CastSlide,
+  type SlideLayer,
+} from "@/api";
 import { cn } from "@/lib/utils";
 import { RESIZE_HANDLES, moveLayerBy, resizeLayerBy, type ResizeHandle } from "./cast-model";
 import { COUNTDOWN_DEFAULT_LAYOUT, formatCountdownLayout, formatGoTimeLayout } from "./go-time-layout";
@@ -86,6 +94,15 @@ export function describeLayer(layer: SlideLayer): string {
       return `Weather — ${layer.text ?? "(no template)"}`;
     case "entity":
       return layer.entity_id ? `Entity — ${layer.entity_id}` : "Entity — (none chosen)";
+    case "ping":
+      // The EVENT NAME, not the label: two buttons on one slide are told apart
+      // by what they fire, and that is also the string an automation author has
+      // to match, so the layer list is where they should be able to read it off.
+      return layer.ping_name ? `Button — fires "${layer.ping_name}"` : "Button — (no event name)";
+    case "nav":
+      return layer.items && layer.items.length > 0
+        ? `Menu — ${layer.items.length} item${layer.items.length === 1 ? "" : "s"}`
+        : "Menu — (no items yet)";
   }
 }
 
@@ -186,17 +203,73 @@ export function LayerView({ layer, now }: { layer: SlideLayer; now: Date }) {
     );
   }
 
+  if (layer.kind === "nav") {
+    // A menu is drawn item by item, in the SAME cells the player focuses
+    // (`navItemRects`, mirrored three ways — see its doc). Drawing it as one box
+    // with the item labels crammed inside would look fine in the editor and
+    // nothing like the wall.
+    //
+    // Each cell carries a dashed outline, which is the editor's standing
+    // shorthand for "this is a region, not paint" (the unfilled image/video
+    // placeholders use the same one). It is the only honest preview of focus:
+    // exactly one item is focused on the TV at a time and which one depends on
+    // what the viewer last pressed, so showing a solid ring on one of them here
+    // would assert something the editor cannot know.
+    const rects = navItemRects(layer);
+    return (
+      <div data-slot="layer-nav" aria-hidden="true" style={box}>
+        {(layer.items ?? []).map((item, i) => {
+          const [ix, iy, iw, ih] = rects[i] ?? [layer.x, layer.y, layer.w, layer.h];
+          return (
+            <div
+              key={i}
+              data-slot="layer-nav-item"
+              style={{
+                position: "absolute",
+                left: ix - layer.x,
+                top: iy - layer.y,
+                width: iw,
+                height: ih,
+                color: layer.color ?? "#FFFFFF",
+                fontSize: layer.font_px ?? 44,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: layer.align ? justifyFor(layer.align) : "center",
+                overflow: "hidden",
+                border: "2px dashed rgba(139,92,246,0.9)",
+                boxSizing: "border-box",
+              }}
+            >
+              {item.label}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   // Every remaining kind is a Label on the player — text, clock, date,
-  // countdown, weather, entity — differing only in where the string comes from.
+  // countdown, weather, entity, and a `ping` button's label — differing only in
+  // where the string comes from.
   // One branch for all six is deliberate: they share the font, colour, alignment
   // and box behaviour exactly, and six near-identical JSX blocks is six places
   // for the preview to drift from the wall.
-  const content = layer.kind === "text" ? (layer.text ?? "") : liveWidgetPreview(layer, now);
+  const content = layer.kind === "text" || layer.kind === "ping" ? (layer.text ?? "") : liveWidgetPreview(layer, now);
   return (
     <div
       data-slot={`layer-${layer.kind}`}
       style={{
         ...box,
+        // An INTERACTIVE layer gets a dashed outline so an operator can see at a
+        // glance which parts of the slide a viewer can press — including the
+        // ones that carry no visual hint of it at all, like an `entity` reading
+        // somebody made interactive by giving it an event name. Keyed on
+        // `isInteractiveLayer` rather than on the kind for exactly that reason:
+        // a kind test would outline the buttons and leave every interactive
+        // widget looking inert, while the player focuses all of them.
+        ...(isInteractiveLayer(layer)
+          ? { outline: "2px dashed rgba(139,92,246,0.9)", outlineOffset: "-2px" }
+          : {}),
         color: layer.color ?? "#FFFFFF",
         fontSize: layer.font_px ?? 48,
         lineHeight: 1.15,

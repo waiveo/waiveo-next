@@ -719,6 +719,8 @@ const (
 	SlideLayerKindDate      SlideLayerKind = "date"
 	SlideLayerKindEntity    SlideLayerKind = "entity"
 	SlideLayerKindImage     SlideLayerKind = "image"
+	SlideLayerKindNav       SlideLayerKind = "nav"
+	SlideLayerKindPing      SlideLayerKind = "ping"
 	SlideLayerKindRect      SlideLayerKind = "rect"
 	SlideLayerKindText      SlideLayerKind = "text"
 	SlideLayerKindVideo     SlideLayerKind = "video"
@@ -737,6 +739,10 @@ func (e SlideLayerKind) Valid() bool {
 	case SlideLayerKindEntity:
 		return true
 	case SlideLayerKindImage:
+		return true
+	case SlideLayerKindNav:
+		return true
+	case SlideLayerKindPing:
 		return true
 	case SlideLayerKindRect:
 		return true
@@ -1937,8 +1943,14 @@ type SlideLayer struct {
 	FontPx *int `json:"font_px,omitempty"`
 	H      int  `json:"h"`
 
-	// Kind The closed layer-kind set, and it MUST stay equal to `internal/shared/wire`'s own (`slideLayerKinds`) — same members, same order. The four LIVE kinds beyond the static three plus `clock` are the widgets: `date` and `countdown` are computed by the player from its own clock, `weather` and `entity` are resolved by the box at Lease issuance (`internal/slidelive`) and drawn verbatim. `video` is image's twin — the second kind whose substance is bytes in the content origin, authored as an `asset_ref` and fetched + content-address-verified by the player before it is presented — and the only moving element a slide can carry; a player draws it as a positioned Video node looped for the slide's dwell time. They are all listed here because this enum is the AUTHORING gate: a kind the player renders and this enum omits is a widget nothing can ever create — the shape of defect this repo keeps producing, and the one that shipped in wave 1 (the four widget kinds landed on the wire and the player, and `POST /casts` answered 422 for every one of them).
+	// Items A `nav` layer's ordered menu, and legal on NO other kind. The items are laid out inside the layer's own box along its longer axis — a wide nav is a horizontal row, a tall one a vertical column — so the drawn geometry alone decides the orientation and there is no second `layout` member that could contradict it. Bounded at eight because the items share the box: past that the per-item region is too small to read at viewing distance or to show focus on. Each item's own laid-out cell must likewise be at least 48x48 canvas pixels, which is a joint constraint on the menu's size and its item count.
+	Items *[]SlideNavItem `json:"items,omitempty"`
+
+	// Kind The closed layer-kind set, and it MUST stay equal to `internal/shared/wire`'s own (`slideLayerKinds`) — same members, same order. The four LIVE kinds beyond the static three plus `clock` are the widgets: `date` and `countdown` are computed by the player from its own clock, `weather` and `entity` are resolved by the box at Lease issuance (`internal/slidelive`) and drawn verbatim. `video` is image's twin — the second kind whose substance is bytes in the content origin, authored as an `asset_ref` and fetched + content-address-verified by the player before it is presented — and the only moving element a slide can carry; a player draws it as a positioned Video node looped for the slide's dwell time. They are all listed here because this enum is the AUTHORING gate: a kind the player renders and this enum omits is a widget nothing can ever create — the shape of defect this repo keeps producing, and the one that shipped in wave 1 (the four widget kinds landed on the wire and the player, and `POST /casts` answered 422 for every one of them). `ping` and `nav` are the INTERACTIVE kinds — the first layers whose value flows from the screen back to the box. A `ping` is a labelled button the viewer focuses with the remote and presses OK on, raising a durable `screen.interaction` event an automation can trigger on; a `nav` is a D-pad menu whose items jump to another slide of the same cast. A `qr` kind is deliberately ABSENT: a QR code's substance is a raster, and the rasterizer that would mint its `asset_ref` does not exist in this deployment yet — publishing the kind before its producer is the same create-with-no-renderer defect wearing the other face.
 	Kind SlideLayerKind `json:"kind"`
+
+	// PingName The stable name a press on this layer reports. A layer carrying one is FOCUSABLE: the player gives it a focus region the viewer can move the remote onto, and OK posts the press back to the relay, which raises a durable `screen.interaction` event carrying this exact value — the value a `rules/1` `event` trigger matches on. Required for `ping`, and OPTIONAL FOR EVERY OTHER KIND, which is what makes an ordinary widget (an `entity` reading, an `image`, a `rect` used as an invisible hotspot) an interactive one with no second mechanism. It is a slug rather than free text because an automation author retypes it into a trigger's match constraint, where "Front Desk " and "front desk" would look identical and never match. A layer carrying one must also be at least 48x48 canvas pixels: below that a focus outline cannot be told apart at television viewing distance, so a viewer cannot see what pressing OK would do.
+	PingName *string `json:"ping_name,omitempty"`
 
 	// TargetMs A `countdown` layer's target instant, in Unix epoch MILLISECONDS (UTC) — the same absolute-instant unit every other time on this wire uses, never a local wall time and never seconds. Absolute is what lets the player count down without knowing the authoring timezone. Required and strictly positive for `countdown`, unused elsewhere; a target already past renders as all zeroes rather than as a negative, so it is deliberately NOT rejected here.
 	TargetMs *int `json:"target_ms,omitempty"`
@@ -1956,8 +1968,14 @@ type SlideLayer struct {
 // SlideLayerAlign A Label-drawn layer's horizontal alignment. Optional.
 type SlideLayerAlign string
 
-// SlideLayerKind The closed layer-kind set, and it MUST stay equal to `internal/shared/wire`'s own (`slideLayerKinds`) — same members, same order. The four LIVE kinds beyond the static three plus `clock` are the widgets: `date` and `countdown` are computed by the player from its own clock, `weather` and `entity` are resolved by the box at Lease issuance (`internal/slidelive`) and drawn verbatim. `video` is image's twin — the second kind whose substance is bytes in the content origin, authored as an `asset_ref` and fetched + content-address-verified by the player before it is presented — and the only moving element a slide can carry; a player draws it as a positioned Video node looped for the slide's dwell time. They are all listed here because this enum is the AUTHORING gate: a kind the player renders and this enum omits is a widget nothing can ever create — the shape of defect this repo keeps producing, and the one that shipped in wave 1 (the four widget kinds landed on the wire and the player, and `POST /casts` answered 422 for every one of them).
+// SlideLayerKind The closed layer-kind set, and it MUST stay equal to `internal/shared/wire`'s own (`slideLayerKinds`) — same members, same order. The four LIVE kinds beyond the static three plus `clock` are the widgets: `date` and `countdown` are computed by the player from its own clock, `weather` and `entity` are resolved by the box at Lease issuance (`internal/slidelive`) and drawn verbatim. `video` is image's twin — the second kind whose substance is bytes in the content origin, authored as an `asset_ref` and fetched + content-address-verified by the player before it is presented — and the only moving element a slide can carry; a player draws it as a positioned Video node looped for the slide's dwell time. They are all listed here because this enum is the AUTHORING gate: a kind the player renders and this enum omits is a widget nothing can ever create — the shape of defect this repo keeps producing, and the one that shipped in wave 1 (the four widget kinds landed on the wire and the player, and `POST /casts` answered 422 for every one of them). `ping` and `nav` are the INTERACTIVE kinds — the first layers whose value flows from the screen back to the box. A `ping` is a labelled button the viewer focuses with the remote and presses OK on, raising a durable `screen.interaction` event an automation can trigger on; a `nav` is a D-pad menu whose items jump to another slide of the same cast. A `qr` kind is deliberately ABSENT: a QR code's substance is a raster, and the rasterizer that would mint its `asset_ref` does not exist in this deployment yet — publishing the kind before its producer is the same create-with-no-renderer defect wearing the other face.
 type SlideLayerKind string
+
+// SlideNavItem One entry of a `nav` layer's menu (`data-model/1` DAT-043): the label the viewer reads and the cast-local slide id pressing OK jumps to. Both members are required — a label-less item is an unreadable target and a target-less one is a menu entry that accepts a press and performs nothing. The target names a slide by `CastSlide.id`, never by an index into delivered content: a cast's slides are projected into the same content array as whatever else the playlist carries, so an index authored against the cast addresses the wrong item the moment an entry is inserted before it. `POST/PATCH /casts` additionally refuses a target naming no slide of the same cast (`CAST_NAV_TARGET_UNKNOWN`).
+type SlideNavItem struct {
+	Label         string `json:"label"`
+	TargetSlideId string `json:"target_slide_id"`
+}
 
 // Timestamp A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
 // The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.

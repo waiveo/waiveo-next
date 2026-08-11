@@ -64,3 +64,22 @@ func TestClassIsZeroValueDurable(t *testing.T) {
 		t.Fatalf("zero-value Class = %v, want Durable", c)
 	}
 }
+
+// TestScreenInteractionIsDurable pins the retention class of a viewer's press.
+//
+// EVT-056 forbids coalescing two presses: they are two facts about what a person
+// did, and merging them under-reports the one thing the event exists to record.
+// A LatestOnly classing here would do exactly that — discard the earlier of two
+// rapid presses before it was ever delivered, silently, and count it as no loss
+// at all (REL-104). An UNCLASSED schema is worse still: the entry is buffered
+// with no class, so nothing on this channel carries it and the press never
+// leaves the relay.
+func TestScreenInteractionIsDurable(t *testing.T) {
+	class, ok := ClassOf(SchemaScreenInteraction)
+	if !ok {
+		t.Fatalf("%s must be classed on this channel, or a viewer's press never reaches the app peer", SchemaScreenInteraction)
+	}
+	if class != Durable {
+		t.Errorf("%s is %v, want Durable — a latest-only class silently merges two presses (EVT-056)", SchemaScreenInteraction, class)
+	}
+}

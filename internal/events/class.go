@@ -32,6 +32,7 @@ type schemaClass struct {
 var classBySchema = map[string]schemaClass{
 	SchemaAutomationRun:      {cost: automationRunCostClass, retention: automationRunRetentionClass},
 	SchemaContentPlayed:      {cost: contentPlayedCostClass, retention: contentPlayedRetentionClass},
+	SchemaScreenInteraction:  {cost: screenInteractionCostClass, retention: screenInteractionRetentionClass},
 	SchemaEntityStateChanged: {cost: entityStateChangedCostClass, retention: entityStateChangedRetentionClass},
 	SchemaDeviceHeartbeat:    {cost: deviceHeartbeatCostClass, retention: deviceHeartbeatRetentionClass},
 	SchemaBoxVitals:          {cost: boxVitalsCostClass, retention: boxVitalsRetentionClass},

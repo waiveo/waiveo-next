@@ -1,15 +1,18 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, FileVideo, ImagePlus, X } from "lucide-react";
+import { AlertTriangle, FileVideo, ImagePlus, Plus, Trash2, X } from "lucide-react";
 import { Button, FormField, KitIcon } from "@/components/kit";
 import {
   ENTITY_STATE_TOKEN,
+  NAV_ITEMS_MAX,
   SLIDE_CANVAS_HEIGHT,
   SLIDE_CANVAS_WIDTH,
   WEATHER_TOKENS,
   isContentKind,
   isLabelKind,
+  type CastSlide,
   type Entity,
   type LayerAlign,
+  type NavItem,
   type SlideLayer,
   type SlideProblem,
 } from "@/api";
@@ -64,6 +67,16 @@ export interface PropertiesPanelProps {
    * typed by hand is one typo away from a widget that shows a dash forever and
    * never says why. Empty while the read is in flight, or if it failed. */
   entities: Entity[];
+  /** Every slide of the cast being edited, for a menu item's jump-target
+   * dropdown. Real slides, not free text: a target that names no slide of this
+   * cast is refused by the server (CAST_NAV_TARGET_UNKNOWN) and would be a menu
+   * item that highlights, accepts a press and does nothing — so the control that
+   * sets one offers only choices that resolve. */
+  slides: CastSlide[];
+  /** The index of the slide being edited, so its own entry can be labelled in
+   * that dropdown. A menu that jumps to the slide it is on is legal (it re-shows
+   * the slide) but is almost never what someone means, so it is worth naming. */
+  slideIndex: number;
 }
 
 export function PropertiesPanel({
@@ -75,6 +88,8 @@ export function PropertiesPanel({
   durationMs,
   onDurationChange,
   entities,
+  slides,
+  slideIndex,
 }: PropertiesPanelProps) {
   const slideProblems = problems.filter((p) => p.index === null);
   const layerProblems = layerIndex === null ? [] : problems.filter((p) => p.index === layerIndex);
@@ -233,6 +248,46 @@ export function PropertiesPanel({
             </>
           ) : null}
 
+          {layer.kind === "ping" ? (
+            <FormField
+              label="Button label"
+              help="What the viewer reads before pressing OK on it."
+            >
+              {(field) => (
+                <input
+                  {...field}
+                  type="text"
+                  className={inputClass}
+                  value={layer.text ?? ""}
+                  onChange={(e) => onPatch({ text: e.target.value })}
+                />
+              )}
+            </FormField>
+          ) : null}
+
+          {layer.kind === "nav" ? (
+            <NavItemsField
+              items={layer.items ?? []}
+              slides={slides}
+              slideIndex={slideIndex}
+              onCommit={(items) => onPatch({ items })}
+            />
+          ) : null}
+
+          {/* The INTERACTION control, offered on every kind but `nav` — whose
+              own items are its interaction. Giving any layer an event name is
+              what makes it focusable on the remote and pressable (an entity
+              reading, an image, a rectangle used as an invisible hotspot), and
+              hiding the control behind the `ping` kind would leave that whole
+              capability authorable only by hand-editing JSON. */}
+          {layer.kind !== "nav" ? (
+            <PingNameField
+              kind={layer.kind}
+              value={layer.ping_name}
+              onCommit={(ping_name) => onPatch({ ping_name })}
+            />
+          ) : null}
+
           {isLabelKind(layer.kind) ? (
             <>
               <NumberField
@@ -312,6 +367,167 @@ export function PropertiesPanel({
         </>
       )}
     </section>
+  );
+}
+
+/**
+ * The EVENT NAME control: the one field that makes a layer pressable.
+ *
+ * It reads as an optional extra on most kinds and as a required field on `ping`,
+ * which is exactly what it is (`wire.ValidateSlideLayers`), and the help text
+ * says what the value is FOR rather than what it is — an operator setting this
+ * has to go and type the same string into an automation trigger, and nothing
+ * else on this panel tells them that.
+ *
+ * It normalises as you type, to the slug grammar the wire enforces: spaces and
+ * capitals are the two things a person naturally types here and both are refused
+ * server-side, so silently lower-casing and hyphenating is the difference
+ * between a field that works and one that reports an error on every keystroke.
+ * Nothing else is transformed — a character outside the grammar is dropped
+ * rather than mapped to a guess.
+ */
+function PingNameField({
+  kind,
+  value,
+  onCommit,
+}: {
+  kind: SlideLayer["kind"];
+  value: string | undefined;
+  onCommit: (value: string | undefined) => void;
+}) {
+  const required = kind === "ping";
+  return (
+    <FormField
+      label={required ? "Event name" : "Event name (makes this pressable)"}
+      help={
+        required
+          ? "An automation triggers on this name. Use it as the `event` trigger's match value."
+          : "Leave blank for a layer nobody can press. Give it a name and the viewer can focus it with the remote and press OK, which raises an event an automation can trigger on."
+      }
+    >
+      {(field) => (
+        <input
+          {...field}
+          type="text"
+          data-slot="ping-name"
+          className={inputClass}
+          value={value ?? ""}
+          onChange={(e) => {
+            const slug = e.target.value
+              .toLowerCase()
+              .replaceAll(" ", "_")
+              .replace(/[^a-z0-9_.-]/g, "");
+            // An empty value REMOVES the key rather than writing "": every
+            // optional member of wire.Layer is omitempty, and a present-but-empty
+            // ping_name would be a layer the wire reads as focusable-with-no-name.
+            onCommit(slug === "" ? undefined : slug);
+          }}
+        />
+      )}
+    </FormField>
+  );
+}
+
+/**
+ * A `nav` layer's menu editor: a row per item (label + which slide it jumps to),
+ * plus add and remove.
+ *
+ * The target is a SELECT over the cast's real slides, never a text input. A
+ * typed id that names no slide is refused by the server
+ * (`CAST_NAV_TARGET_UNKNOWN`) and, if it ever reached a screen, would be a menu
+ * item that highlights, accepts a press and performs nothing — the failure
+ * visible only to whoever is standing in front of the TV. A dropdown of real
+ * choices makes that state unreachable from this surface.
+ *
+ * Slides are labelled by POSITION as well as id ("Slide 2 — intro"), because a
+ * cast-local slide id is an editor-generated string an operator has never seen
+ * and cannot map to the thing they are looking at.
+ */
+function NavItemsField({
+  items,
+  slides,
+  slideIndex,
+  onCommit,
+}: {
+  items: NavItem[];
+  slides: CastSlide[];
+  slideIndex: number;
+  onCommit: (items: NavItem[]) => void;
+}) {
+  const patchItem = (i: number, patch: Partial<NavItem>) =>
+    onCommit(items.map((it, n) => (n === i ? { ...it, ...patch } : it)));
+
+  return (
+    <div className="flex flex-col gap-2" data-slot="nav-items">
+      <span className="text-sm font-medium">Menu items</span>
+      {items.length === 0 ? (
+        <p className="text-[13px] text-muted-foreground">
+          No items yet — this slide will not save until the menu has at least one.
+        </p>
+      ) : null}
+      {items.map((item, i) => (
+        <div key={i} className="flex flex-wrap items-end gap-2" data-slot="nav-item-row">
+          <div className="min-w-0 flex-1">
+            <FormField label={`Item ${i + 1} label`}>
+              {(field) => (
+                <input
+                  {...field}
+                  type="text"
+                  data-slot="nav-item-label"
+                  className={inputClass}
+                  value={item.label}
+                  onChange={(e) => patchItem(i, { label: e.target.value })}
+                />
+              )}
+            </FormField>
+          </div>
+          <div className="min-w-0 flex-1">
+            <FormField label="Jumps to">
+              {(field) => (
+                <select
+                  {...field}
+                  data-slot="nav-item-target"
+                  className={inputClass}
+                  value={item.target_slide_id}
+                  onChange={(e) => patchItem(i, { target_slide_id: e.target.value })}
+                >
+                  <option value="">Choose a slide…</option>
+                  {slides.map((s, n) => (
+                    <option key={s.id} value={s.id}>
+                      {`Slide ${n + 1}${n === slideIndex ? " (this one)" : ""} — ${s.id}`}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </FormField>
+          </div>
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={Trash2}
+            aria-label={`Remove menu item ${i + 1}`}
+            onClick={() => onCommit(items.filter((_, n) => n !== i))}
+          />
+        </div>
+      ))}
+      <div>
+        <Button
+          size="sm"
+          variant="secondary"
+          icon={Plus}
+          disabled={items.length >= NAV_ITEMS_MAX}
+          onClick={() =>
+            // A new item lands with NO target rather than a guessed one: the
+            // whole point of the dropdown is that every stored target resolves,
+            // and defaulting to "the first slide" would make a menu that silently
+            // jumps somewhere nobody chose the easiest thing to save.
+            onCommit([...items, { label: `Item ${items.length + 1}`, target_slide_id: "" }])
+          }
+        >
+          Add item
+        </Button>
+      </div>
+    </div>
   );
 }
 

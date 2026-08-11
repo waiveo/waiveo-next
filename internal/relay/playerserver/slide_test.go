@@ -2,6 +2,7 @@ package playerserver
 
 import (
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
@@ -96,7 +97,9 @@ func TestSlideContentRefRoundTripsToLeaseWithLayers(t *testing.T) {
 		t.Fatalf("content[0].layers has %d entries, want %d; got %+v", len(item.Layers), len(want), item.Layers)
 	}
 	for i := range want {
-		if item.Layers[i] != want[i] {
+		// reflect.DeepEqual, not ==: wire.Layer gained a slice member (Items,
+		// the nav menu) and is no longer comparable. Same assertion.
+		if !reflect.DeepEqual(item.Layers[i], want[i]) {
 			t.Errorf("content[0].layers[%d] = %+v, want %+v (carried unmodified)", i, item.Layers[i], want[i])
 		}
 	}

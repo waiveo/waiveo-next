@@ -185,7 +185,13 @@ sub runPhoton()
                 end for
             end if
 
-            result = { phase: "done", ok: true, contentType: prog.contentType, items: prog.items, status: "photon", error: "" }
+            ' leaseId rides the result because an INTERACTION has to name it:
+            ' the relay only accepts a press against a lease it recently issued
+            ' to this screen (PLY-114's binding, applied to the interaction
+            ' route), so the render thread needs the current lease id to report
+            ' one. Published on every successful poll, not only on a changed
+            ' program — a relay mints a fresh lease per pull.
+            result = { phase: "done", ok: true, contentType: prog.contentType, items: prog.items, leaseId: prog.leaseId, status: "photon", error: "" }
             m.top.photonResult = result
 
         else if prog.needsRepair

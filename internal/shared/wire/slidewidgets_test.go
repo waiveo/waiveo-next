@@ -2,6 +2,7 @@ package wire
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -180,7 +181,10 @@ func TestLiveWidgetFieldsRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(b, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out != in {
+	// reflect.DeepEqual rather than ==: Layer gained a slice member (Items, the
+	// nav menu) and is no longer a comparable struct. The assertion is the same
+	// one — every member round-trips unchanged.
+	if !reflect.DeepEqual(out, in) {
 		t.Fatalf("round trip changed the layer: %+v vs %+v", out, in)
 	}
 }

@@ -17,14 +17,15 @@ func TestIsRegisteredSchema(t *testing.T) {
 	}
 	for _, s := range []string{
 		"entity.state_changed", "automation.run", "content.played",
-		"device.heartbeat", "box.vitals", "audit.event", "variable.changed",
+		"screen.interaction", "device.heartbeat", "box.vitals", "audit.event",
+		"variable.changed",
 	} {
 		if !IsRegisteredSchema(s) {
 			t.Fatalf("%s must be in the registered catalog (EVT-020)", s)
 		}
 	}
-	if len(RegisteredSchemas) != 7 {
-		t.Fatalf("the registered catalog has exactly seven schemas (EVT-020); got %d", len(RegisteredSchemas))
+	if len(RegisteredSchemas) != 8 {
+		t.Fatalf("the registered catalog has exactly eight schemas (EVT-020); got %d", len(RegisteredSchemas))
 	}
 }
 

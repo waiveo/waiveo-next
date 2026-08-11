@@ -13,7 +13,7 @@ import "testing"
 // ack falsely reports it delivered (REL-093). This test fails if any of the five
 // loses its class.
 func TestClassFor_CoversEveryRelayTelemetrySchema(t *testing.T) {
-	// The five schemas relay/1 carries over its telemetry channel (REL-095), all
+	// The schemas relay/1 carries over its telemetry channel (REL-095), all
 	// operational-telemetry-tier (matching the events/1 wire-shape examples and
 	// the events1 conformance driver's fixture class).
 	want := map[string]struct{ cost, retention string }{
@@ -22,6 +22,11 @@ func TestClassFor_CoversEveryRelayTelemetrySchema(t *testing.T) {
 		SchemaEntityStateChanged: {"telemetry", "telemetry-standard"},
 		SchemaDeviceHeartbeat:    {"telemetry", "telemetry-standard"},
 		SchemaBoxVitals:          {"telemetry", "telemetry-standard"},
+		// A viewer's press on an interactive slide layer (EVT-055). It travels
+		// this same channel because the relay is where the press is OBSERVED, so
+		// an unclassed one would be buffered, pushed, and then dropped on arrival
+		// — the automation never runs and nothing anywhere says why.
+		SchemaScreenInteraction: {"telemetry", "telemetry-standard"},
 	}
 	for schema, w := range want {
 		cost, retention, ok := ClassFor(schema)
