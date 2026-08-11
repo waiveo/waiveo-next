@@ -25,13 +25,25 @@ function getIn(container: unknown, loc: PathLoc): unknown {
   return cursor;
 }
 
+/** Whether `v` can hold nested members — the only thing a write is allowed to
+ * descend THROUGH. A scalar cannot: `{...("18:00:00")}` is `{0:"1",1:"8",…}`,
+ * so spreading a string on the way to `after.event` would character-spread it
+ * and write garbage the page never showed anyone. A record that holds a scalar
+ * where a nested write needs a container is a real shape the builders produce
+ * (a `time` condition's `after` is the string `"18:00:00"`; re-typing that
+ * condition to `sun` makes the very next write target `after.event`), so the
+ * write REPLACES the scalar with a fresh container rather than exploding it. */
+function isWritableContainer(v: unknown): boolean {
+  return typeof v === "object" && v !== null;
+}
+
 /** Immutably set `value` at `loc`, cloning the containers along the way and
- * synthesizing an array or object for a missing container based on the next
- * key's type (a numeric key implies an array). */
+ * synthesizing an array or object for a missing (or scalar) container based on
+ * the next key's type (a numeric key implies an array). */
 function setIn(container: unknown, loc: PathLoc, value: unknown): unknown {
   if (loc.length === 0) return value;
   const [key, ...rest] = loc;
-  const base = container ?? (typeof key === "number" ? [] : {});
+  const base = isWritableContainer(container) ? container : typeof key === "number" ? [] : {};
   if (Array.isArray(base)) {
     const copy = base.slice();
     copy[key as number] = setIn(copy[key as number], rest, value);
@@ -107,6 +119,13 @@ export interface RendererProviderProps {
    * banner); this is how it learns a selection moved so it can scope/clear that
    * state to the record now in view. Not fired for the initial mount. */
   onUiChange?: ((ui: Record<string, unknown>) => void) | undefined;
+  /** Notified when the editable `resource` tree changes (UIS-065) — every
+   * bound input's write. The host seam owns surfaces that must agree with the
+   * record the operator is LOOKING at rather than the one the server last sent
+   * (the Automations page's raw-JSON hatch is the case this exists for: seeded
+   * from server state alone, it shows a stale rule and its Apply silently
+   * discards whatever the builder holds). Not fired for the initial mount. */
+  onResourceChange?: ((resource: unknown) => void) | undefined;
   children: ReactNode;
 }
 
@@ -119,6 +138,7 @@ export function RendererProvider({
   slots,
   primarySource,
   onUiChange,
+  onResourceChange,
   children,
 }: RendererProviderProps) {
   const [state, setState] = useState<{ resource: unknown; ui: Record<string, unknown> }>(() => ({
@@ -143,6 +163,20 @@ export function RendererProvider({
     }
     onUiChangeRef.current?.(state.ui);
   }, [state.ui]);
+
+  // The same seam for the editable record (UIS-065). Separate mount guard: the
+  // two trees change independently, and a host that only watches `$ui` cannot
+  // see an edit the operator made inside the form.
+  const onResourceChangeRef = useRef(onResourceChange);
+  onResourceChangeRef.current = onResourceChange;
+  const resourceMountedRef = useRef(false);
+  useEffect(() => {
+    if (!resourceMountedRef.current) {
+      resourceMountedRef.current = true;
+      return;
+    }
+    onResourceChangeRef.current?.(state.resource);
+  }, [state.resource]);
 
   const store = useMemo<RendererStore>(
     () => ({

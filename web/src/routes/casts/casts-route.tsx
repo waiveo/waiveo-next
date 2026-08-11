@@ -283,6 +283,11 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
           // Deep-copied: sharing slide objects with the row still in the list
           // would make an edit to one show up in the other.
           slides: cast.slides.map((s) => ({ ...s, id: crypto.randomUUID(), layers: s.layers.map((l) => ({ ...l })) })),
+          // The cast-wide fallback duration is part of what the cast IS: every
+          // slide that states no `duration_ms` of its own is timed by it, so a
+          // copy without it plays at the player's default instead and looks
+          // identical in the library while running at a different pace.
+          ...(cast.default_duration_ms ? { default_duration_ms: cast.default_duration_ms } : {}),
         });
         toast.success(`Duplicated as ${copy.data.name}`);
         await load();

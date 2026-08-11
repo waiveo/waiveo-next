@@ -191,3 +191,64 @@ describe("actions — submit persists the RESOLVED bound record, not the whole d
     expect(handler.submit).not.toHaveBeenCalledWith("items[id=$ui.sel]", expect.objectContaining({ items: expect.anything() }));
   });
 });
+
+describe("state — a write DESCENDS through a container, never through a scalar", () => {
+  // The regression: `setIn` cloned its intermediate with `{...base}`. When the
+  // record legitimately held a STRING there — a `time` condition's
+  // `after: "18:00:00"`, whose leaf was just re-typed to `sun`, making the very
+  // next write target `after.event` — the spread character-spread the string and
+  // the record became `{"0":"1","1":"8",…,"event":"sunset"}`. The API accepted
+  // that body and the evaluator then read the condition as false forever, with no
+  // error on any surface. A scalar cannot hold members, so a write through one
+  // REPLACES it.
+  const doc = {
+    pageType: "settings-form",
+    source: "cond",
+    sections: [
+      {
+        fields: [
+          {
+            type: "select",
+            bind: "after.event",
+            props: {
+              labelMsg: "msg:event",
+              options: { kind: "literal", items: [{ value: "sunset", labelMsg: "msg:sunset" }] },
+            },
+          },
+        ],
+      },
+    ],
+    actions: [{ type: "button", props: { labelMsg: "msg:save" }, on: { press: { verb: "submit" } } }],
+  };
+
+  it("is a valid document", () => {
+    expect(validatePage(doc).ok).toBe(true);
+  });
+
+  it("replaces a scalar intermediate with a fresh container instead of spreading it", async () => {
+    const user = userEvent.setup();
+    const handler: ActionHandler = { submit: vi.fn() };
+    render(
+      <PageRenderer doc={doc} data={{ cond: { after: "18:00:00" } }} messages={messages} handler={handler} />,
+    );
+    await user.selectOptions(screen.getByLabelText("Event"), "sunset");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(handler.submit).toHaveBeenCalledWith("cond", { after: { event: "sunset" } });
+  });
+
+  it("still descends through a real container without discarding its siblings", async () => {
+    const user = userEvent.setup();
+    const handler: ActionHandler = { submit: vi.fn() };
+    render(
+      <PageRenderer
+        doc={doc}
+        data={{ cond: { after: { offset: -600 } } }}
+        messages={messages}
+        handler={handler}
+      />,
+    );
+    await user.selectOptions(screen.getByLabelText("Event"), "sunset");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(handler.submit).toHaveBeenCalledWith("cond", { after: { offset: -600, event: "sunset" } });
+  });
+});

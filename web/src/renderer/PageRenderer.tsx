@@ -57,6 +57,11 @@ export interface PageRendererProps {
    * errors, a conflict-review banner) to the record now in view. Not fired on
    * the initial mount. */
   onUiChange?: (ui: Record<string, unknown>) => void;
+  /** Notified when the editable resource tree changes — every bound input's
+   * write. Lets a host surface that must agree with what the operator is
+   * looking at (a raw-JSON view of the same record) read the LIVE record
+   * rather than the one the server last sent. Not fired on the initial mount. */
+  onResourceChange?: (resource: unknown) => void;
   /** Notified with the taxonomy errors when a document is rejected. */
   onValidationError?: (errors: ValidationError[]) => void;
 }
@@ -78,6 +83,7 @@ export function PageRenderer({
   eventSourceFactory,
   fieldErrors,
   onUiChange,
+  onResourceChange,
   onValidationError,
 }: PageRendererProps) {
   const result = useMemo(() => validatePage(doc), [doc]);
@@ -128,6 +134,7 @@ export function PageRenderer({
         slots={slots}
         primarySource={primarySource}
         onUiChange={onUiChange}
+        onResourceChange={onResourceChange}
       >
         <PageBody page={page} />
       </RendererProvider>

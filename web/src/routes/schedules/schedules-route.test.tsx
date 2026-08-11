@@ -9,7 +9,7 @@ import scheduleDoc from "./schedule.uis.json";
 import daypartDoc from "./daypart.uis.json";
 import playlistDoc from "./playlist.uis.json";
 import { validatePage } from "@/renderer/validate";
-import { TRACE_ID, ULID_A, ULID_ROOT, cast, scopeNode, ok, problem } from "@/api/test-support";
+import { TRACE_ID, ULID_A, ULID_B, ULID_ROOT, cast, scopeNode, ok, problem } from "@/api/test-support";
 
 // Schedules authors two DOGFOODED ui-schema collections (schedules + playlists as
 // list-detail documents) and a DOGFOODED daypart editor (a settings-form): each
@@ -534,6 +534,37 @@ describe("Playlists — dogfooded management over api/1", () => {
     // A REFERENCE, not an inlined copy: editing the cast has to change every
     // playlist that plays it (DAT-043), which a copy could never do.
     expect(body!.items).toEqual([{ source: "cast", cast_id: ULID_A, duration_seconds: 10 }]);
+  });
+
+  it("does NOT offer a TEMPLATE in the cast picker — the server refuses one", async () => {
+    // A template cast is not schedulable: the server answers 422
+    // CAST_TEMPLATE_NOT_SCHEDULABLE for a playlist item that names one. Offering
+    // it here is a control that can only ever fail — the operator picks "House
+    // style", saves, and is told no by a rule the dropdown never mentioned. The
+    // casts library already splits templates out of the schedulable list; this is
+    // the surface that actually schedules.
+    server.use(
+      http.get("*/api/v1/schedules", () => page([])),
+      http.get("*/api/v1/playlists", () => page([playlist({ revision: 2 })])),
+      http.get("*/api/v1/dayparts", () => page([])),
+      http.get("*/api/v1/scope-nodes", () => page([site()])),
+      http.get("*/api/v1/casts", () =>
+        page([
+          cast({ id: ULID_A, name: "Lobby loop" }),
+          cast({ id: ULID_B, name: "House style", template: true }),
+        ]),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderSchedules();
+    await screen.findByRole("table", { name: "Playlists" });
+    await user.click(screen.getByText("Daytime loop").closest("tr") as HTMLElement);
+
+    await user.click(await screen.findByRole("button", { name: "Add a cast" }));
+    const picker = (await screen.findByLabelText("Cast")) as HTMLSelectElement;
+    await waitFor(() => expect(within(picker).getByRole("option", { name: "Lobby loop" })).toBeInTheDocument());
+    expect(within(picker).queryByRole("option", { name: "House style" })).toBeNull();
   });
 
   // Parity row 2.5, from the only end an operator has. The content origin is

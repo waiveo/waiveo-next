@@ -264,6 +264,65 @@ const DISPOSITION: Record<string, { status: Status; label: string }> = {
   skipped: { status: "off", label: "Skipped" },
 };
 
+/** One line of the effect report: what the run tried to do to one target, and
+ * whether that target took it. */
+interface RunTarget {
+  /** What was attempted — `launch → 01J8…`, `play_cast → 01J8…`. */
+  label: string;
+  ok: boolean;
+  /** The refusal, when the target did not take it. */
+  error?: string | undefined;
+}
+
+/**
+ * The per-target effect report a run actually produced (RUL-236 / the
+ * AutomationRunResult effect arrays), flattened for display.
+ *
+ * `disposition` alone is the MODE evaluation — whether the rule was allowed to
+ * start — and says nothing about what the actions did. A run whose every command
+ * was refused (an unadopted entity, a relay that is offline) still answers 200
+ * `ran`, so a UI that reads only `disposition` paints a refusal as a success.
+ * That is what this exists to prevent: the arrays are the report.
+ */
+function runTargets(result: AutomationRunResult): RunTarget[] {
+  const out: RunTarget[] = [];
+  for (const c of result.commands ?? []) {
+    out.push({ label: `${c.command} → ${c.entity_id}`, ok: c.ok, error: c.error });
+  }
+  for (const s of result.signage ?? []) {
+    const screens = s.screens ?? [];
+    if (screens.length === 0) {
+      // A signage action that wrote no screen reports only its own outcome, and
+      // an outcome that is not `complete` over zero screens is still a failure —
+      // shown as a target rather than dropped for having no rows.
+      out.push({
+        label: `${s.action} → (no screen matched)`,
+        ok: s.outcome === "complete",
+        error: s.outcome === "complete" ? undefined : s.outcome,
+      });
+      continue;
+    }
+    for (const sc of screens) {
+      out.push({ label: `${s.action} → ${sc.screen_id || "(no screen)"}`, ok: sc.ok, error: sc.error });
+    }
+  }
+  return out;
+}
+
+/** The chip a finished run gets: the disposition's own tone only while EVERY
+ * target took its effect; a partial run warns and a total refusal errors. A run
+ * with no targets at all (a rule of pure `log` actions, or one whose conditions
+ * did not hold) keeps the disposition's tone — nothing failed. */
+function runStatus(result: AutomationRunResult, targets: RunTarget[]): { status: Status; label: string } {
+  const base = DISPOSITION[result.disposition] ?? { status: "pending" as Status, label: result.disposition };
+  const failed = targets.filter((t) => !t.ok).length;
+  if (failed === 0) return base;
+  return {
+    status: failed === targets.length ? "error" : "warn",
+    label: `${base.label} — ${failed} of ${targets.length} failed`,
+  };
+}
+
 /** A 422 VALIDATION_FAILED's per-field errors, if this failure is one. */
 function fieldErrorsOf(err: unknown): FieldErrors | null {
   if (err instanceof ApiError && err.status === 422 && Object.keys(err.fieldErrors).length > 0) {
@@ -333,15 +392,41 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
   // the standard toast + re-read + review banner rather than only a fading toast.
   const [enableConflict, setEnableConflict] = useState(false);
 
-  // The raw-JSON escape hatch: whether it is open, its current text, its parse
-  // error, and the per-automation rule bodies "Apply to builder" has staged. An
-  // override is what the builder is seeded with on its next mount; it is dropped
-  // the moment a reload brings fresh server state (the override HAS been saved, or
-  // has been superseded).
+  // The raw-JSON escape hatch: whether it is open, its current text, the text it
+  // was SEEDED with (so an operator's own typing is distinguishable from an
+  // untouched mirror), its parse error, and the per-automation rule bodies "Apply
+  // to builder" has staged. An override is what the builder is seeded with on its
+  // next mount; it is dropped the moment a reload brings fresh server state (the
+  // override HAS been saved, or has been superseded).
   const [jsonOpen, setJsonOpen] = useState(false);
   const [jsonDraft, setJsonDraft] = useState("");
+  const [jsonSeed, setJsonSeed] = useState("");
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [overrides, setOverrides] = useState<Record<string, Automation>>({});
+
+  // The LIVE rule the builder holds, lifted out of the renderer through its
+  // resource-change seam. Without it the JSON hatch can only mirror server state,
+  // and "Apply to builder" then overwrites every unsaved builder edit with a rule
+  // that predates them — the silent-loss path the single-save-path design exists
+  // to close, left open through Apply. Keyed by record id so a reading can never
+  // be shown against a different automation, and cleared whenever the renderer
+  // remounts (`version`), since a fresh mount reports nothing until the next edit.
+  const [builderRule, setBuilderRule] = useState<{ id: string; json: string } | null>(null);
+  useEffect(() => {
+    setBuilderRule(null);
+  }, [version]);
+  const onResourceChange = useCallback((resource: unknown) => {
+    const id = selectedIdRef.current;
+    if (!id) return;
+    const rows = (resource as { automations?: unknown[] } | null)?.automations;
+    const row = Array.isArray(rows) ? rows.find((r) => (r as Automation | null)?.id === id) : undefined;
+    if (!row) return;
+    // The same projection the hatch shows for a server record: the rules/1 keys,
+    // with the builder's own scaffolding containers pruned back out.
+    setBuilderRule({ id, json: JSON.stringify(pruneBuilderScaffolding(ruleBodyOf(row as Automation)), null, 2) });
+  }, []);
+  /** The live builder rule for the record currently selected, if we have one. */
+  const builderJson = builderRule && builderRule.id === selectedId ? builderRule.json : null;
 
   // The scope node the next "New" places an automation on; defaults to the first
   // candidate and is chosen explicitly via the first-party picker when the org has
@@ -411,13 +496,32 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
   const selId = selected?.id;
   const selRev = selected?.revision;
   const selOverride = selectedId ? overrides[selectedId] : undefined;
+  const seedJson = useCallback((text: string) => {
+    setJsonDraft(text);
+    setJsonSeed(text);
+    setJsonError(null);
+  }, []);
   useEffect(() => {
     if (!selected) return;
-    setJsonDraft(ruleBodyJson(selOverride ?? selected));
-    setJsonError(null);
+    seedJson(ruleBodyJson(selOverride ?? selected));
     setDisposition(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selId, selRev, selOverride]);
+
+  // …and track the BUILDER while the hatch's text is untouched, so what the hatch
+  // shows is what the operator has in front of them rather than what the server
+  // last sent. An operator who has typed into the textarea owns it: their text is
+  // left alone and the divergence is warned about instead, because silently
+  // replacing either surface's work is the failure being fixed here.
+  useEffect(() => {
+    if (builderJson === null) return;
+    if (jsonDraft === jsonSeed) seedJson(builderJson);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [builderJson]);
+
+  /** The builder moved on after the operator started editing the JSON, so Apply
+   * would overwrite builder edits the textarea never contained. */
+  const builderDiverged = jsonOpen && builderJson !== null && builderJson !== jsonSeed && jsonDraft !== jsonSeed;
 
   // The renderer owns the selection; moving to a different record retires any
   // captured field errors (keyed by bind path, no record identity) and the conflict
@@ -556,8 +660,13 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
     try {
       const result = await client.automations.run(selected.id);
       setDisposition(result);
-      const label = DISPOSITION[result.disposition]?.label ?? result.disposition;
-      toast.success(`Run ${label.toLowerCase()}`);
+      // What the run DID, not merely that it was allowed to start: a run whose
+      // targets all refused is a failure the operator has to be told about, and it
+      // comes back 200 `ran`.
+      const targets = runTargets(result);
+      const { label } = runStatus(result, targets);
+      if (targets.some((t) => !t.ok)) toast.error(`Run ${label.toLowerCase()}`);
+      else toast.success(`Run ${label.toLowerCase()}`);
     } catch (err) {
       reportProblem("Couldn't run the automation", err);
     } finally {
@@ -595,6 +704,16 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
     }
   }, [client, selected, reload]);
 
+  /** Open/close the hatch. Opening ALWAYS re-mirrors the live builder: the hatch
+   * is a view of the record being edited, and a view that opens onto anything else
+   * is how an Apply destroys work that was never on screen. */
+  const toggleJson = useCallback(() => {
+    const opening = !jsonOpen;
+    setJsonOpen(opening);
+    if (!opening) return;
+    seedJson(builderJson ?? (selected ? ruleBodyJson(selOverride ?? selected) : ""));
+  }, [jsonOpen, builderJson, selected, selOverride, seedJson]);
+
   /** "Apply to builder": parse the hatch's JSON and stage it as the record the
    * builder is seeded with, then remount the renderer so the builder shows it. No
    * network call — Save is still the only thing that writes. */
@@ -619,6 +738,10 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
     setVersion((v) => v + 1);
     toast.success("Applied to the builder — press Save changes to persist it.");
   }, [selected, jsonDraft, overrides]);
+
+  // The last run's per-target report and the chip that summarises it.
+  const runReport = useMemo(() => (disposition ? runTargets(disposition) : []), [disposition]);
+  const runChip = disposition ? runStatus(disposition, runReport) : null;
 
   const editorClasses =
     "wv-touch min-h-[11rem] w-full min-w-0 rounded-input border border-border bg-[color:var(--wv-surface-2)] px-3 py-2 font-mono text-[13px] leading-relaxed text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -704,6 +827,7 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
               handler={handler}
               fieldErrors={fieldErrors}
               onUiChange={onUiChange}
+              onResourceChange={onResourceChange}
             />
           )}
         </main>
@@ -748,19 +872,13 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
                   icon={Braces}
                   className="wv-touch"
                   aria-expanded={jsonOpen}
-                  onClick={() => setJsonOpen((v) => !v)}
+                  onClick={toggleJson}
                 >
                   {jsonOpen ? "Hide JSON" : "Edit as JSON"}
                 </Button>
-                {disposition ? (
-                  <span
-                    data-testid="run-disposition"
-                    data-status={DISPOSITION[disposition.disposition]?.status ?? "pending"}
-                    className="inline-flex items-center"
-                  >
-                    <StatusBadge status={DISPOSITION[disposition.disposition]?.status ?? "pending"}>
-                      {DISPOSITION[disposition.disposition]?.label ?? disposition.disposition}
-                    </StatusBadge>
+                {runChip ? (
+                  <span data-testid="run-disposition" data-status={runChip.status} className="inline-flex items-center">
+                    <StatusBadge status={runChip.status}>{runChip.label}</StatusBadge>
                   </span>
                 ) : null}
               </div>
@@ -776,11 +894,74 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
               </p>
             ) : null}
 
+            {/* What the last run actually DID. The chip above is the mode
+                evaluation; this is the effect report — every device command and
+                every signage write, with the refusal quoted on any that did not
+                take. Without it a run whose targets all refused (an unadopted
+                entity, an offline relay) reads as a plain success. */}
+            {disposition ? (
+              <div data-testid="run-report" className="flex flex-col gap-2 rounded-card border border-border p-3">
+                <p className="text-[13px] text-muted-foreground">
+                  Run {disposition.run_id}
+                  {disposition.dry_run ? " · effects withheld (dry run)" : ""}
+                  {disposition.delays_collapsed
+                    ? ` · ${disposition.delays_collapsed} delay${disposition.delays_collapsed === 1 ? "" : "s"} passed through without waiting`
+                    : ""}
+                </p>
+                {runReport.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    No device or signage effects — this run changed nothing.
+                  </p>
+                ) : (
+                  <ul className="flex flex-col gap-1">
+                    {runReport.map((t, i) => (
+                      <li
+                        key={i}
+                        data-testid="run-target"
+                        data-ok={t.ok}
+                        className="flex flex-wrap items-center gap-2 text-sm"
+                      >
+                        <StatusBadge status={t.ok ? "ok" : "error"}>{t.ok ? "Done" : "Failed"}</StatusBadge>
+                        <span className="font-mono text-[13px]">{t.label}</span>
+                        {t.error ? <span className="text-[color:var(--wv-err)]">{t.error}</span> : null}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {(disposition.logs ?? []).length > 0 ? (
+                  <ul className="flex flex-col gap-1">
+                    {(disposition.logs ?? []).map((l, i) => (
+                      <li key={i} data-testid="run-log" className="text-sm text-muted-foreground">
+                        <span className="font-mono text-[12px] uppercase">{l.level}</span> {l.message}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
+
             {jsonOpen ? (
               <>
+                {builderDiverged ? (
+                  <p
+                    role="status"
+                    data-testid="json-diverged"
+                    className="rounded-card border border-[color:var(--wv-warn)] bg-[color:var(--wv-warn-bg)] p-3 text-sm text-[color:var(--wv-warn)]"
+                  >
+                    The builder has changed since you edited this JSON. Applying will replace those builder edits
+                    with what is written here.{" "}
+                    <button
+                      type="button"
+                      className="underline underline-offset-2"
+                      onClick={() => seedJson(builderJson ?? jsonDraft)}
+                    >
+                      Reload from the builder
+                    </button>
+                  </p>
+                ) : null}
                 <FormField
                   label="Rule body (JSON)"
-                  help="The whole rules/1 rule. Nothing here is written until you apply it to the builder and press Save changes — the builder is the single save path, so an edit can never be lost to the other surface."
+                  help="The whole rules/1 rule, mirroring what the builder holds right now — including edits you have not saved. Nothing here is written until you apply it to the builder and press Save changes: the builder is the single save path, so an edit can never be lost to the other surface."
                   {...(jsonError ? { error: jsonError } : {})}
                 >
                   {(field) => (
