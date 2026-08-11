@@ -9,7 +9,7 @@
 // rides through an edit untouched. Nothing is rebuilt from a model the builder
 // understands, so nothing the builder does not understand can be dropped.
 //
-// Two seams that property does NOT give for free live here.
+// Three seams that property does NOT give for free live here.
 //
 // # 1. Nested bind targets need their container to exist (hydrate/prune)
 //
@@ -37,7 +37,20 @@
 // MAY-declared; an empty map declares nothing). Any container with content in it
 // is kept verbatim.
 //
-// # 2. mode/max is a coupled pair the compiler rejects out of step (RUL-244)
+// # 2. A re-typed condition's bounds are a shape the OTHER kind cannot read
+//
+// `after`/`before` are the one pair of members two leaf kinds both declare and
+// disagree about: `time` says string `"18:00:00"` (RUL-130), `sun` says
+// `{event, offset?}` (RUL-140). An operator re-types a leaf in place and only
+// fills in the field they came for, so the untouched sibling keeps the previous
+// kind's shape — which the API accepts and the evaluator then cannot unmarshal,
+// leaving a condition that is false forever with no error anywhere.
+// `coerceConditionBounds` drops a bound of the wrong shape at prune time, so the
+// saved rule is the one the builder was showing. (The renderer's own write path
+// is the other half: writing to `after.event` over a string REPLACES it with a
+// container instead of spreading it character by character — state.tsx `setIn`.)
+//
+// # 3. mode/max is a coupled pair the compiler rejects out of step (RUL-244)
 //
 // `parallel` REQUIRES `max`; every other mode requires its ABSENCE. The builder
 // shows `max` only under `parallel` (`visibleIf`), so switching parallel → single
@@ -88,9 +101,13 @@ const CONDITION_CONTAINERS = ["expression", "after", "before"] as const; // temp
 const ACTION_CONTAINERS = ["params"] as const; // device_command: item.params.<name>
 
 /** Seed `keys` on `node` with an empty object wherever the key is absent. An
- * existing value of ANY shape is left alone — a `time` condition's `after` is the
- * string `"08:00:00"`, and a write through it (`after.event`, after a switch to
- * `sun`) resolves fine because the intermediate merely has to exist. */
+ * existing value of ANY shape is left alone — including a scalar one: a `time`
+ * condition's `after` is the string `"08:00:00"`, and the renderer's write path
+ * REPLACES a scalar intermediate with a fresh container (state.tsx `setIn`), so
+ * a write to `after.event` after a switch to `sun` lands on an object rather
+ * than character-spreading the time string. What that write leaves behind is a
+ * bound of the WRONG shape for the sibling the operator did not touch, which is
+ * what `coerceConditionBounds` below settles on the way out. */
 function seed(node: Node, keys: readonly string[]): void {
   for (const key of keys) {
     if (!(key in node)) node[key] = {};
@@ -102,6 +119,41 @@ function seed(node: Node, keys: readonly string[]): void {
 function unseed(node: Node, keys: readonly string[]): void {
   for (const key of keys) {
     if (isEmptyObject(node[key])) delete node[key];
+  }
+}
+
+/** The two condition bounds whose SHAPE depends on the leaf kind selected. */
+const BOUND_KEYS = ["after", "before"] as const;
+
+/**
+ * Drop a condition leaf's `after`/`before` bound when it is not the shape the
+ * leaf's own kind declares (RUL-130 vs RUL-140).
+ *
+ * The builder lets an operator re-type a leaf in place, and the two bounded
+ * kinds disagree about what a bound IS: a `time` condition's `after` is the
+ * string `"18:00:00"`, a `sun` condition's is `{event, offset?}`. Nothing runs
+ * between the kind select's write and the next field's, so after a switch the
+ * untouched sibling still holds the OTHER kind's shape — and the server accepts
+ * it, then fails to unmarshal it (`eval/condition.go` reads `after` as a string
+ * for `time` and as a `*sunBoundSpec` for `sun`) and evaluates the condition
+ * false forever, with no error anywhere. `compile.Validate` only checks
+ * vocabulary membership, so nothing else catches it.
+ *
+ * Dropping is the honest resolution, not a conversion: there is no defensible
+ * mapping from `"18:00:00"` to a solar event, and the builder's sun arm is
+ * SHOWING that bound as empty, so the saved rule ends up being exactly what the
+ * operator was looking at. Only the two bound keys are touched; every other
+ * member — including one this builder has no editor for — rides through
+ * untouched, which is this module's whole contract.
+ */
+function coerceConditionBounds(leaf: Node): void {
+  const kind = leaf.type;
+  if (kind !== "time" && kind !== "sun") return;
+  for (const key of BOUND_KEYS) {
+    if (!(key in leaf)) continue;
+    const value = leaf[key];
+    const wellShaped = kind === "sun" ? isPlainObject(value) : typeof value === "string";
+    if (!wellShaped) delete leaf[key];
   }
 }
 
@@ -162,13 +214,13 @@ export function hydrateForBuilder<T extends { triggers: unknown; conditions: unk
  */
 export function pruneBuilderScaffolding(body: RuleBody): RuleBody {
   const copy = clone(body);
+  const finishCondition = (leaf: Node): void => {
+    coerceConditionBounds(leaf);
+    unseed(leaf, CONDITION_CONTAINERS);
+  };
   for (const trigger of nodesOf(copy.triggers)) unseed(trigger, TRIGGER_CONTAINERS);
-  walkConditions(nodesOf(copy.conditions), (leaf) => unseed(leaf, CONDITION_CONTAINERS));
-  walkActions(
-    nodesOf(copy.actions),
-    (leaf) => unseed(leaf, ACTION_CONTAINERS),
-    (leaf) => unseed(leaf, CONDITION_CONTAINERS),
-  );
+  walkConditions(nodesOf(copy.conditions), finishCondition);
+  walkActions(nodesOf(copy.actions), (leaf) => unseed(leaf, ACTION_CONTAINERS), finishCondition);
   return copy;
 }
 

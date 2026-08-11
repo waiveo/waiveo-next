@@ -534,6 +534,88 @@ describe("Automations — building a rule by clicking", () => {
   });
 });
 
+describe("Automations — re-typing a condition leaf between its two BOUNDED kinds", () => {
+  // The defect this pins: a `time` condition's `after` is the string "18:00:00"
+  // and a `sun` condition's is `{event, offset?}`. Switching the kind and filling
+  // in the new field used to write through the old scalar — the renderer's
+  // clone spread the string, so the PATCH carried
+  // {"0":"1","1":"8",…,"event":"sunset"} under a green "Saved changes", and the
+  // server's evaluator (which reads `after` as a *sunBoundSpec) then evaluated
+  // the condition false forever. Both directions are driven here, and the exact
+  // saved JSON is the assertion — a rendering-only check cannot see any of this.
+  it("time → sun: writes a real sun bound and drops the time string it replaced", async () => {
+    const loaded = automation({
+      id: ULID_A,
+      name: "Close at dusk",
+      revision: 3,
+      conditions: [{ type: "time", after: "18:00:00", before: "23:00:00" }],
+    });
+    const rec = patchRecorder((body) => ({ ...loaded, ...body, revision: 4 }));
+    server.use(...liveLists([loaded], HQ), rec.handler);
+
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Close at dusk");
+    expect(screen.getByLabelText("After")).toHaveValue("18:00:00");
+
+    await user.selectOptions(screen.getByLabelText("Condition type"), "sun");
+    await user.selectOptions(screen.getByLabelText("After sun event"), "sunset");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(rec.seen).toHaveLength(1));
+    // Exactly the rule the sun arm was SHOWING: an after bound of {event}, and no
+    // `before` — the time string the operator can no longer see is not smuggled
+    // through in a shape the sun evaluator cannot read.
+    expect(rec.seen[0].body.conditions).toEqual([{ type: "sun", after: { event: "sunset" } }]);
+  });
+
+  it("time → sun: keeps the offset field on the same bound", async () => {
+    const loaded = automation({
+      id: ULID_A,
+      name: "Close at dusk",
+      conditions: [{ type: "time", after: "18:00:00" }],
+    });
+    const rec = patchRecorder((body) => ({ ...loaded, ...body, revision: 2 }));
+    server.use(...liveLists([loaded], HQ), rec.handler);
+
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Close at dusk");
+    await user.selectOptions(screen.getByLabelText("Condition type"), "sun");
+    await user.selectOptions(screen.getByLabelText("After sun event"), "sunrise");
+    await user.type(screen.getByLabelText("After offset (seconds)"), "-900");
+    await user.selectOptions(screen.getByLabelText("Before sun event"), "sunset");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(rec.seen).toHaveLength(1));
+    expect(rec.seen[0].body.conditions).toEqual([
+      { type: "sun", after: { event: "sunrise", offset: -900 }, before: { event: "sunset" } },
+    ]);
+  });
+
+  it("sun → time: writes a real time bound and drops the sun object it replaced", async () => {
+    const loaded = automation({
+      id: ULID_A,
+      name: "Close at dusk",
+      conditions: [{ type: "sun", after: { event: "sunset" }, before: { event: "sunrise", offset: 600 } }],
+    });
+    const rec = patchRecorder((body) => ({ ...loaded, ...body, revision: 2 }));
+    server.use(...liveLists([loaded], HQ), rec.handler);
+
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Close at dusk");
+    expect(screen.getByLabelText("After sun event")).toHaveValue("sunset");
+
+    await user.selectOptions(screen.getByLabelText("Condition type"), "time");
+    setTime(screen.getByLabelText("Before"), "23:00:00");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(rec.seen).toHaveLength(1));
+    expect(rec.seen[0].body.conditions).toEqual([{ type: "time", before: "23:00:00" }]);
+  });
+});
+
 describe("Automations — round-trip fidelity", () => {
   it("carries members the builder has no editor for through an edit, byte for byte", async () => {
     // Two shapes the builder deliberately does not model: a `choose` action's
@@ -707,6 +789,102 @@ describe("Automations — the raw-JSON escape hatch", () => {
   });
 });
 
+describe("Automations — the JSON hatch mirrors the BUILDER, not the last server read", () => {
+  it("opens on the unsaved builder edits, and Apply cannot discard them", async () => {
+    // The loss path: the textarea was seeded only from server state, so the
+    // moment the operator touched the builder the JSON view showed a rule that
+    // predated their work — and "Apply to builder" then wrote that stale rule
+    // back over the builder. A `delay` action added by hand vanished with no
+    // warning, under a green toast.
+    const state = {
+      rows: [
+        automation({
+          id: ULID_A,
+          name: "Open the doors",
+          revision: 3,
+          actions: [{ type: "log", message: "original" }],
+        }),
+      ],
+    };
+    const rec = patchRecorder((body) => ({ ...state.rows[0], ...body, revision: 4 }));
+    server.use(...liveLists(state.rows, HQ), rec.handler);
+
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+
+    // Build in the builder: a second action, a 30s wait.
+    await user.click(screen.getByRole("button", { name: "Add action" }));
+    await user.selectOptions(screen.getAllByLabelText("Action type")[1], "delay");
+    await user.type(screen.getByLabelText("Delay (sec)"), "30");
+
+    // Drop to JSON — it shows what is in front of the operator, not the record
+    // the server last sent.
+    await user.click(screen.getByRole("button", { name: "Edit as JSON" }));
+    const editor = screen.getByLabelText("Rule body (JSON)") as HTMLTextAreaElement;
+    expect(JSON.parse(editor.value).actions).toEqual([
+      { type: "log", message: "original" },
+      { type: "delay", duration_seconds: 30 },
+    ]);
+
+    // …and applying it back is a no-op on the work, not a silent delete of it.
+    await user.click(screen.getByRole("button", { name: "Apply to builder" }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(rec.seen).toHaveLength(1));
+    expect(rec.seen[0].body.actions).toEqual([
+      { type: "log", message: "original" },
+      { type: "delay", duration_seconds: 30 },
+    ]);
+  });
+
+  it("tracks a builder edit made while the hatch is open and untouched", async () => {
+    server.use(
+      ...liveLists([automation({ id: ULID_A, name: "Open the doors", actions: [{ type: "log", message: "original" }] })], HQ),
+    );
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+    await user.click(screen.getByRole("button", { name: "Edit as JSON" }));
+    const editor = screen.getByLabelText("Rule body (JSON)") as HTMLTextAreaElement;
+    expect(editor.value).not.toContain("edited in the builder");
+
+    const message = screen.getByLabelText("Message");
+    await user.clear(message);
+    await user.type(message, "edited in the builder");
+    await waitFor(() => expect((screen.getByLabelText("Rule body (JSON)") as HTMLTextAreaElement).value).toContain("edited in the builder"));
+  });
+
+  it("warns before an Apply that would overwrite builder edits made after the JSON was typed", async () => {
+    server.use(
+      ...liveLists([automation({ id: ULID_A, name: "Open the doors", actions: [{ type: "log", message: "original" }] })], HQ),
+    );
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+    await user.click(screen.getByRole("button", { name: "Edit as JSON" }));
+
+    // The operator edits the JSON — from here it is theirs, never overwritten…
+    const editor = screen.getByLabelText("Rule body (JSON)");
+    await user.clear(editor);
+    await user.click(editor);
+    await user.paste(JSON.stringify({ actions: [{ type: "log", message: "from the json" }] }));
+    expect(screen.queryByTestId("json-diverged")).toBeNull();
+
+    // …and then goes back to the builder, so the two surfaces disagree. Apply is
+    // still available (it is the operator's call), but it is not silent.
+    const message = screen.getByLabelText("Message");
+    await user.clear(message);
+    await user.type(message, "later builder edit");
+    const warning = await screen.findByTestId("json-diverged");
+    expect(warning).toHaveTextContent(/will replace those builder edits/i);
+
+    // …and the way back is offered: reload the textarea from the builder.
+    await user.click(within(warning).getByRole("button", { name: /reload from the builder/i }));
+    expect((screen.getByLabelText("Rule body (JSON)") as HTMLTextAreaElement).value).toContain("later builder edit");
+    expect(screen.queryByTestId("json-diverged")).toBeNull();
+  });
+});
+
 describe("Automations — save conventions over api/1", () => {
   it("on a 422, surfaces the compiler's message naming the rule member it rejected", async () => {
     server.use(
@@ -811,6 +989,135 @@ describe("Automations — run / enable / create", () => {
     const badge = await screen.findByTestId("run-disposition");
     expect(badge).toHaveAttribute("data-status", "ok");
     expect(badge).toHaveTextContent("Ran");
+  });
+
+  it("a run whose every target REFUSED is not a success — the chip errors and the refusals are shown", async () => {
+    // The defect: `runNow` read only `disposition`. A run where the relay refused
+    // every command still answers 200 `ran`, so the console painted a green chip
+    // and a "Run ran" toast over an automation that changed nothing.
+    server.use(
+      ...liveLists([automation({ id: ULID_A, name: "Open the doors" })], HQ),
+      http.post("*/api/v1/automations/:id/run", () =>
+        HttpResponse.json(
+          {
+            run_id: ULID_C,
+            disposition: "ran",
+            dry_run: false,
+            commands: [
+              { entity_id: ULID_B, command: "launch", ok: false, error: "the relay is offline" },
+              { entity_id: ULID_C, command: "power", ok: false, error: "entity is not adopted" },
+            ],
+            signage: [],
+            logs: [],
+          },
+          { headers: { "Trace-Id": TRACE_ID } },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+    await user.click(screen.getByRole("button", { name: "Run now" }));
+
+    const badge = await screen.findByTestId("run-disposition");
+    expect(badge).toHaveAttribute("data-status", "error");
+    expect(badge).toHaveTextContent("2 of 2 failed");
+
+    const report = screen.getByTestId("run-report");
+    const rows = within(report).getAllByTestId("run-target");
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.getAttribute("data-ok") === "false")).toBe(true);
+    expect(report).toHaveTextContent(`launch → ${ULID_B}`);
+    expect(report).toHaveTextContent("the relay is offline");
+    expect(report).toHaveTextContent("entity is not adopted");
+  });
+
+  it("a PARTIAL run warns, and reports the signage screen that failed alongside the one that took", async () => {
+    server.use(
+      ...liveLists([automation({ id: ULID_A, name: "Open the doors" })], HQ),
+      http.post("*/api/v1/automations/:id/run", () =>
+        HttpResponse.json(
+          {
+            run_id: ULID_C,
+            disposition: "ran",
+            dry_run: false,
+            commands: [{ entity_id: ULID_B, command: "launch", ok: true }],
+            signage: [
+              {
+                action: "play_cast",
+                outcome: "partial",
+                screens: [
+                  { screen_id: ULID_B, ok: true },
+                  { screen_id: ULID_C, ok: false, error: "that cast is a template" },
+                ],
+              },
+            ],
+            logs: [{ level: "info", message: "doors opened" }],
+          },
+          { headers: { "Trace-Id": TRACE_ID } },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+    await user.click(screen.getByRole("button", { name: "Run now" }));
+
+    const badge = await screen.findByTestId("run-disposition");
+    expect(badge).toHaveAttribute("data-status", "warn");
+    expect(badge).toHaveTextContent("1 of 3 failed");
+
+    const report = screen.getByTestId("run-report");
+    expect(within(report).getAllByTestId("run-target")).toHaveLength(3);
+    expect(report).toHaveTextContent(`play_cast → ${ULID_C}`);
+    expect(report).toHaveTextContent("that cast is a template");
+    // …and the rule's own log line, which is also part of what the run did.
+    expect(within(report).getByTestId("run-log")).toHaveTextContent("doors opened");
+  });
+
+  it("a run that touched nothing SAYS so rather than implying an effect", async () => {
+    server.use(
+      ...liveLists([automation({ id: ULID_A, name: "Open the doors" })], HQ),
+      http.post("*/api/v1/automations/:id/run", () =>
+        HttpResponse.json(
+          { run_id: ULID_C, disposition: "skipped", dry_run: false, commands: [], signage: [], logs: [] },
+          { headers: { "Trace-Id": TRACE_ID } },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+    await user.click(screen.getByRole("button", { name: "Run now" }));
+
+    expect(await screen.findByTestId("run-disposition")).toHaveAttribute("data-status", "off");
+    expect(screen.getByTestId("run-report")).toHaveTextContent(/changed nothing/i);
+  });
+
+  it("a signage action that matched NO screen is reported, not dropped for having no rows", async () => {
+    server.use(
+      ...liveLists([automation({ id: ULID_A, name: "Open the doors" })], HQ),
+      http.post("*/api/v1/automations/:id/run", () =>
+        HttpResponse.json(
+          {
+            run_id: ULID_C,
+            disposition: "ran",
+            dry_run: false,
+            commands: [],
+            signage: [{ action: "show_alert", outcome: "failed", screens: [] }],
+            logs: [],
+          },
+          { headers: { "Trace-Id": TRACE_ID } },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+    await user.click(screen.getByRole("button", { name: "Run now" }));
+
+    expect(await screen.findByTestId("run-disposition")).toHaveAttribute("data-status", "error");
+    expect(screen.getByTestId("run-report")).toHaveTextContent("show_alert → (no screen matched)");
   });
 
   it("enable/disable toggles `enabled` under the record's If-Match", async () => {

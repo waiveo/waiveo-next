@@ -120,6 +120,55 @@ describe("pruneBuilderScaffolding", () => {
   });
 });
 
+describe("pruneBuilderScaffolding — a re-typed condition's bounds (RUL-130 vs RUL-140)", () => {
+  // `after`/`before` are the one member pair two leaf kinds both declare and
+  // disagree about: `time` says the string "18:00:00", `sun` says {event,offset?}.
+  // The operator re-types a leaf in place and fills in only the field they came
+  // for, so the sibling keeps the OTHER kind's shape — which the API accepts and
+  // the evaluator cannot unmarshal, making the condition false forever with no
+  // error anywhere. The wrong-shape bound must not reach the wire.
+  it("drops a leftover TIME string from a leaf now typed `sun`", () => {
+    const switched = body({ conditions: [{ type: "sun", after: { event: "sunset" }, before: "23:00:00" }] });
+    expect(pruneBuilderScaffolding(switched).conditions).toEqual([{ type: "sun", after: { event: "sunset" } }]);
+  });
+
+  it("drops a leftover SUN object from a leaf now typed `time`", () => {
+    const switched = body({ conditions: [{ type: "time", after: { event: "sunset" }, before: "23:00:00" }] });
+    expect(pruneBuilderScaffolding(switched).conditions).toEqual([{ type: "time", before: "23:00:00" }]);
+  });
+
+  it("keeps a well-shaped bound of either kind verbatim, offsets and all", () => {
+    const sun = body({ conditions: [{ type: "sun", after: { event: "sunrise", offset: -900 }, before: { event: "sunset" } }] });
+    expect(pruneBuilderScaffolding(sun)).toEqual(sun);
+    const time = body({ conditions: [{ type: "time", after: "08:00:00", before: "17:30:00" }] });
+    expect(pruneBuilderScaffolding(time)).toEqual(time);
+  });
+
+  it("leaves a bound alone on a leaf kind that declares none", () => {
+    // Only `time` and `sun` are bounded; a `state` leaf's stray member is the
+    // author's own data (or a newer rules/1's), and this module never drops those.
+    const other = body({ conditions: [{ type: "state", entity_id: "e1", after: { event: "sunset" } }] });
+    expect(pruneBuilderScaffolding(other)).toEqual(other);
+  });
+
+  it("reaches a leaf nested in a composition and one inside a choose branch", () => {
+    const nested = body({
+      conditions: [{ and: [{ not: { type: "sun", after: "18:00:00", before: { event: "sunset" } } }] }],
+      actions: [
+        {
+          type: "choose",
+          branches: [{ condition: { type: "time", after: { event: "sunrise" }, before: "09:00:00" }, actions: [] }],
+        },
+      ],
+    });
+    const pruned = pruneBuilderScaffolding(nested);
+    expect(pruned.conditions).toEqual([{ and: [{ not: { type: "sun", before: { event: "sunset" } } }] }]);
+    expect(pruned.actions).toEqual([
+      { type: "choose", branches: [{ condition: { type: "time", before: "09:00:00" }, actions: [] }] },
+    ]);
+  });
+});
+
 describe("normalizeModeMax (RUL-244)", () => {
   it("clears a stale max the moment the mode is not parallel", () => {
     expect(normalizeModeMax(body({ mode: "single", max: 3 })).max).toBeNull();

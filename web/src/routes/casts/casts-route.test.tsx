@@ -173,6 +173,53 @@ describe("Casts library", () => {
     expect(screen.getByRole("heading", { level: 1, name: "Casts" })).toBeInTheDocument();
   });
 
+  it("carries the cast-wide default duration into the duplicate", async () => {
+    // The defect: the create body was {scope_node, name, slides}. Every slide
+    // that states no `duration_ms` of its own is timed by the cast-wide default,
+    // so a copy that drops it plays at the player's default instead — and looks
+    // identical in the library (same name, same slide count, same health) while
+    // running at a different pace.
+    type DuplicateBody = { default_duration_ms?: number };
+    const seen: { body?: DuplicateBody } = {};
+    server.use(
+      ...listing([cast({ default_duration_ms: 8000 })]),
+      http.post("*/api/v1/casts", async ({ request }) => {
+        seen.body = (await request.json()) as DuplicateBody;
+        return HttpResponse.json(cast({ id: ULID_B, name: "Lobby loop copy" }), {
+          status: 201,
+          headers: { ETag: '"1"', "Trace-Id": TRACE_ID },
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderCasts();
+
+    await user.click(await screen.findByRole("button", { name: "Duplicate Lobby loop" }));
+    await vi.waitFor(() => expect(seen.body).toBeDefined());
+    expect(seen.body?.default_duration_ms).toBe(8000);
+  });
+
+  it("omits the default duration when the cast itself declares none", async () => {
+    type DuplicateBody = Record<string, unknown>;
+    const seen: { body?: DuplicateBody } = {};
+    server.use(
+      ...listing([cast()]),
+      http.post("*/api/v1/casts", async ({ request }) => {
+        seen.body = (await request.json()) as DuplicateBody;
+        return HttpResponse.json(cast({ id: ULID_B, name: "Lobby loop copy" }), {
+          status: 201,
+          headers: { ETag: '"1"', "Trace-Id": TRACE_ID },
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderCasts();
+
+    await user.click(await screen.findByRole("button", { name: "Duplicate Lobby loop" }));
+    await vi.waitFor(() => expect(seen.body).toBeDefined());
+    expect(seen.body).not.toHaveProperty("default_duration_ms");
+  });
+
   it("deletes only after a confirm, and carries the If-Match", async () => {
     const seen: { ifMatch?: string | null; deletes: number } = { deletes: 0 };
     server.use(

@@ -721,7 +721,14 @@ function PlaylistsSection({ client }: { client: WaiveoApi }) {
       ]);
       setPlaylists(rows);
       setScopeNodes(scopeRows);
-      setCasts(castRows);
+      // TEMPLATES ARE NOT SCHEDULABLE. The server refuses a playlist item that
+      // names one (422 CAST_TEMPLATE_NOT_SCHEDULABLE), so offering it in the
+      // picker is a control that can only ever fail — the operator picks "House
+      // style", saves, and is told no by a rule the dropdown never mentioned. A
+      // template is a starting point for authoring, and the casts library
+      // already splits it out of the list of things you can schedule; this is
+      // the same split on the surface that actually schedules.
+      setCasts(castRows.filter((c) => c.template !== true));
       setLoadError(null);
     } catch (err) {
       setPlaylists([]);
