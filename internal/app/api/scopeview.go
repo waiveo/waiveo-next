@@ -155,6 +155,7 @@ func (srv *server) scopeView(r *http.Request) (scopeView, error) {
 	// same outcome by a longer route.
 	p, _ := auth.FromContext(r.Context())
 	bindings := p.Bindings
+	inSubtree := subtreePredicate(tree)
 
 	// One list can ask about the same placement node hundreds of times (every
 	// row under one screen). The chain walk and role resolution are pure over a
@@ -167,17 +168,7 @@ func (srv *server) scopeView(r *http.Request) (scopeView, error) {
 	seenWrite := make(map[string]bool)
 
 	return scopeView{
-		inSubtree: func(ancestor, node string) bool {
-			if ancestor == node {
-				return false
-			}
-			for _, id := range tree.AncestorChain(node) {
-				if id == ancestor {
-					return true
-				}
-			}
-			return false
-		},
+		inSubtree: inSubtree,
 		canRead: func(node string) bool {
 			if v, ok := seen[node]; ok {
 				return v
@@ -198,4 +189,32 @@ func (srv *server) scopeView(r *http.Request) (scopeView, error) {
 			return auth.Resolve(bindings, tree.AncestorChain(node))
 		},
 	}, nil
+}
+
+// subtreePredicate is the ONE definition of the scope tree's containment
+// relation: node lies STRICTLY below ancestor. Equality is deliberately false —
+// a `scope_node subtree` selector term treats the named node itself as the
+// selector's own business (apiselector), and every consumer of this predicate
+// depends on that split.
+//
+// It is a shared function rather than a closure written out at each
+// construction because there are now two views over the same tree — a request's
+// (scopeView) and an event-fired automation run's (automationScopeView) — and
+// two transcriptions of one traversal is how a containment answer and an
+// authorization answer that MUST agree start to disagree. The second one is
+// exactly where that would be invisible: an automation's own bound view derives
+// its read and write sets FROM this predicate, so a copy that drifted would
+// widen or narrow a rule's blast radius with nothing to compare it against.
+func subtreePredicate(tree datamodel.ScopeTree) func(ancestor, node string) bool {
+	return func(ancestor, node string) bool {
+		if ancestor == node {
+			return false
+		}
+		for _, id := range tree.AncestorChain(node) {
+			if id == ancestor {
+				return true
+			}
+		}
+		return false
+	}
 }

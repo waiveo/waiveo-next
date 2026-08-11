@@ -46,15 +46,56 @@ var identityKinds = map[Kind]bool{
 
 // validateAfterWrite runs, inside the write transaction, the datamodel/1
 // validation appropriate to the kind just written, over the RESULTING full
-// row-set — so a write is judged against the state it produced, and a failure
-// aborts the whole transaction (nothing persisted, generation unchanged). A
-// scope-node write is checked with BuildFullScopeTree (DAT-001-003/030-032,
-// with DAT-002's parent-resolution enforced — this store IS the full tree, so
-// a dangling parent_id here is never a relay-snapshot subtree boundary; it is
-// how a re-kinded org or a re-parent-to-garbage write orphans the tree). A
-// scheduling-core write with ValidateRows (DAT-005-008/040-101, references,
-// DAT-073 daypart partition). Errors are wrapped in *ValidationError for the api
-// layer to render as VALIDATION_FAILED.
+// row-set, and refuses the write for the faults THIS WRITE INTRODUCED — so a
+// write is judged against the state it produced, measured against the state it
+// found, and a failure aborts the whole transaction (nothing persisted,
+// generation unchanged). A scope-node write is checked with BuildFullScopeTree
+// (DAT-001-003/030-032, with DAT-002's parent-resolution enforced — this store
+// IS the full tree, so a dangling parent_id here is never a relay-snapshot
+// subtree boundary; it is how a re-kinded org or a re-parent-to-garbage write
+// orphans the tree). A scheduling-core write with ValidateRows
+// (DAT-005-008/040-101, references, DAT-073 daypart partition). Errors are
+// wrapped in *ValidationError for the api layer to render as VALIDATION_FAILED.
+//
+// # Why `prior` exists, and why it is not an optimisation
+//
+// This hook validates the WHOLE row-set of the written kind, which is what makes
+// a cross-row rule enforceable at all (a cast delete refused while a playlist
+// still names it). Applied to the resulting set ALONE it also does something
+// nobody chose: it lets any row already in the store veto every future write of
+// its kind.
+//
+// That is not hypothetical. Inline `source: "slide"` playlist items shipped with
+// no authoring validation, so every layer stack the gate now rejects was stored
+// with a 201. Adding the gate turned each of those rows into a permanent veto:
+// ONE pre-existing bad row and an unrelated, perfectly valid playlist CREATE was
+// refused — with a `field` naming an item index of the SUBMITTED body, which
+// contained no slide at all. TWO of them and CREATE, UPDATE and DELETE were all
+// refused, which removes the last repair path: with no delete there is no way
+// back through the API at all, and recovery means raw SQL against the database
+// file.
+//
+// So the unit of judgement is the DIFFERENCE. prior is the fault multiset the
+// same validators produced over the pre-write state, captured before the
+// mutation by capturePriorFaults; introducedFaults subtracts it. A write is
+// refused for what it broke and not for what it inherited:
+//
+//   - an unrelated create/update/delete alongside a bad row succeeds, because it
+//     introduces nothing;
+//   - a delete that would leave a dangling reference is STILL refused, because
+//     that reference error is new;
+//   - deleting the bad row itself succeeds and REMOVES its fault, which is the
+//     repair path;
+//   - and the same submitted body is refused whether or not some other row is
+//     already broken, which is the property the field paths in the refusal have
+//     to be true of.
+//
+// What it deliberately does NOT do is hide the inherited faults. They remain
+// readable through StoredFaults, are reported at Open, and are logged at each
+// write that steps over them (priorfaults.go) — reported rather than quarantined,
+// because a row this store cannot judge is still a row an operator authored, and
+// silently moving or deleting their content to satisfy a validator added after
+// the fact is a worse answer than telling them which row to fix.
 //
 // scopeNode is the placement the write being validated carries — the effective
 // post-merge value for an Update, empty for a Delete (which removes a placement
@@ -68,7 +109,11 @@ var identityKinds = map[Kind]bool{
 // from the other end — and it is why a scope_node naming nothing used to be a 201.
 // Checking it first also means the refusal a caller reads names the reference
 // itself, rather than whichever downstream rule the unplaced row happened to trip.
-func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind, scopeNode string) error {
+//
+// The placement check is NOT diffed against prior, because it is not a property
+// of the row-set: it is computed from the scope_node THIS request submitted, so
+// every fault it can report is by construction this write's own.
+func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind, scopeNode string, prior priorFaults) error {
 	// NOT for scope nodes. A scope node is the thing a placement points AT, and
 	// DAT-006 says so in as many words: "Every row this contract defines OTHER
 	// THAN A SCOPE NODE ITSELF MUST carry scope_node". Running the placement
@@ -105,27 +150,44 @@ func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind, scopeNode st
 			placementErrs = verr.Errors
 		}
 	}
-	// withPlacement prefixes the placement fault onto whatever the per-kind
-	// validator found, so the reference error leads and the rest survives.
-	withPlacement := func(errs []datamodel.Error) error {
-		all := append(append([]datamodel.Error(nil), placementErrs...), errs...)
-		if len(all) > 0 {
-			return &ValidationError{Errors: all}
-		}
-		return nil
+	resulting, err := rowSetFaults(ctx, tx, kind)
+	if err != nil {
+		return err
 	}
+	introduced := introducedFaults(resulting, prior)
+	prior.reportStepover(kind, resulting, introduced)
+
+	all := append(append([]datamodel.Error(nil), placementErrs...), introduced...)
+	if len(all) > 0 {
+		return &ValidationError{Errors: all}
+	}
+	return nil
+}
+
+// rowSetFaults runs the datamodel/1 validation appropriate to kind over the
+// row-set as tx currently sees it, and reports every fault it finds. It is the
+// ONE per-kind switch: validateAfterWrite runs it over the post-mutation state,
+// capturePriorFaults runs it over the pre-mutation state, and StoredFaults runs
+// it over a quiescent store. Two transcriptions of this switch would be two
+// answers to "is this row-set valid", and the difference between them would be
+// the set of faults a write could never be blamed for or never cleared of.
+//
+// It deliberately excludes the placement check (checkPlacementResolves): that is
+// computed from a submitted request field, not from the row-set, so it has no
+// meaning over a state nobody is writing to.
+func rowSetFaults(ctx context.Context, tx *sql.Tx, kind Kind) ([]datamodel.Error, error) {
 	switch {
 	case kind == KindScopeNode:
 		nodes, err := readScopeNodes(ctx, tx)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		_, errs := datamodel.BuildFullScopeTree(nodes)
-		return withPlacement(errs)
+		return errs, nil
 	case schedulingKinds[kind]:
 		raw, err := readRawRows(ctx, tx)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		_, errs := datamodel.ValidateRows(raw)
 		// Deleting a cast an active screen override names must be refused just
@@ -136,13 +198,13 @@ func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind, scopeNode st
 		// in datamodel.ValidateRows.
 		refErrs, err := checkScreenOverrideTargets(ctx, tx)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		return withPlacement(append(errs, refErrs...))
+		return append(errs, refErrs...), nil
 	case identityKinds[kind]:
 		raw, err := readIdentityRows(ctx, tx)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		_, errs := datamodel.ValidateIdentityRows(raw)
 		// The same rule from the other end: a screen write whose override names
@@ -152,9 +214,9 @@ func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind, scopeNode st
 		// that do not go through that surface.
 		refErrs, err := checkScreenOverrideTargets(ctx, tx)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		return withPlacement(append(errs, refErrs...))
+		return append(errs, refErrs...), nil
 	case kind == KindAutomation:
 		// Automations are gated by the rules compiler (compile.Compile) at the top
 		// of Create/Update, not by datamodel.ValidateRows — a compile failure has
@@ -168,17 +230,7 @@ func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind, scopeNode st
 		// layer's own client-supplied-id rejection (a seed, a pack/install pipeline,
 		// a future caller) could persist a non-ULID automation id that cursor
 		// pagination (DecodeCursor's ulid.Valid gate) would then refuse to page past.
-		ids, err := readIDs(ctx, tx, string(KindAutomation))
-		if err != nil {
-			return err
-		}
-		var errs []datamodel.Error
-		for _, id := range ids {
-			if e := datamodel.CheckRowID(id, "id"); e != nil {
-				errs = append(errs, *e)
-			}
-		}
-		return withPlacement(errs)
+		return rowIDFaults(ctx, tx, KindAutomation)
 	case kind == KindWebhookEndpoint:
 		// A webhook endpoint has no datamodel/1 row schema and no compiler: its
 		// body is validated by the api layer's own per-kind check before the
@@ -187,20 +239,26 @@ func validateAfterWrite(ctx context.Context, tx *sql.Tx, kind Kind, scopeNode st
 		// automations arm above enforces, for the same reason — an in-process
 		// writer that bypasses the HTTP layer must not be able to persist a
 		// non-ULID id that cursor pagination would then refuse to page past.
-		ids, err := readIDs(ctx, tx, string(KindWebhookEndpoint))
-		if err != nil {
-			return err
-		}
-		var errs []datamodel.Error
-		for _, id := range ids {
-			if e := datamodel.CheckRowID(id, "id"); e != nil {
-				errs = append(errs, *e)
-			}
-		}
-		return withPlacement(errs)
+		return rowIDFaults(ctx, tx, KindWebhookEndpoint)
 	default:
-		return fmt.Errorf("store: no validator for kind %q", kind)
+		return nil, fmt.Errorf("store: no validator for kind %q", kind)
 	}
+}
+
+// rowIDFaults is the DAT-005a identity check over one table, the whole of what
+// the automation and webhook-endpoint arms enforce.
+func rowIDFaults(ctx context.Context, tx *sql.Tx, kind Kind) ([]datamodel.Error, error) {
+	ids, err := readIDs(ctx, tx, string(kind))
+	if err != nil {
+		return nil, err
+	}
+	var errs []datamodel.Error
+	for _, id := range ids {
+		if e := datamodel.CheckRowID(id, "id"); e != nil {
+			errs = append(errs, *e)
+		}
+	}
+	return errs, nil
 }
 
 // readRawRows loads every scheduling-core row body, grouped by kind and ordered

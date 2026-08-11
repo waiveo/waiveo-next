@@ -358,6 +358,16 @@ func applyIDRewrites(ctx context.Context, tx *sql.Tx, plan []IDRewrite) error {
 	return nil
 }
 
+// idMigrationVerifyKinds is the one inventory of the validators the id
+// migration is judged by — one representative kind per validator, since
+// rowSetFaults's scheduling arm covers all seven scheduling tables and its
+// identity arm both identity tables. The pre-rewrite capture and the
+// post-rewrite verification walk THIS list, not two transcriptions of it: a kind
+// captured but not verified is a diff nobody uses, and a kind verified but not
+// captured is a boot-time brick of exactly the shape priorfaults.go exists to
+// prevent.
+var idMigrationVerifyKinds = []Kind{KindScopeNode, KindPlaylist, KindAutomation, KindScreen}
+
 // verifyAfterIDRewrite is the migration's safety net, run inside the same
 // transaction as the rewrite so a failure discards all of it.
 //
@@ -373,16 +383,25 @@ func applyIDRewrites(ctx context.Context, tx *sql.Tx, plan []IDRewrite) error {
 // Re-planning last is the idempotence proof, asserted rather than assumed: the
 // migration's own output must be a store this same planner finds nothing to do
 // on.
-func verifyAfterIDRewrite(ctx context.Context, tx *sql.Tx, plan []IDRewrite) error {
+func verifyAfterIDRewrite(ctx context.Context, tx *sql.Tx, plan []IDRewrite, prior map[Kind]priorFaults) error {
 	// KindScopeNode selects BuildScopeTree, KindPlaylist selects ValidateRows
 	// over the whole scheduling-core set (not just playlists), KindAutomation
 	// the id check the rules compiler does not make, and KindScreen selects
 	// ValidateIdentityRows over BOTH identity tables (a screen's device_id link
 	// crosses them, so one kind selects the pair).
-	for _, kind := range []Kind{KindScopeNode, KindPlaylist, KindAutomation, KindScreen} {
+	for _, kind := range idMigrationVerifyKinds {
 		// No placement of its own to resolve: the migration writes no new row, and
 		// the rewritten scope_node columns are covered by the mapping sweep below.
-		if err := validateAfterWrite(ctx, tx, kind, ""); err != nil {
+		//
+		// Judged against the faults the store carried BEFORE the rewrite (captured
+		// by MigrateRowIDs), for the reason priorfaults.go sets out and with one
+		// extra edge to it here: this runs at BOOT. A store holding a row an
+		// older build accepted and a current validator does not — an inline slide
+		// with an empty layer stack, say — would otherwise fail its id migration
+		// permanently, and a migration that cannot complete is a store that cannot
+		// be written to at all. The migration must still be refused for anything
+		// IT broke, which is exactly what the difference reports.
+		if err := validateAfterWrite(ctx, tx, kind, "", prior[kind]); err != nil {
 			return fmt.Errorf("store: canonicalized row ids did not validate: %w", err)
 		}
 	}
@@ -480,10 +499,21 @@ func (s *Store) MigrateRowIDs(ctx context.Context) (IDMigration, error) {
 		if len(plan) == 0 {
 			return nil
 		}
+		// Captured BEFORE the rewrite, one reading per validator the verification
+		// below runs, so the migration is judged on the faults it introduced
+		// (priorfaults.go).
+		prior := make(map[Kind]priorFaults, len(idMigrationVerifyKinds))
+		for _, kind := range idMigrationVerifyKinds {
+			p, err := capturePriorFaults(ctx, tx, kind)
+			if err != nil {
+				return err
+			}
+			prior[kind] = p
+		}
 		if err := applyIDRewrites(ctx, tx, plan); err != nil {
 			return err
 		}
-		if err := verifyAfterIDRewrite(ctx, tx, plan); err != nil {
+		if err := verifyAfterIDRewrite(ctx, tx, plan, prior); err != nil {
 			return err
 		}
 		if err := bumpGeneration(ctx, tx); err != nil {

@@ -388,7 +388,12 @@ func (s *Server) SetServedProgram(generation int64, sp wire.ScreenProgram) {
 			URL:        c.URL,
 			ExpiresAt:  c.ExpiresAt,
 			DurationMS: c.DurationMS,
-			Layers:     layers,
+			// The cast-local slide id rides through unmodified, like every other
+			// pointer on this reference: a `nav` layer's items name their jump
+			// target by it, so dropping it here would leave the player a menu it
+			// can draw and focus but never resolve.
+			SlideID: c.SlideID,
+			Layers:  layers,
 		})
 	}
 	s.SetProgram(generation, sp.ScreenID, sp.ProgramRevision, sp.Priority, sp.Display, content)

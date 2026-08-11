@@ -924,13 +924,35 @@ func main() {
 	}
 	eventIDs := ulid.MonotonicFrom(eventHead)
 	eventHub := eventsse.NewHub(eventLog)
+	// The app-side `event` TRIGGER path (rules/1 RUL-080/081). Every durable
+	// event the ingest appends is also offered to this dispatcher, which fires
+	// the enabled automations whose `event` trigger names that schema and whose
+	// `match` constraints hold — the hop that makes a viewer's press on an
+	// interactive slide layer (events/1 EVT-055 `screen.interaction`) actually
+	// run an automation instead of merely being recorded.
+	//
+	// It is created EMPTY here and bound below by api.New (api.WithEventTriggers)
+	// because the ingest is constructed before the api handler that owns the rule
+	// store and the executor. Until it is bound it is inert; the binding happens
+	// during this same startup, before anything is served.
+	//
+	// It is passed as the ingest's EventDeliverer, NOT as part of its EventSink:
+	// a sink runs under the ingest's own mutex, and a rule run — which reaches
+	// devices over the network — must never hold the one durable telemetry
+	// channel every relay in this deployment shares. The ingest offers each
+	// appended envelope to this dispatcher with that lock released, off the push
+	// request, and with its ack cursor held behind the run until it concludes
+	// (see eventingest.EventDeliverer and the package's durability contract).
+	// telemetryIngest.Drain is what this process waits on at shutdown.
+	eventTriggers := &api.EventTriggerDispatcher{}
 	telemetryIngest := eventingest.New(eventHub, firstPhotonSite.ScopeNode, eventIDs, nowMs,
 		func(relayID, serial string) bool {
 			if _, enrolled := enrollSrv.RelayEnrollmentKey(relayID); !enrolled {
 				return false
 			}
 			return !enrollSrv.IsRevoked(relayID, serial)
-		})
+		},
+		eventTriggers.Deliver)
 
 	// The workspace signing key (SEC-046) and the destination the data-subject
 	// export writes its archive/1 container to (API-120/121). Establishing the
@@ -1140,6 +1162,19 @@ func main() {
 		// and reachable from a test — enforces nothing on a real box. That was the
 		// binary's actual state before this line.
 		api.WithRequiredPacks(requiredPacks),
+		// Bind the dispatcher the telemetry ingest already writes through, so an
+		// ingested durable event evaluates this deployment's `event` triggers and
+		// runs the automations that match (rules/1 RUL-080/081). Without this
+		// option every `event` trigger an operator can author, the compiler
+		// accepts and the store persists would fire nothing at all.
+		api.WithEventTriggers(eventTriggers),
+		// …and publish what each of those runs DID to the same durable event log
+		// the press itself was appended to, as an events/1 automation.run
+		// (EVT-040/042). An event-fired run has no caller to answer, so without
+		// this its per-target refusals — a rule reaching a screen its placement no
+		// longer contains — are a screen that did not change and a log line on the
+		// box, which is not evidence an operator can reach.
+		api.WithRunEvents(eventHub),
 		api.WithWebhookSecrets(webhookSecrets, webhookRotationOverlapMs),
 		api.WithWorkspaceArchive(&api.WorkspaceArchive{Dir: cfg.archiveDir, Key: wsKey}),
 		// The live store a restore stages beside (archive/1, the offline swap).
@@ -1389,6 +1424,14 @@ func main() {
 		// over — the record is committed either way, never lost.
 		if err := jobRunner.Shutdown(shutdownCtx); err != nil {
 			log.Printf("waiveo-feeder: job runner shutdown: %v", err)
+		}
+		// Ingested telemetry whose app-side delivery (an `event`-triggered rule
+		// run) is still in flight drains on the same budget. Missing it costs
+		// nothing durable: an entry whose delivery did not conclude was never
+		// acked, so the relay still holds it and pushes it again after the
+		// restart (eventingest's durability contract).
+		if err := telemetryIngest.Drain(shutdownCtx); err != nil {
+			log.Printf("waiveo-feeder: telemetry delivery drain: %v (an in-flight rule run was abandoned; its event was never acked and the relay re-pushes it)", err)
 		}
 		// Webhook delivery drains last and on the SAME budget: it talks to a
 		// third party this process does not control, so it is the one drain

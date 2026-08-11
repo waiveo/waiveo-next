@@ -775,43 +775,109 @@ func TestTheCommandErrorPathConformsToTheDeclaredRunResultSchema(t *testing.T) {
 // `screens: [{"screen_id": "", ok: false, ...}]`, and
 // AutomationRunScreen.screen_id is required and `$ref: Ulid`
 // (`^[0-9A-HJKMNP-TV-Z]{26}$`). A generated typed client is handed an invalid
-// ULID on exactly the path it exists to describe. The failure belongs to the
-// ACTION — no screen was attempted — so it is reported on the action's own
-// error member with an empty screens list.
+// ULID on exactly the path it exists to describe.
+//
+// The first repair reported it as an ACTION-level error with an empty screens
+// list, on the reasoning that "an invented entry has no id to carry". That
+// reasoning was wrong in its premise and the consequence showed up one layer
+// out: the entry is not invented and the id is not absent — it is the canonical
+// ULID the AUTHOR wrote, which the compile gate already requires (RUL-233's
+// MEMBER_TYPE_INVALID). Dropping it cost the report the one fact an operator
+// needs. For an event-fired run, whose only reader is the automation.run record
+// (eventtriggers_report.go), "some screen this rule names could not be reached"
+// is not a usable answer for a rule with three play_cast actions.
+//
+// So it is reported as one FAILED SCREEN carrying the authored id. The schema
+// obligation this test was written for is unchanged and still asserted whole:
+// the id is a real ULID, so nothing invalid reaches a typed client.
 func TestAnUnresolvableScreenRefIsReportedWithoutFakingAScreenId(t *testing.T) {
-	e := newEnv(t)
-	node := e.placementNode(t)
-	castID := mintSignageCast(t, e, node, "Lunch Menu")
+	// A canonical ULID naming no screen row. It is the ordinary case — a screen
+	// deleted after the rule was written, or one the run may not reach — and the
+	// id is a real identifier, so it can be reported against.
+	const missingULID = "01J8ZN0SCREENR0WM1SS1NG001"
+	// A screen_id that is NOT a canonical ULID. rules/1 constrains this member's
+	// TYPE and not its grammar (RUL-233's MEMBER_TYPE_INVALID), so an author can
+	// store one, and it must never reach `screens[].screen_id`, which the
+	// document declares as a Ulid.
+	const malformedID = "01J8ZN0SUCHSCREENR0W000001" // U is not in Crockford base32
 
-	automationID := mintSignageAutomation(t, e, node, map[string]any{
-		// A syntactically valid ULID that names no screen row.
-		"type": "play_cast", "screen_id": "01J8ZN0SUCHSCREENR0W000001", "cast_id": castID,
+	t.Run("a canonical id is named in the report", func(t *testing.T) {
+		e := newEnv(t)
+		node := e.placementNode(t)
+		castID := mintSignageCast(t, e, node, "Lunch Menu")
+		automationID := mintSignageAutomation(t, e, node, map[string]any{
+			"type": "play_cast", "screen_id": missingULID, "cast_id": castID,
+		})
+
+		resp, raw := e.do(t, http.MethodPost, "/api/v1/automations/"+automationID+"/run", nil, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("run: %d %s", resp.StatusCode, raw)
+		}
+		// The whole body, against the whole declared schema. This is what catches a
+		// member that is present but not of the declared SHAPE — the presence-only
+		// reading responseschema_test.go performs cannot see an empty ULID.
+		assertMatchesDeclaredSchema(t, "AutomationRunResult", raw)
+
+		var out signageRunResult
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(out.Signage) != 1 {
+			t.Fatalf("signage report = %+v, want the one action the rule declared", out.Signage)
+		}
+		got := out.Signage[0]
+		if got.Outcome != "failed" {
+			t.Errorf("outcome = %q, want failed — the action named a screen that is not there", got.Outcome)
+		}
+		if len(got.Screens) != 1 {
+			t.Fatalf("screens = %+v, want exactly one entry naming the screen the author wrote", got.Screens)
+		}
+		sc := got.Screens[0]
+		if sc.ScreenID != missingULID {
+			t.Errorf("screens[0].screen_id = %q, want the authored id %q — a report that does not name the target leaves "+
+				"an operator with three play_cast actions and no idea which one failed", sc.ScreenID, missingULID)
+		}
+		if sc.OK {
+			t.Errorf("screens[0] reports ok for a screen that does not exist")
+		}
+		if sc.Error == "" {
+			t.Errorf("no per-screen error; the operator is told the run failed and not why")
+		}
 	})
 
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/automations/"+automationID+"/run", nil, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("run: %d %s", resp.StatusCode, raw)
-	}
-	// The whole body, against the whole declared schema. This is what catches a
-	// member that is present but not of the declared SHAPE — the presence-only
-	// reading responseschema_test.go performs cannot see an empty ULID.
-	assertMatchesDeclaredSchema(t, "AutomationRunResult", raw)
+	t.Run("a malformed id falls back to the action level rather than being echoed", func(t *testing.T) {
+		e := newEnv(t)
+		node := e.placementNode(t)
+		castID := mintSignageCast(t, e, node, "Lunch Menu")
+		automationID := mintSignageAutomation(t, e, node, map[string]any{
+			"type": "play_cast", "screen_id": malformedID, "cast_id": castID,
+		})
 
-	var out signageRunResult
-	if err := json.Unmarshal(raw, &out); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(out.Signage) != 1 {
-		t.Fatalf("signage report = %+v, want the one action the rule declared", out.Signage)
-	}
-	got := out.Signage[0]
-	if got.Outcome != "failed" {
-		t.Errorf("outcome = %q, want failed — the action named a screen that is not there", got.Outcome)
-	}
-	if got.Error == "" {
-		t.Errorf("no action-level error; the operator is told the run failed and not why")
-	}
-	if len(got.Screens) != 0 {
-		t.Errorf("screens = %+v, want none — no screen was attempted, and an invented entry has no id to carry", got.Screens)
-	}
+		resp, raw := e.do(t, http.MethodPost, "/api/v1/automations/"+automationID+"/run", nil, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("run: %d %s", resp.StatusCode, raw)
+		}
+		// The original defect, and the reason this branch exists at all: echoing a
+		// non-ULID into `screens[].screen_id` hands a generated typed client an
+		// invalid identifier on exactly the path it exists to describe.
+		assertMatchesDeclaredSchema(t, "AutomationRunResult", raw)
+
+		var out signageRunResult
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(out.Signage) != 1 {
+			t.Fatalf("signage report = %+v, want the one action the rule declared", out.Signage)
+		}
+		got := out.Signage[0]
+		if got.Outcome != "failed" {
+			t.Errorf("outcome = %q, want failed", got.Outcome)
+		}
+		if len(got.Screens) != 0 {
+			t.Errorf("screens = %+v, want none — a malformed id names no screen to attribute and must not be echoed into a Ulid field", got.Screens)
+		}
+		if got.Error == "" {
+			t.Errorf("no action-level error; the operator is told the run failed and not why")
+		}
+	})
 }

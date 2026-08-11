@@ -464,6 +464,8 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
                   dispatch({ type: "patchLayer", index: state.layerIndex, patch });
                 }}
                 onPickAsset={() => setPickerOpen(true)}
+                slides={state.slides}
+                slideIndex={state.slideIndex}
                 durationMs={slide.duration_ms}
                 onDurationChange={(durationMs) =>
                   dispatch({ type: "setSlideDuration", index: state.slideIndex, durationMs })

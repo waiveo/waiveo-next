@@ -98,8 +98,10 @@ type traceIngestHarness struct {
 func newTraceIngestHarness() *traceIngestHarness {
 	log := events.NewEventLog(0)
 	return &traceIngestHarness{
-		log:     log,
-		handler: eventingest.New(log, traceIngestScope, traceIngestIDs(), store.WallClockMs, traceRelay().Authorizer()),
+		log: log,
+		// No EventDeliverer: this driver measures what the INGEST records, and a
+		// post-append consumer would add behaviour the case does not observe.
+		handler: eventingest.New(log, traceIngestScope, traceIngestIDs(), store.WallClockMs, traceRelay().Authorizer(), nil),
 	}
 }
 

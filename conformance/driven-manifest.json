@@ -99,6 +99,7 @@
       "EVT-041-valid-automation-run-restarted",
       "EVT-041-valid-automation-run-skipped-internal",
       "EVT-050-valid-content-played",
+      "EVT-055-valid-screen-interaction",
       "EVT-060-valid-device-heartbeat",
       "EVT-070-valid-box-vitals",
       "EVT-080-valid-audit-login-failure",

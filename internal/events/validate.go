@@ -42,6 +42,7 @@ var payloadValidators = map[string]payloadValidator{
 	SchemaEntityStateChanged: validateEntityStateChanged,
 	SchemaAutomationRun:      validateAutomationRun,
 	SchemaContentPlayed:      validateContentPlayed,
+	SchemaScreenInteraction:  validateScreenInteraction,
 	SchemaDeviceHeartbeat:    validateDeviceHeartbeat,
 	SchemaBoxVitals:          validateBoxVitals,
 	SchemaAuditEvent:         validateAuditEvent,

@@ -213,4 +213,50 @@ describe("playlist item normalisation", () => {
     } as PlaylistItem;
     expect(normalizePlaylistItem(switched)).toEqual({ source: "cast", cast_id: ULID_B });
   });
+
+  // THE ROUND TRIP. A `source: "slide"` item carries its whole content INLINE,
+  // and this console has no layer editor — so the only thing it can do with one
+  // is give it back unchanged. It did not: `slide` was missing from both the
+  // source list and the per-source field map, so the normalizer rebuilt the item
+  // from an empty list and the save that followed stored an item with no slide.
+  // The operator was told "Saved playlist"; the screen played one item fewer.
+  //
+  // This is the exact sequence the console performs on Save
+  // (schedules-route.tsx: every item through normalizePlaylistItem, then PATCH),
+  // asserted on the object that would go on the wire.
+  it("round-trips a playlist containing an inline slide without deleting the slide", () => {
+    const inline: PlaylistItem = {
+      source: "slide",
+      slide: {
+        layers: [
+          { kind: "rect", x: 0, y: 0, w: 1920, h: 1080, color: "#101014" },
+          { kind: "text", x: 80, y: 400, w: 1760, h: 200, text: "Reception", font_px: 96 },
+          { kind: "ping", x: 80, y: 700, w: 600, h: 120, text: "Call for service", ping_name: "call_service" },
+        ],
+      },
+      duration_seconds: 20,
+    };
+    const loaded: PlaylistItem[] = [
+      { source: "asset", asset_ref: "sha256:aa11", content_type: "video" },
+      inline,
+      { source: "cast", cast_id: ULID_A },
+    ];
+
+    const saved = loaded.map((item) => normalizePlaylistItem(item));
+
+    expect(saved).toEqual(loaded);
+    // Named separately from the deep-equal above: the deep-equal would also pass
+    // if `slide` were rebuilt as `undefined` under a looser matcher, and it is
+    // the presence of the LAYERS that decides whether a screen draws anything.
+    expect(saved[1].slide?.layers).toHaveLength(3);
+    expect(saved[1].slide?.layers[2].ping_name).toBe("call_service");
+  });
+
+  // A source newer than this build must survive a save too, for the same reason
+  // and by the opposite mechanism: there is no field list to rebuild from, so
+  // the item is passed through rather than emptied.
+  it("passes an unrecognised source through untouched instead of emptying it", () => {
+    const future = { source: "hologram", projection_id: ULID_B, duration_seconds: 8 } as unknown as PlaylistItem;
+    expect(normalizePlaylistItem(future)).toEqual(future);
+  });
 });

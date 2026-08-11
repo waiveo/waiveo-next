@@ -7,6 +7,8 @@ import {
   CloudSun,
   Image as ImageIcon,
   LayoutGrid,
+  ListTree,
+  MousePointerClick,
   Square,
   Timer,
   ToggleLeft,
@@ -43,6 +45,8 @@ const KIND_ICON: Record<LayerKind, LucideIcon> = {
   weather: CloudSun,
   entity: ToggleLeft,
   video: Video,
+  ping: MousePointerClick,
+  nav: ListTree,
 };
 
 const KIND_LABEL: Record<LayerKind, string> = {
@@ -55,6 +59,8 @@ const KIND_LABEL: Record<LayerKind, string> = {
   weather: "Weather",
   entity: "Entity state",
   video: "Video",
+  ping: "Button",
+  nav: "Menu",
 };
 
 /** The kinds the toolbar offers DIRECTLY: the static ones plus the clock, which
@@ -68,8 +74,14 @@ const KIND_LABEL: Record<LayerKind, string> = {
  * the library, and it is the second half of a pair an operator thinks of as one
  * choice ("put a file on the slide"). Its absence from this row was the whole of
  * the defect — the kind was on the wire, in the projector and in the player, and
- * unreachable from the only surface that authors one. */
-const DIRECT_KINDS: LayerKind[] = ["text", "rect", "image", "video", "clock"];
+ * unreachable from the only surface that authors one.
+ *
+ * The two INTERACTIVE kinds are here too, and deliberately not behind the widget
+ * picker: that picker's whole premise is "this draws itself from live data
+ * instead of from what you type", and neither of these does. A button and a menu
+ * are objects you place, exactly like a rectangle — what is new about them is
+ * what they DO, which is the panel's job to explain, not the picker's. */
+const DIRECT_KINDS: LayerKind[] = ["text", "rect", "image", "video", "clock", "ping", "nav"];
 
 /** What each live widget IS, in the terms that decide whether it is the one you
  * want. Every line says where the value comes from, because that is the whole

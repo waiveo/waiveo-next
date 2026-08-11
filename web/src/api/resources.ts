@@ -32,7 +32,7 @@ import {
   type PackRowWrite,
   type PacksModule,
 } from "./packs";
-import { createCastsModule, type CastsModule } from "./casts";
+import { createCastsModule, type CastsModule, type SlideLayer } from "./casts";
 import { createDiagnosticsModule, type DiagnosticsModule } from "./diagnostics";
 import { createBackupModule, createJobsModule, type BackupModule, type JobsModule } from "./backup";
 
@@ -61,16 +61,29 @@ export type PairingCodeResult = components["schemas"]["PairingCodeResult"];
 // ── Scheduling-core Wire shapes (data-model/1; not yet in the OpenAPI) ───────
 
 /** Which content shape one playlist entry carries (DAT-041). `asset` names
- * content-addressed bytes, `playable` names a pack's content, and `cast` names
- * an AUTHORED cast row by id — the source that makes the Studio reach a TV.
+ * content-addressed bytes, `playable` names a pack's content, `slide` carries
+ * ONE authored layer stack inline on the item, and `cast` names an AUTHORED cast
+ * row by id — the source that makes the Studio reach a TV.
  *
  * A `cast` entry is the one source that is not one-to-one with a played item:
  * at projection time it expands into one slide content item per slide of the
  * referenced cast, in authored order (internal/feeder/snapshot and
  * internal/relay/schedulehost both do this), which is exactly why the reference
  * is by id and not an inlined copy — editing the cast changes every screen
- * playing it. */
-export const PLAYLIST_ITEM_SOURCES = ["asset", "playable", "cast"] as const;
+ * playing it.
+ *
+ * This is the CLOSED wire vocabulary, not the set of sources this console can
+ * AUTHOR. `slide` was missing here while the server had shipped, stored and
+ * served it for two releases, and the omission was not cosmetic: it made
+ * `normalizePlaylistItem` below rebuild every inline-slide item from an empty
+ * field list, so merely opening a playlist that contained one and pressing Save
+ * DELETED the slide — a screen quietly one item shorter, with the operator told
+ * "Saved playlist". The editor still offers only the three sources it has
+ * controls for (`playlist.uis.json`); there is no layer editor here yet, and
+ * offering a source whose required member nothing can fill would be a control
+ * that can only ever fail. Listing it here is about round-tripping what the
+ * server already holds, which is a different obligation from authoring it. */
+export const PLAYLIST_ITEM_SOURCES = ["asset", "playable", "slide", "cast"] as const;
 export type PlaylistItemSource = (typeof PLAYLIST_ITEM_SOURCES)[number];
 
 /** What an `asset` item's bytes ARE, and therefore how a screen presents them
@@ -86,22 +99,41 @@ export type PlaylistItemSource = (typeof PLAYLIST_ITEM_SOURCES)[number];
  * honours, which is why it is listed under `asset` alone below. */
 export type PlaylistContentType = "image" | "video";
 
+/** A `source: "slide"` item's INLINE authored slide (DAT-041): one ordered layer
+ * stack, carried on the item rather than referenced. The anonymous twin of a
+ * `CastSlide` — no `id` (nothing outside the item can address it) and no
+ * `duration_ms` (the item's own `duration_seconds` is its dwell time) — reusing
+ * the same `SlideLayer` the cast editor draws, because an authored slide and the
+ * served slide are one shape end to end. */
+export interface PlaylistInlineSlide {
+  layers: SlideLayer[];
+}
+
 /** A playlist item (DAT-041): `asset` (asset_ref + content_type), `playable`
- * (pack_id + content_id) or `cast` (cast_id). */
+ * (pack_id + content_id), `slide` (an inline `slide`) or `cast` (cast_id). */
 export interface PlaylistItem {
   source: PlaylistItemSource;
   asset_ref?: string;
   content_type?: PlaylistContentType;
   pack_id?: string;
   content_id?: string;
+  slide?: PlaylistInlineSlide;
   cast_id?: string;
   duration_seconds?: number;
 }
 
-/** The members that belong to each `source`, and nothing else. */
+/** The members that belong to each `source`, and nothing else.
+ *
+ * Every source in `PLAYLIST_ITEM_SOURCES` MUST have an entry, and the type says
+ * so (`Record<PlaylistItemSource, …>`) rather than leaving it to a `?? []`
+ * fallback in the normalizer. That fallback is what let `slide` be absent here
+ * for two releases while reading as intentional: a source with no entry silently
+ * normalizes to nothing but its own name, so the member that IS the item's whole
+ * content was dropped on every save. A missing entry is now a compile error. */
 const ITEM_FIELDS_BY_SOURCE: Record<PlaylistItemSource, readonly (keyof PlaylistItem)[]> = {
   asset: ["asset_ref", "content_type"],
   playable: ["pack_id", "content_id"],
+  slide: ["slide"],
   cast: ["cast_id"],
 };
 
@@ -119,10 +151,20 @@ const ITEM_FIELDS_BY_SOURCE: Record<PlaylistItemSource, readonly (keyof Playlist
  * Lives here, beside the type, rather than in the one page that edits playlists
  * today: any surface that writes an item has the same obligation, and a second
  * copy of this list is how the two drift.
+ *
+ * A source this build does not KNOW is passed through untouched rather than
+ * rebuilt. That direction is deliberate and it is the lesson `slide` taught:
+ * rebuilding from an empty field list does not "clean" an item this console does
+ * not understand, it DELETES its content — and it does so on a Save the operator
+ * asked for, reporting success. A console one release behind the server must be
+ * able to open and re-save a playlist without destroying the parts of it that are
+ * newer than itself.
  */
 export function normalizePlaylistItem(item: PlaylistItem): PlaylistItem {
+  const fields = ITEM_FIELDS_BY_SOURCE[item.source];
+  if (!fields) return { ...item };
   const out: PlaylistItem = { source: item.source };
-  for (const field of ITEM_FIELDS_BY_SOURCE[item.source] ?? []) {
+  for (const field of fields) {
     const value = item[field];
     if (value !== undefined) Object.assign(out, { [field]: value });
   }

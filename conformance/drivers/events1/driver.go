@@ -120,6 +120,7 @@ func driveCases(rep *report.Report, cases map[string]corpus.Case) {
 	driveAutomationRunRelay(rep, cases, "EVT-041-valid-automation-run-restarted")
 	driveAutomationRunInternal(rep, cases, "EVT-041-valid-automation-run-skipped-internal")
 	driveContentPlayed(rep, cases)
+	driveScreenInteraction(rep, cases)
 	driveDeviceHeartbeat(rep, cases)
 	driveBoxVitals(rep, cases)
 	driveAuditEvent(rep, cases)
@@ -170,8 +171,10 @@ func newIngestHarness() *ingestHarness {
 	log := events.NewEventLog(0)
 	relay := pushRelay()
 	return &ingestHarness{
-		log:     log,
-		handler: eventingest.New(log, siteScope, monotonicIDs(), store.WallClockMs, relay.Authorizer()),
+		log: log,
+		// No EventDeliverer: events/1's cases are about the envelope the log
+		// holds, not about what any app-side consumer then does with it.
+		handler: eventingest.New(log, siteScope, monotonicIDs(), store.WallClockMs, relay.Authorizer(), nil),
 		relay:   relay,
 	}
 }
@@ -597,6 +600,55 @@ func driveContentPlayed(rep *report.Report, cases map[string]corpus.Case) {
 	}
 	recordDeliveredBool(rep, c, delivered, want.Delivered, diffs,
 		"expected.delivered_before_t_end_known (EVT-051) is a producer-timing property this driver has no temporal model to observe; not asserted")
+}
+
+// --- screen.interaction (EVT-055) --------------------------------------------
+
+// driveScreenInteraction drives EVT-055 through the live ingest handler.
+//
+// Like content.played, the producer input is already payload-shaped field for
+// field, so it is pushed as-is as a relay telemetry record — which is exactly
+// what the relay does with it (internal/relay/playerserver's interaction route
+// marshals this shape straight into the telemetry buffer). What the case proves
+// is the whole app-side half at once: that the schema is classed on this
+// channel, that its payload passes the EVT-013 delivery gate, and that
+// `interaction` arrives VERBATIM (EVT-057) — the value an automation matches on,
+// which any normalising hop would silently break.
+func driveScreenInteraction(rep *report.Report, cases map[string]corpus.Case) {
+	const id = "EVT-055-valid-screen-interaction"
+	c, ok := corpus.ByID(cases, id)
+	if !ok {
+		rep.Fail(id, contract, "case not found in frozen corpus")
+		return
+	}
+
+	var want caseExpectation
+	if err := decodeInto(c.Expected, &want); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode expected: %v", err))
+		return
+	}
+	payloadRaw, err := json.Marshal(c.Input)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("marshal input as payload: %v", err))
+		return
+	}
+
+	h := newIngestHarness()
+	h.push(pushBatch(telemetry.Entry{Seq: 1, Schema: events.SchemaScreenInteraction, Payload: payloadRaw}))
+	delivered, env := deliveredEnvelope(h)
+
+	var diffs []report.Diff
+	if delivered {
+		if env.Schema != want.Envelope.Schema {
+			diffs = append(diffs, report.Diff{Field: "envelope.schema", Expected: want.Envelope.Schema, Actual: env.Schema})
+		}
+		if eq, cmpErr := payloadsEqual(env.Payload, want.Envelope.Payload); cmpErr != nil {
+			diffs = append(diffs, report.Diff{Field: "envelope.payload", Expected: "<a parseable JSON payload>", Actual: cmpErr.Error()})
+		} else if !eq {
+			diffs = append(diffs, report.Diff{Field: "envelope.payload", Expected: string(want.Envelope.Payload), Actual: string(env.Payload)})
+		}
+	}
+	recordDeliveredBool(rep, c, delivered, want.Delivered, diffs, "")
 }
 
 // --- device.heartbeat (EVT-060) ---------------------------------------------

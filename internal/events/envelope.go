@@ -48,6 +48,7 @@ var RegisteredSchemas = map[string]struct{}{
 	SchemaEntityStateChanged: {},
 	SchemaAutomationRun:      {},
 	SchemaContentPlayed:      {},
+	SchemaScreenInteraction:  {},
 	SchemaDeviceHeartbeat:    {},
 	SchemaBoxVitals:          {},
 	SchemaAuditEvent:         {},

@@ -86,9 +86,9 @@ func testWallMs() int64 { return time.Now().UnixMilli() }
 
 // newTestIngest mounts the live handler over log, admitting exactly the fixture
 // relay identity.
-func newTestIngest(t *testing.T, sink EventSink) http.Handler {
+func newTestIngest(t *testing.T, sink EventSink) *Ingest {
 	t.Helper()
-	return New(sink, siteScope, seqIDs(), testWallMs, testRelay().Authorizer())
+	return New(sink, siteScope, seqIDs(), testWallMs, testRelay().Authorizer(), nil)
 }
 
 // pushRequest builds the REL-090 telemetry.push request, carrying the connection
@@ -220,7 +220,7 @@ func TestIngest_AppendsEveryRelayTelemetrySchema(t *testing.T) {
 			log := events.NewEventLog(0)
 			h := newTestIngest(t, log)
 			var logged []string
-			h.(*ingest).logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+			h.logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
 
 			ack := postBatch(t, h, pushBatch(telemetry.Entry{Seq: 1, Schema: c.schema, Payload: c.payload}))
 
@@ -254,7 +254,7 @@ func TestIngest_DropsInvalidPayloadButAcksBatch(t *testing.T) {
 	h := newTestIngest(t, log)
 
 	var logged []string
-	in := h.(*ingest)
+	in := h
 	in.logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
 
 	// seq 2's payload has a mode_disposition outside the EVT-041 closed enum.
@@ -349,8 +349,8 @@ func TestIngest_AckIsHighestSeqReceived_JumpsMarkedAndSupersededGaps(t *testing.
 	// The gap set must DRAIN once the cursor jumps the gap: a wedged contiguous
 	// cursor would retain every above-gap seq in `processed` forever — an
 	// unbounded map leak for the life of the connection.
-	if in := h.(*ingest); len(in.processed) != 0 {
-		t.Fatalf("the gap set must drain once the cursor jumps the gap; got %d retained", len(in.processed))
+	if len(h.processed) != 0 {
+		t.Fatalf("the gap set must drain once the cursor jumps the gap; got %d retained", len(h.processed))
 	}
 }
 

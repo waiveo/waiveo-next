@@ -131,6 +131,44 @@ const (
 // still spelled locally in each projection; a cast is not going to repeat that.
 const PlaylistSourceCast = "cast"
 
+// PlaylistSourcePlayable and PlaylistSourceSlide complete DAT-041's `source`
+// vocabulary: a pack's contributed content by reference (`pack_id` +
+// `content_id`, manifest/1 MAN-080), and one authored layer stack carried
+// INLINE on the item (`slide`).
+//
+// They are spelled here, beside the other two, because DAT-041 states the
+// vocabulary as CLOSED — "`source` MUST be exactly one of `asset`, `playable`,
+// `slide`, or `cast`" — and a closed set nothing enumerates is not closed. The
+// gate that enforces it (PlaylistSources) needs all four names in one place, and
+// having three of them exported and the fourth spelled as a bare literal in
+// each projection is exactly the drift PlaylistSourceCast's own doc set out to
+// stop.
+const (
+	PlaylistSourcePlayable = "playable"
+	PlaylistSourceSlide    = "slide"
+)
+
+// PlaylistSources is DAT-041's CLOSED `source` vocabulary — the whole of it.
+//
+// Nothing enforced this until now, and the cost was not theoretical: an item
+// declaring `source: "hologram"` was accepted 201, stored, and then matched no
+// arm of either content projection's switch, so it contributed nothing to the
+// delivered program. A screen played one item fewer than its playlist says, and
+// the only evidence was in a Lease no operator reads — the
+// accepts-work-it-never-performs shape this contract's own reference
+// implementation keeps re-learning.
+//
+// It is a variable rather than a switch inside the validator so the four names
+// have ONE inventory. A fifth source arrives by adding a constant and this
+// entry; a source added to the projections and not here is refused at the write,
+// which is the failure direction that surfaces loudly instead of silently.
+var PlaylistSources = map[string]bool{
+	PlaylistSourceAsset:    true,
+	PlaylistSourcePlayable: true,
+	PlaylistSourceSlide:    true,
+	PlaylistSourceCast:     true,
+}
+
 // Cast is a cast row (DAT-043) — a "slidecast": the ordered set of authored
 // slides an operator builds once and schedules onto screens, and the unit the
 // legacy system's operators worked in. It is the resource-row baseline
@@ -235,11 +273,26 @@ type CastSlide struct {
 // layers a player draws directly, its shape single-sourced from wire.Layer (the
 // player/1 Lease `layers` shape) so an authored slide and the served slide are
 // the SAME layer type end-to-end, never a re-encoding. Layers are back-to-front
-// (array index is z-order). The stack is not validated at authoring time — an
-// image layer's fetch URL is derived from the content origin at projection, so
-// wire.ValidateSlideLayers is applied by the producer that projects it (feeder
-// snapshot / relay schedulehost), which drops a slide whose layers do not
-// validate rather than serving it malformed.
+// (array index is z-order).
+//
+// The stack IS validated at authoring time, by the same gate a cast's own slides
+// pass through (datamodel.slideLayerGate, over
+// wire.ValidateAuthoredSlideLayers). It once was not — the reasoning being that
+// an image layer's fetch URL is derived at projection time, so the producer that
+// projects the slide (feeder snapshot / relay schedulehost) validates it there.
+// That producer DROPS a slide whose layers do not validate, which made the
+// authoring surface accept work it never performed: a 201, and a screen one item
+// short, with the only evidence in a Lease no operator reads. The authoring form
+// of the gate is the answer — identical rules, minus the derived url that does
+// not exist yet.
+//
+// One rule lands differently here than on a cast slide, and it is a property of
+// the SHAPE rather than an exception: a `nav` layer jumps to another slide by
+// CAST-LOCAL slide id, and an inline slide has no cast around it — no siblings,
+// no id of its own — so no target could ever resolve and a nav layer is refused
+// (`PLAYLIST_ITEM_SLIDE_LAYERS_INVALID`). A `ping` is perfectly legal: pressing
+// it records a `screen.interaction` and can fire an automation, which needs no
+// slide id-space at all.
 type Slide struct {
 	Layers []wire.Layer `json:"layers"`
 }

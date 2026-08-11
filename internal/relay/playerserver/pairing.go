@@ -284,6 +284,13 @@ type Server struct {
 	renderStarts []RenderStartRequest
 	renderEnds   []RenderEndRequest
 
+	// interactionRecorder is the durable sink an accepted viewer press is
+	// recorded into (interaction.go): the relay's telemetry buffer, installed by
+	// the binary via SetInteractionRecorder. Nil until installed, and a nil one
+	// makes POST /player/v1/interaction REFUSE rather than accept-and-discard —
+	// see interaction.go's own note on why.
+	interactionRecorder InteractionRecorder
+
 	// slideLive is the live data a native slide's server-resolved widgets are
 	// filled from as a Lease is issued (internal/slidelive) — installed once by
 	// the deployment via SetSlideLive, never per screen, exactly like the
@@ -405,7 +412,8 @@ func NewServer(relayCertPEM []byte, grants []wire.PairingGrant, nowMs func() int
 	}, nil
 }
 
-// Register mounts the pairing AND program-delivery routes onto mux.
+// Register mounts the pairing, program-delivery, interaction and telemetry
+// routes onto mux.
 // Callers serve mux over the relay's own HTTPS player/1 listener, using the
 // same certificate as relayCertPEM (NewServer) — PLY-001's stable
 // /player/v1 path prefix, player/1's ordinary-HTTPS transport (PLY-001),
@@ -415,6 +423,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/player/v1/pair/status", s.handlePairStatus)
 	mux.HandleFunc("/player/v1/program", s.handleProgram)
 	mux.HandleFunc("/player/v1/lease/ack", s.handleLeaseAck)
+	mux.HandleFunc("/player/v1/interaction", s.handleInteraction)
 	mux.HandleFunc("/player/v1/render/start", s.handleRenderStart)
 	mux.HandleFunc("/player/v1/render/end", s.handleRenderEnd)
 }

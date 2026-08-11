@@ -830,6 +830,14 @@ func main() {
 	// before pairingSrv.Register mounts routes onto mux below.
 	pairingSrv.EnablePersistence(store)
 
+	// Wire the RETURN PATH — a viewer's press on an interactive slide layer into
+	// the durable telemetry buffer, and from there to the app peer's event log
+	// and any automation watching for it. Installed BEFORE pairingSrv.Register
+	// mounts the routes below: with no recorder a press is refused 503, and
+	// refusing a real press is exactly what this ordering avoids. See
+	// wireInteractionRecorder (interactionwiring.go) for the whole argument.
+	wireInteractionRecorder(pairingSrv, host.TelemetryBuffer())
+
 	// Install the live data a native slide's server-resolved widgets are filled
 	// from as this relay signs each Lease (internal/slidelive):
 	//

@@ -324,14 +324,44 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 	return rs, errs
 }
 
-// checkPlaylistItems enforces the DAT-041 rules that govern a playlist item's
-// own `content_type` — the field that decides whether an asset item PLAYS as a
-// video or is drawn as a still image (PlaylistItem.ContentType).
+// checkPlaylistItems enforces the DAT-041 rules that govern one playlist item's
+// own shape: its `source`, the `slide` member that source decides the presence
+// of, and its `content_type`.
 //
 // It reports EVERY failing item rather than the first, for the same reason
 // checkCastSlides does: a playlist is a document an operator edits as a whole,
 // and an editor forced to re-submit once per bad item to discover the next one
 // is API-013's multi-field answer thrown away.
+//
+// # The source vocabulary, and why it is checked here at all
+//
+// DAT-041 states `source` as a CLOSED set — "exactly one of `asset`,
+// `playable`, `slide`, or `cast`" — and until this function nothing enforced
+// it. `{"source": "hologram"}` was accepted 201 and stored, and then matched no
+// arm of either content projection's switch, so the item contributed nothing:
+// the screen played one item fewer than its playlist says, with the only
+// evidence in a Lease no operator reads. An unknown source SHORT-CIRCUITS the
+// rest of this item's checks, because every remaining rule is phrased in terms
+// of what the source is and none of them can say anything useful about a source
+// nobody recognises.
+//
+// # The `slide` member, and why BOTH directions are refused
+//
+// DAT-041's second half of the same sentence: "when `source` is `slide`,
+// `slide` MUST be present". A `source: "slide"` item with no `slide` member was
+// likewise a 201, and projected to nothing — the identical defect one field
+// down, and the exact hole the layer gate below was previously guarded by
+// (`item.Slide != nil`) rather than closing. The MIRROR case is refused for the
+// same reason and not for symmetry's sake: a `slide` carried on an `asset` or
+// `cast` item is an authored layer stack no projection will ever look at, so
+// accepting it stores an operator's stated intent that nothing performs.
+//
+// Together those two make "a row the store accepted" and "a slide a player will
+// actually be served" the same set — which the layer gate alone could not,
+// because a gate that only runs when the member is present has nothing to say
+// about the member being absent.
+//
+// # content_type
 //
 // Two rules, and both exist because the alternative is silence:
 //
@@ -349,11 +379,62 @@ func ValidateRows(raw RawRows) (RowSet, []Error) {
 //     store an operator's stated intent that nothing will ever honour — the
 //     accepts-work-it-never-performs shape — so it is refused instead.
 //
-// Nothing here re-validates `source` itself or the source/field pairing: those
-// belong to DAT-041's own rules and are not this function's business.
+// # The layer stack
+//
+// A present inline slide runs the SHARED authored-slide gate (slideLayerGate) —
+// the same gate a cast's own slides pass through. That the inline path once ran
+// no authoring validation at all was the same defect in a third place: the
+// projections revalidate and DROP a slide whose layers do not validate, so an
+// operator got a 201 and a screen one item short.
+//
+// Nothing here re-validates the asset/playable/cast field pairings: those are
+// DAT-041's other half and belong to the reference checks (validateReferences)
+// and the asset-reference gate (internal/app/api/assetrefs.go), which can see
+// the rows and the content origin this function cannot.
 func checkPlaylistItems(items []PlaylistItem) []Error {
 	var errs []Error
 	for i, item := range items {
+		if !PlaylistSources[item.Source] {
+			errs = append(errs, Error{
+				Field: fmt.Sprintf("items[%d].source", i),
+				Code:  "PLAYLIST_ITEM_SOURCE_INVALID",
+				Message: fmt.Sprintf(
+					"source %q is not one of %s/%s/%s/%s; a content projection recognises no other value, so this item would be stored and then contribute nothing to the screen's program (DAT-041)",
+					item.Source, PlaylistSourceAsset, PlaylistSourcePlayable, PlaylistSourceSlide, PlaylistSourceCast),
+			})
+			// Every remaining rule is phrased in terms of the source. Reporting
+			// them against a source nobody recognises would send an operator
+			// after consequences of a single mistake they have already been told
+			// about.
+			continue
+		}
+		switch {
+		case item.Source == PlaylistSourceSlide && item.Slide == nil:
+			errs = append(errs, Error{
+				Field: fmt.Sprintf("items[%d].slide", i),
+				Code:  "PLAYLIST_ITEM_SLIDE_INVALID",
+				Message: fmt.Sprintf(
+					"an item declaring source %q MUST carry its inline slide; without one there is no layer stack to draw and the item projects to nothing (DAT-041)",
+					PlaylistSourceSlide),
+			})
+		case item.Source != PlaylistSourceSlide && item.Slide != nil:
+			errs = append(errs, Error{
+				Field: fmt.Sprintf("items[%d].slide", i),
+				Code:  "PLAYLIST_ITEM_SLIDE_INVALID",
+				Message: fmt.Sprintf(
+					"an inline slide is only carried by a %q item; a %q item's content comes from its own source, so this layer stack would be stored and never drawn (DAT-041)",
+					PlaylistSourceSlide, item.Source),
+			})
+		case item.Slide != nil:
+			// navTargets is left NIL on purpose: an inline slide has no cast
+			// around it and therefore no slide ids to jump to. See
+			// slideLayerGate.checkNavTargets.
+			errs = append(errs, slideLayerGate{
+				field:    fmt.Sprintf("items[%d].slide", i),
+				Code:     "PLAYLIST_ITEM_SLIDE_LAYERS_INVALID",
+				contract: "DAT-041",
+			}.check(item.Slide.Layers)...)
+		}
 		if item.ContentType == "" {
 			continue
 		}
@@ -410,6 +491,22 @@ func checkCastSlides(slides []CastSlide) []Error {
 		}}
 	}
 	var errs []Error
+
+	// The set of slide ids this cast declares, collected in a FIRST pass so a
+	// nav item may target any slide of the cast — including one declared after
+	// the slide the menu sits on, which is the ordinary case for a "next" item
+	// and by far the most common menu there is. Reusing the incremental `seen`
+	// map below would have accepted only BACKWARD jumps, and a forward jump would
+	// have been refused with a message about a slide that plainly exists.
+	// Duplicate ids are reported separately below; here a duplicate simply
+	// resolves, since it is still a slide the player can find.
+	declared := make(map[string]bool, len(slides))
+	for _, s := range slides {
+		if id := strings.TrimSpace(s.ID); id != "" {
+			declared[id] = true
+		}
+	}
+
 	seen := make(map[string]bool, len(slides))
 	for i, s := range slides {
 		switch {
@@ -435,11 +532,134 @@ func checkCastSlides(slides []CastSlide) []Error {
 				Message: "a slide's duration_ms, when stated, MUST be positive; omit it to inherit the playlist item's own duration (DAT-043)",
 			})
 		}
-		if err := wire.ValidateAuthoredSlideLayers(s.Layers); err != nil {
+		errs = append(errs, slideLayerGate{
+			field:      fmt.Sprintf("slides[%d]", i),
+			Code:       "CAST_SLIDE_LAYERS_INVALID",
+			contract:   "DAT-043",
+			navTargets: declared,
+		}.check(s.Layers)...)
+	}
+	return errs
+}
+
+// slideLayerGate is the ONE authoring-time gate over a slide's layer stack, and
+// it exists because there are TWO places a slide is authored — a cast's
+// `slides[]` (DAT-043) and a `source: "slide"` playlist item's inline `slide`
+// (DAT-041) — and until this type they were validated differently. The cast
+// path ran wire.ValidateAuthoredSlideLayers plus the nav-target check; the
+// inline path ran NOTHING, on the reasoning that the projections revalidate at
+// serve time. They do — and they DROP what fails, which is the same
+// accepts-work-it-never-performs shape stated one layer further down: a stored
+// slide that silently never reaches a screen, with the only evidence in a Lease
+// no operator reads.
+//
+// So the gate is a value both call sites construct rather than two call sites
+// that each remember to make the same two calls. A third place a slide can be
+// authored has to fill this struct in, and filling it in is what forces the
+// question a new call site would otherwise never be asked: what is this slide's
+// nav ID-SPACE?
+//
+//   - field is the erroring member's path prefix within the row, so a refusal
+//     sends the operator to the control they typed into.
+//
+//   - Code is the row family's published code for "this layer stack does not
+//     validate": a cast reports CAST_SLIDE_LAYERS_INVALID, a playlist item
+//     PLAYLIST_ITEM_SLIDE_LAYERS_INVALID. One code shared across two row
+//     families would tell an operator their playlist has a bad cast. It is the
+//     one EXPORTED-looking field on this unexported type, and the capital is
+//     deliberate: both of these are FIELD-LEVEL codes (api/1 API-013's
+//     errors[].code), and scripts/validate-error-codes.mjs recognises a
+//     field-level EMISSION by the literal pattern `Code: "…"` — capital C —
+//     rather than by the looser use-scan it applies to top-level codes.
+//
+//     An earlier revision of this comment said a lowercase name would
+//     "SILENTLY remove both codes from the gate". That is wrong in the part
+//     that matters, and it was measured in both directions: lowercasing the
+//     field fails the FORWARD check loudly on the next run — "published in the
+//     Field-level error register but no implementation source emits it",
+//     naming each code — and deleting a code from the contract fails the
+//     reverse check just as loudly. The capital is worth keeping because it is
+//     what the gate reads; it is not the last line of defence, because there is
+//     no silent failure available here in either direction.
+//
+//   - contract names the requirement in the message.
+//
+//   - navTargets is the set of slide ids a `nav` item may jump to from this
+//     slide, and a NIL map is meaningful rather than merely empty: it says this
+//     slide has no addressable siblings at all, so no target could ever resolve
+//     and a nav layer is refused outright. That is exactly a `source: "slide"`
+//     playlist item — one anonymous slide, no id of its own, no cast around it.
+//     Only a cast supplies an id-space, because only a cast declares slide ids.
+type slideLayerGate struct {
+	field      string
+	Code       string
+	contract   string
+	navTargets map[string]bool
+}
+
+// check applies the shared layer gate and the nav-target rule to one authored
+// slide's stack.
+func (g slideLayerGate) check(layers []wire.Layer) []Error {
+	var errs []Error
+	if err := wire.ValidateAuthoredSlideLayers(layers); err != nil {
+		errs = append(errs, Error{
+			Field:   g.field + ".layers",
+			Code:    g.Code,
+			Message: err.Error() + " (" + g.contract + ")",
+		})
+	}
+	return append(errs, g.checkNavTargets(layers)...)
+}
+
+// checkNavTargets enforces the one nav rule that CANNOT live in
+// wire.ValidateAuthoredSlideLayers: every `nav` item's target_slide_id must name
+// a slide that actually exists in this slide's own id-space.
+//
+// The wire validator sees one layer stack at a time and has no idea what other
+// slides exist, so it can only check that a target is well formed. Whether the
+// target RESOLVES is a fact about the enclosing document, and this is the
+// document-level validator — the same split checkCastSlides already applies to
+// slide-id uniqueness.
+//
+// It is enforced rather than left to the player because an unresolvable target
+// is precisely the defect this project keeps shipping: a menu item that takes
+// focus, highlights, accepts a press and performs nothing, with the failure
+// visible only to whoever is standing in front of the screen. Refusing it at
+// authoring time turns a silent dead end into a 422 naming the exact item.
+//
+// A slide with NO id-space (g.navTargets nil — an inline playlist slide) refuses
+// the nav LAYER, not each of its items. The distinction is the honest one: the
+// items are not individually wrong, the layer cannot work here at all, and
+// telling an operator "target_slide_id names no slide" for a document that has
+// no slide ids to name would send them looking for a slide to point at.
+func (g slideLayerGate) checkNavTargets(layers []wire.Layer) []Error {
+	var errs []Error
+	for li, l := range layers {
+		if l.Kind != wire.LayerKindNav {
+			continue
+		}
+		if g.navTargets == nil {
 			errs = append(errs, Error{
-				Field:   fmt.Sprintf("slides[%d].layers", i),
-				Code:    "CAST_SLIDE_LAYERS_INVALID",
-				Message: err.Error() + " (DAT-043)",
+				Field: fmt.Sprintf("%s.layers[%d]", g.field, li),
+				Code:  g.Code,
+				Message: fmt.Sprintf(
+					"a %q layer jumps to another slide by cast-local slide id, and this slide is not part of a cast — it has no sibling slides and no id-space to target, so every item would highlight, accept a press and do nothing; author the menu on a cast's slides instead (%s)",
+					wire.LayerKindNav, g.contract),
+			})
+			continue
+		}
+		for ii, it := range l.Items {
+			if it.TargetSlideID == "" || g.navTargets[it.TargetSlideID] {
+				// An empty target is already reported by the wire validator;
+				// reporting it twice would show an operator two errors for one
+				// mistake.
+				continue
+			}
+			errs = append(errs, Error{
+				Field: fmt.Sprintf("%s.layers[%d].items[%d].target_slide_id", g.field, li, ii),
+				Code:  "CAST_NAV_TARGET_UNKNOWN",
+				Message: fmt.Sprintf("nav item %q targets slide id %q, which this cast does not declare; a menu item whose target does not exist would accept a press and do nothing (DAT-043)",
+					it.Label, it.TargetSlideID),
 			})
 		}
 	}

@@ -264,6 +264,26 @@ func requireNullableStringField(m map[string]json.RawMessage, field string) erro
 	return nil
 }
 
+// optionalStringField checks that, when field is present in m, it is a JSON
+// string — absence is fine, and so is an explicit null (a producer that has no
+// value may either omit the key or send null; both mean the same "no value" and
+// rejecting one of the two spellings would drop a well-formed event over
+// punctuation). It differs from requireNullableStringField in exactly that
+// absence: there the field MUST be present and only its value may be empty
+// (screen.interaction's slide_id, which a slide outside a cast genuinely has
+// none of).
+func optionalStringField(m map[string]json.RawMessage, field string) error {
+	raw, present := m[field]
+	if !present || string(raw) == "null" {
+		return nil
+	}
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return ValidationError{Field: field, Detail: "must be a string when present"}
+	}
+	return nil
+}
+
 // optionalObjectField checks that, when field is present in m, it is a JSON
 // object — absence is fine (the field itself is optional: content.played's
 // power_evidence, box.vitals's sd_health).

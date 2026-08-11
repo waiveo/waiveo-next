@@ -181,7 +181,9 @@ func TestResolveLayersLeavesEveryOtherKindAlone(t *testing.T) {
 		if out[i].Value != "" {
 			t.Fatalf("layer %d (%s) must not be given a resolved value, got %q", i, out[i].Kind, out[i].Value)
 		}
-		if out[i] != in[i] {
+		// reflect.DeepEqual, not ==: wire.Layer gained a slice member (Items,
+		// the nav menu) and is no longer comparable. Same assertion.
+		if !reflect.DeepEqual(out[i], in[i]) {
 			t.Fatalf("layer %d (%s) was modified: %+v vs %+v", i, out[i].Kind, out[i], in[i])
 		}
 	}

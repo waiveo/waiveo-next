@@ -85,13 +85,6 @@
       ]
     },
     {
-      "package": "internal/datamodel",
-      "reason": "A convenience lookup on the built scope tree. The callers that need a node's kind hold the node itself by then; only data-model/1's in-package corpus driver asks the tree.",
-      "funcs": [
-        "ScopeTree.KindOf"
-      ]
-    },
-    {
       "package": "internal/events",
       "reason": "Two unwired clusters. The webhook ENDPOINT LIFECYCLE \u2014 construct fresh, enable, rotate the signing secret, verify an inbound signature \u2014 has no caller: internal/app/webhookdeliver restores an existing endpoint's state and delivers with it, and never runs the lifecycle verbs, which is why events/1's WEBHOOK_ENDPOINT_DISABLED has nothing to emit it. The rest are constructors and frame builders on paths that take a different entry point today (retention is configured at the log, gap frames are built by the SSE hub).",
       "funcs": [

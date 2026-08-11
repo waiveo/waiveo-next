@@ -162,7 +162,7 @@ func TestEveryRefusalCodeIsPublished(t *testing.T) {
 
 	// An ingest that authorizes nobody: every authenticated caller is refused,
 	// which is one of the two refusal paths. The other two need no wiring.
-	handler := New(nil, siteScope, seqIDs(), testWallMs, func(string, string) bool { return false })
+	handler := New(nil, siteScope, seqIDs(), testWallMs, func(string, string) bool { return false }, nil)
 
 	cases := []struct {
 		name    string

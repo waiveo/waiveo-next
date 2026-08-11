@@ -204,3 +204,25 @@ func TestPlaylistItemOverrideOutranksTheCastDefault(t *testing.T) {
 		t.Errorf("the slide that states no duration took %d ms; the playlist item's own 12s override must outrank the cast's 5s default", content[2].DurationMS)
 	}
 }
+
+// TestCastSlideIDRidesTheRelayProjection is the relay-side twin of
+// snapshot.TestCastSlideIDRidesTheProjection.
+//
+// The two projections must agree, and this is the field where a disagreement is
+// invisible until somebody presses a menu item: the app-authored baseline and
+// the relay's own daypart re-resolution both produce slide items, and a `nav`
+// target only resolves if the item carries its cast-local id. If only one
+// projection stamped it, a menu would work until the first schedule boundary and
+// then silently stop, which is the hardest failure of all to attribute.
+func TestCastSlideIDRidesTheRelayProjection(t *testing.T) {
+	content := playlistContent(castStore(nil), castFixturePlaylistID, contentSigner{origin: "https://origin.example"})
+	if len(content) != 3 {
+		t.Fatalf("playlistContent returned %d items, want one per cast slide", len(content))
+	}
+	want := []string{"title", "photo", "clock"}
+	for i, item := range content {
+		if item.SlideID != want[i] {
+			t.Errorf("content[%d].slide_id = %q, want %q — a nav target resolves against this", i, item.SlideID, want[i])
+		}
+	}
+}

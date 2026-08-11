@@ -76,10 +76,17 @@ var idMigrationTables = []struct {
 // reject it is DAT-005a's judgement of the resulting FULL row set.
 const newPlaylistID = "01JAAAAAAAAAAAAAAAAAAAAAAA"
 
-func newPlaylistBody(scopeNode string) json.RawMessage {
+// id defaults to newPlaylistID; an explicit one lets a caller author the row
+// whose OWN id is the fault, which is how "the write introduced this" is told
+// apart from "the store already carried this".
+func newPlaylistBody(scopeNode string, id ...string) json.RawMessage {
+	rowID := newPlaylistID
+	if len(id) > 0 {
+		rowID = id[0]
+	}
 	return json.RawMessage(fmt.Sprintf(
 		`{"id":%q,"scope_node":%q,"name":"Authored After The Rule","items":[{"source":"asset","asset_ref":%q}]}`,
-		newPlaylistID, scopeNode, seedAssetRef))
+		rowID, scopeNode, seedAssetRef))
 }
 
 // openStoreAt opens a file-backed store and closes it when the test ends.
@@ -363,24 +370,49 @@ func TestMigrateRowIDsUnsticksAPreRuleStore(t *testing.T) {
 
 	s := openStoreAt(t, dsn)
 
-	// BEFORE: the store is write-dead. The playlist being created is itself
-	// impeccable; it is rejected because the rows already present are not.
-	_, err := s.Create(ctx, store.KindPlaylist, newPlaylistBody(preRuleSeedIDs["01J8Z4DEM0SCREENF1RSTPH0TN"]))
-	var ve *store.ValidationError
-	if !errors.As(err, &ve) {
-		t.Fatalf("Create against a pre-rule store = %v, want a *store.ValidationError", err)
+	// BEFORE: the pre-rule rows are REPORTED but they do not veto an unrelated
+	// write. This assertion was the other way round until the store learned to
+	// judge a write on what it introduced (priorfaults.go): a store whose rows
+	// predate a validator used to refuse every write of their kind, including
+	// the DELETE that is the only repair path, which is a store recoverable only
+	// by raw SQL. The migration below is still what CANONICALIZES the ids — it
+	// is no longer what makes the store writable at all.
+	faults, err := s.StoredFaults(ctx)
+	if err != nil {
+		t.Fatalf("StoredFaults: %v", err)
 	}
 	var sawRowIDInvalid bool
-	for _, e := range ve.Errors {
+	for _, e := range faults {
 		if e.Code == "ROW_ID_INVALID" {
 			sawRowIDInvalid = true
 		}
 	}
 	if !sawRowIDInvalid {
-		t.Fatalf("Create against a pre-rule store failed with %+v, want at least one ROW_ID_INVALID", ve.Errors)
+		t.Fatalf("StoredFaults on a pre-rule store = %+v, want at least one ROW_ID_INVALID — "+
+			"an inherited fault that no longer blocks a write must still be readable, or the store drifts into a broken state nobody knows about", faults)
 	}
+	probe, err := s.Create(ctx, store.KindPlaylist, newPlaylistBody(preRuleSeedIDs["01J8Z4DEM0SCREENF1RSTPH0TN"]))
+	if err != nil {
+		t.Fatalf("an unrelated, impeccable Create against a pre-rule store = %v, want success — "+
+			"a row already in the store must not veto a write that did not touch it", err)
+	}
+	// And the repair path: the row just written comes straight back out. A store
+	// where DELETE is refused has no way back through the API at all.
+	if err := s.Delete(ctx, store.KindPlaylist, probe.ID, probe.Revision); err != nil {
+		t.Fatalf("Delete against a pre-rule store = %v, want success — DELETE is the repair path and must always be available", err)
+	}
+	// A write this store's OWN rules refuse is still refused: the new row's id is
+	// not a canonical ULID, which is a fault this write introduces.
+	_, err = s.Create(ctx, store.KindPlaylist, newPlaylistBody(preRuleSeedIDs["01J8Z4DEM0SCREENF1RSTPH0TN"], "not-a-ulid"))
+	var ve *store.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("Create with a non-ULID id against a pre-rule store = %v, want a *store.ValidationError — "+
+			"the difference is what a write INTRODUCED, and this write introduces its own bad id", err)
+	}
+	// The create and the delete above; the refused write changed nothing.
+	wantGeneration += 2
 	if g := gen(t, s); g != wantGeneration {
-		t.Fatalf("a rejected write changed the generation: %d, want %d", g, wantGeneration)
+		t.Fatalf("generation after one create + one delete + one rejected write = %d, want %d", g, wantGeneration)
 	}
 
 	// THE MIGRATION.
