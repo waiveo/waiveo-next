@@ -77,7 +77,7 @@ reader nothing and costs a caller the clearer of the two answers.
 | DAT-072 | `contracts/data-model-1.md#scheduling-core-daypart` | `DAT-074-valid-daypart-display-power-off` | covered |
 | DAT-073 | `contracts/data-model-1.md#scheduling-core-daypart` | `DAT-074-valid-daypart-display-power-off`, `DAT-073-invalid-within-schedule-daypart-overlap-rejected`, `DAT-073-invalid-midnight-wrap-collides-next-weekday` | covered |
 | DAT-074 | `contracts/data-model-1.md#scheduling-core-daypart` | `DAT-074-valid-daypart-display-power-off` | covered |
-| DAT-075 | `contracts/data-model-1.md#scheduling-core-daypart` | `DAT-074-valid-daypart-display-power-off`, `DAT-075-valid-masked-preset-fires-on-fall-through`, `DAT-075-valid-fall-back-boundary-refires-preset` | covered |
+| DAT-075 | `contracts/data-model-1.md#scheduling-core-daypart` | `DAT-074-valid-daypart-display-power-off`, `DAT-075-valid-masked-preset-fires-on-fall-through`, `DAT-075-valid-fall-back-boundary-refires-preset`, `DAT-075-valid-apply-carries-baseline-until-the-bound-rows-change` | covered |
 | DAT-076 | `contracts/data-model-1.md#scheduling-core-daypart` | `DAT-074-valid-daypart-display-power-off`, `DAT-121-valid-misfire-catchup-vs-skip-by-kind` | covered |
 | DAT-077 | `contracts/data-model-1.md#scheduling-core-daypart` | `DAT-073-invalid-within-schedule-daypart-overlap-rejected`, `DAT-073-invalid-midnight-wrap-collides-next-weekday` | covered |
 | DAT-080 | `contracts/data-model-1.md#scheduling-core-fallback` | - | TBD-wave1 |

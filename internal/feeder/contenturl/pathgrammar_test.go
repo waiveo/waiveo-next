@@ -365,6 +365,18 @@ func TestEveryContentURLIsMintedByThisPackage(t *testing.T) {
 				"guard goes on passing", byTree[tree], tree, min)
 		}
 	}
+	// …and the REVERSE, which is what makes requiredTrees' own claim ("every tree
+	// the walk reaches is listed") true rather than aspirational. The loop above
+	// can only check trees somebody remembered to list; a tree added to the module
+	// tomorrow is guarded by neither check, and the list goes stale in exactly the
+	// silent way it was written to prevent. A new tree is a one-row edit here.
+	for tree, n := range byTree {
+		if _, listed := requiredTrees[tree]; !listed {
+			t.Errorf("the scan parsed %d non-test .go files under %s/, a tree requiredTrees does not list — add a row "+
+				"for it (a floor well under its actual size, like its neighbours) so this guard can notice that tree "+
+				"going quiet later", n, tree)
+		}
+	}
 	// The allowlist is a liability, not a feature: an entry naming a file that no
 	// longer exists is an exemption nobody is watching.
 	for prefix := range allowedSpellings {

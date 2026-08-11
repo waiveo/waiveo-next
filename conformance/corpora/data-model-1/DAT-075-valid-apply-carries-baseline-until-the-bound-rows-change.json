@@ -1,0 +1,147 @@
+{
+  "case_id": "DAT-075-valid-apply-carries-baseline-until-the-bound-rows-change",
+  "contract": "data-model/1",
+  "req_ids": ["DAT-075"],
+  "description": "A consumer already resolving screen N continuously applies a sequence of desired-state generations while ONE all-day daypart D (00:00:00-23:59:59, every weekday, America/Chicago) stays effective throughout -- the ordinary 24/7 signage shape, where the effective-daypart identity never changes again after boot and an apply is therefore the ONLY occasion on which anything about D's bound batch can reach a device. DAT-075 requires the consumer to carry N's prior effective daypart across such an apply, so a generation that authored no scheduling row (a content-URL re-mint) invokes nothing; the carry holds for exactly as long as the rows an invocation would assert are unchanged. Each leg names whether the baseline may be carried and what, if anything, is invoked: boot (no baseline to carry -- the resume edge, invoked); a re-mint with nothing authored (carried, nothing invoked); an edit to a row that is neither D nor its bound batch (carried, nothing invoked); `last_outcome` recorded on the batch row by the invocation itself, with the fresh `revision`/`updated_at` such a write stamps (carried -- an outcome is a RECORD of an invocation, DAT-092, not an instruction, and neither it nor the bookkeeping stamped alongside it may make each invocation the cause of the next); the bound preset batch's own commands re-authored (NOT carried, invoked -- the generation states a different desired device state for a daypart already in effect, and no later rising edge exists to deliver it); and D's own row re-authored (NOT carried, invoked).",
+  "input": {
+    "scope_nodes": [
+      { "id": "01J0RGNDE1PG2X7R5JQC42EJ00", "kind": "org", "parent_id": null },
+      { "id": "01JS1TECARRY0VERAPPY000001", "kind": "site", "parent_id": "01J0RGNDE1PG2X7R5JQC42EJ00", "tz": "America/Chicago", "lat": 41.8781, "long": -87.6298 },
+      { "id": "01JSCRNCARRY0VERAPPY000001", "kind": "screen", "parent_id": "01JS1TECARRY0VERAPPY000001" }
+    ],
+    "schedules": [
+      { "id": "01JSCHEDCARRY0VERAPPY00001", "scope_node": "01JSCRNCARRY0VERAPPY000001", "name": "Always On", "priority": 0, "revision": 1, "created_at": 1752537600000, "updated_at": 1752537600000 }
+    ],
+    "dayparts": [
+      {
+        "id": "01JDAYPARTCARRY0VERAPY0001",
+        "schedule_id": "01JSCHEDCARRY0VERAPPY00001",
+        "scope_node": "01JSCRNCARRY0VERAPPY000001",
+        "name": "All Day",
+        "days_of_week": [0, 1, 2, 3, 4, 5, 6],
+        "start_time": "00:00:00",
+        "end_time": "23:59:59",
+        "display_power": "on",
+        "preset_batch_id": "01JPBATCHCARRY0VERAPY00001",
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      }
+    ],
+    "preset_batches": [
+      {
+        "preset_id": "01JPBATCHCARRY0VERAPY00001",
+        "scope_node": "01JSCRNCARRY0VERAPPY000001",
+        "name": "Open Scene",
+        "commands": [{ "entity_id": "01JENTTYCARRY0VERAPY000001", "command": "power", "params": { "state": "on" } }],
+        "revision": 1,
+        "created_at": 1752537600000,
+        "updated_at": 1752537600000
+      }
+    ],
+    "resolve_for_scope_node": "01JSCRNCARRY0VERAPPY000001",
+    "applies": [
+      { "label": "boot", "at_local": "2026-01-15T09:00:00" },
+      { "label": "remint-nothing-authored", "at_local": "2026-01-15T10:00:00" },
+      {
+        "label": "unrelated-row-edited",
+        "at_local": "2026-01-15T11:00:00",
+        "authored": {
+          "schedules": [
+            { "id": "01JSCHEDCARRY0VERAPPY00001", "scope_node": "01JSCRNCARRY0VERAPPY000001", "name": "Always On (renamed)", "priority": 0, "revision": 2, "created_at": 1752537600000, "updated_at": 1752541200000 }
+          ]
+        }
+      },
+      {
+        "label": "last-outcome-recorded-on-the-batch-row",
+        "at_local": "2026-01-15T12:00:00",
+        "authored": {
+          "preset_batches": [
+            {
+              "preset_id": "01JPBATCHCARRY0VERAPY00001",
+              "scope_node": "01JSCRNCARRY0VERAPPY000001",
+              "name": "Open Scene",
+              "commands": [{ "entity_id": "01JENTTYCARRY0VERAPY000001", "command": "power", "params": { "state": "on" } }],
+              "last_outcome": {
+                "outcome": "complete",
+                "results": [{ "target": "01JENTTYCARRY0VERAPY000001", "command": "power", "ok": true }],
+                "evaluated_at": 1768489200000
+              },
+              "revision": 2,
+              "created_at": 1752537600000,
+              "updated_at": 1768489200000
+            }
+          ]
+        }
+      },
+      {
+        "label": "bound-preset-batch-re-authored",
+        "at_local": "2026-01-15T13:00:00",
+        "authored": {
+          "preset_batches": [
+            {
+              "preset_id": "01JPBATCHCARRY0VERAPY00001",
+              "scope_node": "01JSCRNCARRY0VERAPPY000001",
+              "name": "Open Scene",
+              "commands": [{ "entity_id": "01JENTTYCARRY0VERAPY000001", "command": "power", "params": { "state": "off" } }],
+              "revision": 2,
+              "created_at": 1752537600000,
+              "updated_at": 1768496400000
+            }
+          ]
+        }
+      },
+      {
+        "label": "effective-daypart-row-re-authored",
+        "at_local": "2026-01-15T14:00:00",
+        "authored": {
+          "dayparts": [
+            {
+              "id": "01JDAYPARTCARRY0VERAPY0001",
+              "schedule_id": "01JSCHEDCARRY0VERAPPY00001",
+              "scope_node": "01JSCRNCARRY0VERAPPY000001",
+              "name": "All Day",
+              "days_of_week": [0, 1, 2, 3, 4, 5, 6],
+              "start_time": "00:00:00",
+              "end_time": "23:59:59",
+              "display_power": "blank",
+              "preset_batch_id": "01JPBATCHCARRY0VERAPY00001",
+              "revision": 2,
+              "created_at": 1752537600000,
+              "updated_at": 1768500000000
+            }
+          ]
+        }
+      },
+      { "label": "settled-again-nothing-authored", "at_local": "2026-01-15T15:00:00" }
+    ]
+  },
+  "expected": {
+    "valid": true,
+    "errors": [],
+    "effective_daypart_identity_sequence": [
+      "01JDAYPARTCARRY0VERAPY0001",
+      "01JDAYPARTCARRY0VERAPY0001",
+      "01JDAYPARTCARRY0VERAPY0001",
+      "01JDAYPARTCARRY0VERAPY0001",
+      "01JDAYPARTCARRY0VERAPY0001",
+      "01JDAYPARTCARRY0VERAPY0001",
+      "01JDAYPARTCARRY0VERAPY0001"
+    ],
+    "results": [
+      { "label": "boot", "may_carry_baseline": false, "effective_daypart_id": "01JDAYPARTCARRY0VERAPY0001", "preset_fired": "01JPBATCHCARRY0VERAPY00001", "reason": "no prior baseline: this is the resume edge DAT-075 names, invoked once and governed by the effective misfire" },
+      { "label": "remint-nothing-authored", "may_carry_baseline": true, "effective_daypart_id": "01JDAYPARTCARRY0VERAPY0001", "preset_fired": null, "reason": "the applied generation authored no scheduling row at all; the baseline is carried and an apply is not a clock" },
+      { "label": "unrelated-row-edited", "may_carry_baseline": true, "effective_daypart_id": "01JDAYPARTCARRY0VERAPY0001", "preset_fired": null, "reason": "the schedule row's name changed; neither the effective daypart's own row nor the batch it binds did, so nothing an invocation would assert changed" },
+      { "label": "last-outcome-recorded-on-the-batch-row", "may_carry_baseline": true, "effective_daypart_id": "01JDAYPARTCARRY0VERAPY0001", "preset_fired": null, "reason": "last_outcome records a past invocation (DAT-092) and the write that records it re-stamps revision/updated_at; treating either as an authored change would make every invocation the cause of the next" },
+      { "label": "bound-preset-batch-re-authored", "may_carry_baseline": false, "effective_daypart_id": "01JDAYPARTCARRY0VERAPY0001", "preset_fired": "01JPBATCHCARRY0VERAPY00001", "reason": "the batch the effective daypart binds now commands a different device state; the identity will not change again inside this window, so this apply is the only occasion to assert it" },
+      { "label": "effective-daypart-row-re-authored", "may_carry_baseline": false, "effective_daypart_id": "01JDAYPARTCARRY0VERAPY0001", "preset_fired": "01JPBATCHCARRY0VERAPY00001", "reason": "the effective daypart's own row was re-authored, so what it asserts on entry is no longer what the carried baseline stood for" },
+      { "label": "settled-again-nothing-authored", "may_carry_baseline": true, "effective_daypart_id": "01JDAYPARTCARRY0VERAPY0001", "preset_fired": null, "reason": "the rows stopped changing, so the carry resumes: an edit does not put the node into a permanently re-invoking state" }
+    ],
+    "preset_invocations_in_order": [
+      { "at_local": "2026-01-15T09:00:00", "preset_batch_id": "01JPBATCHCARRY0VERAPY00001" },
+      { "at_local": "2026-01-15T13:00:00", "preset_batch_id": "01JPBATCHCARRY0VERAPY00001" },
+      { "at_local": "2026-01-15T14:00:00", "preset_batch_id": "01JPBATCHCARRY0VERAPY00001" }
+    ],
+    "no_invocation_on_an_apply_that_authored_nothing": true
+  }
+}

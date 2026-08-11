@@ -1759,9 +1759,12 @@ func bootScheduleResolverAt(applied desiredstate.Applied, srv *playerserver.Serv
 // apply that begins governing it. Each new resolver adopts its entry before its
 // one resume-governed tick, so an apply over a node the relay was already
 // resolving is not mistaken for a resume and does not re-dispatch that node's
-// preset batch to real devices. schedulehost.Resolver.AdoptCarriedState owns
-// the full argument; scheduleDriver.apply is what harvests it.
-func resolveAndServe(ctx context.Context, applied desiredstate.Applied, srv *playerserver.Server, sink *automation.CommandSink, site hello.SiteBinding, tickEvery time.Duration, nowMs int64, carried map[string]*datamodel.EffectiveState) []*schedulehost.Resolver {
+// preset batch to real devices — unless THIS generation re-authored that
+// daypart or its bound preset batch, which the adopting resolver checks and
+// which is the one case an apply must still dispatch on.
+// schedulehost.Resolver.AdoptCarriedState owns the full argument;
+// scheduleDriver.apply is what harvests it.
+func resolveAndServe(ctx context.Context, applied desiredstate.Applied, srv *playerserver.Server, sink *automation.CommandSink, site hello.SiteBinding, tickEvery time.Duration, nowMs int64, carried map[string]*schedulehost.CarriedBaseline) []*schedulehost.Resolver {
 	store, errs := schedulehost.BuildStore(applied.Schedule)
 	for _, e := range errs {
 		log.Printf("waiveo-relay: schedule section: %s: %s: %s", e.Field, e.Code, e.Message)

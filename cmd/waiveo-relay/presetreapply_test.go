@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -40,6 +41,11 @@ import (
 // (06:00-22:00 America/Chicago) binds that batch; the seeded "Overnight Blank"
 // daypart binds none.
 const presetApplyEntityID = "01J8Z3K4N5P6Q7R8S9T0V1SCRN"
+
+// seededPresetBatchID is the batch that daypart binds (store.SeedDemo's own
+// seedPresetBatchID) — the row an operator edits to change what a daypart
+// asserts on entry.
+const seededPresetBatchID = "01J8Z8DEM0PRESETBATCHF1RE1"
 
 // seededFeederStore is an in-memory app store carrying store.SeedDemo's
 // two-daypart schedule — the ordinary signage shape: one daypart binding a
@@ -205,6 +211,69 @@ func TestReMintReapplyDoesNotRefireTheEffectiveDaypartsPresetBatch(t *testing.T)
 	if calls := ctrl.calls(); len(calls) != 1 {
 		t.Fatalf("the re-mint apply dispatched %v (%d commands), want the original 1: a generation apply over a node the relay was ALREADY resolving is not a resume, and must not re-assert the daypart's device state",
 			calls, len(calls))
+	}
+}
+
+// TestAnAuthoredPresetEditIsDispatchedByTheApplyThatCarriesIt is the MIRROR of
+// the re-mint test above, driven through the same real feeder path, and the two
+// together are the property. The carry must suppress an apply that changed
+// nothing — and only that.
+//
+// Keying the carry on effective-daypart identity alone fails this. The seeded
+// "Content Hours" daypart holds 06:00-22:00, so between the edit and 22:00
+// there is no rising edge left for it to ride: an apply that declines to
+// dispatch is not deferring the edit, it is dropping it. Nothing about editing
+// a preset batch ties to a rules/1 trigger either, so the operator has no other
+// route — the display keeps the OLD scene until someone restarts the relay.
+//
+// The edit here is the smallest real one: the same batch, same daypart, same
+// window, one command re-authored. Every id involved is unchanged, which is
+// exactly why identity cannot see it.
+func TestAnAuthoredPresetEditIsDispatchedByTheApplyThatCarriesIt(t *testing.T) {
+	s := seededFeederStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	driver, ctrl := presetApplyDriver(t)
+
+	// Apply #1 inside content hours: the resume edge fires the authored batch.
+	noon := presetApplyInstant(t, 12, 0)
+	driver.apply(ctx, appliedFromFeederStore(t, s, noon), noon)
+	if calls := ctrl.calls(); len(calls) != 1 || calls[0] != presetApplyEntityID+"/launch" {
+		t.Fatalf("apply #1 dispatched %v, want exactly [%s/launch]", calls, presetApplyEntityID)
+	}
+
+	// The operator re-authors the effective daypart's bound preset batch. A store
+	// Update advances the generation by itself — this IS what an edit looks like
+	// on the wire, no synthetic AdvanceGeneration needed.
+	batch, ok, err := s.Get(context.Background(), store.KindPresetBatch, seededPresetBatchID)
+	if err != nil || !ok {
+		t.Fatalf("Get(preset batch %s) = ok %v, err %v", seededPresetBatchID, ok, err)
+	}
+	edit := json.RawMessage(`{"commands":[{"entity_id":"` + presetApplyEntityID + `","command":"home"}]}`)
+	if _, err := s.Update(context.Background(), store.KindPresetBatch, seededPresetBatchID, batch.Revision, edit); err != nil {
+		t.Fatalf("Update(preset batch): %v", err)
+	}
+
+	// Apply #2, still inside the SAME daypart at a later instant — the shape the
+	// relay sees for that edit. The newly authored command must be dispatched.
+	edited := presetApplyInstant(t, 13, 30)
+	driver.apply(ctx, appliedFromFeederStore(t, s, edited), edited)
+	calls := ctrl.calls()
+	if len(calls) != 2 || calls[1] != presetApplyEntityID+"/home" {
+		t.Fatalf("the apply carrying the edited preset batch dispatched %v, want a second command [%s/home] — the effective daypart's identity never changes again inside its window, so an apply that swallows the edit never delivers it at all",
+			calls, presetApplyEntityID)
+	}
+
+	// And the carry is not simply disabled by having seen one edit: a further
+	// apply with nothing authored (a re-mint) is silent again.
+	if err := s.AdvanceGeneration(context.Background()); err != nil {
+		t.Fatalf("AdvanceGeneration: %v", err)
+	}
+	after := presetApplyInstant(t, 14, 0)
+	driver.apply(ctx, appliedFromFeederStore(t, s, after), after)
+	if calls := ctrl.calls(); len(calls) != 2 {
+		t.Fatalf("a re-mint apply after the edit dispatched %v (%d total), want the 2 already dispatched — the carry must resume once the rows stop changing", calls, len(calls))
 	}
 }
 

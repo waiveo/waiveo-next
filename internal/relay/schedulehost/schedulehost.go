@@ -681,27 +681,65 @@ func (r *Resolver) ResolveNow(nowMs int64) (fired *datamodel.PresetFire, err err
 // incoming replacement on (CarryState/AdoptCarriedState).
 func (r *Resolver) ScopeNodeID() string { return r.screenNodeID }
 
-// CarryState is the rising-edge baseline this Resolver reached: the effective
-// state its last successful resolve projected, or nil if it never resolved.
+// CarriedBaseline is what one generation's Resolver hands the Resolver
+// replacing it over the same scope node: the rising-edge baseline it reached,
+// plus the authored rows that baseline's desired device state was read from.
+//
+// The rows travel with the state because the replacement cannot recover them —
+// it holds only the NEW generation's store, and "the same daypart is still
+// effective" and "the same device state is still desired" are different
+// questions. AdoptCarriedState answers the second by comparing these rows
+// against its own generation's; State alone can only answer the first.
+//
+// Nothing here is copied. State is the last-resolved value itself, which
+// nothing mutates after ResolveNow publishes it (each resolve publishes a fresh
+// value rather than editing the previous one), and PresetBatch points into the
+// outgoing resolver's store, which is fixed for that resolver's life.
+type CarriedBaseline struct {
+	// State is the effective state the outgoing resolver's last successful
+	// resolve projected — the value datamodel.PresetTransition keys the next
+	// rising edge against. Never nil in a CarriedBaseline CarryState returns.
+	State *datamodel.EffectiveState
+
+	// PresetBatch is the preset-batch row State's effective daypart bound in the
+	// OUTGOING generation — the batch that would have fired, and so the desired
+	// device state the carried baseline actually stands for. Nil when the
+	// carried state has no effective daypart, when that daypart binds no batch,
+	// or when the outgoing store carried no such row (a degraded store).
+	PresetBatch *datamodel.PresetBatch
+}
+
+// CarryState is the rising-edge baseline this Resolver reached — the effective
+// state its last successful resolve projected together with the preset-batch
+// row that state bound — or nil if it never resolved.
 //
 // It exists for exactly one caller — the apply path replacing this Resolver
 // with a new one over the SAME scope node — which hands it to that new
 // resolver's AdoptCarriedState. Read under the lock because the apply path
 // calls it after cancelling this resolver's loop, and cancellation cannot
 // interrupt a resolve already in flight.
-//
-// The returned state is not copied: it is the last-resolved value itself, which
-// nothing mutates after ResolveNow publishes it (each resolve publishes a fresh
-// value rather than editing the previous one).
-func (r *Resolver) CarryState() *datamodel.EffectiveState {
+func (r *Resolver) CarryState() *CarriedBaseline {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.prev
+	if r.prev == nil {
+		return nil
+	}
+	carried := &CarriedBaseline{State: r.prev}
+	if r.prev.Daypart != nil && r.prev.Daypart.PresetBatchID != "" {
+		// This resolver's OWN store, which is what the baseline was resolved
+		// against and is immutable for its life — so reading it under mu costs
+		// nothing and cannot deadlock.
+		carried.PresetBatch = r.presetBatch(r.prev.Daypart.PresetBatchID)
+	}
+	return carried
 }
 
 // AdoptCarriedState seeds this Resolver's rising-edge baseline from the
-// resolver it REPLACES over the same scope node (that resolver's CarryState).
-// A nil prev, or a call on a Resolver that has already resolved, does nothing.
+// resolver it REPLACES over the same scope node (that resolver's CarryState) —
+// but only when this generation still carries the SAME desired device state for
+// that baseline's effective daypart (datamodel.MayCarryAcrossApply). A nil
+// carried, a carried baseline whose rows this generation re-authored, or a call
+// on a Resolver that has already resolved, all do nothing.
 //
 // # Why a rebuild must not look like a boot
 //
@@ -729,8 +767,42 @@ func (r *Resolver) CarryState() *datamodel.EffectiveState {
 // daypart, so the rebuild resolves a DIFFERENT identity and fires, still
 // governed by misfire. An apply that begins governing a node nobody was
 // resolving carries nothing for it and fires.
-func (r *Resolver) AdoptCarriedState(prev *datamodel.EffectiveState) {
-	if prev == nil {
+//
+// # Why identity alone is the wrong key, and rows are the right one
+//
+// The paragraphs above argue only that a re-apply of the SAME desired state
+// must not re-fire. Keying the carry on effective-daypart identity alone
+// answers a different question than that, and gets the mirror case exactly
+// backwards: it also swallows an apply whose desired state CHANGED.
+//
+// The ordinary 24/7 signage shape is one all-day daypart, and its identity
+// never changes again after boot. An operator editing that daypart's bound
+// preset batch — a different `launch` channel, a different volume — advances
+// the generation, the relay applies it, and an identity-keyed carry reads "same
+// node, same daypart id" as "nothing to do". No boundary is ever crossed
+// afterwards for the edit to ride, so nothing dispatches it, ever; only a relay
+// restart delivers it, and nothing logs that it was withheld. Suppressing "the
+// same desired state, re-applied" and suppressing "a changed desired state" are
+// opposite obligations that identity cannot tell apart.
+//
+// So the carry is keyed at DAYPART-ROW granularity, which is
+// datamodel.MayCarryAcrossApply's own rule (DAT-075) and is called through to
+// here rather than restated: adopt only when the carried baseline's own daypart
+// row AND the preset-batch row it binds are unchanged in this generation. That
+// is exactly the desired device state a fire would assert, and nothing wider —
+// a slide's text or a playlist's items changing leaves both rows untouched and
+// is still carried, so an unrelated edit never yanks a display. It also does
+// not reinstate the re-mint cost: a re-mint re-emits a byte-identical schedule
+// section, so both rows compare equal and the carry applies exactly as before.
+func (r *Resolver) AdoptCarriedState(carried *CarriedBaseline) {
+	if carried == nil || carried.State == nil {
+		return
+	}
+	if !datamodel.MayCarryAcrossApply(carried.State, carried.PresetBatch, r.store) {
+		// This generation re-authored what the carried baseline stood for. Leaving
+		// the baseline nil makes the effective daypart a rising edge for TickBoot,
+		// which is what delivers the edit — still governed by that daypart's own
+		// misfire, so a site declaring `skip` is still obeyed.
 		return
 	}
 	r.mu.Lock()
@@ -738,7 +810,7 @@ func (r *Resolver) AdoptCarriedState(prev *datamodel.EffectiveState) {
 	if r.prev != nil {
 		return // already resolved — its own baseline is newer than any carried one.
 	}
-	r.prev = prev
+	r.prev = carried.State
 }
 
 // FirePreset dispatches a rising-edge preset batch's device commands through the

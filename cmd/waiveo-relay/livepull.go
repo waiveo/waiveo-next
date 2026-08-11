@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/relay/automation"
 	"github.com/maaxton/waiveo-next/internal/relay/automationhost"
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
@@ -201,11 +200,15 @@ func (d *scheduleDriver) apply(ctx context.Context, applied desiredstate.Applied
 // resolvers about to replace them. Nil before the first apply, and nil for a
 // node whose resolver never completed a resolve: in both cases the replacement
 // starts from no baseline, which is the genuine resume edge DAT-075 names.
-func (d *scheduleDriver) carryStates() map[string]*datamodel.EffectiveState {
+//
+// Each baseline carries the authored rows it was resolved from, because whether
+// the replacement may adopt it depends on whether THIS generation re-authored
+// them (schedulehost.Resolver.AdoptCarriedState, which owns that decision).
+func (d *scheduleDriver) carryStates() map[string]*schedulehost.CarriedBaseline {
 	if len(d.resolvers) == 0 {
 		return nil
 	}
-	carried := make(map[string]*datamodel.EffectiveState, len(d.resolvers))
+	carried := make(map[string]*schedulehost.CarriedBaseline, len(d.resolvers))
 	for nodeID, r := range d.resolvers {
 		if st := r.CarryState(); st != nil {
 			carried[nodeID] = st
