@@ -179,6 +179,30 @@ export function formatClock(ms: number): string {
   return new Date(ms).toLocaleTimeString();
 }
 
+/**
+ * The zone this page renders log timestamps in, named so the column can say so.
+ *
+ * The parity diff attributes the unlabelled timestamps here to the absence of a
+ * timezone SETTING. They are not caused by one and are not fixed by one. These
+ * lines are the feeder PROCESS's own log; local time in this platform comes from
+ * a site (DAT-031), a workspace may hold several, and DAT-034 forbids resolution
+ * from ever substituting box-local state — so there is no stored zone that is
+ * the right one to render a process log in. The person reading it is in the
+ * browser, which makes the browser's zone the honest choice.
+ *
+ * What was actually wrong is that it was unstated: a bare `14:32:07` that could
+ * equally be the box's clock or the reader's is a time an operator cannot
+ * correlate with anything — a journald line, a screen going dark, a colleague on
+ * the phone. Naming the zone costs a header and removes the ambiguity entirely.
+ */
+export function displayTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "local time";
+  } catch {
+    return "local time";
+  }
+}
+
 type Load<T> =
   | { status: "loading" }
   | { status: "ok"; value: T }
@@ -379,7 +403,10 @@ export function restartReturned(
 const LOG_COLUMNS: ColumnDef<PlatformLogRecord>[] = [
   {
     id: "ts",
-    header: "Time",
+    // The zone rides in the header rather than on every row: it is the same for
+    // every line, and repeating it 200 times would push the message column off
+    // the screen to say one thing once.
+    header: `Time (${displayTimeZone()})`,
     accessorFn: (r) => r.ts_ms,
     cell: ({ row }) => (
       <span className="font-mono text-xs text-muted-foreground">{formatClock(row.original.ts_ms)}</span>

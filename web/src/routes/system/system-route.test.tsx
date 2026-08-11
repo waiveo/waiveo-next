@@ -3,7 +3,12 @@ import { render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
-import SystemRoute, { formatBytes, formatUptime, RESTART_GIVEUP_MS } from "./system-route";
+import SystemRoute, {
+  displayTimeZone,
+  formatBytes,
+  formatUptime,
+  RESTART_GIVEUP_MS,
+} from "./system-route";
 import restartPanelDoc from "./restart-panel.uis.json";
 import { validatePage } from "@/renderer";
 import { TRACE_ID, problem } from "@/api/test-support";
@@ -213,6 +218,16 @@ describe("SystemRoute — the platform log", () => {
     expect(screen.getByText(/Showing 1 of 40 matching/)).toBeInTheDocument();
   });
 
+  it("names the zone its timestamps are in", async () => {
+    serve({ logs: logPage({ items: [record({ seq: 1 })] }) });
+    render(<SystemRoute />);
+    const table = await screen.findByRole("table", { name: /platform log/i });
+    // A bare clock time that could be the box's or the reader's is a time that
+    // correlates with nothing. The zone is stated once, in the header.
+    expect(within(table).getByText(`Time (${displayTimeZone()})`)).toBeInTheDocument();
+    expect(within(table).queryByText("Time")).toBeNull();
+  });
+
   it("sends the level, source and text filters to the server", async () => {
     const seen: URL[] = [];
     serve({ onLogs: (url) => seen.push(url) });
@@ -334,6 +349,13 @@ describe("SystemRoute — formatters", () => {
     expect(formatUptime(0)).toBe("0s");
     expect(formatUptime(3_723_000)).toBe("1h 2m");
     expect(formatUptime(90_000_000)).toBe("1d 1h");
+  });
+
+  it("displayTimeZone names a zone rather than returning an empty string", () => {
+    // A blank would render the column as "Time ()", which is worse than the
+    // unlabelled column it replaces.
+    expect(displayTimeZone()).not.toBe("");
+    expect(typeof displayTimeZone()).toBe("string");
   });
 });
 
