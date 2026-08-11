@@ -157,6 +157,144 @@ describe("packs registry client", () => {
   });
 });
 
+// The marketplace half of the same registry: resolve-and-install, the on-demand
+// update check, and the install-record history. Same endpoint for install, same
+// pipeline, same conventions — only the way the bytes are LOCATED differs.
+describe("packs marketplace client", () => {
+  it("installs by REFERENCE as JSON on the same endpoint, carrying an Idempotency-Key", async () => {
+    let contentType: string | null = null;
+    let idempotencyKey: string | null = null;
+    let body: Record<string, unknown> | null = null;
+    server.use(
+      http.post(`${TEST_BASE}/packs`, async ({ request }) => {
+        contentType = request.headers.get("Content-Type");
+        idempotencyKey = request.headers.get("Idempotency-Key");
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(
+          { id: PACK_ID, version: "1.0.0", pages: [], collections: [], locales: ["en"] },
+          { status: 201, headers: { "Trace-Id": TRACE_ID } },
+        );
+      }),
+    );
+    const result = await api().packs.installRef({ pack_id: PACK_ID, trust_channel: "community" });
+    expect(result.id).toBe(PACK_ID);
+    // The JSON content type IS the discriminant that says "resolve this reference"
+    // rather than "install these bytes".
+    expect(contentType).toBe("application/json");
+    expect(idempotencyKey).toMatch(/^[0-9a-f-]{36}$/i);
+    // The server decodes this body with unknown members REFUSED, so an absent
+    // optional must be OMITTED — never sent as an empty string.
+    expect(body).toEqual({ pack_id: PACK_ID, trust_channel: "community" });
+  });
+
+  it("carries an explicit source and pinned version when the operator supplies them", async () => {
+    let body: Record<string, unknown> | null = null;
+    server.use(
+      http.post(`${TEST_BASE}/packs`, async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(
+          { id: PACK_ID, version: "1.2.0", pages: [], collections: [], locales: ["en"] },
+          { status: 200, headers: { "Trace-Id": TRACE_ID } },
+        );
+      }),
+    );
+    await api().packs.installRef({
+      pack_id: PACK_ID,
+      trust_channel: "verified",
+      source: "https://registry.example/index.json",
+      version: "1.2.0",
+    });
+    expect(body).toEqual({
+      pack_id: PACK_ID,
+      trust_channel: "verified",
+      source: "https://registry.example/index.json",
+      version: "1.2.0",
+    });
+  });
+
+  it("surfaces a refused reference with its own marketplace code", async () => {
+    server.use(
+      http.post(`${TEST_BASE}/packs`, () =>
+        problem(422, "VALIDATION_FAILED", "the pack reference must name one of the four trust channels", {
+          errors: [{ field: "artifact", code: "TRUST_CHANNEL_UNKNOWN", message: "got \"\"" }],
+        }),
+      ),
+    );
+    const err = await api()
+      .packs.installRef({ pack_id: PACK_ID, trust_channel: "community" })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).fieldErrors["artifact"]).toContain("got");
+  });
+
+  it("runs an update check as a bodyless POST on the pack's own /update path", async () => {
+    let idempotencyKey: string | null = null;
+    let hitPath: string | null = null;
+    let raw: string | null = null;
+    server.use(
+      http.post(`${TEST_BASE}/packs/acme/menu-board/update`, async ({ request }) => {
+        idempotencyKey = request.headers.get("Idempotency-Key");
+        hitPath = new URL(request.url).pathname;
+        raw = await request.text();
+        return HttpResponse.json(
+          { action: "updated", id: PACK_ID, from_version: "1.0.0", to_version: "1.1.0", pages: ["menu-items"] },
+          { headers: { "Trace-Id": TRACE_ID } },
+        );
+      }),
+    );
+    const result = await api().packs.update(PACK_ID);
+    expect(result.action).toBe("updated");
+    expect(result.to_version).toBe("1.1.0");
+    // The pack id's single slash stays a real path separator.
+    expect(hitPath).toBe("/api/v1/packs/acme/menu-board/update");
+    // Nothing about HOW the pack is re-resolved is sent: the channel pin lives in
+    // the install record server-side (MKT-094).
+    expect(raw).toBe("");
+    // A retriable mutating POST outside plain creation still carries the key.
+    expect(idempotencyKey).toMatch(/^[0-9a-f-]{36}$/i);
+  });
+
+  it("lists the install-record history as a keyset page, oldest first", async () => {
+    const rec = (over: Record<string, unknown>) => ({
+      id: ULID_A,
+      pack_id: PACK_ID,
+      resolved_version: "1.0.0",
+      trust_channel: "community",
+      source: "https://registry.example/index.json",
+      stale_source: false,
+      content_digest: "sha256:aa11",
+      key_id: "key-1",
+      artifact_digest: null,
+      installed_at: 1_753_000_000_000,
+      ...over,
+    });
+    server.use(
+      http.get(`${TEST_BASE}/packs/acme/menu-board/installs`, () =>
+        HttpResponse.json(
+          { items: [rec({ id: ULID_A }), rec({ id: ULID_B, resolved_version: "1.1.0" })], cursor: null },
+          { headers: { "Trace-Id": TRACE_ID } },
+        ),
+      ),
+    );
+    const page = await api().packs.installs(PACK_ID);
+    expect(page.items.map((r) => r.resolved_version)).toEqual(["1.0.0", "1.1.0"]);
+    // A direct install genuinely has no channel: `null` is meaningful, not missing.
+    expect(page.items[0].trust_channel).toBe("community");
+  });
+
+  it("404s the history of a pack that is not installed (its records went with it)", async () => {
+    server.use(
+      http.get(`${TEST_BASE}/packs/acme/menu-board/installs`, () =>
+        problem(404, "NOT_FOUND", "No pack exists at this identifier."),
+      ),
+    );
+    const err = await api()
+      .packs.installs(PACK_ID)
+      .catch((e: unknown) => e);
+    expect((err as ApiError).status).toBe(404);
+  });
+});
+
 describe("pack-data collections client — a first-class api/1 citizen", () => {
   const base = `${TEST_BASE}/packs/acme/menu-board/data/menu_items`;
 

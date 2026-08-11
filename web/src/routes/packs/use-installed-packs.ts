@@ -28,11 +28,43 @@ export interface PackNavGroup {
   pages: PackNavPage[];
 }
 
+/** The DOM event the Extensions console fires after an install, an update or an
+ * uninstall lands.
+ *
+ * It exists so that "a pack installs LIVE" is true of the console the operator is
+ * looking at, not just of the box. The nav is resolved once per client identity;
+ * without a signal, a pack installed from /extensions would not appear in the
+ * rail until the page was reloaded — and a management console that requires a
+ * reload to show its own work has, from where the operator sits, required a
+ * restart.
+ *
+ * A window event rather than a shared store or a prop chain because the producer
+ * (a route) and the consumer (the shell around it) are on opposite sides of the
+ * router outlet, and threading a refresh callback through AppShell would put
+ * console-page state in the shell's props for one page's benefit. */
+export const PACKS_CHANGED_EVENT = "waiveo:packs-changed";
+
+/** Announce that the installed-pack set has changed, so every subscriber
+ * (the Extensions nav) re-resolves. A no-op outside a browser. */
+export function notifyPacksChanged(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(PACKS_CHANGED_EVENT));
+}
+
 /** Resolve the Extensions nav groups for the shell. Re-runs when the api client
- * identity changes (once, in practice). */
+ * identity changes (once, in practice) and whenever PACKS_CHANGED_EVENT fires. */
 export function useInstalledPackNav(api?: WaiveoApi): PackNavGroup[] {
   const client = useMemo(() => api ?? createApi(), [api]);
   const [groups, setGroups] = useState<PackNavGroup[]>([]);
+  // Bumped by PACKS_CHANGED_EVENT; re-runs the resolve effect below.
+  const [changeToken, setChangeToken] = useState(0);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onChanged = () => setChangeToken((n) => n + 1);
+    window.addEventListener(PACKS_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(PACKS_CHANGED_EVENT, onChanged);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,7 +107,7 @@ export function useInstalledPackNav(api?: WaiveoApi): PackNavGroup[] {
     return () => {
       cancelled = true;
     };
-  }, [client]);
+  }, [client, changeToken]);
 
   return groups;
 }
