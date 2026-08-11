@@ -231,7 +231,7 @@ describe("LiveScreensPanel — push now", () => {
     // THE assertion: a real PUT reached the server, at the right screen, naming
     // the right cast. A button wired to nothing passes every other check here.
     await waitFor(() => expect(pushes).toHaveLength(1));
-    expect(pushes[0]).toEqual({ path: SCREEN_1, body: { cast_id: CAST_A } });
+    expect(pushes[0]).toEqual({ path: SCREEN_1, body: { mode: "play", cast_id: CAST_A } });
 
     // And the claim made to the operator is INTENT, never delivery.
     const toast = await screen.findByText(/Sent to Lobby TV/);
@@ -245,7 +245,7 @@ describe("LiveScreensPanel — push now", () => {
       statusRow({
         screen_id: SCREEN_2,
         name: "Cafe board",
-        now: { screen_id: SCREEN_2, source: "cast", cast_id: CAST_A, pushed_at: 1752537000000 },
+        now: { screen_id: SCREEN_2, mode: "play", source: "cast", cast_id: CAST_A, pushed_at: 1752537000000 },
       }),
     ]);
     const table = await screen.findByRole("table", { name: "Live screens" });
@@ -262,7 +262,7 @@ describe("LiveScreensPanel — push now", () => {
   it("marks an overridden row as pushed by an operator", async () => {
     renderPanel([
       statusRow({
-        now: { screen_id: SCREEN_1, source: "cast", cast_id: CAST_A, pushed_at: 1752537000000 },
+        now: { screen_id: SCREEN_1, mode: "play", source: "cast", cast_id: CAST_A, pushed_at: 1752537000000 },
       }),
     ]);
     const table = await screen.findByRole("table", { name: "Live screens" });

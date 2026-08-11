@@ -174,8 +174,8 @@ func TestSetEntityStateRidesTheReport(t *testing.T) {
 	s.Observe(rokuSighting("192.168.50.31"), 1000)
 
 	entityID := deviceid.Entity(testSite, testDriver, testNativeID, "main")
-	if !s.SetEntityState(entityID, "idle") {
-		t.Fatal("SetEntityState = false for an entity this relay's own candidate derives to")
+	if !s.SetEntityObservation(entityID, "idle", nil) {
+		t.Fatal("SetEntityObservation = false for an entity this relay's own candidate derives to")
 	}
 
 	cands := s.Report().Body.Candidates
@@ -193,15 +193,15 @@ func TestSetEntityStateRidesTheReport(t *testing.T) {
 func TestSetEntityStateRefusesUnknownAndUnsited(t *testing.T) {
 	unsited := NewStore("relay-1")
 	unsited.Observe(rokuSighting("192.168.50.31"), 1000)
-	if unsited.SetEntityState("01J8Z3K4N5P6Q7R8S9T0V1ENTX", "on") {
-		t.Fatal("SetEntityState = true with no site adopted; nothing derives yet")
+	if unsited.SetEntityObservation("01J8Z3K4N5P6Q7R8S9T0V1ENTX", "on", nil) {
+		t.Fatal("SetEntityObservation = true with no site adopted; nothing derives yet")
 	}
 
 	s := NewStore("relay-1")
 	s.SetSite(testSite)
 	s.Observe(rokuSighting("192.168.50.31"), 1000)
-	if s.SetEntityState("01J8Z3K4N5P6Q7R8S9T0V1ENTX", "on") {
-		t.Fatal("SetEntityState = true for an id no candidate derives to")
+	if s.SetEntityObservation("01J8Z3K4N5P6Q7R8S9T0V1ENTX", "on", nil) {
+		t.Fatal("SetEntityObservation = true for an id no candidate derives to")
 	}
 }
 
@@ -216,13 +216,20 @@ func TestSetEntityStateSurvivesReObservation(t *testing.T) {
 	s.Observe(rokuSighting("192.168.50.31"), 1000)
 
 	entityID := deviceid.Entity(testSite, testDriver, testNativeID, "main")
-	s.SetEntityState(entityID, "on")
+	s.SetEntityObservation(entityID, "on", map[string]string{"power_mode": "PowerOn", "active_app": "Waiveo"})
 
 	s.Observe(rokuSighting("192.168.50.31"), 2000)
 
 	cands := s.Report().Body.Candidates
 	if got := cands[0].Entities[0].State; got != "on" {
 		t.Fatalf("reported entity state after a re-sighting = %q, want %q", got, "on")
+	}
+	// The ATTRIBUTES behind that state are carried across for the identical
+	// reason, and are the half that would fail silently: an operator watching
+	// the entity list would see the state hold steady while "active_app"
+	// blinked out on every discovery sweep.
+	if got := cands[0].Entities[0].Attributes["active_app"]; got != "Waiveo" {
+		t.Fatalf("reported active_app after a re-sighting = %q, want %q", got, "Waiveo")
 	}
 }
 
@@ -240,7 +247,7 @@ func TestReObservationDropsAVanishedEntitysState(t *testing.T) {
 		{Key: "tuner", DeviceClass: "media-player"},
 	}
 	s.Observe(two, 1000)
-	s.SetEntityState(deviceid.Entity(testSite, testDriver, testNativeID, "tuner"), "off")
+	s.SetEntityObservation(deviceid.Entity(testSite, testDriver, testNativeID, "tuner"), "off", nil)
 
 	s.Observe(rokuSighting("192.168.50.31"), 2000) // "main" only
 

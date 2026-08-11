@@ -9,8 +9,9 @@
 // triggers RUL-020/030/040/050/060 (edge) and RUL-070/080/090 (app); conditions
 // RUL-110/120/130/141/150 (edge) and RUL-160 template (app); actions
 // device_command RUL-160, preset_batch RUL-170, delay RUL-190, log RUL-200
-// (edge) and notify RUL-210, variable_write RUL-220, workflow_start RUL-230
-// (app); modes single/restart edge, queued/parallel app-only (RUL-240).
+// (edge) and notify RUL-210, variable_write RUL-220, workflow_start RUL-230,
+// play_cast RUL-234, show_alert/dismiss_alert RUL-235 (app); modes
+// single/restart edge, queued/parallel app-only (RUL-240).
 package vocab
 
 // Class is a member's execution class.
@@ -57,6 +58,12 @@ var conditions = map[string]Class{
 var actions = map[string]Class{
 	"device_command": Edge, "preset_batch": Edge, "choose": Edge, "delay": Edge, "log": Edge,
 	"notify": App, "variable_write": App, "workflow_start": App,
+	// The signage actions (RUL-234/235). App-class unconditionally, and for a
+	// structural reason rather than a policy one: each writes a screen row's
+	// authored program override (data-model/1 DAT-004c), which is app-peer state
+	// the edge engine neither holds nor may write — the same argument RUL-220
+	// makes for variable_write.
+	"play_cast": App, "show_alert": App, "dismiss_alert": App,
 }
 
 // Class returns the execution class of a leaf member type within kind, or
@@ -79,6 +86,30 @@ func ClassOf(kind Kind, typ string) Class {
 		return c
 	}
 	return Unknown
+}
+
+// The signage action types (RUL-234/235) — the three actions that target
+// SCREENS rather than entities, and therefore carry a ScreenRef (RUL-233) where
+// a device-affecting action carries an EntityRef.
+const (
+	ActionPlayCast     = "play_cast"
+	ActionShowAlert    = "show_alert"
+	ActionDismissAlert = "dismiss_alert"
+)
+
+// IsSignageAction reports whether typ is one of the three RUL-233 ScreenRef-
+// carrying action types. It is the ONE definition of that set: the compiler
+// consults it to know which actions to apply the ScreenRef ambiguity check to
+// (RUL-233 / SCREEN_REF_AMBIGUOUS), and the evaluator consults the same three
+// constants to dispatch them. Two independently-maintained lists would let an
+// action be dispatchable without ever being checked, which is the compile gate
+// silently not covering a member of the vocabulary it gates.
+func IsSignageAction(typ string) bool {
+	switch typ {
+	case ActionPlayCast, ActionShowAlert, ActionDismissAlert:
+		return true
+	}
+	return false
 }
 
 // ModeClass returns a rule mode's class: "" (omitted, defaults to single),

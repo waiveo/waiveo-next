@@ -113,7 +113,7 @@ func DeriveScreenPrograms(rows store.DesiredStateResult, contentBaseURL string, 
 			}
 			continue
 		}
-		programs = append(programs, programFor(screen, state, rowStore, contentBaseURL, rows.ScreenOverrides[screen.ID]))
+		programs = append(programs, programFor(screen, state, rowStore, contentBaseURL, nowMs))
 	}
 
 	return programs, errs
@@ -142,55 +142,74 @@ func resolutionStore(rows store.DesiredStateResult) (datamodel.RowStore, []datam
 //     by item and in order (playlistContent). A `blank` display carries an empty
 //     content array — a screen told to show nothing has nothing to fetch, and
 //     REL-060's no-null rule means that array is empty, not absent.
-//   - priority is always `scheduled` (leasePriorityScheduled).
+//   - priority is `scheduled` (leasePriorityScheduled) for everything schedule
+//     resolution produces; only an ALERT override raises it (overrideProgram).
 //   - program_revision is derived from the projected program itself
 //     (programRevisionFor).
 //
-// UNLESS this screen carries an active push-now override, in which case
-// overrideProgram replaces all of the above (see its own doc). The resolution
-// still runs: it costs nothing an override changes and it keeps the per-screen
-// DAT-034 degrade uniform — a screen whose effective tz will not resolve is
+// A screen carrying an applicable program override (DAT-004c/DAT-004d) skips
+// scheduling resolution's answer entirely — that is what an override IS — and is
+// projected by overrideProgram instead. The resolve above still runs for it, for
+// three reasons: a lapsed or absent override must fall through to it; Resolve is
+// also what surfaces an unresolvable effective tz, and the per-screen DAT-034
+// degrade must stay uniform (a screen whose effective tz will not resolve is
 // omitted from the section whether it is overridden or not, because the reason
-// it is omitted (nothing on this side may substitute box-local state) has
-// nothing to do with what an operator pushed.
-func programFor(screen datamodel.Screen, state datamodel.EffectiveState, rowStore datamodel.RowStore, contentBaseURL string, override store.ScreenOverride) wire.ScreenProgram {
-	if override.ScreenID != "" {
-		return overrideProgram(screen, rowStore, contentBaseURL, override)
-	}
-	content := []wire.ContentRef{}
-	if state.Display == displayContent {
-		content = playlistContent(rowStore, state.PlaylistID, contentBaseURL)
-	}
-	prog := wire.ScreenProgram{
-		ScreenID: screen.ID,
-		Priority: leasePriorityScheduled,
-		Display:  state.Display,
-		Content:  content,
+// it is omitted — nothing on this side may substitute box-local state — has
+// nothing to do with what an operator pushed).
+func programFor(screen datamodel.Screen, state datamodel.EffectiveState, rowStore datamodel.RowStore, contentBaseURL string, nowMs int64) wire.ScreenProgram {
+	var prog wire.ScreenProgram
+	if screen.Override.Applies(nowMs) {
+		prog = overrideProgram(screen, rowStore, contentBaseURL)
+	} else {
+		content := []wire.ContentRef{}
+		if state.Display == displayContent {
+			content = playlistContent(rowStore, state.PlaylistID, contentBaseURL)
+		}
+		prog = wire.ScreenProgram{
+			ScreenID: screen.ID,
+			Priority: leasePriorityScheduled,
+			Display:  state.Display,
+			Content:  content,
+		}
 	}
 	prog.ProgramRevision = programRevisionFor(prog)
 	return prog
 }
 
-// leasePriorityPreempt is the REL-061/PLY-108 `priority` a PUSH-NOW override
-// carries: the deliberately-invoked takeover class, as opposed to the
-// `scheduled` class ordinary resolution produces.
+// leasePriorityPreempt is the REL-061/PLY-108 `priority` an ALERT override's
+// program carries: the deliberately-invoked takeover class, which is what makes
+// a player interrupt the item it is mid-way through instead of waiting for a
+// natural boundary. DAT-004d assigns it to `mode: "alert"` and only to that —
+// a `play` override is an ordinary content change and carries `scheduled`.
 //
-// It is the correct classification rather than a convenient marker, and the
-// distinction does real work at two places downstream. A player treats a
-// preempt Lease as an immediate interrupt rather than waiting for the current
-// item to finish (PLY-100/101), which is what makes "now" mean now on the
-// screen and not at the end of a five-minute slide. And the relay refuses to let
-// a same-generation schedule resolution overwrite a preempt program
-// (playerserver.SetProgram's own priority fence) — without which the relay's
-// 30-second re-resolve tick would quietly put the schedule back within half a
-// minute of every push.
+// It is the correct CLASSIFICATION rather than a convenient marker, and it does
+// real work at two places downstream. A player treats a preempt Lease as an
+// immediate interrupt rather than waiting for the current item to finish
+// (PLY-100/101), which is what makes "now" mean now on the screen and not at the
+// end of a five-minute slide. And the relay refuses to let a same-generation
+// schedule resolution overwrite a preempt program (playerserver.SetProgram's own
+// priority fence) — without which the relay's 30-second re-resolve tick would
+// quietly put the schedule back within half a minute of every alert.
+//
+// That fence is a SECOND guard, not the only one: Pinned below is what stops the
+// same reversion for a `play` override, which is deliberately `scheduled`
+// priority and therefore invisible to a priority comparison. The two guard
+// different moments and neither subsumes the other.
 const leasePriorityPreempt = "preempt"
 
-// overrideProgram projects a screen's active push-now override onto its REL-061
-// entry: `display: content`, `priority: preempt`, and the override's cast or
-// playlist projected through the SAME two functions ordinary resolution uses
-// (castContent / playlistContent), so a cast shown by a push is byte-identical
-// to the same cast shown by a schedule.
+// overrideProgram projects a screen whose program override applies (DAT-004d).
+//
+// The override is the app peer's statement about ONE screen, so it produces a
+// complete program rather than a modifier on the resolved one: `display:
+// content`, the override's own content, and a priority set by its mode. It is
+// marked Pinned, which is the relay's signal not to replace it with a local
+// schedule re-resolution (DAT-004d, carried as wire.ScreenProgram.Pinned) —
+// without that, the one deployment shape
+// where the relay CAN attribute a scope node's resolution to a screen (a single
+// governed node, a single screen) would quietly revert every override at the
+// next resolver tick. That is precisely the "surface accepts work it never
+// performs" failure: the write lands, the projection is right, and the screen
+// still shows yesterday's playlist.
 //
 // display is unconditionally `content`, and that is the point of the operation:
 // an operator pushing a cast to a screen is saying "show this", which is not a
@@ -199,36 +218,45 @@ const leasePriorityPreempt = "preempt"
 // notice on. (What the SCREEN then does with a preempt Lease arriving over an
 // active blank is player/1's own PLY-104 question, decided there, not here.)
 //
-// An override whose target row has vanished projects to an EMPTY content array
-// rather than to the schedule. That is deliberate and is the honest reading of
-// the two available answers: the store refuses to write an override naming a
-// missing row and refuses to delete a cast a playlist names, so reaching this
-// state means the referenced row went away underneath a live override — and
-// silently falling back to the schedule would present an operator with a screen
-// that looks like their push was never made, while the override is still very
-// much in force and will keep winning. An empty preempt program is visibly
-// wrong, which is what it is.
+// A `cast_id` naming no cast contributes no content (castContent's own degrade,
+// DAT-004c), and the program is still marked as an override: the screen shows
+// nothing rather than silently reverting to its schedule, which is the honest
+// report of "you pinned content that is no longer there". Reaching that state at
+// all is meant to be impossible — the surface imposing the override refuses a
+// cast that does not exist (DAT-004c) — so it is a visible wrongness of last
+// resort, not a routine path.
 //
 // It takes no duration override: the item-level `duration_seconds` a playlist
-// item can carry (DAT-042) belongs to the playlist item, and a push names a cast
-// directly with no item to carry one — so each slide's own `duration_ms` governs,
-// falling back to the player's default (slideDurationMS with a zero item
-// duration).
-func overrideProgram(screen datamodel.Screen, rowStore datamodel.RowStore, contentBaseURL string, override store.ScreenOverride) wire.ScreenProgram {
-	var content []wire.ContentRef
-	if override.CastID != "" {
-		content = castContent(rowStore, override.CastID, 0, contentBaseURL)
-	} else {
-		content = playlistContent(rowStore, override.PlaylistID, contentBaseURL)
+// item can carry (DAT-042) belongs to the playlist item, and an override names a
+// cast directly with no item to carry one — so each slide's own `duration_ms`
+// governs, falling back to the cast's `default_duration_ms` and then the
+// player's own default (slideDurationMS with a zero item duration).
+func overrideProgram(screen datamodel.Screen, rowStore datamodel.RowStore, contentBaseURL string) wire.ScreenProgram {
+	o := screen.Override
+	priority := leasePriorityScheduled
+	if o.Mode == datamodel.ScreenOverrideModeAlert {
+		priority = leasePriorityPreempt
 	}
-	prog := wire.ScreenProgram{
+	content := []wire.ContentRef{}
+	switch {
+	case o.CastID != "":
+		content = castContent(rowStore, o.CastID, 0, contentBaseURL)
+	case o.Message != "":
+		if layers, ok := resolveLayers(wire.AlertSlideLayers(o.Message), contentBaseURL); ok {
+			content = append(content, wire.ContentRef{
+				ContentType: contentTypeSlide,
+				Layers:      layers,
+				ExpiresAt:   contentURLExpiresAt,
+			})
+		}
+	}
+	return wire.ScreenProgram{
 		ScreenID: screen.ID,
-		Priority: leasePriorityPreempt,
+		Priority: priority,
 		Display:  displayContent,
 		Content:  content,
+		Pinned:   true,
 	}
-	prog.ProgramRevision = programRevisionFor(prog)
-	return prog
 }
 
 // displayContent is the REL-061/PLY-093 `display` value naming a powered screen

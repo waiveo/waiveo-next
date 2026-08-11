@@ -28,6 +28,7 @@ const (
 	codeUnknownFilter             = "UNKNOWN_FILTER"
 	codeEdgeExpressionCrossEntity = "EDGE_EXPRESSION_CROSS_ENTITY_REFERENCE"
 	codeEntityRefAmbiguous        = "ENTITY_REF_AMBIGUOUS"
+	codeScreenRefAmbiguous        = "SCREEN_REF_AMBIGUOUS"
 	codeModeMaxMissing            = "MODE_MAX_MISSING"
 	codeModeMaxNotApplicable      = "MODE_MAX_NOT_APPLICABLE"
 	codeMisfireInvalid            = "MISFIRE_INVALID"

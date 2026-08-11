@@ -81,7 +81,6 @@
         "FileFetcher.Fetch",
         "FileFetcher.resolve",
         "NewMarket",
-        "Market.Sources",
         "Bundle.Has"
       ]
     },
@@ -213,8 +212,19 @@
       ]
     },
     {
+      "package": "internal/rules/clock",
+      "reason": "The injectable fake clock. Production reads time through the relay's real sysClock (internal/relay/automationhost) and, on the app side, through the server's own injected nowMs (internal/app/api's appClock) \u2014 neither of which is this one. It became unreachable when POST /automations/{id}/run stopped driving a throwaway engine on a FakeClock; only unit tests construct one now, which is cause (c) in this file's own taxonomy.",
+      "funcs": [
+        "NewFakeClock",
+        "FakeClock.Advance",
+        "FakeClock.SetWall",
+        "FakeClock.Mono",
+        "FakeClock.WallMillis"
+      ]
+    },
+    {
       "package": "internal/rules/engine",
-      "reason": "The rules engine's TICK LOOP \u2014 seed the schedule floor, tick, dispatch schedules, step trigger ticks, resume a delay, and the stabilization window around it \u2014 is driven by rules/1's corpus driver, which lives in this module as internal/rules/eval_corpus_test.go rather than under conformance/drivers, and by nothing in either binary. So the engine is measured against the contract without being run in production. Wiring it into the relay is what closes this group; it must not be deleted.",
+      "reason": "The rules engine's TICK LOOP \u2014 seed the schedule floor, tick, dispatch schedules, step trigger ticks, resume a delay, and the stabilization window around it \u2014 is driven by rules/1's corpus driver, which lives in this module as internal/rules/eval_corpus_test.go rather than under conformance/drivers, and by nothing in either binary. So the engine is measured against the contract without being run in production. Wiring it into the relay is what closes this group; it must not be deleted. Load/SeedEntityState/seedTriggerBaseline joined them when POST /automations/{id}/run stopped synthesizing a device observation through a throwaway engine: a MANUAL run has no trigger history to seed and no generation to load \u2014 it evaluates the rule's conditions and runs its actions directly (internal/app/api/automations_exec.go, which explains why). The relay loads rules through ApplyGeneration, never Load, so the single-rule entry point now has no production caller at all. It is kept rather than deleted because it is the engine's own documented unit-level entry point and its corpus and unit drivers use it.",
       "funcs": [
         "Engine.SeedScheduleFloor",
         "Engine.Tick",
@@ -222,7 +232,10 @@
         "Engine.stepTriggerTick",
         "Engine.resumeDelay",
         "Engine.SetStabilizationWindow",
-        "Engine.releaseStabilized"
+        "Engine.releaseStabilized",
+        "Engine.Load",
+        "Engine.SeedEntityState",
+        "Engine.seedTriggerBaseline"
       ]
     },
     {
@@ -252,8 +265,6 @@
       "reason": "ResolveRef \u2014 resolve an external-id reference to an internal id \u2014 has no caller anywhere: the API's write paths take ids directly, so the field that was meant to accept either form does not exist yet. The rest are two String()/Error() methods on types nothing formats and two idempotency-store introspection helpers.",
       "funcs": [
         "ResolveRef",
-        "BeginKind.String",
-        "IdempotencyStore.Now",
         "IdempotencyStore.len",
         "PageParamError.Error"
       ]

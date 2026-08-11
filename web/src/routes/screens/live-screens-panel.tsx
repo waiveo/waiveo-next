@@ -190,7 +190,12 @@ export function LiveScreensPanel({ api, autoRefresh = true }: LiveScreensPanelPr
     }
     setBusy(true);
     try {
-      await api.screens.pushNow(dialog.screen.screen_id, { cast_id: castId });
+      // `play`, not `alert`: this dialog is the everyday "show this here"
+      // gesture, and `alert` is the takeover that interrupts whatever a screen
+      // is mid-way through (PLY-108). Defaulting the everyday act to the
+      // takeover would make every push a preempt and leave the console with no
+      // way to express the ordinary one.
+      await api.screens.pushNow(dialog.screen.screen_id, { mode: "play", cast_id: castId });
       // "Sent", not "showing": the screen adopts it on its next poll, and this
       // console has no evidence it has yet. The row's own Now-playing cell
       // reports what the fleet actually observed, and will change on its own.

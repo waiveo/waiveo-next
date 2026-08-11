@@ -318,15 +318,21 @@ export interface ScreensModule extends ResourceModule<Screen, ScreenCreate, Scre
    * no evidence for. */
   issuePairingCode(id: string): Promise<PairingCodeResult>;
 
-  /** PUSH NOW — show this cast (or playlist) on this screen instead of whatever
-   * its schedule resolves, until it is cleared.
+  /** PUSH NOW — impose this screen's program override (`data-model/1` DAT-004c):
+   * show this cast, or a generated slide bearing a literal `message`, instead of
+   * whatever its schedule resolves. `mode: "play"` is the everyday assignment;
+   * `mode: "alert"` is the takeover. `ttl_seconds` makes it self-clearing.
+   *
+   * This is the ONE surface that imposes an override — `screens.update()` has no
+   * `override` member, deliberately, because putting content on a wall is an
+   * imperative act and not a field of a resource edit.
    *
    * It reports INTENT, not delivery. The server persists the override as desired
    * state and nudges the site's relays; the screen adopts it on its next
-   * program poll (~10s) and, because the resulting Lease is `preempt`,
-   * interrupts what it is showing rather than waiting for it to finish. A
-   * console must not claim the screen IS showing it — read `screenStatus.list()`
-   * for what the fleet has actually observed. */
+   * program poll (~10s) and, under `alert`, interrupts what it is showing rather
+   * than waiting for it to finish. A console must not claim the screen IS
+   * showing it — read `screenStatus.list()` for what the fleet has actually
+   * observed. */
   pushNow(id: string, target: ScreenNowRequest): Promise<ScreenNow>;
 
   /** Clear this screen's push-now override; it returns to its schedule. Safe to

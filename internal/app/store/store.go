@@ -422,15 +422,6 @@ func Open(dsn string, nowMs func() int64) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate discovered devices: %w", err)
 	}
-	// The per-screen push-now overrides (screen_overrides). Its own table for
-	// the reason pairing grants have one: an override is set and cleared, never
-	// PATCHed, carries no revision and no placement of its own, and joins the
-	// desired-state projection as a `preempt` screen_programs entry rather than
-	// as an api/1 resource family (screenoverrides.go).
-	if _, err := db.Exec(screenOverridesSchema); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("store: migrate screen overrides: %w", err)
-	}
 	// Revoked screens and relay certificates (api/1 API-140, revocations.go).
 	// Their own table rather than a column, so a revocation outlives the row it
 	// concerns — the store hard-deletes, and a revocation lost to a tidy-up is

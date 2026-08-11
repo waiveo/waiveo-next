@@ -281,3 +281,78 @@ func TestMalformedIdentityRowReported(t *testing.T) {
 		t.Fatalf("a malformed screen row was not reported (codes %v)", codes(errs))
 	}
 }
+
+// TestScreenOverrideShapeIsValidated covers DAT-004c's own member rules, the
+// half of the override this validator can judge. Each case alters exactly one
+// member of an otherwise-valid override so the code it draws is unambiguous.
+//
+// The cast REFERENCE is deliberately not among them: casts live in the
+// scheduling-core bundle, not the identity bundle this validator sees, so
+// DAT-004c puts that check on the surface imposing the override
+// (internal/app/api's signage sink) and this file's checkScreenOverride says so
+// in its own doc.
+func TestScreenOverrideShapeIsValidated(t *testing.T) {
+	withOverride := func(o *ScreenOverride) Screen {
+		s := goodScreen(idScreenA, nil)
+		s.Override = o
+		return s
+	}
+	cases := []struct {
+		name     string
+		override *ScreenOverride
+		want     []string
+	}{
+		{"absent override is the ordinary state", nil, nil},
+		{"a play override naming a cast", &ScreenOverride{Mode: "play", CastID: idDeviceA}, nil},
+		{"an alert carrying a literal message", &ScreenOverride{Mode: "alert", Message: "Kitchen closed"}, nil},
+		{"an alert with an expiry", &ScreenOverride{Mode: "alert", Message: "Fire drill", ExpiresAt: 1_700_000_000_000}, nil},
+		{"an unknown mode", &ScreenOverride{Mode: "urgent", CastID: idDeviceA}, []string{"SCREEN_OVERRIDE_INVALID"}},
+		{"neither cast_id nor message", &ScreenOverride{Mode: "play"}, []string{"SCREEN_OVERRIDE_INVALID"}},
+		{"both cast_id and message", &ScreenOverride{Mode: "alert", CastID: idDeviceA, Message: "x"}, []string{"SCREEN_OVERRIDE_INVALID"}},
+		// A literal message under `play` is refused rather than quietly treated
+		// as an alert: `play` is the ordinary content change and delivers at
+		// `scheduled` priority, so accepting it here would make the delivered
+		// urgency depend on which member the author happened to fill in.
+		{"a message under mode play", &ScreenOverride{Mode: "play", Message: "x"}, []string{"SCREEN_OVERRIDE_INVALID"}},
+		{"a message over 200 characters", &ScreenOverride{Mode: "alert", Message: strings.Repeat("m", 201)}, []string{"SCREEN_OVERRIDE_INVALID"}},
+		{"a negative expiry", &ScreenOverride{Mode: "alert", Message: "x", ExpiresAt: -1}, []string{"SCREEN_OVERRIDE_INVALID"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, errs := ValidateIdentityRows(RawIdentityRows{
+				Screens: []json.RawMessage{rawOf(t, withOverride(tc.override))},
+			})
+			got := codes(errs)
+			if len(got) != len(tc.want) {
+				t.Fatalf("codes = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("codes = %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestScreenOverrideAppliesOnTheClock pins DAT-004d's expiry rule, which is what
+// makes an alert self-limiting: the override stops applying the instant its
+// window closes, at RESOLUTION time, with nothing running and no write.
+func TestScreenOverrideAppliesOnTheClock(t *testing.T) {
+	var absent *ScreenOverride
+	if absent.Applies(1) {
+		t.Error("a nil override applies; the absent case must never govern a program")
+	}
+	noExpiry := &ScreenOverride{Mode: "play", CastID: idDeviceA}
+	if !noExpiry.Applies(1) || !noExpiry.Applies(1<<40) {
+		t.Error("an override with no expires_at must apply at every instant")
+	}
+	expiring := &ScreenOverride{Mode: "alert", Message: "x", ExpiresAt: 1000}
+	if !expiring.Applies(999) {
+		t.Error("an override must apply strictly before its expires_at")
+	}
+	// The boundary is exclusive: at exactly expires_at the window has closed.
+	if expiring.Applies(1000) || expiring.Applies(1001) {
+		t.Error("an override must not apply at or after its expires_at")
+	}
+}

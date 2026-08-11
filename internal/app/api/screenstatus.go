@@ -127,12 +127,6 @@ func (srv *server) listScreenStatus(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
 		return
 	}
-	overrides, err := srv.store.ScreenOverrides(r.Context())
-	if err != nil {
-		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
-		return
-	}
-
 	observed := map[string]screens.Status{}
 	if srv.screenStatus != nil {
 		for _, st := range srv.screenStatus.Statuses() {
@@ -142,7 +136,7 @@ func (srv *server) listScreenStatus(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]screenStatusRow, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, screenStatusRowOf(row, observed[row.ID], overrides))
+		out = append(out, screenStatusRowOf(row, observed[row.ID], srv.nowMs()))
 	}
 
 	// Paged, scoped and selector-filtered through the SAME helper the device
@@ -165,7 +159,7 @@ func (srv *server) listScreenStatus(w http.ResponseWriter, r *http.Request) {
 // statement about it and the one an operator most needs to see. Reporting it as
 // live-with-zero-ages, or leaving it out of the list, are the two ways this row
 // could lie, and both were available for free.
-func screenStatusRowOf(row store.Resource, st screens.Status, overrides map[string]store.ScreenOverride) screenStatusRow {
+func screenStatusRowOf(row store.Resource, st screens.Status, nowMs int64) screenStatusRow {
 	f := parseFields(row.Body)
 	out := screenStatusRow{
 		ScreenID:     row.ID,
@@ -196,8 +190,13 @@ func screenStatusRowOf(row store.Resource, st screens.Status, overrides map[stri
 		out.ContentCount = st.ContentCount
 		out.RenderAssetRef = st.RenderAssetRef
 	}
-	if o, ok := overrides[row.ID]; ok {
-		n := screenNowOf(o)
+	// The override is read off the SCREEN ROW (DAT-004c) — the one place it
+	// lives — and reported only while it APPLIES (DAT-004d). A lapsed override
+	// is not shown, because the projection has already stopped honouring it:
+	// reporting it here would tell an operator a screen is pinned when its
+	// program has already fallen back to the schedule.
+	if o := screenOverrideOf(row.Body); o.Applies(nowMs) {
+		n := screenNowOf(row.ID, o)
 		out.Now = &n
 	}
 	return out

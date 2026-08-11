@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
+	"github.com/maaxton/waiveo-next/internal/datamodel"
 )
 
 // screennow.go is the operator's PUSH-NOW surface — "show this on that screen,
@@ -16,9 +18,37 @@ import (
 //	DELETE /api/v1/screens/{screen_id}/now   clear it; the screen falls back
 //	                                         to its schedule
 //
-// It is the api/1 half of internal/app/store's screen-override subsystem, whose
-// own header owns WHY the override is durable desired state rather than a live
-// command. What this file owns is the operator-facing contract around it.
+// It is the api/1 half of the screen program override (data-model/1 DAT-004c),
+// which lives as the `override` member of the screen IDENTITY ROW
+// (datamodel.Screen.Override) — not in a table of its own. What this file owns
+// is the operator-facing contract around it.
+//
+// # Why the override is a member of the screen row
+//
+// An override is per-screen state and the screen row already travels: it rides
+// the signed desired-state snapshot the relay already applies, gets projected
+// onto that screen's REL-061 entry by snapshot.overrideProgram, and is read back
+// on every screen read with no join. A side table for it would be a second thing
+// to project, to join, and to keep consistent with the row it is about — and the
+// two would drift on the first delete that only remembered one of them.
+//
+// It is also what gives the override a TTL for free: `expires_at` is a member of
+// the row like the rest of it, evaluated at RESOLUTION time
+// (ScreenOverride.Applies), so an alert stops applying with no writer running at
+// all — which is what makes "show this for sixty seconds" an operation rather
+// than a reminder to come back and clean up.
+//
+// # Why these two routes, rather than an `override` member on PATCH /screens
+//
+// Imposing an override is an IMPERATIVE ACT on a physical display in a physical
+// room, and `PUT /screens/{id}/now` says that. A PATCH carrying an `override`
+// member says "edit this row", which buries the act inside a resource edit:
+// invisible to anything that reads the route rather than the body (audit
+// review, rate limiting, an authorization matrix), and it makes "clear it" an
+// explicit JSON `null` instead of a DELETE. So the screen resource's create and
+// update bodies deliberately declare NO `override` member — `additionalProperties:
+// false` on ScreenCreate/ScreenUpdate makes a PATCH that tries it a 422 — and
+// this pair is the only surface that imposes one.
 //
 // # Why PUT and DELETE rather than two POSTs
 //
@@ -35,9 +65,9 @@ import (
 // This handler writes one row and returns. The write bumps the desired-state
 // generation, whose post-commit hook nudges every live relay (REL-057); each
 // relay re-pulls, applies the generation, and installs the screen's new
-// `preempt` program; the screen picks it up on its next ordinary program poll
-// (~10s, PLY-082) and — because a preempt Lease interrupts rather than waits
-// (PLY-100/101) — swaps immediately rather than at the end of the current item.
+// program; the screen picks it up on its next ordinary program poll (~10s,
+// PLY-082) and — under `mode: "alert"`, whose Lease is `preempt` — swaps
+// immediately rather than at the end of the current item (PLY-100/101).
 //
 // No new push channel was invented for this, deliberately. The poll and the
 // nudge already exist, they already carry every other change to a screen, and a
@@ -55,34 +85,43 @@ import (
 // accepts work it never performs" shape this codebase keeps having to remove.
 
 // screenNowRequest is PUT /screens/{screen_id}/now's body (openapi
-// ScreenNowRequest): exactly one of cast_id/playlist_id.
+// ScreenNowRequest): the override's own members, with `ttl_seconds` standing in
+// for the row's absolute `expires_at`.
 //
 // Decoded with DisallowUnknownFields, as every strict-bodied operation in this
-// package is: the two members differ by one word, and silently ignoring a
-// misspelled `cast_id` would leave the request naming NOTHING and be refused as
-// "name a cast or a playlist" — a message pointing at the field the caller
-// thought they had set.
+// package is: silently ignoring a misspelled `cast_id` would leave the request
+// naming NOTHING and be refused as "name a cast or a message" — a message
+// pointing at the field the caller thought they had set.
+//
+// TTLSeconds is a DURATION and the row stores an INSTANT. The conversion happens
+// server-side, here, for two reasons: "show this for sixty seconds" is what the
+// operator means, and an absolute instant computed on the caller's clock would
+// let that clock's skew decide when a fire-drill notice comes down.
 type screenNowRequest struct {
+	Mode       string `json:"mode"`
 	CastID     string `json:"cast_id"`
-	PlaylistID string `json:"playlist_id"`
+	Message    string `json:"message"`
+	TTLSeconds int    `json:"ttl_seconds"`
 }
 
 // screenNow is the operation's response body (openapi ScreenNow): the override
-// as it now stands. `source` names which of the two id members is populated, so
-// a consumer switches on one closed value instead of inferring intent from which
-// string happens to be empty.
+// as it now stands. `source` names which of the two content members is
+// populated, so a consumer switches on one closed value instead of inferring
+// intent from which string happens to be empty.
 type screenNow struct {
-	ScreenID   string `json:"screen_id"`
-	Source     string `json:"source"`
-	CastID     string `json:"cast_id,omitempty"`
-	PlaylistID string `json:"playlist_id,omitempty"`
-	PushedAt   int64  `json:"pushed_at"`
+	ScreenID  string `json:"screen_id"`
+	Mode      string `json:"mode"`
+	Source    string `json:"source"`
+	CastID    string `json:"cast_id,omitempty"`
+	Message   string `json:"message,omitempty"`
+	ExpiresAt int64  `json:"expires_at,omitempty"`
+	PushedAt  int64  `json:"pushed_at,omitempty"`
 }
 
 // Override source discriminators (openapi ScreenNow.source).
 const (
-	screenNowSourceCast     = "cast"
-	screenNowSourcePlaylist = "playlist"
+	screenNowSourceCast    = "cast"
+	screenNowSourceMessage = "message"
 )
 
 // mountScreenNow registers the push-now pair. Both hang off the screens family's
@@ -105,52 +144,76 @@ func (srv *server) setScreenNow(w http.ResponseWriter, r *http.Request) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		writeProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed",
-			"The request body must be a JSON object carrying exactly one of `cast_id` or `playlist_id`.")
+			"The request body must be a JSON object carrying `mode` and exactly one of `cast_id` or `message`.")
 		return
 	}
-	// Exactly one, checked here as well as in the store. The API check is what
-	// produces a 422 an operator can read; the store's own check is what makes
-	// the invariant true for every caller, including a future one that does not
-	// come through this handler (a recurring defect shape in this codebase is a
-	// rule enforced at exactly one layer, so the second caller silently breaks
-	// it).
-	if (req.CastID == "") == (req.PlaylistID == "") {
+	if req.TTLSeconds < 0 {
 		writeProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed",
-			"Set exactly one of `cast_id` or `playlist_id` — a push names one thing to show.")
+			"`ttl_seconds` must be a positive number of seconds — omit it for an override that lasts until it is cleared.")
 		return
 	}
 
-	id, ok := srv.authorizeScreenWrite(w, r)
+	// The override's SHAPE is checked by the one validator that owns DAT-004c
+	// (datamodel.ValidateScreenOverride), not by a second hand-written copy of
+	// its rules here. A copy is how the API surface and the row validator start
+	// disagreeing about what a legal override is — and the row validator is the
+	// one that runs on the write below, so a divergence would show up as a 500
+	// from a body this handler had just approved.
+	now := srv.nowMs()
+	override := &datamodel.ScreenOverride{
+		Mode:    req.Mode,
+		CastID:  req.CastID,
+		Message: req.Message,
+		SetAt:   now,
+	}
+	if req.TTLSeconds > 0 {
+		override.ExpiresAt = now + int64(req.TTLSeconds)*int64(time.Second/time.Millisecond)
+	}
+	if errs := datamodel.ValidateScreenOverride(override); len(errs) > 0 {
+		writeProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed", errs[0].Message)
+		return
+	}
+
+	id, res, ok := srv.authorizeScreenWrite(w, r)
 	if !ok {
 		return
 	}
 
-	written, err := srv.store.SetScreenOverride(r.Context(), id, req.CastID, req.PlaylistID)
+	// DAT-004c's reference check, on the surface IMPOSING the override — which is
+	// where the contract puts it, because this surface holds both row families at
+	// once and the screen row's own validator (which sees only screens and
+	// devices) does not. Without it a push naming a deleted cast answers 200 and
+	// pins the screen to an empty content array: a dark wall, its schedule
+	// suppressed, with no error anywhere in the system.
+	if override.CastID != "" {
+		if err := srv.castMustExist(r, override.CastID); err != nil {
+			writeProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed",
+				"No cast exists with the identifier this push names.")
+			return
+		}
+	}
+
+	written, err := srv.writeScreenOverride(r, id, res.Revision, override)
 	if err != nil {
 		// The screen vanished between the authorization read above and the
-		// write's own in-transaction existence check — the same delete race
-		// issuePairingCode handles, answered the same way.
-		if errors.Is(err, store.ErrScreenOverrideScreenUnknown) {
+		// write — the same delete race issuePairingCode handles, answered the
+		// same way. A revision mismatch is the same class: something else wrote
+		// this row in between, and a push is "latest wins", so it is retried
+		// once inside writeScreenOverride before it can reach here.
+		if errors.Is(err, store.ErrNotFound) {
 			writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No screen exists with this identifier.")
 			return
 		}
-		// The cast or playlist named does not exist. A 422 rather than a 404:
-		// the SCREEN in the path is real and was found, so the request is not
-		// addressed at a missing resource — it carries a body member naming one,
-		// which is a validation fault about that member.
-		if errors.Is(err, store.ErrScreenOverrideTargetUnknown) {
-			writeProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed",
-				"No cast or playlist exists with the identifier this push names.")
+		var verr *store.ValidationError
+		if errors.As(err, &verr) && len(verr.Errors) > 0 {
+			writeProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed", verr.Errors[0].Message)
 			return
 		}
 		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
 		return
 	}
 
-	// The store hands back the row it wrote, `pushed_at` included: a handler that
-	// re-read the table here would be racing a concurrent clear for a value the
-	// write already produced.
-	writeJSONValue(w, http.StatusOK, screenNowOf(written))
+	writeJSONValue(w, http.StatusOK, screenNowOf(id, written))
 }
 
 // clearScreenNow implements DELETE /screens/{screen_id}/now (openapi
@@ -162,21 +225,85 @@ func (srv *server) setScreenNow(w http.ResponseWriter, r *http.Request) {
 // clicks would make a console show an error for an operation that did exactly
 // what the operator wanted.
 func (srv *server) clearScreenNow(w http.ResponseWriter, r *http.Request) {
-	id, ok := srv.authorizeScreenWrite(w, r)
+	id, res, ok := srv.authorizeScreenWrite(w, r)
 	if !ok {
 		return
 	}
 
-	if _, err := srv.store.ClearScreenOverride(r.Context(), id); err != nil {
+	// Nothing to clear is not a write: skipping it keeps a repeated clear from
+	// bumping the desired-state generation and nudging every relay in the site
+	// for no change at all.
+	if screenOverrideOf(res.Body) == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	if _, err := srv.writeScreenOverride(r, id, res.Revision, nil); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// Deleted underneath us: the resulting state an operator asked for —
+			// no override on that screen — is true.
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// writeScreenOverride patches ONE member of the screen row — `override`, or an
+// explicit JSON null to clear it — through the ordinary conditional resource
+// update (API-022), against the revision the row was read at.
+//
+// A lost revision race is RETRIED once rather than reported. "Show this here
+// now" is a latest-wins instruction (the store's own upsert semantics said the
+// same thing), and a 412 about a row the operator never read would be an error
+// message about an optimistic-concurrency mechanism they cannot act on. One
+// retry, not a loop: two writers racing forever is a different fault and must
+// not be hidden by a handler spinning.
+func (srv *server) writeScreenOverride(r *http.Request, id string, rev int64, override *datamodel.ScreenOverride) (*datamodel.ScreenOverride, error) {
+	// An explicit JSON null clears the override, which is the mergeBody
+	// convention for removing an optional member. Omitting the key would leave
+	// it untouched, which is exactly what a clear must not do.
+	body, err := json.Marshal(map[string]any{"override": override})
+	if err != nil {
+		return nil, err
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if _, err = srv.store.Update(r.Context(), store.KindScreen, id, rev, body); err == nil {
+			return override, nil
+		}
+		if !errors.Is(err, store.ErrRevisionMismatch) {
+			return nil, err
+		}
+		cur, found, gerr := srv.store.Get(r.Context(), store.KindScreen, id)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if !found {
+			return nil, store.ErrNotFound
+		}
+		rev = cur.Revision
+	}
+	return nil, err
+}
+
+// castMustExist reports whether castID names a cast row.
+func (srv *server) castMustExist(r *http.Request, castID string) error {
+	_, found, err := srv.store.Get(r.Context(), store.KindCast, castID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 // authorizeScreenWrite resolves {screen_id}, checks it against the caller's
 // visible set, and requires write authority at the screen row's own placement,
-// returning the id.
+// returning the id AND the row it read (whose revision the conditional write
+// below is made against, and whose body says whether an override is even set).
 //
 // It is the same read-then-write split issuePairingCode performs, factored out
 // because both push-now operations need it identically and because the ORDER is
@@ -185,48 +312,66 @@ func (srv *server) clearScreenNow(w http.ResponseWriter, r *http.Request) {
 // used to probe which screens exist elsewhere in the tree; only a row the caller
 // can SEE but may not WRITE answers 403.
 //
-// Push-now is a write, not a read, and that is not a formality: it changes what
-// a physical display in a physical room shows. Authorizing it at the screen row's
-// placement (SEC-005) is what keeps an operator scoped to one site from putting
-// content on another site's wall.
-func (srv *server) authorizeScreenWrite(w http.ResponseWriter, r *http.Request) (id string, ok bool) {
+// Push-now is a write, not a formality: it changes what a physical display in a
+// physical room shows. Authorizing it at the screen row's placement (SEC-005) is
+// what keeps an operator scoped to one site from putting content on another
+// site's wall.
+func (srv *server) authorizeScreenWrite(w http.ResponseWriter, r *http.Request) (id string, res store.Resource, ok bool) {
 	id = r.PathValue("screen_id")
 	res, found, err := srv.store.Get(r.Context(), store.KindScreen, id)
 	if err != nil {
 		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
-		return "", false
+		return "", store.Resource{}, false
 	}
 	if !found {
 		writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No screen exists with this identifier.")
-		return "", false
+		return "", store.Resource{}, false
 	}
 	view, verr := srv.scopeView(r)
 	if verr != nil {
 		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
-		return "", false
+		return "", store.Resource{}, false
 	}
 	node := parseFields(res.Body).ScopeNode
 	if !view.canRead(node) {
 		writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No screen exists with this identifier.")
-		return "", false
+		return "", store.Resource{}, false
 	}
 	if !view.canWrite(node) {
 		writeProblem(w, r, http.StatusForbidden, "FORBIDDEN", "Forbidden", unauthorizedWriteDetail)
-		return "", false
+		return "", store.Resource{}, false
 	}
-	return id, true
+	return id, res, true
 }
 
-// screenNowOf projects a stored override onto its served representation — the
+// screenOverrideOf reads a stored screen row's `override` member. It is the ONE
+// decode of that member outside the datamodel package, so the push-now surface
+// and the screen-status join cannot disagree about what is set on a screen.
+func screenOverrideOf(body []byte) *datamodel.ScreenOverride {
+	var raw struct {
+		Override *datamodel.ScreenOverride `json:"override"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil
+	}
+	return raw.Override
+}
+
+// screenNowOf projects a screen's override onto its served representation — the
 // ONE place the `source` discriminator is derived, so the PUT response and the
-// screen-status list can never disagree about what a given row is.
-func screenNowOf(o store.ScreenOverride) screenNow {
+// screen-status list can never disagree about what a given override is.
+func screenNowOf(screenID string, o *datamodel.ScreenOverride) screenNow {
+	if o == nil {
+		return screenNow{ScreenID: screenID}
+	}
 	out := screenNow{
-		ScreenID:   o.ScreenID,
-		Source:     screenNowSourcePlaylist,
-		CastID:     o.CastID,
-		PlaylistID: o.PlaylistID,
-		PushedAt:   o.CreatedAt,
+		ScreenID:  screenID,
+		Mode:      o.Mode,
+		Source:    screenNowSourceMessage,
+		CastID:    o.CastID,
+		Message:   o.Message,
+		ExpiresAt: o.ExpiresAt,
+		PushedAt:  o.SetAt,
 	}
 	if o.CastID != "" {
 		out.Source = screenNowSourceCast

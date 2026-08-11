@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/app/api"
 	"github.com/maaxton/waiveo-next/internal/app/screens"
+	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
@@ -17,6 +19,33 @@ import (
 // the push, checks the DURABLE half as well as the response, because a route
 // that answered 200 and wrote nothing would satisfy every response assertion
 // while changing no screen anywhere.
+
+// storedOverride reads a screen row's `override` member straight out of the
+// store — the ONE place a screen override lives (DAT-004c). These tests read it
+// rather than trusting the response, because a route that answered 200 and wrote
+// nothing would satisfy every response assertion while changing no screen.
+func storedOverride(t *testing.T, e *testEnv, screenID string) *datamodel.ScreenOverride {
+	t.Helper()
+	res, found, err := e.store.Get(context.Background(), store.KindScreen, screenID)
+	if err != nil {
+		t.Fatalf("read screen %s: %v", screenID, err)
+	}
+	if !found {
+		t.Fatalf("screen %s does not exist", screenID)
+	}
+	var row struct {
+		Override *datamodel.ScreenOverride `json:"override"`
+	}
+	if err := json.Unmarshal(res.Body, &row); err != nil {
+		t.Fatalf("decode screen %s: %v", screenID, err)
+	}
+	return row.Override
+}
+
+// pushBody is the ordinary `play` push body: show this cast until it is cleared.
+func pushBody(castID string) map[string]any {
+	return map[string]any{"mode": "play", "cast_id": castID}
+}
 
 // snFixture creates a screen row and a cast at the env's fixture placement node
 // and returns both ids.
@@ -62,7 +91,7 @@ func TestPushNowWritesTheOverrideAndBumpsTheGeneration(t *testing.T) {
 	}
 
 	resp, raw := e.do(t, http.MethodPut, "/api/v1/screens/"+screenID+"/now",
-		mustJSON(t, map[string]any{"cast_id": castID}), nil)
+		mustJSON(t, pushBody(castID)), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("PUT now = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
@@ -76,12 +105,12 @@ func TestPushNowWritesTheOverrideAndBumpsTheGeneration(t *testing.T) {
 
 	// The durable half. Without it the console reports a successful push and no
 	// screen anywhere changes.
-	overrides, err := e.store.ScreenOverrides(ctx)
-	if err != nil {
-		t.Fatalf("ScreenOverrides: %v", err)
+	stored := storedOverride(t, e, screenID)
+	if stored == nil || stored.CastID != castID || stored.Mode != datamodel.ScreenOverrideModePlay {
+		t.Fatalf("stored override = %+v, want a play override naming the pushed cast", stored)
 	}
-	if overrides[screenID].CastID != castID {
-		t.Fatalf("stored override = %+v, want the pushed cast", overrides[screenID])
+	if stored.SetAt == 0 {
+		t.Error("stored override carries set_at 0 — the console shows an operator how long an override has been in force from this")
 	}
 	after, err := e.store.Generation(ctx)
 	if err != nil {
@@ -97,10 +126,9 @@ func TestPushNowWritesTheOverrideAndBumpsTheGeneration(t *testing.T) {
 func TestClearNowRemovesTheOverrideAndIsSafeToRepeat(t *testing.T) {
 	e := newEnv(t)
 	screenID, castID, _ := snFixture(t, e)
-	ctx := context.Background()
 
 	if resp, raw := e.do(t, http.MethodPut, "/api/v1/screens/"+screenID+"/now",
-		mustJSON(t, map[string]any{"cast_id": castID}), nil); resp.StatusCode != http.StatusOK {
+		mustJSON(t, pushBody(castID)), nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("PUT now = %d (%s)", resp.StatusCode, raw)
 	}
 
@@ -110,12 +138,8 @@ func TestClearNowRemovesTheOverrideAndIsSafeToRepeat(t *testing.T) {
 			t.Fatalf("DELETE now #%d = %d, want 204 (%s)", i+1, resp.StatusCode, raw)
 		}
 	}
-	overrides, err := e.store.ScreenOverrides(ctx)
-	if err != nil {
-		t.Fatalf("ScreenOverrides: %v", err)
-	}
-	if len(overrides) != 0 {
-		t.Fatalf("%d override(s) remain after clearing, want 0", len(overrides))
+	if got := storedOverride(t, e, screenID); got != nil {
+		t.Fatalf("override %+v remains after clearing, want none", got)
 	}
 }
 
@@ -130,10 +154,15 @@ func TestPushNowRefusesABodyThatNamesNothingUsable(t *testing.T) {
 		body map[string]any
 		want int
 	}{
-		{"neither a cast nor a playlist", map[string]any{}, http.StatusUnprocessableEntity},
-		{"both at once", map[string]any{"cast_id": castID, "playlist_id": castID}, http.StatusUnprocessableEntity},
-		{"a misspelled member", map[string]any{"castid": castID}, http.StatusUnprocessableEntity},
-		{"a cast that does not exist", map[string]any{"cast_id": "01J8ZN0SUCHCASTR0W00000001"}, http.StatusUnprocessableEntity},
+		{"no mode at all", map[string]any{"cast_id": castID}, http.StatusUnprocessableEntity},
+		{"an unknown mode", map[string]any{"mode": "takeover", "cast_id": castID}, http.StatusUnprocessableEntity},
+		{"neither a cast nor a message", map[string]any{"mode": "play"}, http.StatusUnprocessableEntity},
+		{"both at once", map[string]any{"mode": "alert", "cast_id": castID, "message": "evacuate"}, http.StatusUnprocessableEntity},
+		{"a message under mode play", map[string]any{"mode": "play", "message": "evacuate"}, http.StatusUnprocessableEntity},
+		{"a message over 200 characters", map[string]any{"mode": "alert", "message": strings.Repeat("x", 201)}, http.StatusUnprocessableEntity},
+		{"a misspelled member", map[string]any{"mode": "play", "castid": castID}, http.StatusUnprocessableEntity},
+		{"a negative ttl", map[string]any{"mode": "play", "cast_id": castID, "ttl_seconds": -1}, http.StatusUnprocessableEntity},
+		{"a cast that does not exist", map[string]any{"mode": "play", "cast_id": "01J8ZN0SUCHCASTR0W00000001"}, http.StatusUnprocessableEntity},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -147,7 +176,7 @@ func TestPushNowRefusesABodyThatNamesNothingUsable(t *testing.T) {
 	// A missing SCREEN is a 404: the request is addressed at a resource that is
 	// not there, which is a different fault from a body member naming one.
 	if resp, _ := e.do(t, http.MethodPut, "/api/v1/screens/01J8ZN0SUCHSCREENR0W000001/now",
-		mustJSON(t, map[string]any{"cast_id": castID}), nil); resp.StatusCode != http.StatusNotFound {
+		mustJSON(t, pushBody(castID)), nil); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("PUT now at an unknown screen = %d, want 404", resp.StatusCode)
 	}
 	if resp, _ := e.do(t, http.MethodDelete, "/api/v1/screens/01J8ZN0SUCHSCREENR0W000001/now", nil, nil); resp.StatusCode != http.StatusNotFound {
@@ -191,7 +220,7 @@ func TestScreenStatusJoinsTheRowTheOverrideAndTheRelaysObservation(t *testing.T)
 	}
 
 	if resp, raw := e.do(t, http.MethodPut, "/api/v1/screens/"+screenID+"/now",
-		mustJSON(t, map[string]any{"cast_id": castID}), nil); resp.StatusCode != http.StatusOK {
+		mustJSON(t, pushBody(castID)), nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("PUT now = %d (%s)", resp.StatusCode, raw)
 	}
 
@@ -238,7 +267,7 @@ func TestScreenStatusJoinsTheRowTheOverrideAndTheRelaysObservation(t *testing.T)
 	if !ok {
 		t.Fatalf("the pushed screen's row carries no `now` member: %v", live)
 	}
-	if now["cast_id"] != castID || now["source"] != "cast" {
+	if now["cast_id"] != castID || now["source"] != "cast" || now["mode"] != "play" {
 		t.Errorf("now = %v, want the pushed cast", now)
 	}
 
@@ -324,7 +353,7 @@ func TestPushNowIsScopedToTheScreensOwnPlacement(t *testing.T) {
 	outsider := e.principalAt(t, elsewhere)
 
 	resp, _ := e.as(t, outsider, http.MethodPut, "/api/v1/screens/"+screenID+"/now",
-		mustJSON(t, map[string]any{"cast_id": castID}), nil)
+		mustJSON(t, pushBody(castID)), nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("PUT now at a screen outside the caller's subtree = %d, want 404 (indistinguishable from an id that names nothing)", resp.StatusCode)
 	}
@@ -334,21 +363,17 @@ func TestPushNowIsScopedToTheScreensOwnPlacement(t *testing.T) {
 	}
 
 	// And nothing was written by either refusal.
-	overrides, err := e.store.ScreenOverrides(context.Background())
-	if err != nil {
-		t.Fatalf("ScreenOverrides: %v", err)
-	}
-	if len(overrides) != 0 {
-		t.Fatalf("%d override(s) written by a refused push, want 0", len(overrides))
+	if got := storedOverride(t, e, screenID); got != nil {
+		t.Fatalf("override %+v written by a refused push, want none", got)
 	}
 
 	// The same screen IS pushable by a caller whose authority covers it, so the
 	// refusals above are the scoping and not a route that refuses everyone.
 	if resp, raw := e.do(t, http.MethodPut, "/api/v1/screens/"+screenID+"/now",
-		mustJSON(t, map[string]any{"cast_id": castID}), nil); resp.StatusCode != http.StatusOK {
+		mustJSON(t, pushBody(castID)), nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("PUT now as the root-bound principal = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
-	if got, _ := e.store.ScreenOverrides(context.Background()); got[screenID].CastID != castID {
-		t.Errorf("stored override = %+v, want the pushed cast", got[screenID])
+	if got := storedOverride(t, e, screenID); got == nil || got.CastID != castID {
+		t.Errorf("stored override = %+v, want the pushed cast", got)
 	}
 }

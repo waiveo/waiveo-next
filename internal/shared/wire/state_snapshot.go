@@ -136,12 +136,28 @@ func (sec ScheduleSection) Normalized() ScheduleSection {
 // ScreenProgram is one relay/1 `screen_programs` entry (REL-061).
 // `Priority` is one of `scheduled` or `preempt`; `Display` is one of
 // `content` or `blank`.
+//
+// Pinned is an additive field (REL-004) marking an entry the app peer produced
+// from a screen's own program OVERRIDE (data-model/1 DAT-004c) rather than from
+// scheduling resolution. It is the relay's instruction not to replace this
+// entry with its own local re-resolution of the carried `schedule` section
+// (DAT-004d: "a consumer that re-resolves a screen's program locally MUST NOT
+// replace a program an override produced").
+//
+// It has to be on the wire rather than inferred, and `priority` cannot stand in
+// for it: a `play`-mode override is deliberately `scheduled` priority — it is an
+// ordinary content change, not a takeover — so priority alone cannot distinguish
+// "the app pinned this" from "the app resolved this". Without the flag, the one
+// deployment shape where a relay CAN attribute a scope node's resolution to a
+// screen (a single governed node serving a single screen) would revert every
+// override at the next resolver tick, silently.
 type ScreenProgram struct {
 	ScreenID        string       `json:"screen_id"`
 	ProgramRevision string       `json:"program_revision"`
 	Priority        string       `json:"priority"`
 	Display         string       `json:"display"`
 	Content         []ContentRef `json:"content"`
+	Pinned          bool         `json:"pinned,omitempty"`
 }
 
 // ContentRef is one signed content reference inside a ScreenProgram's

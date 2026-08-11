@@ -490,10 +490,28 @@ func (e ScopeNodeUpdateKind) Valid() bool {
 	}
 }
 
+// Defines values for ScreenNowMode.
+const (
+	ScreenNowModeAlert ScreenNowMode = "alert"
+	ScreenNowModePlay  ScreenNowMode = "play"
+)
+
+// Valid indicates whether the value is a known member of the ScreenNowMode enum.
+func (e ScreenNowMode) Valid() bool {
+	switch e {
+	case ScreenNowModeAlert:
+		return true
+	case ScreenNowModePlay:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ScreenNowSource.
 const (
-	ScreenNowSourceCast     ScreenNowSource = "cast"
-	ScreenNowSourcePlaylist ScreenNowSource = "playlist"
+	ScreenNowSourceCast    ScreenNowSource = "cast"
+	ScreenNowSourceMessage ScreenNowSource = "message"
 )
 
 // Valid indicates whether the value is a known member of the ScreenNowSource enum.
@@ -501,7 +519,43 @@ func (e ScreenNowSource) Valid() bool {
 	switch e {
 	case ScreenNowSourceCast:
 		return true
-	case ScreenNowSourcePlaylist:
+	case ScreenNowSourceMessage:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ScreenNowRequestMode.
+const (
+	ScreenNowRequestModeAlert ScreenNowRequestMode = "alert"
+	ScreenNowRequestModePlay  ScreenNowRequestMode = "play"
+)
+
+// Valid indicates whether the value is a known member of the ScreenNowRequestMode enum.
+func (e ScreenNowRequestMode) Valid() bool {
+	switch e {
+	case ScreenNowRequestModeAlert:
+		return true
+	case ScreenNowRequestModePlay:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ScreenOverrideMode.
+const (
+	Alert ScreenOverrideMode = "alert"
+	Play  ScreenOverrideMode = "play"
+)
+
+// Valid indicates whether the value is a known member of the ScreenOverrideMode enum.
+func (e ScreenOverrideMode) Valid() bool {
+	switch e {
+	case Alert:
+		return true
+	case Play:
 		return true
 	default:
 		return false
@@ -904,22 +958,76 @@ type AutomationListResponse struct {
 	Items  []Automation `json:"items"`
 }
 
+// AutomationRunCommand One device command this run dispatched (or, under `dry_run`, would have).
+type AutomationRunCommand struct {
+	Command string `json:"command"`
+
+	// EntityId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	EntityId Ulid `json:"entity_id"`
+
+	// Error Present only when `ok` is false — why this one target did not take the command.
+	Error *string `json:"error,omitempty"`
+	Ok    bool    `json:"ok"`
+}
+
 // AutomationRunRequest Optional trigger-context override for this manual run.
 type AutomationRunRequest struct {
 	Context *map[string]interface{} `json:"context,omitempty"`
+
+	// DryRun When `true`, the run is evaluated to completion — conditions, branch selection, target resolution — but every effect is WITHHELD: no device command is dispatched and no screen override is written. The response reports exactly what a real run would have done. The default is `false`: run-now ACTS.
+	DryRun *bool `json:"dry_run,omitempty"`
 }
 
-// AutomationRunResult defines model for AutomationRunResult.
+// AutomationRunResult What the run actually did. `disposition` is the mode-evaluation outcome; the three effect arrays are the report the operator needs to tell "it ran" from "it ran and changed something".
 type AutomationRunResult struct {
-	// Disposition rules/1's closed RunDisposition set.
+	// Commands Every `device_command` target this run dispatched to, in dispatch order.
+	Commands []AutomationRunCommand `json:"commands"`
+
+	// DelaysCollapsed How many `delay` actions this run passed through WITHOUT waiting. A synchronous manual run does not hold the request open for a rule's own pacing, so the remaining actions run immediately; the count is reported rather than hidden, because a rule whose timing matters behaves differently here than it does on a trigger.
+	DelaysCollapsed *int `json:"delays_collapsed,omitempty"`
+
+	// Disposition rules/1's closed RunDisposition set. `skipped` here means the rule's own conditions did not hold, so its actions were not run — not an error, and not a failure of the request.
 	Disposition AutomationRunResultDisposition `json:"disposition"`
+
+	// DryRun Whether effects were withheld.
+	DryRun bool `json:"dry_run"`
+
+	// Logs Every `log` action's evaluated message (`rules/1` RUL-200), in order.
+	Logs []struct {
+		// Level One of `info`, `warning`, `error` (`rules/1` RUL-200). A plain string for the reason `AutomationRunSignage.action` gives.
+		Level   string `json:"level"`
+		Message string `json:"message"`
+	} `json:"logs"`
 
 	// RunId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	RunId Ulid `json:"run_id"`
+
+	// Signage Every signage action this run performed, in action order.
+	Signage []AutomationRunSignage `json:"signage"`
 }
 
-// AutomationRunResultDisposition rules/1's closed RunDisposition set.
+// AutomationRunResultDisposition rules/1's closed RunDisposition set. `skipped` here means the rule's own conditions did not hold, so its actions were not run — not an error, and not a failure of the request.
 type AutomationRunResultDisposition string
+
+// AutomationRunScreen One screen a signage action wrote (or, under `dry_run`, would have).
+type AutomationRunScreen struct {
+	// Error Present only when `ok` is false.
+	Error *string `json:"error,omitempty"`
+	Ok    bool    `json:"ok"`
+
+	// ScreenId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	ScreenId Ulid `json:"screen_id"`
+}
+
+// AutomationRunSignage One signage action's outcome (`rules/1` RUL-236), in the same three-value shape a preset batch reports (RUL-172).
+type AutomationRunSignage struct {
+	// Action The signage action type — one of `play_cast`, `show_alert`, `dismiss_alert` (`rules/1` RUL-234/RUL-235). Left as a plain string rather than an `enum` deliberately: an `enum` here mints package-level Go constants named after its VALUES, and two of them (`failed` on `outcome` below) collide with an existing enum's, which silently renames that other enum's constants across the whole generated package. The closed set is stated here and enforced by the one place that can produce it.
+	Action string `json:"action"`
+
+	// Outcome One of `complete`, `partial`, `failed` — `rules/1` RUL-172's own three-value outcome, reused by RUL-236. A plain string for the reason `action` above gives.
+	Outcome string                `json:"outcome"`
+	Screens []AutomationRunScreen `json:"screens"`
+}
 
 // AutomationUpdate Partial update — every field optional, at least one required.
 type AutomationUpdate struct {
@@ -1169,6 +1277,9 @@ type DeviceListResponse struct {
 
 // Entity One addressable object a device exposes — the unit `rules/1` entity references resolve to and the unit a device command is addressed to (`relay/1` REL-112). Read-only on this API for the same reason a Device is, and carries no `revision` for the same reason.
 type Entity struct {
+	// Attributes The driver-observed detail behind `state` (`device-class-registry/1` REG-064; for a Roku `power_mode`, `active_app`, `active_app_id`, `app_type`, `is_screensaver`, `app_version`). `state` answers on/idle/standby/off; an operator looking at a screen that is not showing what it should needs to know it is sitting in another app, which `state` cannot say. Values are strings even where the driver's own value is a boolean — this is display detail crossing a trust boundary from a relay, and a bounded string map is checkable at intake in a way an arbitrary JSON value is not. Absent until the relay has reported some.
+	Attributes *map[string]string `json:"attributes,omitempty"`
+
 	// DeviceClass The device class whose command vocabulary a command to this entity must resolve against (`device-class-registry/1` REG-052).
 	DeviceClass string `json:"device_class"`
 
@@ -1595,9 +1706,12 @@ type Screen struct {
 	Id Ulid `json:"id"`
 
 	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
-	Labels   LabelMap `json:"labels"`
-	Name     string   `json:"name"`
-	Revision int      `json:"revision"`
+	Labels LabelMap `json:"labels"`
+	Name   string   `json:"name"`
+
+	// Override A screen's program override (`data-model/1` DAT-004c): a per-screen content pin that supersedes whatever the scheduling core resolves for that screen, for as long as it applies. It is deliberately not a second scheduling mechanism — no cascade, no priority order, no layering, no recurrence — it is "show this here, now, until it is cleared or lapses", which is what an operator's push-now gesture and an automation's `play_cast`/`show_alert` action (`rules/1` RUL-234/RUL-235) both need and what a schedule cannot express.
+	Override *ScreenOverride `json:"override,omitempty"`
+	Revision int             `json:"revision"`
 
 	// ScopeNode A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	ScopeNode Ulid `json:"scope_node"`
@@ -1627,34 +1741,69 @@ type ScreenListResponse struct {
 	Items  []Screen `json:"items"`
 }
 
-// ScreenNow A screen's active push-now override. `source` names which id member is populated, so a consumer switches on one closed value rather than inferring intent from which string happens to be empty.
+// ScreenNow A screen's active program override, as it now stands — the same override the screen row carries (`ScreenOverride`), with the screen's own id and under the operator-facing name the push-now surface uses. `source` names which content member is populated, so a consumer switches on one closed value rather than inferring intent from which string happens to be empty.
 type ScreenNow struct {
 	// CastId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	CastId *Ulid `json:"cast_id,omitempty"`
 
-	// PlaylistId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
-	PlaylistId *Ulid `json:"playlist_id,omitempty"`
+	// ExpiresAt The instant the override lapses; absent means it lasts until cleared.
+	ExpiresAt *Timestamp    `json:"expires_at,omitempty"`
+	Message   *string       `json:"message,omitempty"`
+	Mode      ScreenNowMode `json:"mode"`
 
-	// PushedAt A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
-	// The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
-	PushedAt Timestamp `json:"pushed_at"`
+	// PushedAt The instant the override was imposed (the row's `set_at`).
+	PushedAt *Timestamp `json:"pushed_at,omitempty"`
 
 	// ScreenId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	ScreenId Ulid            `json:"screen_id"`
 	Source   ScreenNowSource `json:"source"`
 }
 
+// ScreenNowMode defines model for ScreenNow.Mode.
+type ScreenNowMode string
+
 // ScreenNowSource defines model for ScreenNow.Source.
 type ScreenNowSource string
 
-// ScreenNowRequest What to show on a screen right now. Exactly one of `cast_id` and `playlist_id` — a push names one thing to show, and a server that resolved "both" by precedence would turn a client bug into the wrong content on a wall.
+// ScreenNowRequest What to show on a screen right now: the body of the ONE surface that imposes a screen's program override (`data-model/1` DAT-004c). Its members are that override's, with one substitution — the row stores an absolute `expires_at` and this body states a RELATIVE `ttl_seconds`, because "show this for sixty seconds" is what an operator means and because deriving the instant server-side keeps a caller's clock skew from deciding when an alert ends.
+// There is deliberately no `override` member on `ScreenCreate` or `ScreenUpdate`: imposing an override is an imperative act on a physical display, and burying it inside a resource edit hides it from anything reading the route — audit, rate limiting, authorization review — and makes "clear it" an awkward explicit `null` rather than a `DELETE`.
 type ScreenNowRequest struct {
-	// CastId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
+	// CastId The cast whose slides the screen plays. Exactly one of `cast_id` and `message` is stated — a body naming neither says nothing to show, and one naming both is two instructions with no rule ranking them, which a server resolving by precedence would turn into the wrong content on a wall. A `cast_id` naming no cast row is REFUSED here (DAT-004c): accepting it would pin the screen to an empty content array with its schedule suppressed — a dark screen with no error anywhere.
 	CastId *Ulid `json:"cast_id,omitempty"`
 
-	// PlaylistId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
-	PlaylistId *Ulid `json:"playlist_id,omitempty"`
+	// Message A literal alert message, shown as one generated slide with no authored cast needed. Admissible only under `mode: "alert"`.
+	Message *string `json:"message,omitempty"`
+
+	// Mode `play` is the ordinary assignment and delivers at `scheduled` priority; `alert` is the takeover and delivers at `preempt`, so a player interrupts the item it is mid-way through (`player/1` PLY-108). DAT-004c admits a literal `message` only under `alert`.
+	Mode ScreenNowRequestMode `json:"mode"`
+
+	// TtlSeconds How long the override lasts, in seconds from the moment it is imposed; omitted means it lasts until it is explicitly cleared. The server converts it to the row's absolute `expires_at`, after which the override is treated as absent at resolution time with NO write required to retire it (DAT-004d) — so an alert self-limits even on a relay that has lost its app peer.
+	TtlSeconds *int `json:"ttl_seconds,omitempty"`
 }
+
+// ScreenNowRequestMode `play` is the ordinary assignment and delivers at `scheduled` priority; `alert` is the takeover and delivers at `preempt`, so a player interrupts the item it is mid-way through (`player/1` PLY-108). DAT-004c admits a literal `message` only under `alert`.
+type ScreenNowRequestMode string
+
+// ScreenOverride A screen's program override (`data-model/1` DAT-004c): a per-screen content pin that supersedes whatever the scheduling core resolves for that screen, for as long as it applies. It is deliberately not a second scheduling mechanism — no cascade, no priority order, no layering, no recurrence — it is "show this here, now, until it is cleared or lapses", which is what an operator's push-now gesture and an automation's `play_cast`/`show_alert` action (`rules/1` RUL-234/RUL-235) both need and what a schedule cannot express.
+type ScreenOverride struct {
+	// CastId The cast whose slides the screen plays. Exactly one of `cast_id` and `message` is stated.
+	CastId *Ulid `json:"cast_id,omitempty"`
+
+	// ExpiresAt The instant the override lapses. Absent means no expiry. A lapsed override is treated as absent at resolution time with no write required to retire it (DAT-004d), so an alert self-limits even on a relay that has lost its app peer.
+	ExpiresAt *Timestamp `json:"expires_at,omitempty"`
+
+	// Message A literal alert message, shown as one generated slide. Admissible only under `mode: "alert"` — a `play` override names a cast.
+	Message *string `json:"message,omitempty"`
+
+	// Mode `play` is the ordinary assignment and delivers at `scheduled` priority; `alert` is the takeover and delivers at `preempt`, so a player interrupts the item it is mid-way through (`player/1` PLY-108).
+	Mode ScreenOverrideMode `json:"mode"`
+
+	// SetAt The instant the override was imposed. Informational.
+	SetAt *Timestamp `json:"set_at,omitempty"`
+}
+
+// ScreenOverrideMode `play` is the ordinary assignment and delivers at `scheduled` priority; `alert` is the takeover and delivers at `preempt`, so a player interrupts the item it is mid-way through (`player/1` PLY-108).
+type ScreenOverrideMode string
 
 // ScreenStatus One screen's authored identity joined to what the relays have observed of it. See `listScreenStatus` for how the ages are to be read and why `reachability` never says "offline".
 type ScreenStatus struct {

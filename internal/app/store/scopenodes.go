@@ -158,18 +158,6 @@ type DesiredStateResult struct {
 	// has just withdrawn.
 	Revoked []string
 
-	// ScreenOverrides is every active push-now override, keyed by screen_id
-	// (screenoverrides.go) — the "show this here now" assignment that outranks
-	// whatever the schedule would otherwise resolve for that screen, projected
-	// by snapshot.DeriveScreenPrograms into a `preempt`-priority entry
-	// (REL-061/PLY-108).
-	//
-	// Read inside DesiredState's own lock section with everything else, for the
-	// reason Revoked is: an override bound to a different generation than the
-	// content around it is a screen whose emergency notice and whose schedule
-	// come from two different instants.
-	ScreenOverrides map[string]ScreenOverride
-
 	Generation int64
 }
 
@@ -222,10 +210,6 @@ func (s *Store) DesiredState(ctx context.Context) (DesiredStateResult, error) {
 	if err != nil {
 		return DesiredStateResult{}, err
 	}
-	overrides, err := readScreenOverrides(ctx, s.db)
-	if err != nil {
-		return DesiredStateResult{}, err
-	}
 	generation, err := readGeneration(ctx, s.db)
 	if err != nil {
 		return DesiredStateResult{}, err
@@ -239,7 +223,6 @@ func (s *Store) DesiredState(ctx context.Context) (DesiredStateResult, error) {
 		Screens:         screens,
 		PairingGrants:   grants,
 		Revoked:         revoked,
-		ScreenOverrides: overrides,
 		Generation:      generation,
 	}, nil
 }

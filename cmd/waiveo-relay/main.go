@@ -1961,19 +1961,47 @@ func installPersistedServingState(store *identity.Store, srv *playerserver.Serve
 // same screen still describe one screen, and reading that as ambiguous would
 // cost a genuinely single-screen site its schedule attribution over a duplicate
 // in an array nothing here controls.
+//
+// # A PINNED program is never served over
+//
+// A screen whose app-authored program is PINNED (wire.ScreenProgram.Pinned —
+// the app peer projected it from that screen's own program override,
+// data-model/1 DAT-004c) is excluded, and the exclusion is the whole reason an
+// override survives on a single-screen site. DAT-004d states it directly: a
+// consumer re-resolving a screen's program locally MUST NOT replace a program
+// an override produced, because the relay has no input that could contradict
+// the app peer's statement about one specific screen. Without this, exactly the
+// deployment where the attribution IS forced — one governed node, one screen —
+// would revert every play_cast and every alert at the next resolver tick: the
+// write lands, the projection is right, the screen still shows its schedule.
+//
+// Excluding the screen (rather than suppressing the whole resolver) keeps the
+// resolver running for its OTHER job: a scope node's daypart rising-edge preset
+// batches (DAT-075) are a scope-node concern that needs no screen identity, and
+// an alert on a screen must not also stop the lights from coming on.
 func soleServedScreenID(governedNodeIDs []string, programs []wire.ScreenProgram) string {
 	if len(governedNodeIDs) != 1 {
 		return ""
 	}
 	screenID := ""
+	pinned := map[string]bool{}
 	for _, sp := range programs {
-		if sp.ScreenID == "" || sp.ScreenID == screenID {
+		if sp.ScreenID == "" {
+			continue
+		}
+		if sp.Pinned {
+			pinned[sp.ScreenID] = true
+		}
+		if sp.ScreenID == screenID {
 			continue
 		}
 		if screenID != "" {
 			return "" // more than one screen: the node -> screen attribution is not forced.
 		}
 		screenID = sp.ScreenID
+	}
+	if pinned[screenID] {
+		return ""
 	}
 	return screenID
 }
@@ -2285,7 +2313,7 @@ func toWireCandidates(cands []deviceplane.Candidate) []wire.DeviceCandidate {
 		}
 		ents := make([]wire.CandidateEntity, 0, len(c.Entities))
 		for _, e := range c.Entities {
-			ents = append(ents, wire.CandidateEntity{Key: e.Key, DeviceClass: e.DeviceClass, State: e.State})
+			ents = append(ents, wire.CandidateEntity{Key: e.Key, DeviceClass: e.DeviceClass, State: e.State, Attributes: e.Attributes})
 		}
 		out = append(out, wire.DeviceCandidate{
 			Match:        match,

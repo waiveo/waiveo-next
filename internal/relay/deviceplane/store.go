@@ -84,10 +84,16 @@ const candidatesMessageType = "device.candidates"
 // peer derives that from the key and the device's identity (REL-110b), and this
 // relay derives the identical value to resolve an inbound command
 // (Store.ResolveEntity).
+//
+// Attributes is the driver-observed detail behind State (REG-064: power_mode,
+// active_app, app_type, ...), carried upward beside it so an operator can see
+// WHAT a screen is doing and not only that it is on. Like State it is written
+// only by the poller (SetEntityObservation), never by a discovery sighting.
 type CandidateEntity struct {
-	Key         string `json:"key"`
-	DeviceClass string `json:"device_class"`
-	State       string `json:"state,omitempty"`
+	Key         string            `json:"key"`
+	DeviceClass string            `json:"device_class"`
+	State       string            `json:"state,omitempty"`
+	Attributes  map[string]string `json:"attributes,omitempty"`
 }
 
 // Observation is one sighting of a physical device, as a discovery lane reports
@@ -309,15 +315,26 @@ func (s *Store) Observe(o Observation, atMs int64) {
 		// "not learned here", never "no longer true", so a surviving entity keeps
 		// the state already held unless this sighting states a new one.
 		prevState := make(map[string]string, len(c.Entities))
+		prevAttrs := make(map[string]map[string]string, len(c.Entities))
 		for _, e := range c.Entities {
 			if e.State != "" {
 				prevState[e.Key] = e.State
+			}
+			// Attributes are carried across a re-sighting for the identical
+			// reason State is: a discovery packet observes neither, so an
+			// incoming entity list has both blank and replacing the slice
+			// wholesale would delete what the poller learned.
+			if len(e.Attributes) > 0 {
+				prevAttrs[e.Key] = e.Attributes
 			}
 		}
 		c.Entities = append([]CandidateEntity(nil), o.Entities...)
 		for i := range c.Entities {
 			if c.Entities[i].State == "" {
 				c.Entities[i].State = prevState[c.Entities[i].Key]
+			}
+			if len(c.Entities[i].Attributes) == 0 {
+				c.Entities[i].Attributes = prevAttrs[c.Entities[i].Key]
 			}
 		}
 		// The four LEARNED facts are refreshed only when the new sighting
@@ -365,10 +382,16 @@ func orKeep(next, held string) string {
 	return held
 }
 
-// SetEntityState records the state a driver has OBSERVED for one entity of one
-// candidate device (REL-110a: `state` present only once the relay has observed
-// one), so it rides the next full-set `device.candidates` report upward and
-// becomes the `state` an operator reads off the app peer's entity list.
+// SetEntityObservation records what a driver has OBSERVED for one entity of one
+// candidate device — its canonical state (REL-110a: `state` present only once
+// the relay has observed one) and the driver-level attributes behind it
+// (REG-064) — so both ride the next full-set `device.candidates` report upward
+// and become what an operator reads off the app peer's entity list.
+//
+// The two travel together, in one call, because they are one observation: a
+// state and a set of attributes written by separate calls could be halves of
+// two different polls, and an operator reading "standby" beside "active_app:
+// Netflix" has no way to know which one is current.
 //
 // entityID is the app-peer-visible id, resolved the same way ResolveEntity
 // resolves a command's target: by re-deriving every id this relay's own
@@ -381,9 +404,17 @@ func orKeep(next, held string) string {
 // is deliberately NOT excluded: suppression is an instruction not to ACT on a
 // device, and continuing to report what a suppressed device is doing is
 // exactly what lets an operator decide to un-suppress it.
-func (s *Store) SetEntityState(entityID, entityState string) bool {
+func (s *Store) SetEntityObservation(entityID, entityState string, attrs map[string]string) bool {
 	if !observationFieldOK(entityState) {
 		return false
+	}
+	// Every attribute key and value is held to the same bound the state string
+	// is: this map is reported upward verbatim, and an unbounded one would let a
+	// driver grow a report until it no longer fits a frame.
+	for k, v := range attrs {
+		if !observationFieldOK(k) || !observationFieldOK(v) {
+			return false
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -395,6 +426,18 @@ func (s *Store) SetEntityState(entityID, entityState string) bool {
 		for i, e := range c.Entities {
 			if deviceid.Entity(s.site, c.Driver, c.NativeID, e.Key) == entityID {
 				c.Entities[i].State = entityState
+				// A copy, not the caller's map: the poller reuses its own
+				// snapshot maps, and a shared reference would let a later poll
+				// mutate what this candidate reports mid-report.
+				if len(attrs) == 0 {
+					c.Entities[i].Attributes = nil
+				} else {
+					cp := make(map[string]string, len(attrs))
+					for k, v := range attrs {
+						cp[k] = v
+					}
+					c.Entities[i].Attributes = cp
+				}
 				return true
 			}
 		}

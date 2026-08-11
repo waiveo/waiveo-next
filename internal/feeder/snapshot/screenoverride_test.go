@@ -14,6 +14,11 @@ import (
 // row 5.7): what the signed snapshot carries for a screen an operator has pushed
 // content to, and — just as importantly — that everything else about the section
 // is unchanged for a screen nobody has.
+//
+// The override is the screen ROW's own `override` member (DAT-004c), so these
+// tests impose it the way every other surface does: a conditional patch of that
+// one member through the ordinary resource update. There is no second store to
+// write to.
 
 const (
 	// A cast created at the seeded screen's own scope node, so a push has
@@ -23,6 +28,31 @@ const (
 	ovPushAsset = "sha256:9999999999999999999999999999999999999999999999999999999999999999"
 	ovScopeNode = "01J8Z4DEM0SCREENF1RSTPH0TN"
 )
+
+// pushOverride imposes an override on a screen through the ordinary conditional
+// resource update — the same single write path the api surface and the run-now
+// signage sink both take (there is exactly ONE override store, and this is it).
+func pushOverride(t *testing.T, s *store.Store, screenID string, o *datamodel.ScreenOverride) {
+	t.Helper()
+	ctx := context.Background()
+	res, found, err := s.Get(ctx, store.KindScreen, screenID)
+	if err != nil || !found {
+		t.Fatalf("read screen %s before the push: found=%v err=%v", screenID, found, err)
+	}
+	patch, err := json.Marshal(map[string]any{"override": o})
+	if err != nil {
+		t.Fatalf("marshal the override patch: %v", err)
+	}
+	if _, err := s.Update(ctx, store.KindScreen, screenID, res.Revision, patch); err != nil {
+		t.Fatalf("write the override on %s: %v", screenID, err)
+	}
+}
+
+// alertOn is the emergency push these tests drive: `mode: "alert"`, which is the
+// mode DAT-004d assigns `preempt` priority to.
+func alertOn(castID string) *datamodel.ScreenOverride {
+	return &datamodel.ScreenOverride{Mode: datamodel.ScreenOverrideModeAlert, CastID: castID}
+}
 
 // ovSeedWithCast returns a seeded store that additionally holds a two-slide cast
 // at the seeded screen's placement, and that cast's id.
@@ -57,7 +87,6 @@ func ovSeedWithCast(t *testing.T, assetRef string) *store.Store {
 func TestPushedCastProjectsToAPreemptProgramCarryingItsSlides(t *testing.T) {
 	const seedAsset = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	s := ovSeedWithCast(t, seedAsset)
-	ctx := context.Background()
 
 	// Before: the ordinary scheduled program, so nothing below can pass vacuously.
 	before, _ := DeriveScreenPrograms(desiredState(t, s), "https://origin.example", contentInstant(t))
@@ -67,9 +96,7 @@ func TestPushedCastProjectsToAPreemptProgramCarryingItsSlides(t *testing.T) {
 	}
 	wantSeededAssetThenSlide(t, beforeProg.Content, seedAsset)
 
-	if _, err := s.SetScreenOverride(ctx, store.SeedScreenID, ovCastID, ""); err != nil {
-		t.Fatalf("push the cast: %v", err)
-	}
+	pushOverride(t, s, store.SeedScreenID, alertOn(ovCastID))
 
 	after, errs := DeriveScreenPrograms(desiredState(t, s), "https://origin.example", contentInstant(t))
 	if len(errs) != 0 {
@@ -80,6 +107,9 @@ func TestPushedCastProjectsToAPreemptProgramCarryingItsSlides(t *testing.T) {
 	if prog.Priority != "preempt" {
 		t.Errorf("pushed program priority = %q, want preempt — at `scheduled` the relay's own re-resolution overwrites it within 30s and the player waits out the current item instead of interrupting",
 			prog.Priority)
+	}
+	if !prog.Pinned {
+		t.Error("pushed program is not Pinned — Pinned is what stops the relay re-resolving this screen from the schedule it also carries (DAT-004d), and it is the ONLY such guard for a `play` override, whose priority is deliberately `scheduled`")
 	}
 	if prog.Display != "content" {
 		t.Errorf("pushed program display = %q, want content — an operator pushing a cast is saying show this", prog.Display)
@@ -118,23 +148,21 @@ func TestPushedCastProjectsToAPreemptProgramCarryingItsSlides(t *testing.T) {
 func TestClearingThePushRestoresTheScheduledProjection(t *testing.T) {
 	const seedAsset = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	s := ovSeedWithCast(t, seedAsset)
-	ctx := context.Background()
 
 	before, _ := DeriveScreenPrograms(desiredState(t, s), "https://origin.example", contentInstant(t))
 	beforeProg := programForScreen(t, before, store.SeedScreenID)
 
-	if _, err := s.SetScreenOverride(ctx, store.SeedScreenID, ovCastID, ""); err != nil {
-		t.Fatalf("push: %v", err)
-	}
-	if cleared, err := s.ClearScreenOverride(ctx, store.SeedScreenID); err != nil || !cleared {
-		t.Fatalf("clear = (%v, %v), want (true, nil)", cleared, err)
-	}
+	pushOverride(t, s, store.SeedScreenID, alertOn(ovCastID))
+	pushOverride(t, s, store.SeedScreenID, nil) // an explicit null clears it
 
 	after, _ := DeriveScreenPrograms(desiredState(t, s), "https://origin.example", contentInstant(t))
 	afterProg := programForScreen(t, after, store.SeedScreenID)
 
 	if afterProg.Priority != "scheduled" {
 		t.Errorf("after clearing, priority = %q, want scheduled", afterProg.Priority)
+	}
+	if afterProg.Pinned {
+		t.Error("after clearing, the program is still Pinned — the relay would go on refusing to re-resolve a screen with no override on it")
 	}
 	if afterProg.ProgramRevision != beforeProg.ProgramRevision {
 		t.Errorf("after clearing, program_revision = %q, want the pre-push %q — the same schedule at the same instant must derive the same program",
@@ -149,7 +177,6 @@ func TestClearingThePushRestoresTheScheduledProjection(t *testing.T) {
 func TestAPushOverridesEvenABlankedScreen(t *testing.T) {
 	const seedAsset = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	s := ovSeedWithCast(t, seedAsset)
-	ctx := context.Background()
 
 	// The overnight instant, where the seeded schedule resolves to display:blank.
 	blank, _ := DeriveScreenPrograms(desiredState(t, s), "https://origin.example", blankInstant(t))
@@ -157,9 +184,7 @@ func TestAPushOverridesEvenABlankedScreen(t *testing.T) {
 		t.Fatalf("fixture: the un-pushed screen derives display %q overnight, want blank", got)
 	}
 
-	if _, err := s.SetScreenOverride(ctx, store.SeedScreenID, ovCastID, ""); err != nil {
-		t.Fatalf("push: %v", err)
-	}
+	pushOverride(t, s, store.SeedScreenID, alertOn(ovCastID))
 	prog := programForScreen(t,
 		mustDerive(t, desiredState(t, s), blankInstant(t)), store.SeedScreenID)
 	if prog.Display != "content" {
@@ -188,15 +213,16 @@ func TestAPushOnlyAffectsTheScreenItNames(t *testing.T) {
 	if _, err := s.Create(ctx, store.KindScreen, body); err != nil {
 		t.Fatalf("create the second screen: %v", err)
 	}
-	if _, err := s.SetScreenOverride(ctx, store.SeedScreenID, ovCastID, ""); err != nil {
-		t.Fatalf("push: %v", err)
-	}
+	pushOverride(t, s, store.SeedScreenID, alertOn(ovCastID))
 
 	programs := mustDerive(t, desiredState(t, s), contentInstant(t))
 	if got := programForScreen(t, programs, store.SeedScreenID).Priority; got != "preempt" {
 		t.Errorf("the PUSHED screen derives priority %q, want preempt", got)
 	}
 	neighbour := programForScreen(t, programs, otherScreen)
+	if neighbour.Pinned {
+		t.Error("the NEIGHBOURING screen is Pinned — one screen's push leaked onto another, and the relay would stop re-resolving a screen nobody overrode")
+	}
 	if neighbour.Priority != "scheduled" {
 		t.Fatalf("the NEIGHBOURING screen derives priority %q, want scheduled — one screen's push leaked onto another", neighbour.Priority)
 	}
