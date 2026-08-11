@@ -29,6 +29,7 @@ import (
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
@@ -383,7 +384,7 @@ func resolveContentThroughDesiredState(t *testing.T, e *testEnv, screenNodeID st
 	// The content-origin base the snapshot carries is the SAME base the upload
 	// endpoint built its url from (e.contentBase) — so an app-authored url and a
 	// schedule-resolved url are byte-identical for the same asset (REL-061).
-	snap, _, err := snapshot.BuildFromStore(ds, e.contentBase, id, nowMs, nil)
+	snap, _, err := snapshot.BuildFromStore(ds, contenturl.Signer{Base: e.contentBase}, id, nowMs)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}

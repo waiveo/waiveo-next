@@ -1640,7 +1640,7 @@ export interface components {
             text?: string;
             /** @description An `image` or `video` layer's content-addressed `sha256:` reference — the only half of a content-bearing layer that is AUTHORED. Its fetch `url` is derived from the content origin at projection time. */
             asset_ref?: string;
-            /** @description An `image` or `video` layer's direct content-origin fetch target, derived at projection time and present on a SERVED slide. A create/update need not supply it. */
+            /** @description An `image` or `video` layer's direct content-origin fetch target, derived at projection time and present on a SERVED slide. It is never AUTHORED: a create or update need not supply it, and one that does has it IGNORED — the stored layer carries only the `asset_ref`, and a read of the row will not echo a supplied `url` back. That is not tidiness. A content URL is signed and expires (`relay/1` REL-066a), so a stored copy is a link that dies: an editor that saved one showed broken images the next time the cast was opened. An authoring surface holds the `asset_ref` and resolves a live URL from `GET /content` at the moment it needs to fetch. */
             url?: string;
             /** @description A `countdown` layer's target instant, in Unix epoch MILLISECONDS (UTC) — the same absolute-instant unit every other time on this wire uses, never a local wall time and never seconds. Absolute is what lets the player count down without knowing the authoring timezone. Required and strictly positive for `countdown`, unused elsewhere; a target already past renders as all zeroes rather than as a negative, so it is deliberately NOT rejected here. */
             target_ms?: number;

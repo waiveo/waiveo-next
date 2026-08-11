@@ -94,16 +94,25 @@ func WithClock(nowMs func() int64) Option {
 // # Why this is an option rather than always-on
 //
 // Because the key has to reach every party that constructs a content URL, and
-// one of them is not this process. REL-066 has the RELAY build a
+// one of them is not this process: REL-066 has the RELAY build a
 // schedule-resolved item's url itself, from the `content_origin` base it was
-// handed (internal/relay/schedulehost, deriveContentURL) — it holds no key and
-// can mint no signature. Turning verification on for a deployment whose relay
-// resolves schedules would refuse that relay's own URLs.
+// handed. That party is now supplied — the key rides the signed snapshot as
+// `content_url_key` (REL-066a) and the relay mints with it
+// (internal/relay/schedulehost) — and so are the IN-PROCESS parties, which take
+// their signer from this very store (Store.Signer).
 //
-// So the key is set where the minting and the serving sides are known to
-// agree, and the relay-side half is tracked as its own work rather than
-// half-shipped here. A caller that sets no key gets the previous behaviour:
-// content served by address, unsigned.
+// The gap between those two sentences is the whole of this option's history and
+// worth keeping written down. Enforcement shipped here first, on the argument
+// above, while the app-side producers went on concatenating bare URLs; because
+// cmd/waiveo-feeder loads-or-creates the key unconditionally, enforcement was on
+// in every real deployment and no `image` or `video` layer could display on any
+// screen. Setting a key must never again be a decision one half of the system
+// makes alone — which is why Store.Signer exists and why in-process producers
+// are expected to go through it rather than be handed a key of their own.
+//
+// A caller that sets no key gets the previous behaviour: content served by
+// address, unsigned — and Store.Signer's minters match that posture, so the two
+// remain consistent in either configuration.
 //
 // An empty key is ignored rather than stored, so a caller that computes a key
 // and gets nothing cannot silently end up with verification "enabled" against
@@ -115,6 +124,39 @@ func WithSigningKey(key []byte) Option {
 			s.signingKey = append([]byte(nil), key...)
 		}
 	}
+}
+
+// Signer returns the content-URL minter for THIS origin under base: a
+// contenturl.Signer carrying this store's own signing key and its own clock,
+// with the stated ttl (contenturl.ServeTTL for a URL handed straight to its
+// consumer, contenturl.SnapshotTTL for one minted into a signed generation —
+// equal values today, two policies either way).
+//
+// # This method is the point, not a convenience
+//
+// Minting and verifying are two halves of one agreement, and the whole class of
+// defect this exists to close is the two halves disagreeing. The origin refuses
+// an unsigned fetch exactly when it holds a key (Handler); a producer that
+// signs only when IT was separately handed a key can therefore be wired to a
+// key-holding origin while minting bare URLs — which is what shipped, and it
+// made every uploaded image unfetchable through the very process that stored
+// it, `201` on the way in and `403` on the way out.
+//
+// Taking the key from the verifier makes that unconstructible instead of
+// merely discouraged: there is no argument to pass wrong. The clock comes from
+// here for the same reason — the deadline is judged against this store's clock
+// (Handler passes s.nowMs() to contenturl.Verify), so measuring it from any
+// other one measures a skew rather than a lifetime.
+//
+// Every in-process producer of a content URL is expected to obtain its Signer
+// here. A caller with no origin to ask — a fixture builder, a test — constructs
+// a contenturl.Signer literally and thereby states its signing posture where a
+// reader can see it.
+func (s *Store) Signer(base string, ttl time.Duration) contenturl.Signer {
+	s.mu.RLock()
+	key := append([]byte(nil), s.signingKey...)
+	s.mu.RUnlock()
+	return contenturl.Signer{Base: base, Key: key, TTL: ttl, NowMs: s.nowMs()}
 }
 
 // New returns an empty in-memory Store with no persistence. Use Open to back a
@@ -420,7 +462,12 @@ func (s *Store) Remove(hexDigest string) error {
 }
 
 // contentPathPrefix is the route content is served under: /content/<hex>.
-const contentPathPrefix = "/content/"
+//
+// Taken from the minting package rather than restated, so the path this origin
+// SERVES and the path every producer MINTS are one string by construction
+// (contenturl.PathPrefix) — a route and a producer that drifted apart would
+// answer 404 for a URL that verified perfectly.
+const contentPathPrefix = contenturl.PathPrefix
 
 // Handler returns an http.Handler serving GET /content/<hex> — the exact
 // bytes Serve(<hex>) returns, via http.ServeContent, or 404 for an unknown

@@ -6,6 +6,7 @@ import (
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
@@ -44,7 +45,7 @@ func TestVideoPlaylistItemProjectsAVideoContentRef(t *testing.T) {
 		{Source: datamodel.PlaylistSourceAsset, AssetRef: videoAsset, ContentType: datamodel.PlaylistContentTypeVideo},
 	})
 
-	programs, errs := DeriveScreenPrograms(desiredState(t, s), parityOrigin, contentInstant(t))
+	programs, errs := DeriveScreenPrograms(desiredState(t, s), contenturl.Signer{Base: parityOrigin}, contentInstant(t))
 	if len(errs) != 0 {
 		t.Fatalf("DeriveScreenPrograms reported %+v", errs)
 	}
@@ -79,7 +80,7 @@ func TestAssetItemWithNoContentTypeStillProjectsWithNone(t *testing.T) {
 		{Source: datamodel.PlaylistSourceAsset, AssetRef: videoAsset},
 	})
 
-	programs, errs := DeriveScreenPrograms(desiredState(t, s), parityOrigin, contentInstant(t))
+	programs, errs := DeriveScreenPrograms(desiredState(t, s), contenturl.Signer{Base: parityOrigin}, contentInstant(t))
 	if len(errs) != 0 {
 		t.Fatalf("DeriveScreenPrograms reported %+v", errs)
 	}
@@ -117,7 +118,7 @@ func TestSlideVideoLayerGetsItsFetchURLDerived(t *testing.T) {
 		{Source: datamodel.PlaylistSourceCast, CastID: castID},
 	})
 
-	programs, errs := DeriveScreenPrograms(desiredState(t, s), parityOrigin, contentInstant(t))
+	programs, errs := DeriveScreenPrograms(desiredState(t, s), contenturl.Signer{Base: parityOrigin}, contentInstant(t))
 	if len(errs) != 0 {
 		t.Fatalf("DeriveScreenPrograms reported %+v", errs)
 	}
@@ -164,7 +165,7 @@ func TestSlideVideoLayerIsDroppedWhenNoContentOriginIsStated(t *testing.T) {
 		{Source: datamodel.PlaylistSourceCast, CastID: castID},
 	})
 
-	programs, errs := DeriveScreenPrograms(desiredState(t, s), "", contentInstant(t))
+	programs, errs := DeriveScreenPrograms(desiredState(t, s), contenturl.Signer{Base: ""}, contentInstant(t))
 	if len(errs) != 0 {
 		t.Fatalf("DeriveScreenPrograms reported %+v", errs)
 	}

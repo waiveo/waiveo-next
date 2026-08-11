@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	feederenroll "github.com/maaxton/waiveo-next/internal/feeder/enroll"
 	feederrelayconn "github.com/maaxton/waiveo-next/internal/feeder/relayconn"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
@@ -55,7 +56,7 @@ func newConnTestHarness(t *testing.T) *connTestHarness {
 	if err != nil {
 		t.Fatalf("signing.LoadOrCreate: %v", err)
 	}
-	snap, err := snapshot.Build([]byte("conn-test-image-bytes"), "https://origin.example", feederID, nil)
+	snap, err := snapshot.Build([]byte("conn-test-image-bytes"), contenturl.Signer{Base: "https://origin.example"}, feederID, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}

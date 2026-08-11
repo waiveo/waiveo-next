@@ -61,6 +61,7 @@
       "DAT-073-invalid-midnight-wrap-collides-next-weekday",
       "DAT-073-invalid-within-schedule-daypart-overlap-rejected",
       "DAT-074-valid-daypart-display-power-off",
+      "DAT-075-valid-apply-carries-baseline-until-the-bound-rows-change",
       "DAT-075-valid-fall-back-boundary-refires-preset",
       "DAT-075-valid-masked-preset-fires-on-fall-through",
       "DAT-092-valid-preset-batch-partial-failure",

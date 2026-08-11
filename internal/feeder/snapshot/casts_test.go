@@ -7,6 +7,7 @@ import (
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
@@ -210,7 +211,7 @@ func TestCastWithAnUndrawableSlideDropsOnlyThatSlide(t *testing.T) {
 		}},
 	}}
 
-	content := playlistContent(rowStore, "01J8ZP1AY11ST0000000000001", parityOrigin)
+	content := playlistContent(rowStore, "01J8ZP1AY11ST0000000000001", contenturl.Signer{Base: parityOrigin})
 	if len(content) != 2 {
 		t.Fatalf("content = %d items, want the 2 drawable slides; got %+v", len(content), content)
 	}

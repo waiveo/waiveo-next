@@ -41,7 +41,9 @@ type pullFunc func(sinceGeneration int64) (desiredstate.Applied, error)
 // drops a strictly-older generation's write (REL-052/056), so a stale in-flight
 // resolver can never revert the new serve. apply is driven from the boot path
 // (once) and from rePuller.tick, which serializes every live apply under its own
-// lock, so the cancel handoff needs no lock of its own.
+// lock, so neither the cancel handoff nor the resolver-set handoff below needs a
+// lock of its own. (Each RESOLVER has one, for the one field an apply reads
+// across the cancel boundary — schedulehost.Resolver.CarryState.)
 type scheduleDriver struct {
 	srv       *playerserver.Server
 	sink      *automation.CommandSink
@@ -51,6 +53,15 @@ type scheduleDriver struct {
 	// cancel tears down the currently-installed generation's resolve loops; nil
 	// before the first apply.
 	cancel context.CancelFunc
+
+	// resolvers is the currently-installed generation's resolvers keyed by the
+	// scope node each resolves, and it is here for ONE reason: the next apply
+	// hands each node's rising-edge baseline to the resolver replacing it, so a
+	// rebuild is not mistaken for a boot and does not re-fire that node's preset
+	// batch at real devices. Empty before the first apply — which is what makes
+	// the boot apply a genuine resume edge.
+	// (schedulehost.Resolver.AdoptCarriedState owns the argument.)
+	resolvers map[string]*schedulehost.Resolver
 }
 
 // apply installs applied's serving state: this generation's revocation view
@@ -123,6 +134,26 @@ func (d *scheduleDriver) apply(ctx context.Context, applied desiredstate.Applied
 	if d.cancel != nil {
 		d.cancel() // tear down the prior generation's resolve loops before the swap
 	}
+	// Harvest the outgoing generation's rising-edge baselines, one per governed
+	// scope node, for the resolvers about to replace them. AFTER the cancel
+	// above, so the value harvested is as close to final as cancellation can
+	// make it.
+	//
+	// A DEVICE-PLANE apply cost, not a serving one: without this, every apply
+	// rebuilt each resolver from a nil baseline, datamodel.PresetTransition read
+	// that as the empty daypart identity, and the currently effective daypart
+	// looked like a rising edge — so a full preset batch (display_power, input
+	// select, volume) was re-dispatched to real hardware on every apply,
+	// including the feeder's 12-hourly content-URL re-mint, which authors
+	// nothing (cmd/waiveo-feeder/remint.go).
+	//
+	// Residual, and bounded: cancellation cannot interrupt a resolve already in
+	// flight, so a boundary crossed inside that window could be harvested either
+	// side of the tick that fired it. Harvesting the earlier value re-fires that
+	// one batch once — a genuine boundary's own batch, at that boundary, which
+	// DAT-075 states outright is safely re-applied. Harvesting the later value
+	// (the ordinary outcome) fires it exactly once. Neither can miss it.
+	carried := d.carryStates()
 	// This generation's revocation view (REL-066) BEFORE its programs, and
 	// before its schedule resolves over them. Ordering is a real choice on a
 	// LIVE apply, where the player/1 routes are already serving: installing
@@ -156,7 +187,34 @@ func (d *scheduleDriver) apply(ctx context.Context, applied desiredstate.Applied
 	installed = serveAppAuthoredPrograms(d.srv, applied.Generation, applied.ScreenPrograms)
 	loopCtx, cancel := context.WithCancel(ctx)
 	d.cancel = cancel
-	return installed, resolveAndServe(loopCtx, applied, d.srv, d.sink, d.site, d.tickEvery, nowMs)
+	resolvers = resolveAndServe(loopCtx, applied, d.srv, d.sink, d.site, d.tickEvery, nowMs, carried)
+	d.resolvers = make(map[string]*schedulehost.Resolver, len(resolvers))
+	for _, r := range resolvers {
+		d.resolvers[r.ScopeNodeID()] = r
+	}
+	return installed, resolvers
+}
+
+// carryStates is the outgoing generation's rising-edge baselines keyed by scope
+// node — each installed resolver's schedulehost.Resolver.CarryState — for the
+// resolvers about to replace them. Nil before the first apply, and nil for a
+// node whose resolver never completed a resolve: in both cases the replacement
+// starts from no baseline, which is the genuine resume edge DAT-075 names.
+//
+// Each baseline carries the authored rows it was resolved from, because whether
+// the replacement may adopt it depends on whether THIS generation re-authored
+// them (schedulehost.Resolver.AdoptCarriedState, which owns that decision).
+func (d *scheduleDriver) carryStates() map[string]*schedulehost.CarriedBaseline {
+	if len(d.resolvers) == 0 {
+		return nil
+	}
+	carried := make(map[string]*schedulehost.CarriedBaseline, len(d.resolvers))
+	for nodeID, r := range d.resolvers {
+		if st := r.CarryState(); st != nil {
+			carried[nodeID] = st
+		}
+	}
+	return carried
 }
 
 // rePuller applies a re-pulled desired-state generation to the relay's live

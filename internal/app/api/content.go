@@ -2,10 +2,34 @@ package api
 
 import (
 	"net/http"
-	"strings"
 
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 )
+
+// contentSigner is the minter for every content URL this surface hands back.
+//
+// It is taken from the ORIGIN STORE this surface writes to and the feeder
+// serves from, so the key a URL is minted under is by construction the key that
+// origin verifies under (origin.Store.Signer). Built any other way, this route
+// can — and did — answer `201 {asset_ref, url}` with a url the very same
+// process refuses `403`, because the origin enforced signatures while this
+// route concatenated a bare address.
+//
+// contenturl.ServeTTL, not SnapshotTTL: these URLs are minted at RESPONSE time
+// and fetched by whoever asked, within the life of one console session. The two
+// constants hold the same value today, so naming the right one is not currently
+// load-bearing — which is exactly why it is named deliberately rather than left
+// to chance, since the day they diverge again this route must not silently
+// acquire a build-time lifetime.
+//
+// A url minted here is DERIVED and short-lived, so it is never stored: an
+// authoring surface persists the `asset_ref` and re-resolves the url from this
+// listing when it needs to render. store.stripDerivedMembers enforces that on
+// the write side — see its doc for what a persisted one did.
+func (srv *server) contentSigner() contenturl.Signer {
+	return srv.content.Signer(srv.contentBase, contenturl.ServeTTL)
+}
 
 // uploadContent handles POST /api/v1/content: the content-addressed asset upload
 // over the feeder's shared origin store (relay/1 REL-061).
@@ -13,12 +37,13 @@ import (
 // It reads the raw request body and stores the bytes under their OWN sha256
 // content hash (server.content.Add), computing the asset_ref server-side — a
 // client-supplied ref is never trusted. It responds 201 with the content-addressed
-// {asset_ref, url}, where url is the single-sourced <base>/content/<hex> form
-// snapshot.Build uses; a screen fetches those bytes directly from the content
-// origin (the relay is never in this data path, REL-140 — the upload writes into
-// the SAME origin.Store the feeder serves GET /content/<hex> from, so the asset is
-// immediately servable). A zero-length body is rejected 400 / VALIDATION_FAILED —
-// empty content cannot be stored.
+// {asset_ref, url}, where url is MINTED by the origin's own signer
+// (srv.contentSigner) rather than assembled here; a screen or a console fetches
+// those bytes directly from the content origin (the relay is never in this data
+// path, REL-140 — the upload writes into the SAME origin.Store the feeder serves
+// GET /content/<hex> from, so the asset is immediately servable at the url
+// returned). A zero-length body is rejected 400 / VALIDATION_FAILED — empty
+// content cannot be stored.
 //
 // # Idempotency-Key
 //
@@ -69,11 +94,11 @@ func (srv *server) uploadContentExec(w http.ResponseWriter, r *http.Request, bod
 			"INTERNAL", "Internal Server Error", "The content could not be stored.", nil)
 		return
 	}
-	hexDigest := strings.TrimPrefix(assetRef, "sha256:")
+	url, _ := srv.contentSigner().Mint(assetRef)
 
 	writeJSONValue(w, http.StatusCreated, map[string]string{
 		"asset_ref": assetRef,
-		"url":       srv.contentBase + "/content/" + hexDigest,
+		"url":       url,
 	})
 }
 
@@ -101,13 +126,20 @@ type contentEntry struct {
 // the listing and the servable bytes cannot disagree — an entry here is fetchable
 // now, and a swept asset is absent from both. Entries are digest-ordered
 // (origin.Store.Entries), a stable order independent of upload time.
+//
+// Every row's url is minted by that same store's signer, once for the whole
+// listing so a page of assets shares one deadline: an image picker that renders
+// half its thumbnails before an unlucky second boundary must not have the other
+// half expire a millisecond earlier than the first.
 func (srv *server) listContent(w http.ResponseWriter, r *http.Request) {
 	entries := srv.content.Entries()
+	sign := srv.contentSigner()
 	out := make([]contentEntry, 0, len(entries))
 	for _, e := range entries {
+		url, _ := sign.Mint(e.HexDigest)
 		out = append(out, contentEntry{
 			AssetRef:  "sha256:" + e.HexDigest,
-			URL:       srv.contentBase + "/content/" + e.HexDigest,
+			URL:       url,
 			SizeBytes: int64(e.SizeBytes),
 			StoredAt:  e.StoredAtMs,
 		})

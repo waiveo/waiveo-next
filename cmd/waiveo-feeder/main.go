@@ -743,7 +743,7 @@ func main() {
 	// cached by generation and invalidated when an api write advances it — so each
 	// pull serves the current generation (the authoring loop's serving half).
 	src := &desiredStateSource{
-		store: st, contentBaseURL: contentBaseURL, id: id, contentURLKey: contentURLKey,
+		store: st, content: contentStore, contentBaseURL: contentBaseURL, id: id,
 		nowMs: nowMs,
 	}
 	// Fail fast if the seeded/persisted store cannot derive a signed snapshot
@@ -1218,7 +1218,11 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzFor(cfg.storePath, cfg.contentPath))
-	mux.Handle("/content/", contentStore.Handler())
+	// contenturl.PathPrefix, not a literal: the route this origin is MOUNTED at
+	// and the path every producer mints must be one string, or a perfectly
+	// signed url 404s. TestEveryContentURLIsMintedByThisPackage enforces the
+	// single spelling.
+	mux.Handle(contenturl.PathPrefix, contentStore.Handler())
 	mux.Handle("/api/v1/", apiHandler)
 	mux.Handle("/telemetry/v1/push", telemetryIngest)
 	// The subscriber's visible set (events/1 EVT-120) is resolved per connection
@@ -1255,6 +1259,13 @@ func main() {
 	// self-limiting half does not happen until some unrelated write advances the
 	// generation.
 	go overrideExpiryLoop(context.Background(), st, nowMs, wake)
+	// Publish the content-URL re-mint (remint.go). desiredStateSource caps its
+	// cache so it can never SERVE a generation whose urls are half dead, but a
+	// rebuilt snapshot at an unchanged generation reaches nobody — relayconn
+	// answers `state.unchanged` with no body, and the relay's pull no-ops on a
+	// generation it already holds. Without this the fleet goes on serving the
+	// urls it pulled at T until they 403 at T+SnapshotTTL.
+	go remintLoop(context.Background(), st, contenturl.SnapshotRemintInterval)
 
 	cert, err := tls.X509KeyPair(id.TLSCertPEM(), id.TLSKeyPEM())
 	if err != nil {
@@ -1508,20 +1519,53 @@ func startWebhookDelivery(
 // INSTANT), and a cache keyed on two of those three serves a stale answer for
 // the third exactly as long as nobody touches the first two.
 //
-// The instant is bounded, not sampled: cachedUntil is the earliest pending
-// `expires_at` over the screens this build read (nextOverrideExpiry), so the
+// The instant is bounded, not sampled: cachedUntil is the earliest instant this
+// build stops being the right answer for a reason no write will announce, so the
 // cached snapshot is served for precisely as long as it is still correct and
-// rebuilt the first time it is asked for after it stops being. A screen with no
-// TTL'd override leaves it zero and nothing about the old behaviour changes.
+// rebuilt the first time it is asked for after it stops being.
+//
+// # Two such reasons, and the second is why a content URL does not rot
+//
+// The first is the pending override expiry above (nextOverrideExpiry). The
+// second is that this build MINTED signed, expiring content URLs
+// (contenturl.SnapshotTTL), and a generation cached past their deadline is a
+// generation whose every image and video 403s at the screen — HV-1 again, on a
+// timer, with nothing anywhere reporting it. Nothing an operator does causes
+// that: it is reached by a feeder simply staying up without an authoring write,
+// and it lands on whichever screen next reboots or evicts its content cache.
+//
+// So the cache window is also capped at contenturl.SnapshotRemintInterval, half
+// the life of the URLs the build stamped. That is what let SnapshotTTL come down
+// from thirty days to one: the deadline no longer has to outlive an authoring
+// lull, because a lull no longer means an un-re-minted snapshot.
+//
+// This cap is only the SERVING half of that, and on its own it would have been a
+// slower spelling of the same defect: a rebuilt snapshot at an unchanged
+// generation is answered `state.unchanged` with no body and never leaves this
+// process. remint.go is the other half — it advances the generation on the same
+// interval so the fleet actually pulls the fresh mint. Both are needed; neither
+// subsumes the other, and this one stays because a relay pulling for its own
+// reasons (a reconnect, a boot) must never be handed a build whose urls are
+// already half dead.
+//
+// The relay-side residual (an outage longer than the TTL, which only REL-066d
+// closes) is documented on SnapshotTTL itself.
 type desiredStateSource struct {
 	store          *store.Store
 	contentBaseURL string
-	// contentURLKey rides every derived snapshot's revocation_and_site
-	// (REL-066a) so every relay at this site can mint the content URLs it
-	// serves — including the schedule-resolved ones no app peer can pre-sign,
-	// and including re-minting through an outage (REL-050/066d).
-	contentURLKey []byte
-	id            *signing.Identity
+	// content is the content origin this feeder serves, and the source of the
+	// key every derived snapshot mints its own `url`s under AND publishes as
+	// revocation_and_site.content_url_key (REL-066a) for every relay at the site
+	// to re-mint with — including the schedule-resolved URLs no app peer can
+	// pre-sign, and including re-minting through an outage (REL-050/066d).
+	//
+	// The key is READ FROM THE ORIGIN (origin.Store.Signer) rather than carried
+	// alongside it, so the half that mints and the half that verifies are one
+	// value. Carried separately, they were free to differ — and the shape that
+	// differed silently was an origin holding a key while every app-authored URL
+	// was minted without one, which 403'd every image and video on every screen.
+	content *origin.Store
+	id      *signing.Identity
 
 	// nowMs is the instant each rebuild resolves every screen's program at
 	// (snapshot.BuildFromStore). It is injected rather than read inline because
@@ -1534,15 +1578,39 @@ type desiredStateSource struct {
 	cachedGen int64
 	haveCache bool
 	// cachedUntil is the instant the cached snapshot stops being the right
-	// answer for reasons no write will announce: the earliest override
-	// `expires_at` still in the future when it was built. Zero means nothing
-	// pending, so the generation is the only thing that can invalidate it.
+	// answer for reasons no write will announce: the earlier of the earliest
+	// pending override `expires_at` and this build's content-URL re-mint
+	// deadline (cacheWindowEnd). It is never zero on a real build — the re-mint
+	// term always applies — so the generation is never the only thing that can
+	// invalidate the cache.
 	cachedUntil int64
+}
+
+// cacheWindowEnd is the instant a snapshot built at nowMs over these screen rows
+// stops being servable: the EARLIER of the next pending screen-override expiry
+// (nextOverrideExpiry — after which the derivation itself is wrong) and the
+// content-URL re-mint deadline (after which the derivation is still right but the
+// urls in it are on their way to expiring).
+//
+// Both are "the cache is stale for a reason no write announces", which is why
+// they are one bound rather than two mechanisms. The re-mint term is
+// unconditional, so the result is always positive: a deployment cannot end up
+// caching a generation forever by simply having no TTL'd overrides, which is the
+// state every ordinary site is in.
+//
+// A pure function of (rows, instant), so both halves are testable without running
+// a feeder.
+func cacheWindowEnd(screens []datamodel.Screen, nowMs int64) int64 {
+	until := nowMs + contenturl.SnapshotRemintInterval.Milliseconds()
+	if next := nextOverrideExpiry(screens, nowMs); next != 0 && next < until {
+		return next
+	}
+	return until
 }
 
 // current returns the snapshot for the store's current generation, rebuilding it
 // when the generation has advanced since the last build OR when the last build's
-// earliest pending override expiry has passed. Safe for concurrent pulls.
+// cache window (cacheWindowEnd) has closed. Safe for concurrent pulls.
 func (d *desiredStateSource) current() (wire.StateSnapshotBody, error) {
 	ctx := context.Background()
 	gen, err := d.store.Generation(ctx)
@@ -1561,7 +1629,7 @@ func (d *desiredStateSource) current() (wire.StateSnapshotBody, error) {
 	if err != nil {
 		return wire.StateSnapshotBody{}, err
 	}
-	snap, degrades, err := snapshot.BuildFromStore(ds, d.contentBaseURL, d.id, now, d.contentURLKey)
+	snap, degrades, err := snapshot.BuildFromStore(ds, d.content.Signer(d.contentBaseURL, contenturl.SnapshotTTL), d.id, now)
 	if err != nil {
 		return wire.StateSnapshotBody{}, err
 	}
@@ -1574,7 +1642,7 @@ func (d *desiredStateSource) current() (wire.StateSnapshotBody, error) {
 	}
 	d.cached = snap
 	d.cachedGen = ds.Generation
-	d.cachedUntil = nextOverrideExpiry(ds.Screens, now)
+	d.cachedUntil = cacheWindowEnd(ds.Screens, now)
 	d.haveCache = true
 	return snap, nil
 }

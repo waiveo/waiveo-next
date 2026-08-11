@@ -127,8 +127,43 @@ function liveWidgetPreview(layer: SlideLayer, now: Date): string {
  * a slide left open across midnight would otherwise show yesterday. */
 const TICKING_KINDS = ["clock", "date", "countdown"];
 
+/**
+ * `asset_ref` → a fetch URL for those bytes, as of RIGHT NOW: the content
+ * listing (`GET /content`), keyed for lookup.
+ *
+ * A content-bearing layer's URL is not part of the layer. It is minted by the
+ * server per response and it EXPIRES (`internal/feeder/contenturl`), so the only
+ * correct time to know one is the moment something is about to fetch it — which
+ * is why the server refuses to store an authored one at all
+ * (`internal/app/store/derivedmembers.go`) and why the canvas resolves through
+ * this rather than reading `layer.url`.
+ *
+ * Reading `layer.url` is exactly what broke: the picker patched the listing's
+ * url into the layer, the save persisted it, and reopening the cast a day later
+ * drew a canvas of broken images against a url the origin had begun refusing.
+ */
+export type AssetUrls = ReadonlyMap<string, string>;
+
+/** The fetch URL for a content-bearing layer's bytes, or undefined when there
+ * are none to draw — no asset chosen yet, or one the library no longer holds
+ * (an asset the retention sweep reclaimed). Both are undrawable, and both are
+ * shown as the same "nothing here" outline. */
+function assetUrlFor(layer: SlideLayer, assetUrls: AssetUrls | undefined): string | undefined {
+  if (!layer.asset_ref) return undefined;
+  return assetUrls?.get(layer.asset_ref);
+}
+
 /** One layer, drawn the way the player draws it. Canvas-space coordinates. */
-export function LayerView({ layer, now }: { layer: SlideLayer; now: Date }) {
+export function LayerView({
+  layer,
+  now,
+  assetUrls,
+}: {
+  layer: SlideLayer;
+  now: Date;
+  /** The content library, for a content-bearing layer's preview. See AssetUrls. */
+  assetUrls?: AssetUrls | undefined;
+}) {
   const box: CSSProperties = {
     position: "absolute",
     left: layer.x,
@@ -142,11 +177,14 @@ export function LayerView({ layer, now }: { layer: SlideLayer; now: Date }) {
   }
 
   if (isContentKind(layer.kind)) {
-    // A content-bearing layer with no bytes chosen yet is drawn as a labelled
-    // outline rather than nothing: it is a placed, selectable, movable object
-    // that simply is not finished, and an invisible one could not be found
-    // again.
-    if (!layer.url) {
+    // Resolved from the content library, never read off the layer: the layer
+    // holds the content-addressed `asset_ref`, and the url for those bytes is
+    // minted per response and expires. See AssetUrls.
+    const src = assetUrlFor(layer, assetUrls);
+    // A content-bearing layer with no bytes to draw is a labelled outline rather
+    // than nothing: it is a placed, selectable, movable object that simply is
+    // not finished, and an invisible one could not be found again.
+    if (!src) {
       return (
         <div
           data-slot={`layer-${layer.kind}-empty`}
@@ -168,7 +206,7 @@ export function LayerView({ layer, now }: { layer: SlideLayer; now: Date }) {
       return (
         <video
           data-slot="layer-video"
-          src={layer.url}
+          src={src}
           muted
           playsInline
           preload="metadata"
@@ -179,7 +217,7 @@ export function LayerView({ layer, now }: { layer: SlideLayer; now: Date }) {
     return (
       <img
         data-slot="layer-image"
-        src={layer.url}
+        src={src}
         alt=""
         style={{ ...box, objectFit: "contain" }}
       />
@@ -220,10 +258,13 @@ export function SlideStage({
   slide,
   scale,
   className,
+  assetUrls,
 }: {
   slide: CastSlide;
   scale: number;
   className?: string;
+  /** The content library, for content-bearing layers' previews. See AssetUrls. */
+  assetUrls?: AssetUrls | undefined;
 }) {
   const ticking = slide.layers.some((l) => TICKING_KINDS.includes(l.kind));
   const now = useNow(ticking);
@@ -242,7 +283,7 @@ export function SlideStage({
         }}
       >
         {slide.layers.map((layer, i) => (
-          <LayerView key={i} layer={layer} now={now} />
+          <LayerView key={i} layer={layer} now={now} assetUrls={assetUrls} />
         ))}
       </div>
     </div>
@@ -283,6 +324,8 @@ export interface SlideCanvasProps {
   /** A keyboard resize, by a canvas-space delta on one grip. */
   onResizeBy: (index: number, handle: ResizeHandle, dx: number, dy: number) => void;
   onDelete: (index: number) => void;
+  /** The content library, for content-bearing layers' previews. See AssetUrls. */
+  assetUrls?: AssetUrls | undefined;
 }
 
 /** What a drag in progress is holding: which layer, which grip (null = move),
@@ -303,6 +346,7 @@ export function SlideCanvas({
   onNudge,
   onResizeBy,
   onDelete,
+  assetUrls,
 }: SlideCanvasProps) {
   const frameRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(1);
@@ -408,7 +452,7 @@ export function SlideCanvas({
         onPointerDown={() => onSelect(null)}
       >
         {/* The artwork, at 1:1 inside the scale transform. */}
-        <SlideStage slide={slide} scale={scale} className="pointer-events-none absolute left-0 top-0" />
+        <SlideStage slide={slide} scale={scale} assetUrls={assetUrls} className="pointer-events-none absolute left-0 top-0" />
 
         {/* The chrome, in screen pixels. One hit target per layer, topmost last
             so the z-order the operator sees is the z-order they click. */}

@@ -4379,8 +4379,15 @@ components:
           type: string
           description: >-
             An `image` or `video` layer's direct content-origin fetch target,
-            derived at projection time and present on a SERVED slide. A
-            create/update need not supply it.
+            derived at projection time and present on a SERVED slide. It is
+            never AUTHORED: a create or update need not supply it, and one that
+            does has it IGNORED — the stored layer carries only the `asset_ref`,
+            and a read of the row will not echo a supplied `url` back. That is
+            not tidiness. A content URL is signed and expires (`relay/1`
+            REL-066a), so a stored copy is a link that dies: an editor that
+            saved one showed broken images the next time the cast was opened.
+            An authoring surface holds the `asset_ref` and resolves a live URL
+            from `GET /content` at the moment it needs to fetch.
         target_ms:
           type: integer
           minimum: 1

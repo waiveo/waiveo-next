@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
@@ -70,7 +71,7 @@ func TestBuildDemoScheduleValidatesCleanly(t *testing.T) {
 	img := loadTestImage(t)
 	id := testIdentity(t)
 
-	snap, err := Build(img, "https://origin.example", id, nil)
+	snap, err := Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -93,7 +94,7 @@ func TestBuildDemoScheduleResolvesContentVsBlankByTimeOfDay(t *testing.T) {
 	img := loadTestImage(t)
 	id := testIdentity(t)
 
-	snap, err := Build(img, "https://origin.example", id, nil)
+	snap, err := Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestBuildDemoScheduleContentAssetRefMatchesScreenProgram(t *testing.T) {
 	img := loadTestImage(t)
 	id := testIdentity(t)
 
-	snap, err := Build(img, "https://origin.example", id, nil)
+	snap, err := Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -169,7 +170,7 @@ func TestBuildDemoScheduleRowsHaveNoPackOwnershipField(t *testing.T) {
 	img := loadTestImage(t)
 	id := testIdentity(t)
 
-	snap, err := Build(img, "https://origin.example", id, nil)
+	snap, err := Build(img, contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

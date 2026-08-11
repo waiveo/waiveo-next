@@ -53,6 +53,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	feederenroll "github.com/maaxton/waiveo-next/internal/feeder/enroll"
 	feederrelayconn "github.com/maaxton/waiveo-next/internal/feeder/relayconn"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
@@ -159,7 +160,7 @@ func newHarness(t *testing.T, opts ...feederrelayconn.Option) *harness {
 	if err != nil {
 		t.Fatalf("read fixture image: %v", err)
 	}
-	snap1, err := snapshot.Build(img, "https://origin.example", feederID, nil)
+	snap1, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, feederID, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}

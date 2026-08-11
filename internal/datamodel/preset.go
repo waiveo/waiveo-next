@@ -16,6 +16,14 @@ package datamodel
 // changes the effective daypart re-fires with NO de-duplication by DST ambiguity
 // (DAT-075), while a single window spanning a whole repeated hour keeps one
 // identity and does not re-fire.
+//
+// A desired-state generation apply is not a clock tick, and MayCarryAcrossApply
+// is where that is decided: a consumer already resolving the node carries its
+// baseline across the apply — so a generation that authored no scheduling row
+// re-asserts nothing — for exactly as long as the rows a fire would assert are
+// unchanged (DAT-075).
+
+import "reflect"
 
 // PresetFire records a preset batch fired on a rising edge of effective-daypart
 // identity (DAT-075): DaypartID is the effective daypart whose transition
@@ -56,6 +64,124 @@ func PresetTransition(prev, cur *EffectiveState) *PresetFire {
 		return nil // rising edge, but this daypart binds no preset batch.
 	}
 	return &PresetFire{DaypartID: curID, PresetBatchID: batch}
+}
+
+// MayCarryAcrossApply reports whether a consumer that was ALREADY resolving a
+// scope node continuously may carry prev — the rising-edge baseline it had
+// reached — across an apply of the desired-state generation applied, instead of
+// starting from no baseline (DAT-075).
+//
+// prevBatch is the preset-batch row prev's effective daypart bound in the
+// OUTGOING generation, which the consumer must hand over with prev: applied
+// carries the new row, and the old one is otherwise unrecoverable. It is nil
+// when prev had no effective daypart or that daypart bound no batch.
+//
+// # What the carry is for, and the mirror it must not become
+//
+// DAT-075's resume edge names boot, an apply that BEGINS resolving a node, and
+// clock-trust resume — each a discontinuity in the consumer's ability to
+// observe, where it may have MISSED an edge and `misfire` says what to do about
+// the one it missed. A consumer resolving continuously has missed nothing, so a
+// re-apply over it is not a resume: without the carry, the currently effective
+// daypart reads as a rising edge on every apply, and a generation advanced for
+// reasons that author no scheduling row at all (a content-URL re-mint) re-asserts
+// device state at instants nobody scheduled.
+//
+// That argument reaches exactly as far as "the desired state did not change",
+// which is why this is not keyed on effective-daypart identity alone. On the
+// ordinary 24/7 shape — one all-day daypart — the identity never changes again
+// after boot, so an identity-keyed carry also swallows an operator's edit to
+// that daypart's bound batch, with no later edge left for it to ride. So the
+// carry holds only while the rows a fire would ASSERT are unchanged: prev's own
+// daypart row, and the preset-batch row it binds. An edit anywhere else in the
+// section (a playlist's items, a slide's text) leaves both untouched and is
+// still carried, so an unrelated edit never re-asserts device state either.
+//
+// Re-application itself is not the hazard — at a genuine rising edge a batch is
+// safely re-applied, DST-repeated hour included (DAT-075/119). What this refuses
+// is manufacturing an edge where neither the clock nor the desired state moved.
+//
+// A prev with no effective daypart is always carryable: it binds no batch, and
+// PresetTransition reads it as the same empty identity a nil baseline gives.
+func MayCarryAcrossApply(prev *EffectiveState, prevBatch *PresetBatch, applied RowStore) bool {
+	if prev == nil {
+		return false // nothing to carry: the consumer starts from no baseline.
+	}
+	if prev.Daypart == nil {
+		return true
+	}
+	cur := applied.daypart(prev.Daypart.ID)
+	if cur == nil || !sameDaypart(prev.Daypart, cur) {
+		return false
+	}
+	if cur.PresetBatchID == "" {
+		return true // binds no batch: no device state to have changed.
+	}
+	return samePresetBatch(prevBatch, applied.presetBatch(cur.PresetBatchID))
+}
+
+// sameDaypart reports whether two daypart rows state the same desired state, and
+// samePresetBatch the same for preset-batch rows.
+//
+// Both compare the WHOLE row structurally rather than a chosen list of fields,
+// so a field added to either row is compared from the day it exists — the
+// opposite failure mode from an identity key, which goes silently stale against
+// everything it does not name. What is excluded is exactly what is not a
+// STATEMENT of desired state: `last_outcome`, which RECORDS an invocation
+// (DAT-092) rather than instructing one, and the store's own baseline
+// bookkeeping (`revision`, `created_at`, `updated_at`, DAT-005), stamped by
+// whatever wrote the row rather than authored into it.
+//
+// The bookkeeping exclusion is what makes the `last_outcome` one real. DAT-092
+// REQUIRES a preset-batch row's `last_outcome` be recorded once the batch has
+// been invoked, and the write that records it stamps a fresh `revision` and
+// `updated_at` in the same breath. Comparing those would make every invocation
+// an authored change and therefore the cause of the next invocation — a
+// device-command loop running at generation cadence, on hardware. Excluding
+// `last_outcome` by itself would not have stopped it.
+//
+// Nothing is lost by it: a row whose desired state changed changed one of the
+// fields that expresses it, and a row that only got re-stamped desires exactly
+// what it desired before.
+func sameDaypart(prev, cur *Daypart) bool {
+	if prev == nil || cur == nil {
+		return prev == nil && cur == nil
+	}
+	a, b := *prev, *cur
+	a.Revision, a.CreatedAt, a.UpdatedAt = 0, 0, 0
+	b.Revision, b.CreatedAt, b.UpdatedAt = 0, 0, 0
+	return reflect.DeepEqual(a, b)
+}
+
+func samePresetBatch(prev, cur *PresetBatch) bool {
+	if prev == nil || cur == nil {
+		return prev == nil && cur == nil
+	}
+	a, b := *prev, *cur
+	a.LastOutcome, a.Revision, a.CreatedAt, a.UpdatedAt = nil, 0, 0, 0
+	b.LastOutcome, b.Revision, b.CreatedAt, b.UpdatedAt = nil, 0, 0, 0
+	return reflect.DeepEqual(a, b)
+}
+
+// daypart and presetBatch are the referential lookups MayCarryAcrossApply
+// compares a carried baseline's rows against: the row of that id in this store,
+// or nil when it carries none (a row the applied generation dropped).
+func (s RowStore) daypart(daypartID string) *Daypart {
+	for i := range s.Rows.Dayparts {
+		if s.Rows.Dayparts[i].ID == daypartID {
+			return &s.Rows.Dayparts[i]
+		}
+	}
+	return nil
+}
+
+func (s RowStore) presetBatch(presetID string) *PresetBatch {
+	for i := range s.Rows.PresetBatches {
+		if s.Rows.PresetBatches[i].PresetID == presetID {
+			return &s.Rows.PresetBatches[i]
+		}
+	}
+	return nil
 }
 
 // effectiveDaypartID is the identity keying a rising edge: the effective daypart's

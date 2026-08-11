@@ -8,6 +8,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/api"
 	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 )
 
@@ -136,7 +137,7 @@ func revokedInSnapshot(t *testing.T, e *testEnv) []string {
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	snap, _, err := snapshot.BuildFromStore(ds, testContentBase, mustSigning(t), fixedNowMs, nil)
+	snap, _, err := snapshot.BuildFromStore(ds, contenturl.Signer{Base: testContentBase}, mustSigning(t), fixedNowMs)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}

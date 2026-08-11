@@ -1680,7 +1680,10 @@ const scheduleResolverTickInterval = 30 * time.Second
 // tests can drive a deterministic instant — preserving the boot-only signature
 // the existing boot tests exercise.
 func bootScheduleResolverAt(applied desiredstate.Applied, srv *playerserver.Server, sink *automation.CommandSink, site hello.SiteBinding, nowMs int64) []*schedulehost.Resolver {
-	return resolveAndServe(context.Background(), applied, srv, sink, site, scheduleResolverTickInterval, nowMs)
+	// nil carried state: a boot has no prior generation's resolvers to carry a
+	// rising-edge baseline from, which is exactly what makes the boot resolve a
+	// genuine resume edge (schedulehost.Resolver.AdoptCarriedState).
+	return resolveAndServe(context.Background(), applied, srv, sink, site, scheduleResolverTickInterval, nowMs, nil)
 }
 
 // resolveAndServe parses applied.Schedule into a data-model/1 RowStore
@@ -1747,7 +1750,21 @@ func bootScheduleResolverAt(applied desiredstate.Applied, srv *playerserver.Serv
 // the boot log line's context; the resolved schedule's own effective tz comes
 // from the carried scope tree exclusively (datamodel.EffectiveTZ via
 // datamodel.Resolve), never from site or any box-local clock (DAT-034/118).
-func resolveAndServe(ctx context.Context, applied desiredstate.Applied, srv *playerserver.Server, sink *automation.CommandSink, site hello.SiteBinding, tickEvery time.Duration, nowMs int64) []*schedulehost.Resolver {
+//
+// # carried: why a rebuild is not a boot
+//
+// carried maps a scope node to the rising-edge baseline the resolver being
+// REPLACED for that node had reached (schedulehost.Resolver.CarryState); nil,
+// or an absent entry, means nothing was resolving that node — a boot, or an
+// apply that begins governing it. Each new resolver adopts its entry before its
+// one resume-governed tick, so an apply over a node the relay was already
+// resolving is not mistaken for a resume and does not re-dispatch that node's
+// preset batch to real devices — unless THIS generation re-authored that
+// daypart or its bound preset batch, which the adopting resolver checks and
+// which is the one case an apply must still dispatch on.
+// schedulehost.Resolver.AdoptCarriedState owns the full argument;
+// scheduleDriver.apply is what harvests it.
+func resolveAndServe(ctx context.Context, applied desiredstate.Applied, srv *playerserver.Server, sink *automation.CommandSink, site hello.SiteBinding, tickEvery time.Duration, nowMs int64, carried map[string]*schedulehost.CarriedBaseline) []*schedulehost.Resolver {
 	store, errs := schedulehost.BuildStore(applied.Schedule)
 	for _, e := range errs {
 		log.Printf("waiveo-relay: schedule section: %s: %s: %s", e.Field, e.Code, e.Message)
@@ -1772,7 +1789,11 @@ func resolveAndServe(ctx context.Context, applied desiredstate.Applied, srv *pla
 		}
 
 		r := schedulehost.NewResolver(store, nodeID, servedScreenID, srv, applied.Generation, applied.ContentOrigin, applied.ContentURLKey)
-		r.TickBoot(nowMs, sink) // the level-triggered STATE projection + the misfire-governed boot resume-edge preset (DAT-075/076/094/119/121).
+		// BEFORE TickBoot, always: the carried baseline is what decides whether
+		// that one tick is a resume edge at all. Adopting it afterwards would be
+		// adopting it too late — TickBoot would already have fired.
+		r.AdoptCarriedState(carried[nodeID])
+		r.TickBoot(nowMs, sink) // the level-triggered STATE projection + the misfire-governed resume-edge preset (DAT-075/076/094/119/121).
 		resolvers = append(resolvers, r)
 
 		switch {

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 	"github.com/maaxton/waiveo-next/internal/relay/automation"
@@ -44,7 +45,7 @@ func buildDemoSection(t *testing.T) wire.ScheduleSection {
 	if err != nil {
 		t.Fatalf("signing.LoadOrCreate: %v", err)
 	}
-	snap, err := snapshot.Build([]byte("fixture-image-bytes"), "https://origin.example", id, nil)
+	snap, err := snapshot.Build([]byte("fixture-image-bytes"), contenturl.Signer{Base: "https://origin.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
@@ -1086,5 +1087,162 @@ func TestResolverServingNoScreenStillFiresItsNodesPresets(t *testing.T) {
 	if lease.ProgramRevision != playerserver.TerminalProgramRevision || lease.Display != "blank" || len(lease.Content) != 0 {
 		t.Errorf("served program_revision/display/content = %q/%q/%+v, want the terminal default — a resolver with no screen to serve installed a program anyway",
 			lease.ProgramRevision, lease.Display, lease.Content)
+	}
+}
+
+// TestAdoptedCarriedStateMakesARebuildNotAResumeEdge is the unit-level half of
+// the device-plane apply-cost fix (cmd/waiveo-relay's own
+// TestReMintReapplyDoesNotRefireTheEffectiveDaypartsPresetBatch drives it end to
+// end through the feeder).
+//
+// A Resolver is rebuilt on every desired-state generation apply, not only at
+// boot. Starting each rebuild from a nil baseline made the ALREADY-effective
+// daypart look like a rising edge to datamodel.PresetTransition, so TickBoot
+// re-dispatched its whole preset batch to real devices on every apply. Adopting
+// the outgoing resolver's baseline is what tells the replacement that nothing
+// was missed and there is nothing to catch up.
+//
+// Both directions are asserted here, because only the pair is the property: a
+// carried baseline suppresses the rebuild's spurious edge, and NO carried
+// baseline (a genuine boot) still fires.
+func TestAdoptedCarriedStateMakesARebuildNotAResumeEdge(t *testing.T) {
+	store := resumeMisfireStore(t, "") // default misfire -> catch_up_once (DAT-121)
+	srv, _ := newTestPlayerServer(t)
+	sink, ctrl := newFakeSink(t)
+	at := demoLocalInstant(t, 12, 0)
+
+	// The boot resolver: no baseline to carry, so its one resume tick fires.
+	boot := NewResolver(store, resumeMisfireScreenID, testServedScreenID, srv, 1, "", nil)
+	boot.AdoptCarriedState(nil) // what the apply path passes when nothing preceded it
+	boot.TickBoot(at, sink)
+	if calls := ctrl.calls(); len(calls) != 1 || calls[0] != resumeMisfireEntity+"/home" {
+		t.Fatalf("the boot resolver dispatched %v, want exactly [%s/home] — a genuine boot resume edge must still fire", calls, resumeMisfireEntity)
+	}
+	if boot.CarryState() == nil || boot.CarryState().State == nil || boot.CarryState().State.Daypart == nil {
+		t.Fatalf("the boot resolver carries no resolved state, so no rebuild could adopt one")
+	}
+	// The carried baseline names the batch its daypart bound, which is what makes
+	// "this generation re-authored it" answerable at all (AdoptCarriedState).
+	if b := boot.CarryState().PresetBatch; b == nil || b.PresetID != resumeMisfirePresetID {
+		t.Fatalf("the boot resolver carried preset batch %v, want the one its effective daypart binds (%s)", b, resumeMisfirePresetID)
+	}
+
+	// The rebuild: same node, same store, a LATER instant still inside the same
+	// all-day daypart — the shape a generation apply over a node the relay was
+	// already resolving takes. It adopts the outgoing baseline and fires nothing.
+	rebuilt := NewResolver(store, resumeMisfireScreenID, testServedScreenID, srv, 2, "", nil)
+	rebuilt.AdoptCarriedState(boot.CarryState())
+	rebuilt.TickBoot(demoLocalInstant(t, 15, 0), sink)
+	if calls := ctrl.calls(); len(calls) != 1 {
+		t.Fatalf("the rebuilt resolver dispatched %v (%d total), want the original 1 — a rebuild is not a boot and must not re-fire the effective daypart's preset batch", calls, len(calls))
+	}
+	// The STATE projection is never suppressed, only the edge (DAT-119).
+	if rebuilt.CarryState() == nil || rebuilt.CarryState().State == nil || rebuilt.CarryState().State.Daypart == nil || rebuilt.CarryState().State.Daypart.ID != resumeMisfireDaypartID {
+		t.Fatalf("the rebuilt resolver did not resolve/track the STATE projection — only the preset edge is gated (DAT-119)")
+	}
+}
+
+// TestAnEditToTheEffectiveDaypartsPresetBatchFiresOnTheNextApply is the MIRROR
+// of the test above, and the two are one property: the carry suppresses an
+// apply that changed nothing about this node's desired device state, and only
+// that.
+//
+// Keying the carry on effective-daypart IDENTITY alone got the mirror wrong. On
+// the ordinary 24/7 signage shape — one all-day daypart, the fixture here — the
+// identity never changes again after boot, so an operator editing the bound
+// preset batch's commands produced a new generation whose apply the carry read
+// as "same node, same daypart id, nothing to do". There was no future rising
+// edge left for the edit to ride and no log line saying so: only a relay
+// restart delivered it. Suppressing "the same desired state re-applied" and
+// suppressing "a changed desired state" are opposite obligations, and the carry
+// must tell them apart by comparing the ROWS the baseline was computed from.
+//
+// Both directions are asserted, over stores built INDEPENDENTLY so the
+// comparison is proven to be row equality rather than pointer identity: a
+// re-mint (an identically-authored rebuild) still fires nothing, and an edit to
+// the effective daypart's bound batch dispatches the NEW command.
+func TestAnEditToTheEffectiveDaypartsPresetBatchFiresOnTheNextApply(t *testing.T) {
+	srv, _ := newTestPlayerServer(t)
+	sink, ctrl := newFakeSink(t)
+
+	// The boot resolver fires its bound batch's authored command once.
+	boot := NewResolver(resumeMisfireStore(t, ""), resumeMisfireScreenID, testServedScreenID, srv, 1, "", nil)
+	boot.TickBoot(demoLocalInstant(t, 12, 0), sink)
+	if calls := ctrl.calls(); len(calls) != 1 || calls[0] != resumeMisfireEntity+"/home" {
+		t.Fatalf("the boot resolver dispatched %v, want exactly [%s/home]", calls, resumeMisfireEntity)
+	}
+
+	// The re-mint direction: a SEPARATELY BUILT store carrying byte-identical
+	// rows is the shape a content-URL re-mint applies, and it must still fire
+	// nothing. Equal rows, different backing memory.
+	remint := NewResolver(resumeMisfireStore(t, ""), resumeMisfireScreenID, testServedScreenID, srv, 2, "", nil)
+	remint.AdoptCarriedState(boot.CarryState())
+	remint.TickBoot(demoLocalInstant(t, 13, 0), sink)
+	if calls := ctrl.calls(); len(calls) != 1 {
+		t.Fatalf("an apply over an identically-authored rebuild dispatched %v (%d total), want the original 1 — the carry must survive a re-mint", calls, len(calls))
+	}
+
+	// The authored-edit direction: same node, same daypart id, the SAME window
+	// still effective — only the bound batch's command was re-authored. That is
+	// a change of this node's desired device state, and the apply is the only
+	// occasion left to deliver it.
+	edited := resumeMisfireStore(t, "")
+	edited.Rows.PresetBatches[0].Commands = []datamodel.PresetCommand{{EntityID: resumeMisfireEntity, Command: "launch", Params: json.RawMessage(`{"channel":"edited"}`)}}
+	edited.Rows.PresetBatches[0].Revision = 2
+	edited.Rows.PresetBatches[0].UpdatedAt = 2
+
+	applied := NewResolver(edited, resumeMisfireScreenID, testServedScreenID, srv, 3, "", nil)
+	applied.AdoptCarriedState(remint.CarryState())
+	applied.TickBoot(demoLocalInstant(t, 15, 0), sink)
+	calls := ctrl.calls()
+	if len(calls) != 2 || calls[1] != resumeMisfireEntity+"/launch" {
+		t.Fatalf("the apply carrying an edited preset batch dispatched %v, want a second command [%s/launch] — an edit to the effective daypart's bound batch has no future rising edge to ride, so an apply that swallows it is never delivered at all",
+			calls, resumeMisfireEntity)
+	}
+}
+
+// TestAdoptCarriedStateIsIgnoredOnceTheResolverHasResolved pins the ordering
+// trap the apply path could fall into: the carried baseline is the input to a
+// resolver's FIRST resolve, so adopting one afterwards would overwrite a newer
+// baseline with an OLDER one and manufacture exactly the spurious rising edge
+// the carry exists to remove.
+//
+// The stale baseline adopted here names a DIFFERENT daypart from the one the
+// resolver has since resolved — the only shape in which a missing guard is
+// observable at the device plane.
+func TestAdoptCarriedStateIsIgnoredOnceTheResolverHasResolved(t *testing.T) {
+	store, errs := BuildStore(buildDemoSection(t))
+	if len(errs) != 0 {
+		t.Fatalf("BuildStore(demo section) errs = %+v, want none", errs)
+	}
+	srv, _ := newTestPlayerServer(t)
+	sink, ctrl := newFakeSink(t)
+	r := NewResolver(store, demoScreenScopeNodeID, testServedScreenID, srv, 1, "", nil)
+
+	// Overnight: the blank daypart holds and binds no preset — nothing fires,
+	// and this becomes the stale baseline.
+	r.Tick(demoLocalInstant(t, 2, 0), sink)
+	stale := r.CarryState()
+	if stale == nil || stale.State == nil || stale.State.Daypart == nil {
+		t.Fatalf("the overnight tick resolved no effective daypart, so there is no stale baseline to adopt")
+	}
+
+	// Cross into the content daypart: one fire, and the baseline advances.
+	r.Tick(demoLocalInstant(t, 12, 0), sink)
+	if calls := ctrl.calls(); len(calls) != 1 {
+		t.Fatalf("crossing into the content daypart dispatched %v, want exactly 1", calls)
+	}
+
+	r.AdoptCarriedState(nil)   // a nil carry never clears an existing baseline
+	r.AdoptCarriedState(stale) // and neither does a late, older one replace it
+	if got := r.CarryState(); got == nil || got.State == nil || got.State.Daypart == nil || got.State.Daypart.ID == stale.State.Daypart.ID {
+		t.Fatalf("AdoptCarriedState rolled a resolved resolver's baseline back to the stale daypart %v", got)
+	}
+
+	// Still inside the content daypart: level-triggered state, no second fire.
+	// A rolled-back baseline would read this tick as a fresh rising edge.
+	r.Tick(demoLocalInstant(t, 15, 0), sink)
+	if calls := ctrl.calls(); len(calls) != 1 {
+		t.Fatalf("a tick after a late AdoptCarriedState dispatched %v, want still exactly 1 — the baseline was clobbered and the edge re-manufactured", calls)
 	}
 }

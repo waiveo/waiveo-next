@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
@@ -128,7 +129,7 @@ func TestApplyPersistsScreenProgramsForOfflineServe(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, []wire.PairingGrant{grant.Mint()})
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, id, []wire.PairingGrant{grant.Mint()})
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}
@@ -165,7 +166,7 @@ func TestApplyAppliesGenerationAndProgramsInLockstep(t *testing.T) {
 	img := loadTestImage(t)
 	id := testFeederIdentity(t)
 
-	snap, err := snapshot.Build(img, "https://origin.example", id, []wire.PairingGrant{grant.Mint()})
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: "https://origin.example"}, id, []wire.PairingGrant{grant.Mint()})
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}

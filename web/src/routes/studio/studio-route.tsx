@@ -15,7 +15,7 @@ import {
   type SlideLayer,
   type WaiveoApi,
 } from "@/api";
-import { MediaPickerModal } from "@/routes/media/media-library";
+import { MediaPickerModal, useContentLibrary } from "@/routes/media/media-library";
 import {
   EMPTY_STUDIO_STATE,
   currentSlide,
@@ -86,6 +86,32 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
   const [leaveOpen, setLeaveOpen] = useState(false);
   /** Every entity the box knows, for an `entity` widget's subject picker. */
   const [entities, setEntities] = useState<Entity[]>([]);
+
+  // ── The content library, for drawing content-bearing layers ───────────────
+  //
+  // Loaded unconditionally (not only when the picker opens) because the CANVAS
+  // needs it, not just the picker: a layer holds a content-addressed
+  // `asset_ref`, and the url for those bytes is minted per response and EXPIRES
+  // (internal/feeder/contenturl). So an image is drawn from a url resolved now,
+  // never from one saved with the cast.
+  //
+  // Saving one is what broke: the picker patched the listing's url into the
+  // layer, the save persisted it, and reopening the cast after the deadline drew
+  // broken images against a url the origin refuses. The server now declines to
+  // store it at all (internal/app/store/derivedmembers.go); this is the other
+  // half — the live source it is dropped in favour of.
+  const { assets: contentAssets } = useContentLibrary(client);
+  // An asset picked THIS session is merged over the listing. The picker fetches
+  // its own, fresher listing when it opens, so an asset uploaded after the
+  // editor mounted is pickable but absent from the map above — and without this
+  // the operator would choose an image and watch the canvas keep showing the
+  // "nothing chosen" outline. It holds a url, not the document: this is the
+  // render-time lookup, and nothing here is ever saved.
+  const [pickedUrls, setPickedUrls] = useState<ReadonlyMap<string, string>>(new Map());
+  const assetUrls = useMemo(
+    () => new Map([...(contentAssets ?? []).map((a) => [a.asset_ref, a.url] as const), ...pickedUrls]),
+    [contentAssets, pickedUrls],
+  );
 
   const slide = currentSlide(state);
   const layer = selectedLayer(state);
@@ -397,6 +423,7 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
           onDuplicate={(index) => dispatch({ type: "duplicateSlide", index, id: newSlideId() })}
           onDelete={(index) => dispatch({ type: "deleteSlide", index })}
           onMove={(from, to) => dispatch({ type: "moveSlide", from, to })}
+          assetUrls={assetUrls}
         />
 
         {slide ? (
@@ -411,6 +438,7 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
                 onNudge={onNudge}
                 onResizeBy={onResizeBy}
                 onDelete={onDeleteLayer}
+                assetUrls={assetUrls}
               />
               <p className="text-[12px] text-muted-foreground">
                 Drag a layer to move it, or drag a corner to resize. With a layer focused: arrow keys nudge,
@@ -461,10 +489,18 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
         selectedRef={layer?.asset_ref}
         onPick={(asset) => {
           if (state.layerIndex === null) return;
+          // The asset_ref ALONE. `url` is derived — minted per response, with a
+          // deadline — so it belongs in the render-time lookup (assetUrls) and
+          // never in the document being edited: a draft carrying it would send
+          // it on save, and a stored copy is a link that dies. The server
+          // strips one anyway (internal/app/store/derivedmembers.go); not
+          // putting it in the model is what makes that a backstop rather than
+          // the only defence.
+          setPickedUrls((prev) => new Map(prev).set(asset.asset_ref, asset.url));
           dispatch({
             type: "patchLayer",
             index: state.layerIndex,
-            patch: { asset_ref: asset.asset_ref, url: asset.url },
+            patch: { asset_ref: asset.asset_ref, url: undefined },
           });
         }}
       />

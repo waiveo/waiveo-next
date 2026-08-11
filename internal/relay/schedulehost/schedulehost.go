@@ -20,11 +20,11 @@ package schedulehost
 import (
 	"context"
 	"encoding/json"
-	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
-	"strings"
+	"sync"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/relay/automation"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
@@ -266,13 +266,20 @@ func programRevisionFor(state datamodel.EffectiveState) string {
 //
 // contentOrigin is the desired-state's content-origin base URL
 // (desiredstate.Applied.ContentOrigin, from revocation_and_site.content_origin,
-// REL-061/066). Each asset item's Lease `url` is stamped as
-// `contentOrigin + "/content/" + hex(asset_ref)` — the sha256: prefix stripped
-// off the content-addressed ref — which is BYTE-IDENTICAL to the URL form the
-// app-authored path (snapshot.Build) emits for the same asset + base, so the
-// two content-URL grammars are single-sourced (REL-061), never a second shape.
-// `expires_at` is 0 for now, matching snapshot.Build (no content-URL TTL policy
-// is defined yet).
+// REL-061/066). Each asset item's Lease `url` is MINTED by contenturl.Signer
+// under that base (contentSigner.urlFor) — the same minter the app-authored path
+// calls, so the two sides cannot grow a second URL grammar (REL-061). The PATH
+// is identical to what the app emits for the same asset + base; the query is
+// not, and must not be: each side signs its own deadline, measured from its own
+// clock, which is exactly what lets an offline relay keep re-minting through an
+// outage (REL-050/066d).
+//
+// `expires_at` on the Lease item is still 0 here, and that is now a KNOWN GAP
+// rather than the accurate statement it once was. A minted url has a real
+// deadline, so a Lease claiming none understates it; the app-authored path
+// (snapshot) carries the true one. Closing it here means deciding what a
+// re-minted item's deadline says to a player mid-Lease (PLY-086/092) and is left
+// to the same work that finishes REL-066d.
 //
 // When contentOrigin is "" — the desired state carried no content origin — the
 // url is left EMPTY exactly as before: the relay derives content URLs only from
@@ -472,7 +479,14 @@ type contentSigner struct {
 // good for. It is generous because the cost of it being too short is a screen
 // that cannot fetch content it was told to play, and the cost of it being too
 // long is bounded by the key's own rotation.
-const contentURLTTL = 24 * time.Hour
+//
+// It is contenturl.ServeTTL rather than its own number, so that this relay's
+// lifetime and the app side's are stated side by side in one place and can be
+// compared. They are equal today (contenturl.SnapshotTTL collapsed onto ServeTTL
+// once the feeder began re-minting its snapshot on a timer); the app side is the
+// one that would have to argue for diverging again, and its constant is where
+// that argument lives.
+const contentURLTTL = contenturl.ServeTTL
 
 // urlFor mints the URL for one asset_ref.
 //
@@ -480,24 +494,19 @@ const contentURLTTL = 24 * time.Hour
 // peer delivers no key has always had. With no origin it returns empty, and the
 // relay never fabricates a box-local one (REL-140) — the caller degrades to a
 // url-less content item, which a screen surfaces as unresolvable rather than
-// fetching from somewhere nobody authorized.
+// fetching from somewhere nobody authorized. A digest that will not sign returns
+// empty too: the UNSIGNED form would be worse than none, since against a
+// verifying origin it 403s, which reads to an operator as an authorization fault
+// rather than as the malformed asset_ref it is.
+//
+// The three-case rule is contenturl.Signer.Mint's, called rather than restated,
+// so this relay's minting and the app's cannot drift on the URL grammar or on
+// what an unmintable ref degrades to. This projection carries no `expires_at`
+// onto its Lease items today, so the deadline is dropped here; the app side,
+// which does carry one, uses it.
 func (c contentSigner) urlFor(assetRef string) string {
-	if c.origin == "" {
-		return ""
-	}
-	hexDigest := strings.TrimPrefix(assetRef, "sha256:")
-	if len(c.key) == 0 {
-		return c.origin + "/content/" + hexDigest
-	}
-	signed, err := contenturl.URL(c.origin, c.key, hexDigest, c.nowMs+contentURLTTL.Milliseconds())
-	if err != nil {
-		// A digest that will not sign is one this relay cannot serve a fetchable
-		// url for. Returning the UNSIGNED form would be worse than returning
-		// none: against a verifying origin it 403s, which reads to an operator
-		// as an authorization fault rather than as the malformed asset_ref it is.
-		return ""
-	}
-	return signed
+	url, _ := contenturl.Signer{Base: c.origin, Key: c.key, TTL: contentURLTTL, NowMs: c.nowMs}.Mint(assetRef)
+	return url
 }
 
 // Resolver owns the per-instant serving of ONE scope node's schedule-resolved
@@ -561,10 +570,24 @@ type Resolver struct {
 	// strictly-older write.
 	generation int64
 
+	// mu guards prev alone. Every other field is fixed for a Resolver's life,
+	// and prev would be too — it is written and read only by the one goroutine
+	// driving this resolver — were it not for CarryState, which the APPLY
+	// goroutine calls on the resolver it is replacing. Cancelling that
+	// resolver's loop cannot interrupt a resolve already in flight
+	// (scheduleDriver.apply's own doc), so that read genuinely races the
+	// in-flight write and needs the lock.
+	mu sync.Mutex
+
 	// prev is the effective state the last successful ResolveNow projected, or
 	// nil before the first — the edge datamodel.PresetTransition keys a preset
 	// firing on. It is advanced only on a successful resolve, so a resolution
 	// error never spuriously changes the rising-edge baseline.
+	//
+	// A resolver REPLACING another over the same scope node adopts that one's
+	// prev (AdoptCarriedState) instead of starting from nil: a rebuild is not a
+	// boot, and a nil baseline would make every rebuild a rising edge. See
+	// AdoptCarriedState.
 	prev *datamodel.EffectiveState
 
 	// lastResolveMs is the instant the last successful ResolveNow resolved at —
@@ -645,10 +668,149 @@ func (r *Resolver) ResolveNow(nowMs int64) (fired *datamodel.PresetFire, err err
 		r.srv.SetProgram(r.generation, r.servedScreenID, programRevision, priority, display, content)
 	}
 
+	r.mu.Lock()
 	fired = datamodel.PresetTransition(r.prev, &state)
 	r.prev = &state
+	r.mu.Unlock()
 	r.lastResolveMs = nowMs
 	return fired, nil
+}
+
+// ScopeNodeID is the scope node this Resolver resolves — the key a caller
+// rebuilding a generation's resolvers matches an outgoing resolver to its
+// incoming replacement on (CarryState/AdoptCarriedState).
+func (r *Resolver) ScopeNodeID() string { return r.screenNodeID }
+
+// CarriedBaseline is what one generation's Resolver hands the Resolver
+// replacing it over the same scope node: the rising-edge baseline it reached,
+// plus the authored rows that baseline's desired device state was read from.
+//
+// The rows travel with the state because the replacement cannot recover them —
+// it holds only the NEW generation's store, and "the same daypart is still
+// effective" and "the same device state is still desired" are different
+// questions. AdoptCarriedState answers the second by comparing these rows
+// against its own generation's; State alone can only answer the first.
+//
+// Nothing here is copied. State is the last-resolved value itself, which
+// nothing mutates after ResolveNow publishes it (each resolve publishes a fresh
+// value rather than editing the previous one), and PresetBatch points into the
+// outgoing resolver's store, which is fixed for that resolver's life.
+type CarriedBaseline struct {
+	// State is the effective state the outgoing resolver's last successful
+	// resolve projected — the value datamodel.PresetTransition keys the next
+	// rising edge against. Never nil in a CarriedBaseline CarryState returns.
+	State *datamodel.EffectiveState
+
+	// PresetBatch is the preset-batch row State's effective daypart bound in the
+	// OUTGOING generation — the batch that would have fired, and so the desired
+	// device state the carried baseline actually stands for. Nil when the
+	// carried state has no effective daypart, when that daypart binds no batch,
+	// or when the outgoing store carried no such row (a degraded store).
+	PresetBatch *datamodel.PresetBatch
+}
+
+// CarryState is the rising-edge baseline this Resolver reached — the effective
+// state its last successful resolve projected together with the preset-batch
+// row that state bound — or nil if it never resolved.
+//
+// It exists for exactly one caller — the apply path replacing this Resolver
+// with a new one over the SAME scope node — which hands it to that new
+// resolver's AdoptCarriedState. Read under the lock because the apply path
+// calls it after cancelling this resolver's loop, and cancellation cannot
+// interrupt a resolve already in flight.
+func (r *Resolver) CarryState() *CarriedBaseline {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.prev == nil {
+		return nil
+	}
+	carried := &CarriedBaseline{State: r.prev}
+	if r.prev.Daypart != nil && r.prev.Daypart.PresetBatchID != "" {
+		// This resolver's OWN store, which is what the baseline was resolved
+		// against and is immutable for its life — so reading it under mu costs
+		// nothing and cannot deadlock.
+		carried.PresetBatch = r.presetBatch(r.prev.Daypart.PresetBatchID)
+	}
+	return carried
+}
+
+// AdoptCarriedState seeds this Resolver's rising-edge baseline from the
+// resolver it REPLACES over the same scope node (that resolver's CarryState) —
+// but only when this generation still carries the SAME desired device state for
+// that baseline's effective daypart (datamodel.MayCarryAcrossApply). A nil
+// carried, a carried baseline whose rows this generation re-authored, or a call
+// on a Resolver that has already resolved, all do nothing.
+//
+// # Why a rebuild must not look like a boot
+//
+// A resolver is rebuilt on every desired-state generation apply, not only at
+// boot (cmd/waiveo-relay's scheduleDriver). Without this, each rebuild started
+// from a nil baseline, and datamodel.PresetTransition reads a nil prev as the
+// empty identity — so the currently effective daypart looked like a rising edge
+// on EVERY apply and TickBoot re-dispatched its whole preset batch to real
+// devices. With the feeder re-minting content URLs on a 12-hourly timer
+// (contenturl.SnapshotRemintInterval), that turned a resume rule into a cron:
+// twice a day, at a wall-clock instant nobody chose, every governed node
+// re-asserted its daypart's device state — powering a display an operator had
+// just switched off, or yanking an input back mid-presentation.
+//
+// DAT-075's resume clause names boot, generation apply, and clock-trust resume
+// because each is a discontinuity in the consumer's ability to observe: it may
+// have MISSED an edge, and `misfire` says what to do about the one it missed.
+// A relay that has been continuously resolving this node has missed nothing, so
+// a re-apply over it is not a resume and there is nothing to catch up. Carrying
+// the baseline across the rebuild is what makes the code say that.
+//
+// It suppresses no genuine edge. A real boot has no outgoing resolver to carry
+// from, so its baseline is nil and it fires. A daypart boundary crossed between
+// the last live tick and the rebuild leaves the carried baseline naming the OLD
+// daypart, so the rebuild resolves a DIFFERENT identity and fires, still
+// governed by misfire. An apply that begins governing a node nobody was
+// resolving carries nothing for it and fires.
+//
+// # Why identity alone is the wrong key, and rows are the right one
+//
+// The paragraphs above argue only that a re-apply of the SAME desired state
+// must not re-fire. Keying the carry on effective-daypart identity alone
+// answers a different question than that, and gets the mirror case exactly
+// backwards: it also swallows an apply whose desired state CHANGED.
+//
+// The ordinary 24/7 signage shape is one all-day daypart, and its identity
+// never changes again after boot. An operator editing that daypart's bound
+// preset batch — a different `launch` channel, a different volume — advances
+// the generation, the relay applies it, and an identity-keyed carry reads "same
+// node, same daypart id" as "nothing to do". No boundary is ever crossed
+// afterwards for the edit to ride, so nothing dispatches it, ever; only a relay
+// restart delivers it, and nothing logs that it was withheld. Suppressing "the
+// same desired state, re-applied" and suppressing "a changed desired state" are
+// opposite obligations that identity cannot tell apart.
+//
+// So the carry is keyed at DAYPART-ROW granularity, which is
+// datamodel.MayCarryAcrossApply's own rule (DAT-075) and is called through to
+// here rather than restated: adopt only when the carried baseline's own daypart
+// row AND the preset-batch row it binds are unchanged in this generation. That
+// is exactly the desired device state a fire would assert, and nothing wider —
+// a slide's text or a playlist's items changing leaves both rows untouched and
+// is still carried, so an unrelated edit never yanks a display. It also does
+// not reinstate the re-mint cost: a re-mint re-emits a byte-identical schedule
+// section, so both rows compare equal and the carry applies exactly as before.
+func (r *Resolver) AdoptCarriedState(carried *CarriedBaseline) {
+	if carried == nil || carried.State == nil {
+		return
+	}
+	if !datamodel.MayCarryAcrossApply(carried.State, carried.PresetBatch, r.store) {
+		// This generation re-authored what the carried baseline stood for. Leaving
+		// the baseline nil makes the effective daypart a rising edge for TickBoot,
+		// which is what delivers the edit — still governed by that daypart's own
+		// misfire, so a site declaring `skip` is still obeyed.
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.prev != nil {
+		return // already resolved — its own baseline is newer than any carried one.
+	}
+	r.prev = carried.State
 }
 
 // FirePreset dispatches a rising-edge preset batch's device commands through the
@@ -758,11 +920,21 @@ func (r *Resolver) Tick(nowMs int64, sink *automation.CommandSink) {
 	r.FirePreset(fired, sink)
 }
 
-// TickBoot is the ONE resume-governed tick a Resolver performs — at boot,
-// generation apply, or clock-trust resume (DAT-075's final sentence: "On
-// boot, generation apply, or clock-trust resume the current effective
-// daypart's preset batch fires once, governed by its effective misfire"). It
-// resolves and serves the current instant's Lease exactly as Tick does (the
+// TickBoot is the ONE resume-governed tick a Resolver performs — the first
+// tick of a newly built Resolver, which is a boot, a clock-trust resume, or a
+// generation apply that begins resolving this node (DAT-075's final sentence:
+// "On boot, on a generation apply that begins resolving a scope node the
+// consumer was not already resolving, or on clock-trust resume, the current
+// effective daypart's preset batch fires once, governed by its effective
+// misfire").
+//
+// A generation apply over a node this relay was ALREADY resolving is not one of
+// those: the replacement Resolver adopts the outgoing one's rising-edge
+// baseline (AdoptCarriedState), so TickBoot sees the unchanged effective
+// daypart it actually is and fires nothing. Nothing was missed, so there is
+// nothing to catch up. AdoptCarriedState's own doc owns why.
+//
+// It resolves and serves the current instant's Lease exactly as Tick does (the
 // level-triggered STATE projection, DAT-119, via ResolveNow) — that part is
 // never suppressed — but the preset-batch rising edge ResolveNow surfaces is
 // dispatched only when the newly-effective daypart's own effective misfire

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 	"github.com/maaxton/waiveo-next/internal/relay/schedulehost"
@@ -143,7 +144,7 @@ func resolveThroughDesiredState(t *testing.T, st *store.Store, img []byte, id *s
 	if err != nil {
 		t.Fatalf("DesiredState: %v", err)
 	}
-	snap, _, err := snapshot.BuildFromStore(ds, "https://origin.example", id, nowMs, nil)
+	snap, _, err := snapshot.BuildFromStore(ds, contenturl.Signer{Base: "https://origin.example"}, id, nowMs)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}

@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/feeder/enroll"
 	"github.com/maaxton/waiveo-next/internal/feeder/grant"
 	"github.com/maaxton/waiveo-next/internal/feeder/origin"
@@ -79,7 +80,7 @@ func bootTestFeeder(t *testing.T) (baseURL string, img []byte) {
 	}
 
 	g := grant.Mint()
-	snap, err := snapshot.Build(img, baseURL, id, []wire.PairingGrant{g})
+	snap, err := snapshot.Build(img, contenturl.Signer{Base: baseURL}, id, []wire.PairingGrant{g})
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}

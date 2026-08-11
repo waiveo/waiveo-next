@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
 	"github.com/maaxton/waiveo-next/internal/rules/registry"
@@ -25,7 +26,7 @@ func TestEndToEndFromFeederSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("signing.LoadOrCreate: %v", err)
 	}
-	snap, err := snapshot.Build([]byte("demo-image-bytes"), "https://relay.example", id, nil)
+	snap, err := snapshot.Build([]byte("demo-image-bytes"), contenturl.Signer{Base: "https://relay.example"}, id, nil)
 	if err != nil {
 		t.Fatalf("snapshot.Build: %v", err)
 	}

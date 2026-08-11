@@ -7,6 +7,7 @@ import (
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/datamodel"
+	"github.com/maaxton/waiveo-next/internal/feeder/contenturl"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
@@ -89,7 +90,7 @@ func TestPushedCastProjectsToAPreemptProgramCarryingItsSlides(t *testing.T) {
 	s := ovSeedWithCast(t, seedAsset)
 
 	// Before: the ordinary scheduled program, so nothing below can pass vacuously.
-	before, _ := DeriveScreenPrograms(desiredState(t, s), "https://origin.example", contentInstant(t))
+	before, _ := DeriveScreenPrograms(desiredState(t, s), contenturl.Signer{Base: "https://origin.example"}, contentInstant(t))
 	beforeProg := programForScreen(t, before, store.SeedScreenID)
 	if beforeProg.Priority != "scheduled" {
 		t.Fatalf("fixture: the un-pushed screen derives priority %q, want scheduled", beforeProg.Priority)
@@ -98,7 +99,7 @@ func TestPushedCastProjectsToAPreemptProgramCarryingItsSlides(t *testing.T) {
 
 	pushOverride(t, s, store.SeedScreenID, alertOn(ovCastID))
 
-	after, errs := DeriveScreenPrograms(desiredState(t, s), "https://origin.example", contentInstant(t))
+	after, errs := DeriveScreenPrograms(desiredState(t, s), contenturl.Signer{Base: "https://origin.example"}, contentInstant(t))
 	if len(errs) != 0 {
 		t.Fatalf("deriving a pushed screen reported %+v, want none", errs)
 	}
@@ -149,13 +150,13 @@ func TestClearingThePushRestoresTheScheduledProjection(t *testing.T) {
 	const seedAsset = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	s := ovSeedWithCast(t, seedAsset)
 
-	before, _ := DeriveScreenPrograms(desiredState(t, s), "https://origin.example", contentInstant(t))
+	before, _ := DeriveScreenPrograms(desiredState(t, s), contenturl.Signer{Base: "https://origin.example"}, contentInstant(t))
 	beforeProg := programForScreen(t, before, store.SeedScreenID)
 
 	pushOverride(t, s, store.SeedScreenID, alertOn(ovCastID))
 	pushOverride(t, s, store.SeedScreenID, nil) // an explicit null clears it
 
-	after, _ := DeriveScreenPrograms(desiredState(t, s), "https://origin.example", contentInstant(t))
+	after, _ := DeriveScreenPrograms(desiredState(t, s), contenturl.Signer{Base: "https://origin.example"}, contentInstant(t))
 	afterProg := programForScreen(t, after, store.SeedScreenID)
 
 	if afterProg.Priority != "scheduled" {
@@ -179,7 +180,7 @@ func TestAPushOverridesEvenABlankedScreen(t *testing.T) {
 	s := ovSeedWithCast(t, seedAsset)
 
 	// The overnight instant, where the seeded schedule resolves to display:blank.
-	blank, _ := DeriveScreenPrograms(desiredState(t, s), "https://origin.example", blankInstant(t))
+	blank, _ := DeriveScreenPrograms(desiredState(t, s), contenturl.Signer{Base: "https://origin.example"}, blankInstant(t))
 	if got := programForScreen(t, blank, store.SeedScreenID).Display; got != "blank" {
 		t.Fatalf("fixture: the un-pushed screen derives display %q overnight, want blank", got)
 	}
@@ -232,7 +233,7 @@ func TestAPushOnlyAffectsTheScreenItNames(t *testing.T) {
 // mustDerive derives the section or fails on any per-screen degrade.
 func mustDerive(t *testing.T, ds store.DesiredStateResult, nowMs int64) []wire.ScreenProgram {
 	t.Helper()
-	programs, errs := DeriveScreenPrograms(ds, "https://origin.example", nowMs)
+	programs, errs := DeriveScreenPrograms(ds, contenturl.Signer{Base: "https://origin.example"}, nowMs)
 	if len(errs) != 0 {
 		t.Fatalf("DeriveScreenPrograms reported %+v, want none", errs)
 	}

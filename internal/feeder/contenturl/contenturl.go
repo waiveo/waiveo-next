@@ -64,6 +64,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"time"
 )
 
 // Query parameter names. Kept as constants because the verifying side reads
@@ -78,6 +80,145 @@ const (
 // codebase computes under any key. Without it, a key reused for a second
 // purpose could have one construction's bytes accepted as the other's.
 const statementDomain = "waiveo-content-url/1"
+
+// PathPrefix is the ONE spelling of the content route's path segment — the
+// `/content/` between an origin's base URL and an asset's hex digest, which is
+// all REL-061's `<base>/content/<hex>` grammar consists of beyond those two.
+//
+// It is exported so that the serving origin and every producer alike reach the
+// grammar through this package rather than each concatenating it inline, and
+// that is not a style preference. Concatenating it inline is precisely how this
+// deployment shipped an origin that enforced signatures (Verify) alongside four
+// separate call sites that went on emitting the bare, unsigned form: the app's
+// own upload route handed a caller a `url` that the very same process answered
+// 403, and no `image` or `video` layer could display on any screen. A grammar
+// spelled in one place cannot acquire a fifth producer that forgot to sign
+// without that showing up as a diff in this package.
+//
+// TestEveryContentURLIsMintedByThisPackage is the mechanical half of that, and
+// it is a SOURCE SCAN with stated limits, not a guarantee: it parses every
+// non-test .go file in the module and rejects the segment spelled as a literal,
+// split across a concatenation, or joined on by path.Join/url.JoinPath/a
+// slash-bearing Sprintf — and it cannot see a path assembled from values it
+// cannot read (a variable, a config string, a computed format). That test's own
+// doc enumerates exactly what gets past it. Its behavioural complement is
+// snapshot.TestEveryContentURLTheSnapshotCarriesIsFetchableAtTheOrigin, which
+// does not care how a url was spelled but only sees producers a fixture drives.
+const PathPrefix = "/content/"
+
+// assetRefPrefix is the `sha256:` scheme a content-addressed asset_ref carries
+// (REL-061). A URL's path holds the bare hex digest, so Mint strips it.
+const assetRefPrefix = "sha256:"
+
+// The two content-URL lifetimes this codebase mints under. They differ by an
+// order of magnitude because the two minting sites differ in WHEN they mint
+// relative to when the URL is fetched, and a deadline is only ever as good as
+// that gap.
+//
+// The rule that generates both: a minted URL must outlive the longest ordinary
+// delay between the instant it is minted and the LAST fetch anyone will make
+// with it. Everything else — the poll interval, a prefetch retry, a screen's
+// content cache — is dwarfed by that gap, so it is the only term worth sizing
+// against.
+const (
+	// ServeTTL is for a URL minted at the moment it is handed to its consumer:
+	// the relay's schedule-resolved Lease items (REL-066d), and the app api's
+	// upload/list responses. The gap there is a session — a screen fetching the
+	// program it just pulled, a console rendering the media library page it just
+	// loaded — so 24 hours is already some four orders of magnitude of headroom
+	// over the player's ~10 s program poll and every prefetch retry behind it,
+	// while keeping an observed URL's usefulness to an attacker bounded to a day.
+	ServeTTL = 24 * time.Hour
+
+	// SnapshotTTL is for a URL minted at snapshot BUILD time into a signed
+	// desired-state generation (internal/feeder/snapshot), and it is EQUAL to
+	// ServeTTL. The two names are kept because they are two policies that happen
+	// to coincide, not one policy with two spellings — a future divergence should
+	// have to be argued at the site that needs it.
+	//
+	// # Why it was thirty days, and why that was the wrong answer
+	//
+	// A build-time mint is fetched not within a session but for however long its
+	// generation stays the one being served, and three mechanisms make that long.
+	// The feeder caches its built snapshot by store GENERATION, which only an api
+	// write advances — so a site nobody authors for a fortnight would serve a
+	// fortnight-old mint. A relay applies its cached snapshot for the whole of an
+	// outage (REL-050). And internal/relay/playerserver's SetServedProgram
+	// carries an app-authored `url` through to the Lease UNMODIFIED, so for a
+	// pinned screen override — push-now, the path HV-1 was found on — the
+	// app-minted URL is the only one that screen will ever be given.
+	//
+	// That argument is right about the exposure and wrong about the remedy. It
+	// sized the DEADLINE to the longest lull, which buys reachability by handing
+	// out a month-long bearer capability for every asset a site displays — the
+	// exact property this package's own doc says an unsigned URL has and signing
+	// exists to remove. And it did not even close the hole it was sized for: a
+	// feeder up for longer than the ceiling with no authoring write still serves
+	// expired URLs, silently, to any screen that reboots or evicts its cache.
+	//
+	// # What closes it instead
+	//
+	// Bound the AGE OF THE MINT rather than stretching the deadline: no relay is
+	// left holding URLs older than SnapshotRemintInterval, whatever an operator
+	// does or does not author. That takes TWO halves, and either alone is the
+	// same defect wearing a slower costume:
+	//
+	//   - the feeder's snapshot cache expires on SnapshotRemintInterval as well
+	//     as on the store generation, so a build whose URLs are half dead is
+	//     never SERVED again (cmd/waiveo-feeder's desiredStateSource). That
+	//     mechanism was already there — the cache is ALREADY invalidated on an
+	//     instant "for reasons no write will announce", the pending
+	//     screen-override expiry — so it is one more term in the same bound;
+	//   - and the feeder advances the store generation on the same interval
+	//     (cmd/waiveo-feeder's remintLoop), which is what makes the rebuild
+	//     LEAVE the feeder. A pull whose `since_generation` matches is answered
+	//     `state.unchanged` with no body at all (relayconn), the relay no-ops on
+	//     a generation it already holds, and its pull has no timer — it fires on
+	//     a nudge, and nudges come from store commits. So a re-mint at an
+	//     unchanged generation refreshes a cache nobody reads.
+	//
+	// The second half is affordable only because a re-mint does not disturb a
+	// screen: snapshot.programRevisionFor digests the program through
+	// revisionContent, which drops exactly the `exp`/`sig` a re-mint changes, so
+	// the nudged relay re-applies without any player treating it as a new program
+	// (PLY-090/108). Remove that reduction and this interval becomes a fleet-wide
+	// rotation restart twice a day.
+	//
+	// # The residual, which is REL-066d's to close
+	//
+	// A relay riding out an outage longer than this TTL (REL-050) still serves a
+	// snapshot whose URLs have died, because nothing on the box can re-mint the
+	// app-authored baseline it passes through. REL-066d — a relay re-mints EVERY
+	// url at the moment it serves it, app-authored ones included — is the durable
+	// fix; the relay does that today only for items it resolves itself, and only
+	// on a single-governed-node, single-screen, non-pinned site
+	// (cmd/waiveo-relay's soleServedScreenID). Until then the honest statement is
+	// that content survives an outage of up to this TTL, which is a bound an
+	// operator can read, rather than a month-long capability that hides the same
+	// cliff further out.
+	SnapshotTTL = ServeTTL
+
+	// SnapshotRemintInterval is how often the feeder re-mints the URLs in its
+	// desired-state generation and PUBLISHES that it has, independently of whether
+	// anyone authored anything: the cap on its snapshot cache
+	// (cmd/waiveo-feeder's desiredStateSource) and the cadence of its generation
+	// advance (cmd/waiveo-feeder's remintLoop) are the same interval, because they
+	// are the two halves of one guarantee.
+	//
+	// It lives here, beside the deadline it is derived from, because the two are
+	// one decision: a re-mint interval at or above SnapshotTTL is no bound at all,
+	// and changing either alone reintroduces the gap. Half the TTL is the ordinary
+	// choice — every relay is nudged to re-pull at least this often, and the URLs
+	// the pull hands it are minted at that instant, so what a relay holds always
+	// has at least SnapshotTTL - SnapshotRemintInterval of life left in it: a full
+	// ServeTTL/2 of slack even if the feeder then goes away entirely.
+	//
+	// The cost is one row-less write transaction and one snapshot rebuild every
+	// twelve hours on a site nobody is editing, plus two extra pulls per relay per
+	// day. The rebuild is a rebuild of in-memory rows: cheaper than the pull it is
+	// answering.
+	SnapshotRemintInterval = SnapshotTTL / 2
+)
 
 // Distinguishable refusals. A caller branches on these: an expired URL is a
 // client that needs a fresh reference, while a bad signature is a forgery or a
@@ -165,7 +306,104 @@ func URL(base string, key []byte, hexDigest string, expiresAtMs int64) (string, 
 	if err != nil {
 		return "", err
 	}
-	return base + "/content/" + hexDigest + "?" + q, nil
+	return UnsignedURL(base, hexDigest) + "?" + q, nil
+}
+
+// UnsignedURL returns the bare `<base>/content/<hex>` URL carrying no signature
+// — the form a deployment holding NO key mints, and the only form that makes
+// sense against an origin holding no key, since it verifies nothing.
+//
+// It is exported so even the deliberately-unsigned path spells the grammar here
+// (PathPrefix's doc): the point of one spelling is lost if the unsigned branch
+// keeps its own copy, and the unsigned branch is where a forgotten signature
+// hides.
+func UnsignedURL(base, hexDigest string) string {
+	return base + PathPrefix + hexDigest
+}
+
+// Signer mints the content URLs one deployment's content origin will verify.
+//
+// # Why the four fields travel as one value
+//
+// Because a URL minted from one origin's base, under another origin's key, or
+// against a clock other than the one its deadline will be read against, is not
+// a URL that verifies — and each of those is an ordinary mistake when the four
+// are four separate parameters threaded through a dozen call sites.
+// internal/relay/schedulehost reached the same conclusion for its own three and
+// bundled them; this is that type, promoted so the app side cannot grow a
+// second, subtly different copy.
+//
+// # The empty key is a statement, not an omission
+//
+// An empty Key means THIS DEPLOYMENT DOES NOT SIGN, and Mint answers with the
+// unsigned form. That is only correct if the verifying origin also holds no key
+// — it skips verification exactly then (origin.Store.Handler) — so the two ends
+// must be the same key or the mint is refused by the very process that made it.
+// Do not assemble that agreement by hand: origin.Store.Signer builds a Signer
+// carrying the STORE'S OWN key and the STORE'S OWN clock, which makes a
+// disagreeing pair unconstructible rather than merely unlikely. A Signer built
+// literally is for a caller that holds no origin at all (a fixture builder, a
+// test), and states its posture in the literal where a reader can see it.
+type Signer struct {
+	// Base is the content origin a screen fetches from — REL-066's
+	// `content_origin`. Empty means this deployment can state no content URL,
+	// and Mint returns none rather than fabricating a box-local one (REL-140).
+	Base string
+	// Key is the HMAC key the origin verifies under (REL-066a). Empty means
+	// this deployment does not sign; see the type doc.
+	Key []byte
+	// TTL is how long a minted URL stays fetchable — ServeTTL or SnapshotTTL,
+	// chosen by when the mint happens relative to the fetch.
+	TTL time.Duration
+	// NowMs is the instant the deadline is measured from, injected rather than
+	// read from a clock inside Mint so a generation built at a stated instant
+	// is reproducible from that instant alone.
+	NowMs int64
+}
+
+// Signs reports whether this Signer will produce signed URLs — equivalently,
+// whether the origin it was built from enforces them.
+func (s Signer) Signs() bool { return len(s.Key) > 0 }
+
+// Mint returns the URL for one content-addressed assetRef (`sha256:<hex>`, or a
+// bare hex digest) and the instant that URL expires at — the value belonging on
+// the wire beside it, so a consumer is told when its capability dies instead of
+// discovering it as a 403.
+//
+// It returns ("", 0) — no URL, which every consumer already degrades on — in
+// each case where a fetchable URL cannot honestly be stated:
+//
+//   - no Base: there is no origin to point at, and no box-local one is invented
+//     (REL-140). This is the pre-existing empty-origin degrade.
+//   - a digest that will not sign (not lowercase hex): returning the UNSIGNED
+//     form instead would be worse than returning none — against a verifying
+//     origin it 403s, which reads to an operator as an authorization fault
+//     rather than as the malformed asset_ref it is.
+//   - a Key with no usable TTL or no clock (`NowMs <= 0`): a signer that can
+//     sign but cannot state a deadline would otherwise mint one measured from
+//     the epoch — a URL born thirty days expired, which fails as a 403 at the
+//     screen and as nothing at all at the mint. A misconfigured Signer must be
+//     visible where it is constructed, not on a wall a week later.
+//
+// With no Key it returns the unsigned form and a zero deadline, because nothing
+// about that URL expires: the origin that will serve it verifies nothing.
+func (s Signer) Mint(assetRef string) (url string, expiresAtMs int64) {
+	if s.Base == "" {
+		return "", 0
+	}
+	hexDigest := strings.TrimPrefix(assetRef, assetRefPrefix)
+	if !s.Signs() {
+		return UnsignedURL(s.Base, hexDigest), 0
+	}
+	if s.TTL <= 0 || s.NowMs <= 0 {
+		return "", 0
+	}
+	expiresAtMs = s.NowMs + s.TTL.Milliseconds()
+	signed, err := URL(s.Base, s.Key, hexDigest, expiresAtMs)
+	if err != nil {
+		return "", 0
+	}
+	return signed, expiresAtMs
 }
 
 // Verify checks the signed URL for hexDigest carrying query q, as of nowMs.

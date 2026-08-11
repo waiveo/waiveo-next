@@ -64,6 +64,7 @@ var corpusHandlers = map[string]func(*testing.T, json.RawMessage, json.RawMessag
 	"DAT-073-invalid-within-schedule-daypart-overlap-rejected":          checkOverlapReject073,
 	"DAT-073-invalid-midnight-wrap-collides-next-weekday":               checkOverlapReject073,
 	"DAT-074-valid-daypart-display-power-off":                           checkDisplayPowerOff074,
+	"DAT-075-valid-apply-carries-baseline-until-the-bound-rows-change":  checkCarryAcrossApply075,
 	"DAT-075-valid-fall-back-boundary-refires-preset":                   checkPresetFallBack075,
 	"DAT-075-valid-masked-preset-fires-on-fall-through":                 checkPresetMasked075,
 	"DAT-092-valid-preset-batch-partial-failure":                        checkBatchOutcome092,
@@ -756,6 +757,186 @@ func checkPresetFallBack075(t *testing.T, rawIn, rawExp json.RawMessage) {
 			t.Fatalf("invocation %d = {%s,%s}, want {%s,%s}", i, gotInv[i].at, gotInv[i].batch, w.AtUTC, w.PresetBatchID)
 		}
 	}
+}
+
+// --- DAT-075: a generation apply carries the baseline until the bound rows change ---
+
+// checkCarryAcrossApply075 replays a SEQUENCE OF APPLIES over one continuously
+// resolving node, which is the only shape in which DAT-075's carry clause is
+// observable: each apply installs its generation's rows, the consumer decides
+// whether it may carry the baseline it had reached (MayCarryAcrossApply), and
+// the invocation is whatever PresetTransition then reports from that baseline.
+//
+// The case's dayparting is deliberately inert — one all-day daypart, effective
+// at every instant in the case — so the identity sequence is constant and every
+// difference between legs comes from the rows, not from the clock. A driver that
+// only replayed instants could not tell these legs apart at all.
+func checkCarryAcrossApply075(t *testing.T, rawIn, rawExp json.RawMessage) {
+	base := mustInput(t, rawIn)
+	var in struct {
+		Applies []struct {
+			Label    string `json:"label"`
+			AtLocal  string `json:"at_local"`
+			Authored struct {
+				Schedules     []Schedule    `json:"schedules"`
+				Dayparts      []Daypart     `json:"dayparts"`
+				PresetBatches []PresetBatch `json:"preset_batches"`
+			} `json:"authored"`
+		} `json:"applies"`
+	}
+	if err := json.Unmarshal(rawIn, &in); err != nil {
+		t.Fatalf("decode applies: %v", err)
+	}
+	var exp struct {
+		IdentitySequence []*string `json:"effective_daypart_identity_sequence"`
+		Results          []struct {
+			Label            string  `json:"label"`
+			MayCarry         bool    `json:"may_carry_baseline"`
+			EffectiveDaypart *string `json:"effective_daypart_id"`
+			PresetFired      *string `json:"preset_fired"`
+		} `json:"results"`
+		Invocations []struct {
+			AtLocal       string `json:"at_local"`
+			PresetBatchID string `json:"preset_batch_id"`
+		} `json:"preset_invocations_in_order"`
+	}
+	if err := json.Unmarshal(rawExp, &exp); err != nil {
+		t.Fatalf("decode expected: %v", err)
+	}
+	if len(in.Applies) != len(exp.Results) {
+		t.Fatalf("applies = %d, expected results = %d", len(in.Applies), len(exp.Results))
+	}
+
+	rows := base // the generation currently applied; each leg's `authored` rows replace theirs by id
+	var prev *EffectiveState
+	var prevBatch *PresetBatch
+	var gotSeq []*string
+	type inv struct{ at, batch string }
+	var gotInv []inv
+
+	for i, a := range in.Applies {
+		rows.Schedules = replaceSchedules(rows.Schedules, a.Authored.Schedules)
+		rows.Dayparts = replaceDayparts(rows.Dayparts, a.Authored.Dayparts)
+		rows.PresetBatches = replacePresetBatches(rows.PresetBatches, a.Authored.PresetBatches)
+		store := storeFromInput(rows)
+
+		// The consumer's decision, then the edge that follows from it.
+		mayCarry := MayCarryAcrossApply(prev, prevBatch, store)
+		baseline := prev
+		if !mayCarry {
+			baseline = nil
+		}
+		st, err := Resolve(store, base.ResolveFor, localMs(t, effTZName(t, store, base.ResolveFor), a.AtLocal))
+		if err != nil {
+			t.Fatalf("Resolve %s: %v", a.Label, err)
+		}
+		fire := PresetTransition(baseline, &st)
+
+		r := exp.Results[i]
+		if r.Label != a.Label {
+			t.Fatalf("apply %d label = %q, expected %q", i, a.Label, r.Label)
+		}
+		if mayCarry != r.MayCarry {
+			t.Fatalf("%s may_carry_baseline = %v, want %v", a.Label, mayCarry, r.MayCarry)
+		}
+		if daypartID(st) != strp(r.EffectiveDaypart) {
+			t.Fatalf("%s effective = %q, want %q", a.Label, daypartID(st), strp(r.EffectiveDaypart))
+		}
+		firedID := ""
+		if fire != nil {
+			firedID = fire.PresetBatchID
+		}
+		if firedID != strp(r.PresetFired) {
+			t.Fatalf("%s preset_fired = %q, want %q", a.Label, firedID, strp(r.PresetFired))
+		}
+		if fire != nil {
+			gotInv = append(gotInv, inv{at: a.AtLocal, batch: fire.PresetBatchID})
+		}
+		gotSeq = append(gotSeq, idPtr(daypartID(st)))
+
+		// What this consumer hands its own replacement at the NEXT apply: the
+		// baseline it just reached, and the batch that baseline's daypart binds
+		// in the generation it was resolved against.
+		cur := st
+		prev = &cur
+		prevBatch = nil
+		if cur.Daypart != nil && cur.Daypart.PresetBatchID != "" {
+			prevBatch = store.presetBatch(cur.Daypart.PresetBatchID)
+		}
+	}
+
+	if !eqStrPtrs(gotSeq, exp.IdentitySequence) {
+		t.Fatalf("identity sequence = %v, want %v", ptrSeq(gotSeq), ptrSeq(exp.IdentitySequence))
+	}
+	if len(gotInv) != len(exp.Invocations) {
+		t.Fatalf("invocations = %d, want %d", len(gotInv), len(exp.Invocations))
+	}
+	for i, w := range exp.Invocations {
+		if gotInv[i].batch != w.PresetBatchID || gotInv[i].at != w.AtLocal {
+			t.Fatalf("invocation %d = {%s,%s}, want {%s,%s}", i, gotInv[i].at, gotInv[i].batch, w.AtLocal, w.PresetBatchID)
+		}
+	}
+}
+
+// replaceSchedules/replaceDayparts/replacePresetBatches apply one generation's
+// authored rows over the previously applied set, matching on the row's own
+// identity field (a preset batch's is `preset_id`, DAT-005). An authored row
+// with an unknown id is appended, so a leg can add a row as well as re-author
+// one.
+//
+// Each returns a FRESH slice rather than editing in place, which is not a style
+// choice: a consumer hands its replacement a pointer to the row its baseline was
+// resolved against (CarriedBaseline's own shape), and a driver that re-authored
+// rows in the previous generation's backing array would have that pointer read
+// the NEW row — every comparison equal, every leg carried, the case green
+// against an engine that does nothing. A generation is its own parsed row set on
+// the wire, and it must be one here too.
+func replaceSchedules(cur, authored []Schedule) []Schedule {
+	out := append([]Schedule(nil), cur...)
+	for _, a := range authored {
+		replaced := false
+		for i := range out {
+			if out[i].ID == a.ID {
+				out[i], replaced = a, true
+			}
+		}
+		if !replaced {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+func replaceDayparts(cur, authored []Daypart) []Daypart {
+	out := append([]Daypart(nil), cur...)
+	for _, a := range authored {
+		replaced := false
+		for i := range out {
+			if out[i].ID == a.ID {
+				out[i], replaced = a, true
+			}
+		}
+		if !replaced {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+func replacePresetBatches(cur, authored []PresetBatch) []PresetBatch {
+	out := append([]PresetBatch(nil), cur...)
+	for _, a := range authored {
+		replaced := false
+		for i := range out {
+			if out[i].PresetID == a.PresetID {
+				out[i], replaced = a, true
+			}
+		}
+		if !replaced {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // --- DAT-075: masked daypart fires nothing; fall-through fires base -----------
