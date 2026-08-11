@@ -20,6 +20,7 @@ package schedulehost
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
@@ -569,10 +570,24 @@ type Resolver struct {
 	// strictly-older write.
 	generation int64
 
+	// mu guards prev alone. Every other field is fixed for a Resolver's life,
+	// and prev would be too — it is written and read only by the one goroutine
+	// driving this resolver — were it not for CarryState, which the APPLY
+	// goroutine calls on the resolver it is replacing. Cancelling that
+	// resolver's loop cannot interrupt a resolve already in flight
+	// (scheduleDriver.apply's own doc), so that read genuinely races the
+	// in-flight write and needs the lock.
+	mu sync.Mutex
+
 	// prev is the effective state the last successful ResolveNow projected, or
 	// nil before the first — the edge datamodel.PresetTransition keys a preset
 	// firing on. It is advanced only on a successful resolve, so a resolution
 	// error never spuriously changes the rising-edge baseline.
+	//
+	// A resolver REPLACING another over the same scope node adopts that one's
+	// prev (AdoptCarriedState) instead of starting from nil: a rebuild is not a
+	// boot, and a nil baseline would make every rebuild a rising edge. See
+	// AdoptCarriedState.
 	prev *datamodel.EffectiveState
 
 	// lastResolveMs is the instant the last successful ResolveNow resolved at —
@@ -653,10 +668,77 @@ func (r *Resolver) ResolveNow(nowMs int64) (fired *datamodel.PresetFire, err err
 		r.srv.SetProgram(r.generation, r.servedScreenID, programRevision, priority, display, content)
 	}
 
+	r.mu.Lock()
 	fired = datamodel.PresetTransition(r.prev, &state)
 	r.prev = &state
+	r.mu.Unlock()
 	r.lastResolveMs = nowMs
 	return fired, nil
+}
+
+// ScopeNodeID is the scope node this Resolver resolves — the key a caller
+// rebuilding a generation's resolvers matches an outgoing resolver to its
+// incoming replacement on (CarryState/AdoptCarriedState).
+func (r *Resolver) ScopeNodeID() string { return r.screenNodeID }
+
+// CarryState is the rising-edge baseline this Resolver reached: the effective
+// state its last successful resolve projected, or nil if it never resolved.
+//
+// It exists for exactly one caller — the apply path replacing this Resolver
+// with a new one over the SAME scope node — which hands it to that new
+// resolver's AdoptCarriedState. Read under the lock because the apply path
+// calls it after cancelling this resolver's loop, and cancellation cannot
+// interrupt a resolve already in flight.
+//
+// The returned state is not copied: it is the last-resolved value itself, which
+// nothing mutates after ResolveNow publishes it (each resolve publishes a fresh
+// value rather than editing the previous one).
+func (r *Resolver) CarryState() *datamodel.EffectiveState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.prev
+}
+
+// AdoptCarriedState seeds this Resolver's rising-edge baseline from the
+// resolver it REPLACES over the same scope node (that resolver's CarryState).
+// A nil prev, or a call on a Resolver that has already resolved, does nothing.
+//
+// # Why a rebuild must not look like a boot
+//
+// A resolver is rebuilt on every desired-state generation apply, not only at
+// boot (cmd/waiveo-relay's scheduleDriver). Without this, each rebuild started
+// from a nil baseline, and datamodel.PresetTransition reads a nil prev as the
+// empty identity — so the currently effective daypart looked like a rising edge
+// on EVERY apply and TickBoot re-dispatched its whole preset batch to real
+// devices. With the feeder re-minting content URLs on a 12-hourly timer
+// (contenturl.SnapshotRemintInterval), that turned a resume rule into a cron:
+// twice a day, at a wall-clock instant nobody chose, every governed node
+// re-asserted its daypart's device state — powering a display an operator had
+// just switched off, or yanking an input back mid-presentation.
+//
+// DAT-075's resume clause names boot, generation apply, and clock-trust resume
+// because each is a discontinuity in the consumer's ability to observe: it may
+// have MISSED an edge, and `misfire` says what to do about the one it missed.
+// A relay that has been continuously resolving this node has missed nothing, so
+// a re-apply over it is not a resume and there is nothing to catch up. Carrying
+// the baseline across the rebuild is what makes the code say that.
+//
+// It suppresses no genuine edge. A real boot has no outgoing resolver to carry
+// from, so its baseline is nil and it fires. A daypart boundary crossed between
+// the last live tick and the rebuild leaves the carried baseline naming the OLD
+// daypart, so the rebuild resolves a DIFFERENT identity and fires, still
+// governed by misfire. An apply that begins governing a node nobody was
+// resolving carries nothing for it and fires.
+func (r *Resolver) AdoptCarriedState(prev *datamodel.EffectiveState) {
+	if prev == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.prev != nil {
+		return // already resolved — its own baseline is newer than any carried one.
+	}
+	r.prev = prev
 }
 
 // FirePreset dispatches a rising-edge preset batch's device commands through the
@@ -766,11 +848,21 @@ func (r *Resolver) Tick(nowMs int64, sink *automation.CommandSink) {
 	r.FirePreset(fired, sink)
 }
 
-// TickBoot is the ONE resume-governed tick a Resolver performs — at boot,
-// generation apply, or clock-trust resume (DAT-075's final sentence: "On
-// boot, generation apply, or clock-trust resume the current effective
-// daypart's preset batch fires once, governed by its effective misfire"). It
-// resolves and serves the current instant's Lease exactly as Tick does (the
+// TickBoot is the ONE resume-governed tick a Resolver performs — the first
+// tick of a newly built Resolver, which is a boot, a clock-trust resume, or a
+// generation apply that begins resolving this node (DAT-075's final sentence:
+// "On boot, on a generation apply that begins resolving a scope node the
+// consumer was not already resolving, or on clock-trust resume, the current
+// effective daypart's preset batch fires once, governed by its effective
+// misfire").
+//
+// A generation apply over a node this relay was ALREADY resolving is not one of
+// those: the replacement Resolver adopts the outgoing one's rising-edge
+// baseline (AdoptCarriedState), so TickBoot sees the unchanged effective
+// daypart it actually is and fires nothing. Nothing was missed, so there is
+// nothing to catch up. AdoptCarriedState's own doc owns why.
+//
+// It resolves and serves the current instant's Lease exactly as Tick does (the
 // level-triggered STATE projection, DAT-119, via ResolveNow) — that part is
 // never suppressed — but the preset-batch rising edge ResolveNow surfaces is
 // dispatched only when the newly-effective daypart's own effective misfire

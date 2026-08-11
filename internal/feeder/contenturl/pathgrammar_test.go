@@ -108,17 +108,37 @@ const scanFloor = 340
 //
 // A tree is keyed by its first path segment, or its first two under `internal/`,
 // which is the granularity at which this module is actually organized.
+//
+// EVERY tree the walk reaches is listed, not just the interesting ones, and that
+// is the point rather than thoroughness for its own sake. Ten trees were left
+// out of the first version, and each of them was a hole in BOTH checks at once:
+// `internal/manifest` is 14 files against a floor with 24 files of slack, so the
+// walk could have stopped entering it and the count would still have cleared —
+// silently, which is the exact failure mode this guard exists to make loud. Two
+// of the omissions were the ones that mattered most: `internal/datamodel`, where
+// the `Layer`/`Slide` types a derived url hangs off are declared, and
+// `internal/slidelive`, which resolves content. A tree with no row here is a
+// tree this guard cannot notice losing.
 var requiredTrees = map[string]int{
-	"cmd":              8,  // 13: every binary, including the feeder that mounts the origin
-	"internal/app":     60, // 100: the api producers HV-1 was found on
-	"internal/feeder":  8,  // 13: the origin, the snapshot builder, this package
-	"internal/relay":   30, // 57: the relay-side producers REL-066d will add to
-	"internal/shared":  15, // 27: wire, where a url-bearing type would be declared
-	"internal/rules":   20, // 36
-	"internal/events":  8,  // 16
-	"conformance":      20, // 36: the contract suites
-	"scripts":          8,  // 15: the make-dev loops, one of which is allowlisted
-	"internal/archive": 4,  // 8: the export/restore path
+	"cmd":                    8,  // 14: every binary, including the feeder that mounts the origin
+	"internal/app":           60, // 100: the api producers HV-1 was found on
+	"internal/feeder":        8,  // 13: the origin, the snapshot builder, this package
+	"internal/relay":         30, // 57: the relay-side producers REL-066d will add to
+	"internal/shared":        15, // 27: wire, where a url-bearing type would be declared
+	"internal/rules":         20, // 36
+	"internal/events":        8,  // 16
+	"conformance":            20, // 36: the contract suites
+	"scripts":                8,  // 15: the make-dev loops, one of which is allowlisted
+	"internal/archive":       4,  // 8: the export/restore path
+	"internal/manifest":      8,  // 14: pack manifests, which declare playable content
+	"internal/datamodel":     4,  // 8: where Layer and Slide are declared
+	"internal/deviceclass":   3,  // 6
+	"internal/virtualplayer": 2,  // 4: the synthetic player, which consumes served urls
+	"internal/tools":         1,  // 3
+	"internal/slidelive":     1,  // 2: content resolution
+	"internal/packsig":       1,  // 2
+	"api":                    1,  // 2
+	"examples":               1,  // 1: the in-repo example pack
 }
 
 // treeOf is the key requiredTrees is counted by: the first path segment, or the

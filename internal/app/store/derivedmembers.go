@@ -131,22 +131,36 @@ var derivedMemberStrippers = map[Kind]func(json.RawMessage) (json.RawMessage, bo
 // A body that needed no edit is returned as the SAME bytes: nothing is decoded
 // and re-encoded, so nothing about it can change.
 //
-// A body that did need one is rebuilt only along the path to the layers it
-// edited. Everything off that path rides as json.RawMessage and is copied
-// verbatim — an untouched slide, an untouched item, a `duration_ms` that is
-// never run through float64 and back, an unrecognized member nobody here knows
-// about.
+// A body that did need one is rebuilt, and two spellings change. Neither
+// changes a VALUE: every one of these round-trips to the identical decoded
+// document, minus the `url` members this function set out to remove. But the
+// two have different REACH, and an earlier version of this comment got that
+// wrong in the safe-sounding direction by scoping both to "the objects on the
+// edited path". Only the first is that narrow.
 //
-// The objects ON that path are re-encoded from a map[string]json.RawMessage, and
-// two things about THEM do change, neither of them a value: Go emits map keys in
-// sorted order, so their members come back alphabetized, and encoding/json
-// re-escapes the three HTML-significant characters inside them: a `<`, `>` or
-// `&` in a text layer comes back as its six-character unicode escape, which
-// decodes to the identical string but is not the identical byte. The earlier
-// version of this comment claimed "member order survives byte for byte", which
-// was true of the rest of the document and untrue of exactly the objects this
-// function touches. Values are preserved exactly; their container's spelling is
-// not.
+//  1. Member ORDER changes on the path, and only on the path. Each object
+//     rebuilt along the way to an edited layer is re-encoded from a
+//     map[string]json.RawMessage, and Go emits map keys sorted, so those
+//     objects come back alphabetized. Everything off the path rides as
+//     json.RawMessage — an untouched slide, an untouched item, an unrecognized
+//     member nobody here knows about — and keeps its authored member order.
+//
+//  2. HTML-significant characters are re-escaped throughout the WHOLE body,
+//     path or not. json.Marshal of a map[string]json.RawMessage COMPACTS each
+//     child with escapeHTML on, and that compaction walks the child to its
+//     leaves — so a `<`, `>` or `&` anywhere in the row comes back as its
+//     six-character unicode escape. Probed on a cast body: with one url
+//     stripped from slide 0, a top-level `"z_top":"a & b <tag>"`, the `name`
+//     beside it, and untouched slide 1's own text all came back escaped.
+//
+// What is preserved exactly, and not merely approximately: every value, and
+// every number's authored spelling — a `duration_ms` of `1.50` is compacted,
+// never run through float64 and back, and comes out `1.50`.
+//
+// So: this is a re-spelling of the row, not a re-interpretation of it. Anything
+// comparing these bytes to their authored form (a digest, a golden fixture, a
+// byte-equality assertion) must expect the escapes across the whole row and the
+// sorted keys on the edited path; anything DECODING them sees no difference.
 func stripDerivedMembers(kind Kind, body json.RawMessage) json.RawMessage {
 	strip, ok := derivedMemberStrippers[kind]
 	if !ok {
