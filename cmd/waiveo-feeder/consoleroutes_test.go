@@ -53,7 +53,7 @@ import (
 //     that hands the mux to something this scan cannot resolve FAILS rather than
 //     being skipped.
 //   - the CONSOLE routes, from `<Route path=…>` in web/src/App.tsx, and the nav
-//     targets from the shell's NAV_ITEMS.
+//     targets from the shell's NAV_TREE (web/src/shell/nav-tree.ts).
 //
 // # And why the matching is delegated
 //
@@ -122,13 +122,70 @@ func TestEveryNavItemPointsAtADeclaredConsoleRoute(t *testing.T) {
 	}
 	for _, want := range []string{"/", "/screens", "/media"} {
 		if !slices.Contains(nav, want) {
-			t.Fatalf("derived nav targets %v are missing %q — the scan over the shell's NAV_ITEMS found the wrong thing", nav, want)
+			t.Fatalf("derived nav targets %v are missing %q — the scan over the shell's NAV_TREE found the wrong thing", nav, want)
 		}
 	}
 	for _, to := range nav {
 		if !slices.Contains(routes, to) {
 			t.Errorf("the primary nav offers %q, which web/src/App.tsx declares no <Route> for — clicking it renders nothing inside the shell. Declared routes: %v", to, routes)
 		}
+	}
+}
+
+// TestEveryConsoleRouteIsReachable is the converse property, and the one the
+// nav RESTRUCTURE made worth pinning: the test above catches a nav entry that
+// leads nowhere, and this one catches a PAGE that nothing leads to.
+//
+// It exists because grouping thirteen flat siblings into a tree is exactly the
+// operation that loses one. A dropped node still compiles, still typechecks, and
+// still renders a perfectly good console — the page is simply gone, and the only
+// way to notice is to remember it existed. An orphaned page is a worse outcome
+// than the flat rail this replaced, so it is a build failure.
+//
+// Both sides are derived, and the exemptions are too. A route that is
+// deliberately off the rail — the sign-in page, the Studio (opened on a cast),
+// the account page in the header, a pack's own page — is declared in
+// OFF_RAIL_ROUTES *in the nav tree itself*, next to the door it is reached
+// through. That is what keeps this from degenerating into the thing it is
+// guarding against: there is no list of exceptions in this file to quietly grow
+// whenever the check is inconvenient. Adding a <Route> and nothing else fails,
+// and the two ways to fix it are to put it in the nav or to write down how an
+// operator gets there.
+func TestEveryConsoleRouteIsReachable(t *testing.T) {
+	root := moduleRoot(t)
+	routes := consoleRoutes(t, root)
+	nav := navTargets(t, root)
+	offRail := offRailRoutes(t, root)
+
+	// Completeness on the third derived list, for the same reason the others
+	// have one: an OFF_RAIL_ROUTES scan that found nothing would make every
+	// route below look unreachable, and one that matched the whole file would
+	// make every route look excused. The second failure is the dangerous one —
+	// it passes.
+	if len(offRail) < 3 {
+		t.Fatalf("derived only %d off-rail routes (%v); the console has more, so the scan over OFF_RAIL_ROUTES is broken", len(offRail), offRail)
+	}
+	for _, want := range []string{"/login", "/studio"} {
+		if !slices.Contains(offRail, want) {
+			t.Fatalf("derived off-rail routes %v are missing %q — the scan over OFF_RAIL_ROUTES found the wrong thing", offRail, want)
+		}
+	}
+	// ...and nothing may be BOTH, which would mean a page was quietly excused
+	// while it was on the rail all along — the excuse would then outlive its
+	// removal from the nav and hide the orphan this test exists to catch.
+	for _, to := range offRail {
+		if slices.Contains(nav, to) {
+			t.Errorf("%q is declared in OFF_RAIL_ROUTES but IS on the primary rail; drop the declaration, or it will excuse the page for good the day it leaves the nav", to)
+		}
+	}
+
+	for _, route := range routes {
+		if slices.Contains(nav, route) || slices.Contains(offRail, route) {
+			continue
+		}
+		t.Errorf("web/src/App.tsx declares a page at %q that NOTHING navigates to: it is in no group in web/src/shell/nav-tree.ts and is not declared in that file's OFF_RAIL_ROUTES.\n"+
+			"An operator can only reach it by typing the URL. Put it in the tree, or — if it genuinely is not a rail destination — add it to OFF_RAIL_ROUTES with the door it IS reached through.\n"+
+			"Rail targets: %v\nOff-rail: %v", route, nav, offRail)
 	}
 }
 
@@ -467,17 +524,45 @@ func consoleRoutes(t *testing.T, root string) []string {
 
 var navToRe = regexp.MustCompile(`\bto:\s*"([^"]+)"`)
 
-// navTargets returns every `to:` in the shell's NAV_ITEMS table.
+// navTreeFile is where the console's information architecture lives, as data.
+// It used to be a flat NAV_ITEMS array inside app-shell.tsx; it became a nested
+// tree in its own module when the rail was grouped by product area, and this
+// scan followed it — the derivation moves with the nav, which is the whole point
+// of deriving rather than listing.
+var navTreeFile = filepath.Join("web", "src", "shell", "nav-tree.ts")
+
+// navTargets returns every `to:` in the shell's NAV_TREE — the rail's
+// destinations, at whatever depth they sit. Group nodes carry no `to` (a group
+// is a product area, not a page), so they contribute nothing and need no
+// special handling here.
 func navTargets(t *testing.T, root string) []string {
 	t.Helper()
-	src := readRepoFile(t, root, filepath.Join("web", "src", "shell", "app-shell.tsx"))
-	start := strings.Index(src, "const NAV_ITEMS")
+	return tableTargets(t, root, "export const NAV_TREE")
+}
+
+// offRailRoutes returns every `to:` in OFF_RAIL_ROUTES — the pages that are
+// deliberately not rail destinations, each declared alongside the door it IS
+// reached through.
+func offRailRoutes(t *testing.T, root string) []string {
+	t.Helper()
+	return tableTargets(t, root, "export const OFF_RAIL_ROUTES")
+}
+
+// tableTargets pulls the `to:` values out of one top-level array literal in the
+// nav tree module. The terminator is `\n];` at column zero, which only the
+// OUTER array can match — a group's nested `children` array closes at an indent,
+// so a group's leaves are collected as part of the tree they belong to rather
+// than ending the scan early.
+func tableTargets(t *testing.T, root, decl string) []string {
+	t.Helper()
+	src := readRepoFile(t, root, navTreeFile)
+	start := strings.Index(src, decl)
 	if start < 0 {
-		t.Fatal("web/src/shell/app-shell.tsx has no NAV_ITEMS table — the primary nav moved and this scan must move with it")
+		t.Fatalf("%s has no %q — the console navigation moved and this scan must move with it", navTreeFile, decl)
 	}
 	end := strings.Index(src[start:], "\n];")
 	if end < 0 {
-		t.Fatal("could not find the end of NAV_ITEMS in web/src/shell/app-shell.tsx")
+		t.Fatalf("could not find the end of %q in %s", decl, navTreeFile)
 	}
 	block := src[start : start+end]
 	seen := map[string]bool{}

@@ -1,25 +1,14 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { Link, NavLink, Outlet } from "react-router";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Link, NavLink, Outlet, useLocation } from "react-router";
 import {
-  Activity,
   AudioWaveform,
-  CalendarClock,
-  DatabaseBackup,
+  ChevronDown,
+  ChevronRight,
   FileText,
-  Film,
-  HeartPulse,
-  LayoutDashboard,
-  LayoutTemplate,
   Menu,
-  MonitorPlay,
-  Palette,
   PanelLeftClose,
   PanelLeftOpen,
   Puzzle,
-  Radio,
-  Upload,
-  Workflow,
-  type LucideIcon,
 } from "lucide-react";
 import { Button, KitIcon, NavDrawer } from "@/components/kit";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
@@ -30,6 +19,7 @@ import { cn } from "@/lib/utils";
 import type { WaiveoApi } from "@/api";
 import { useInstalledPackNav, type PackNavGroup } from "@/routes/packs/use-installed-packs";
 import { resolvePackIcon } from "./pack-icon";
+import { NAV_TREE, groupOwning, type NavGroup, type NavLeaf } from "./nav-tree";
 
 /**
  * AppShell — the console's responsive frame. The primary navigation is LOCKED
@@ -42,29 +32,93 @@ import { resolvePackIcon } from "./pack-icon";
  * responsive.css (`wv-shell__sidebar`, `wv-shell__hamburger`, `wv-shell__drawer`)
  * so the rail lock is robust and flash-free; the drawer's overlay/focus-trap/
  * Escape/`aria-expanded` come from the kit `NavDrawer` (Radix Dialog).
+ *
+ * # What the rail CONTAINS lives elsewhere
+ *
+ * The information architecture — which destinations exist and which product
+ * area owns each one — is DATA, in `./nav-tree.ts`. This file knows how to
+ * render a tree; it does not know that Casts belong under Slidecast. That split
+ * is deliberate: adding a page is a node in an array, which is a one-line merge
+ * between parallel tracks rather than a conflict inside a component.
+ *
+ * There are two nav landmarks, never merged: "Primary" (this tree, the core
+ * console) and "Extensions" (installed packs' own pages, resolved live), so
+ * third-party destinations stay visibly demarcated from first-party ones.
  */
-interface NavItem {
-  to: string;
-  label: string;
-  icon: LucideIcon;
-  end?: boolean;
+
+/** Which groups the operator has left OPEN, keyed by the group's stable id.
+ * Absent means "as shipped", which is open — a rail that hides five of its six
+ * product areas on first run reintroduces the problem the tree exists to fix. */
+type OpenGroups = Record<string, boolean>;
+
+const NAV_STORAGE_KEY = "waiveo.nav.groups";
+
+function readOpenGroups(): OpenGroups {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(NAV_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    // Keep only the booleans. Anything else in there is corruption or a stale
+    // shape, and a nav that throws on it would take the whole console with it.
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>).filter(([, v]) => typeof v === "boolean"),
+    ) as OpenGroups;
+  } catch {
+    return {};
+  }
 }
 
-const NAV_ITEMS: NavItem[] = [
-  { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
-  { to: "/screens", label: "Screens", icon: MonitorPlay },
-  { to: "/devices", label: "Devices", icon: Radio },
-  { to: "/schedules", label: "Schedules", icon: CalendarClock },
-  { to: "/casts", label: "Casts", icon: LayoutTemplate },
-  { to: "/upload", label: "Upload", icon: Upload },
-  { to: "/media", label: "Media", icon: Film },
-  { to: "/automations", label: "Automations", icon: Workflow },
-  { to: "/activity", label: "Activity", icon: Activity },
-  { to: "/pages", label: "Pages", icon: LayoutTemplate },
-  { to: "/system", label: "System", icon: HeartPulse },
-  { to: "/backup", label: "Backup", icon: DatabaseBackup },
-  { to: "/design", label: "Design kit", icon: Palette },
-];
+function persistOpenGroups(state: OpenGroups): void {
+  try {
+    window.localStorage.setItem(NAV_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // A blocked/full localStorage must never break navigation.
+  }
+}
+
+/** Groups ship OPEN; the stored map only ever records a deviation. */
+function isGroupOpen(state: OpenGroups, id: string): boolean {
+  return state[id] !== false;
+}
+
+/**
+ * The expand/collapse memory, plus the REVEAL rule.
+ *
+ * Two things a collapsible rail has to get right, and legacy got neither (its
+ * one nesting attempt was reverted within days): the state has to survive a
+ * reload, and the group holding the page you are ON has to be open — otherwise
+ * an operator who collapsed Slidecast last week clicks a link to /casts and the
+ * rail shows no trace of where they landed. The reveal is a real state change,
+ * not a render-time override, so the group stays open and its toggle keeps
+ * working normally afterwards.
+ */
+function useNavGroups() {
+  const [open, setOpen] = useState<OpenGroups>(readOpenGroups);
+  const { pathname } = useLocation();
+
+  useEffect(() => {
+    const owner = groupOwning(pathname);
+    if (owner === undefined) return;
+    setOpen((prev) => {
+      if (isGroupOpen(prev, owner)) return prev;
+      const next = { ...prev, [owner]: true };
+      persistOpenGroups(next);
+      return next;
+    });
+  }, [pathname]);
+
+  const toggleGroup = useCallback((id: string) => {
+    setOpen((prev) => {
+      const next = { ...prev, [id]: !isGroupOpen(prev, id) };
+      persistOpenGroups(next);
+      return next;
+    });
+  }, []);
+
+  return { open, toggleGroup };
+}
 
 function Brand({ collapsed, className }: { collapsed?: boolean; className?: string }) {
   return (
@@ -99,30 +153,143 @@ function navLinkClass(collapsed?: boolean) {
     );
 }
 
+/** One destination. Shared by the top level and by every group's children, so a
+ * leaf looks and behaves identically wherever it sits in the tree. */
+function NavLeafLink({
+  item,
+  collapsed,
+  onNavigate,
+}: {
+  item: NavLeaf;
+  collapsed?: boolean | undefined;
+  onNavigate?: (() => void) | undefined;
+}) {
+  return (
+    <NavLink
+      to={item.to}
+      end={item.end ?? false}
+      onClick={onNavigate}
+      className={navLinkClass(collapsed)}
+    >
+      <KitIcon icon={item.icon} decorative className="size-4 shrink-0" />
+      <span className={cn(collapsed && "sr-only")}>{item.label}</span>
+    </NavLink>
+  );
+}
+
+/**
+ * A product area and its destinations — a DISCLOSURE, built out of the two
+ * things the pattern actually requires and nothing else: a real `<button>` that
+ * carries `aria-expanded` and points at the region it controls, and a `<ul>`
+ * that is genuinely hidden (the `hidden` attribute, not a CSS class) when
+ * closed. That combination is what makes the tree keyboard-navigable with no
+ * key handling of our own — Tab reaches the toggle, Space/Enter works it because
+ * it is a button, and a screen reader announces "collapsed"/"expanded" and skips
+ * the closed region instead of reading destinations the operator cannot see.
+ *
+ * The heading does NOT navigate. A group is a product area, not a page: giving
+ * it a `to` as well as a toggle would mean one click had two meanings, and it
+ * would compete with its own first child for "which page am I on".
+ */
+function NavGroupSection({
+  group,
+  open,
+  onToggle,
+  collapsed,
+  onNavigate,
+}: {
+  group: NavGroup;
+  open: boolean;
+  onToggle: (id: string) => void;
+  collapsed?: boolean | undefined;
+  onNavigate?: (() => void) | undefined;
+}) {
+  const panelId = `nav-group-${group.id}`;
+  return (
+    <>
+      <button
+        type="button"
+        data-slot="nav-group-toggle"
+        data-nav-group={group.id}
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={() => onToggle(group.id)}
+        className={cn(
+          "wv-touch flex w-full items-center gap-2.5 rounded-input px-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
+          collapsed && "justify-center",
+        )}
+      >
+        <KitIcon icon={group.icon} decorative className="size-4 shrink-0" />
+        <span className={cn(collapsed && "sr-only")}>{group.label}</span>
+        {collapsed ? null : (
+          <KitIcon
+            icon={open ? ChevronDown : ChevronRight}
+            decorative
+            className="ml-auto size-3.5 shrink-0"
+          />
+        )}
+      </button>
+      {/* The `hidden` attribute is load-bearing: it is what removes the closed
+          region from the accessibility tree. A Tailwind display class would look
+          identical and leave every closed destination focusable and announced. */}
+      <ul
+        id={panelId}
+        hidden={!open}
+        data-slot="nav-group-panel"
+        className={cn(
+          "flex flex-col gap-1",
+          // Indent under the heading, with a hairline that makes the containment
+          // visible rather than merely implied. Collapsed to icons there is no
+          // room for either, and the group icon above is the only affordance.
+          collapsed ? "mt-1" : "mt-1 ml-4 border-l border-border pl-3",
+        )}
+      >
+        {group.children.map((child) => (
+          <li key={child.to}>
+            <NavLeafLink item={child} collapsed={collapsed} onNavigate={onNavigate} />
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
 function ShellNav({
   collapsed,
   onNavigate,
   packNav,
+  openGroups,
+  onToggleGroup,
 }: {
   collapsed?: boolean;
   onNavigate?: () => void;
   packNav?: PackNavGroup[];
+  openGroups: OpenGroups;
+  onToggleGroup: (id: string) => void;
 }) {
   return (
     <div className="flex flex-col gap-4">
-      <nav aria-label="Primary" className="flex flex-col gap-1">
-        {NAV_ITEMS.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.end ?? false}
-            onClick={onNavigate}
-            className={navLinkClass(collapsed)}
-          >
-            <KitIcon icon={item.icon} decorative className="size-4 shrink-0" />
-            <span className={cn(collapsed && "sr-only")}>{item.label}</span>
-          </NavLink>
-        ))}
+      {/* A real list inside the landmark: a screen reader announces "6 items"
+          and the group/child relationship is structural, not a matter of
+          indentation an assistive technology cannot see. */}
+      <nav aria-label="Primary">
+        <ul className="flex flex-col gap-1">
+          {NAV_TREE.map((node) => (
+            <li key={node.kind === "leaf" ? node.to : node.id}>
+              {node.kind === "leaf" ? (
+                <NavLeafLink item={node} collapsed={collapsed} onNavigate={onNavigate} />
+              ) : (
+                <NavGroupSection
+                  group={node}
+                  open={isGroupOpen(openGroups, node.id)}
+                  onToggle={onToggleGroup}
+                  collapsed={collapsed}
+                  onNavigate={onNavigate}
+                />
+              )}
+            </li>
+          ))}
+        </ul>
       </nav>
       {packNav && packNav.length > 0 ? (
         <ExtensionsNav groups={packNav} collapsed={collapsed} onNavigate={onNavigate} />
@@ -198,6 +365,11 @@ export function AppShell({ children, api }: { children?: ReactNode; api?: Waiveo
   // The Extensions nav: installed packs' pages, resolved over the api/1 client.
   // Degrades to nothing (no section) when no packs are installed or unreachable.
   const packNav = useInstalledPackNav(api);
+  // ONE expand/collapse state for the rail and the drawer. They are never both
+  // visible (the breakpoint decides), but they are both mounted — two
+  // independent copies would drift, so an operator who collapsed a group on a
+  // phone would find it open again on the desktop rail of the same session.
+  const { open: openGroups, toggleGroup } = useNavGroups();
 
   // The desktop/mobile split is CSS-only: at >=1024px responsive.css hides the
   // drawer (`wv-shell__drawer`) and shows the permanent rail. But Radix Dialog's
@@ -226,7 +398,12 @@ export function AppShell({ children, api }: { children?: ReactNode; api?: Waiveo
         )}
       >
         <Brand collapsed={collapsed} />
-        <ShellNav collapsed={collapsed} packNav={packNav} />
+        <ShellNav
+          collapsed={collapsed}
+          packNav={packNav}
+          openGroups={openGroups}
+          onToggleGroup={toggleGroup}
+        />
         <div className="mt-auto flex flex-col gap-1">
           <button
             type="button"
@@ -270,7 +447,12 @@ export function AppShell({ children, api }: { children?: ReactNode; api?: Waiveo
             }
           >
             <Brand />
-            <ShellNav onNavigate={() => setDrawerOpen(false)} packNav={packNav} />
+            <ShellNav
+              onNavigate={() => setDrawerOpen(false)}
+              packNav={packNav}
+              openGroups={openGroups}
+              onToggleGroup={toggleGroup}
+            />
           </NavDrawer>
           <Brand className="wv-shell__mobile-brand" />
           <div className="ml-auto flex items-center gap-2">

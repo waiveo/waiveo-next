@@ -12,6 +12,7 @@ import UploadRoute from "@/routes/upload/upload-route";
 import MediaRoute from "@/routes/media/media-route";
 import CastsRoute from "@/routes/casts/casts-route";
 import StudioRoute from "@/routes/studio/studio-route";
+import WidgetsRoute from "@/routes/widgets/widgets-route";
 import AutomationsRoute from "@/routes/automations/automations-route";
 import ActivityRoute from "@/routes/activity/activity-route";
 import DesignRoute from "@/routes/design/design-route";
@@ -86,6 +87,13 @@ export default function App() {
                 shows this session's uploads by filename; this browses everything
                 already stored, addressed by digest. */}
             <Route path="/media" element={<MediaRoute />} />
+            {/* What a slide can carry, browsable (parity row 8.4). Legacy had a
+                Widgets area under Slidecast and this console had none — the
+                kinds existed only as an insert menu inside the Studio, which
+                meant finding out whether the platform could put the weather on
+                a wall required first opening an editor on a cast you had not
+                made. Sits under Slidecast in the rail, where legacy had it. */}
+            <Route path="/widgets" element={<WidgetsRoute />} />
             <Route path="/automations" element={<AutomationsRoute />} />
             <Route path="/activity" element={<ActivityRoute />} />
             <Route path="/pages" element={<PagesRoute />} />

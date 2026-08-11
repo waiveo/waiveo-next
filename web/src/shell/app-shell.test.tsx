@@ -23,7 +23,12 @@ function setViewport(kind: "desktop" | "phone") {
     }) as unknown as MediaQueryList) as unknown as typeof window.matchMedia;
 }
 
-afterEach(() => setViewport("desktop"));
+afterEach(() => {
+  setViewport("desktop");
+  // The rail's expand/collapse memory is persisted, so a test that collapses a
+  // group would otherwise hand that state to the next one.
+  window.localStorage.clear();
+});
 
 function renderShell(path = "/design", children = <div>route content</div>) {
   return render(
@@ -33,6 +38,32 @@ function renderShell(path = "/design", children = <div>route content</div>) {
       </MemoryRouter>
     </ThemeProvider>,
   );
+}
+
+/**
+ * Read the rail back as the TREE it renders, from the DOM.
+ *
+ * Reading structure rather than a flat list of labels is the point: the defect
+ * being fixed was not "the wrong links" — every link was there — it was that
+ * they were all siblings. A test that collects `getAllByRole("link")` passes
+ * just as happily on thirteen flat items as on a grouped tree, which is exactly
+ * how the flat rail survived this long.
+ */
+function readRailTree(sidebar: HTMLElement) {
+  const nav = within(sidebar).getByRole("navigation", { name: /primary/i });
+  const top = nav.querySelector(":scope > ul") as HTMLElement;
+  return Array.from(top.children).map((li) => {
+    const toggle = li.querySelector(':scope > [data-slot="nav-group-toggle"]');
+    if (toggle) {
+      const panel = li.querySelector(':scope > [data-slot="nav-group-panel"]') as HTMLElement;
+      return {
+        group: toggle.textContent?.trim(),
+        expanded: toggle.getAttribute("aria-expanded") === "true",
+        children: Array.from(panel.querySelectorAll("a")).map((a) => a.textContent?.trim()),
+      };
+    }
+    return { leaf: (li.querySelector(":scope > a") as HTMLElement | null)?.textContent?.trim() };
+  });
 }
 
 describe("AppShell — locked-left responsive shell", () => {
@@ -63,14 +94,63 @@ describe("AppShell — locked-left responsive shell", () => {
     expect(sidebar.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("carries the full console navigation in the rail, in order", () => {
+  // ── The information architecture ──────────────────────────────────────────
+  // The rail used to be thirteen flat siblings. The owner's complaint was
+  // structural, not cosmetic: "you've got CASTS over here, but CASTS should be
+  // under slide casts... Screens should be under slide cast, just like CASTS."
+  // These assertions ARE the IA — moving a page between areas has to be a
+  // deliberate edit here, not something that happens to still pass.
+
+  it("groups the rail by product area, with Casts and Screens under Slidecast", () => {
+    const { container } = renderShell();
+    const sidebar = container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
+    expect(readRailTree(sidebar)).toEqual([
+      { leaf: "Overview" },
+      {
+        group: "Slidecast",
+        expanded: true,
+        // Legacy's own order (Casts · Screens · Media · Widgets), with the two
+        // members legacy never had slotted where they belong rather than
+        // appended: Schedules programs Screens, Upload is Media's write half.
+        children: ["Casts", "Screens", "Schedules", "Media", "Upload", "Widgets"],
+      },
+      { group: "Devices", expanded: true, children: ["All devices"] },
+      { leaf: "Automations" },
+      {
+        group: "Platform",
+        expanded: true,
+        children: ["Activity", "System", "Backup", "Pages", "Design kit"],
+      },
+    ]);
+  });
+
+  it("puts NO product page at the top level beside the platform pages", () => {
+    // The other half of the same property, stated as an absence. The tree
+    // assertion above would still pass if a duplicate `Casts` were ALSO left at
+    // the top level; this is what says the page moved rather than multiplied.
+    const { container } = renderShell();
+    const sidebar = container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
+    const topLevelLeaves = readRailTree(sidebar)
+      .map((n) => ("leaf" in n ? n.leaf : undefined))
+      .filter((l): l is string => l !== undefined);
+    expect(topLevelLeaves).toEqual(["Overview", "Automations"]);
+    for (const scattered of ["Casts", "Screens", "Media", "Upload", "System", "Backup"]) {
+      expect(topLevelLeaves).not.toContain(scattered);
+    }
+  });
+
+  it("still reaches every destination the flat rail had", () => {
+    // Grouping is exactly the operation that loses a page, and a lost page is a
+    // worse outcome than the flat rail. (The build-level version of this is
+    // cmd/waiveo-feeder/consoleroutes_test.go, which derives BOTH the route
+    // table and the tree; this is the rendered check.)
     const { container } = renderShell();
     const sidebar = container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
     const railNav = within(sidebar).getByRole("navigation", { name: /primary/i });
     const labels = within(railNav)
       .getAllByRole("link")
       .map((a) => a.textContent?.trim());
-    expect(labels).toEqual([
+    for (const had of [
       "Overview",
       "Screens",
       "Devices",
@@ -84,7 +164,137 @@ describe("AppShell — locked-left responsive shell", () => {
       "System",
       "Backup",
       "Design kit",
-    ]);
+    ]) {
+      // "Devices" now reads "All devices" — the legacy label, and the one that
+      // reads correctly beside the Discovery and Roku entries that join it.
+      const expected = had === "Devices" ? "All devices" : had;
+      expect(labels).toContain(expected);
+    }
+    // ...plus the destination the flat rail never had at all (parity row 8.4).
+    expect(labels).toContain("Widgets");
+  });
+
+  it("exposes each group as a real disclosure — button, aria-expanded, aria-controls", () => {
+    // The semantics are the accessibility story: a <button> is reachable by Tab
+    // and worked by Space/Enter with no key handling of our own, aria-expanded
+    // is what a screen reader announces as collapsed/expanded, and
+    // aria-controls is what ties the announcement to the region it opens.
+    const { container } = renderShell();
+    const sidebar = container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
+    const railNav = within(sidebar).getByRole("navigation", { name: /primary/i });
+    expect(railNav.tagName).toBe("NAV");
+
+    const toggles = within(railNav).getAllByRole("button");
+    expect(toggles.map((b) => b.textContent?.trim())).toEqual(["Slidecast", "Devices", "Platform"]);
+    for (const toggle of toggles) {
+      expect(toggle).toHaveAttribute("type", "button");
+      expect(toggle).toHaveAttribute("aria-expanded", "true");
+      const controls = toggle.getAttribute("aria-controls");
+      expect(controls).toBeTruthy();
+      // The controlled region must actually exist, or the announcement points
+      // at nothing.
+      expect(railNav.querySelector(`#${controls}`)).not.toBeNull();
+    }
+  });
+
+  it("collapses a group, and takes its destinations out of the accessibility tree", async () => {
+    const user = userEvent.setup();
+    const { container } = renderShell();
+    const sidebar = container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
+    const slidecast = within(sidebar).getByRole("button", { name: "Slidecast" });
+
+    expect(within(sidebar).getByRole("link", { name: "Casts" })).toBeInTheDocument();
+    await user.click(slidecast);
+
+    expect(slidecast).toHaveAttribute("aria-expanded", "false");
+    // Not merely invisible: gone from the a11y tree, so a screen-reader user is
+    // not offered six destinations a sighted user cannot see. (A Tailwind
+    // display class would look identical here and fail this.)
+    expect(within(sidebar).queryByRole("link", { name: "Casts" })).toBeNull();
+    expect(within(sidebar).queryByRole("link", { name: "Widgets" })).toBeNull();
+    // A sibling group is untouched.
+    expect(within(sidebar).getByRole("link", { name: "Activity" })).toBeInTheDocument();
+
+    await user.click(slidecast);
+    expect(slidecast).toHaveAttribute("aria-expanded", "true");
+    expect(within(sidebar).getByRole("link", { name: "Casts" })).toBeInTheDocument();
+  });
+
+  it("remembers which groups are collapsed across a remount", async () => {
+    // Collapse SLIDECAST while standing on /design, which lives in Platform.
+    // Collapsing the group that owns the current route would not test memory at
+    // all — the reveal rule below re-opens it on the next mount, correctly.
+    const user = userEvent.setup();
+    const first = renderShell("/design");
+    const sidebar1 = first.container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
+    await user.click(within(sidebar1).getByRole("button", { name: "Slidecast" }));
+    expect(within(sidebar1).queryByRole("link", { name: "Casts" })).toBeNull();
+    first.unmount();
+
+    const second = renderShell("/design");
+    const sidebar2 = second.container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
+    expect(within(sidebar2).getByRole("button", { name: "Slidecast" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(within(sidebar2).queryByRole("link", { name: "Casts" })).toBeNull();
+    // Only the group that was collapsed — the memory records deviations, not a
+    // whole snapshot, so an area nobody touched still ships open.
+    expect(within(sidebar2).getByRole("button", { name: "Devices" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
+  it("survives a corrupt stored preference rather than taking the console with it", () => {
+    window.localStorage.setItem("waiveo.nav.groups", "{not json");
+    const { container } = renderShell();
+    const sidebar = container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
+    expect(within(sidebar).getByRole("button", { name: "Slidecast" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
+  it("REVEALS the active route's group even when the operator had collapsed it", async () => {
+    // The failure this prevents: an operator collapses Slidecast, later follows
+    // a link to /casts, and the rail shows no trace of where they landed. The
+    // reveal is a real state change, so the group stays open and its toggle goes
+    // on working normally.
+    const user = userEvent.setup();
+    const first = renderShell("/design");
+    const sidebar1 = first.container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
+    await user.click(within(sidebar1).getByRole("button", { name: "Slidecast" }));
+    expect(within(sidebar1).queryByRole("link", { name: "Casts" })).toBeNull();
+    first.unmount();
+
+    // Arrive on a page INSIDE the collapsed group.
+    const second = renderShell("/casts");
+    const sidebar2 = second.container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
+    expect(within(sidebar2).getByRole("button", { name: "Slidecast" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(within(sidebar2).getByRole("link", { name: "Casts" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  });
+
+  it("keeps the drawer's tree in step with the rail's — one memory, not two", async () => {
+    const user = userEvent.setup();
+    renderShell();
+    // Collapse in the rail...
+    const sidebar = document.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
+    await user.click(within(sidebar).getByRole("button", { name: "Devices" }));
+    // ...and the drawer opens showing the same thing. Two independent copies of
+    // this state would drift the moment a phone and a desktop shared a session.
+    await user.click(screen.getByRole("button", { name: /open navigation menu/i }));
+    const drawer = await screen.findByRole("dialog");
+    expect(within(drawer).getByRole("button", { name: "Devices" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
   });
 
   it("marks the Activity route active when it is the current path", () => {

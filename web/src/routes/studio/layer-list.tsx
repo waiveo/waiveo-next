@@ -1,27 +1,19 @@
 import { useState } from "react";
-import {
-  ArrowDown,
-  ArrowUp,
-  CalendarDays,
-  Clock,
-  CloudSun,
-  Image as ImageIcon,
-  LayoutGrid,
-  ListTree,
-  MousePointerClick,
-  Sparkles,
-  Square,
-  Timer,
-  ToggleLeft,
-  Trash2,
-  Type,
-  Video,
-  type LucideIcon,
-} from "lucide-react";
+import { ArrowDown, ArrowUp, LayoutGrid, Sparkles, Trash2 } from "lucide-react";
 import { Button, EmptyState, KitIcon, Modal } from "@/components/kit";
-import { DERIVE_KINDS, WIDGET_LAYER_KINDS, type DeriveKind, type LayerKind, type SlideLayer, type WidgetLayerKind } from "@/api";
+import { DERIVE_KINDS, WIDGET_LAYER_KINDS, type DeriveKind, type LayerKind, type SlideLayer } from "@/api";
 import { cn } from "@/lib/utils";
 import { describeLayer } from "./slide-canvas";
+// The glyphs, names and blurbs are the SHARED catalog — `/widgets` browses the
+// same descriptions this toolbar inserts from, so the two can never disagree
+// about what a Weather layer is or where its value comes from.
+import {
+  DERIVE_BLURB,
+  DERIVE_LABEL,
+  KIND_ICON,
+  KIND_LABEL,
+  WIDGET_BLURB,
+} from "./layer-catalog";
 
 /**
  * The insert toolbar and the layer list — the two halves of "what is on this
@@ -35,36 +27,6 @@ import { describeLayer } from "./slide-canvas";
  * it. The inversion is confined to this component — every index that crosses the
  * boundary in either direction is a model index.
  */
-
-const KIND_ICON: Record<LayerKind, LucideIcon> = {
-  text: Type,
-  rect: Square,
-  image: ImageIcon,
-  clock: Clock,
-  date: CalendarDays,
-  countdown: Timer,
-  weather: CloudSun,
-  entity: ToggleLeft,
-  video: Video,
-  ping: MousePointerClick,
-  nav: ListTree,
-  derive: Sparkles,
-};
-
-const KIND_LABEL: Record<LayerKind, string> = {
-  text: "Text",
-  rect: "Rectangle",
-  image: "Image",
-  clock: "Clock",
-  date: "Date",
-  countdown: "Countdown",
-  weather: "Weather",
-  entity: "Entity state",
-  video: "Video",
-  ping: "Button",
-  nav: "Menu",
-  derive: "Rasterized",
-};
 
 /** The kinds the toolbar offers DIRECTLY: the static ones plus the clock, which
  * predates the widget concept and is the layer an operator reaches for most.
@@ -85,33 +47,6 @@ const KIND_LABEL: Record<LayerKind, string> = {
  * are objects you place, exactly like a rectangle — what is new about them is
  * what they DO, which is the panel's job to explain, not the picker's. */
 const DIRECT_KINDS: LayerKind[] = ["text", "rect", "image", "video", "clock", "ping", "nav"];
-
-/** What each live widget IS, in the terms that decide whether it is the one you
- * want. Every line says where the value comes from, because that is the whole
- * difference between these four and a text layer — and, for the two the box
- * resolves, the reason the canvas can only ever show a stand-in. */
-const WIDGET_BLURB: Record<WidgetLayerKind, string> = {
-  date: "Today's date, drawn by the screen from its own clock and re-rendered as the day turns.",
-  countdown: "Time remaining until an instant you choose. The screen counts it down itself, so it keeps ticking even if the box is unreachable.",
-  weather: "Current conditions for this site, fetched by the box and refreshed on every screen poll.",
-  entity: "The live state of one device — on, off, playing — as the box last observed it.",
-};
-
-/** What each rasterized kind IS, and — because a derive layer costs a render an
- * operator has to go and run — WHEN NOT to reach for it. Two of the three have a
- * native equivalent that stays live, needs no content and re-styles instantly;
- * choosing the rasterized one for a flat panel is a real, silent cost. */
-const DERIVE_LABEL: Record<DeriveKind, string> = {
-  qr: "QR code",
-  text: "Styled text",
-  rect: "Styled panel",
-};
-
-const DERIVE_BLURB: Record<DeriveKind, string> = {
-  qr: "A scannable QR code. No screen can draw one itself, so this is the only way to put a code on a slide.",
-  text: "Text with a gradient, a drop shadow, a rounded backing or a font the screen does not ship. Plain text should stay a Text layer — it needs no render.",
-  rect: "A panel with a gradient fill, rounded corners or a drop shadow. A flat block of colour should stay a Rectangle — it needs no render.",
-};
 
 export interface InsertToolbarProps {
   onInsert: (kind: LayerKind) => void;
