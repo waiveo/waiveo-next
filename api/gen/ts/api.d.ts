@@ -881,6 +881,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/derive/pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the slide layers waiting to be rasterized
+         * @description Every `derive` layer this caller can read whose PNG has not been produced yet (`pending`) or was produced from a spec or geometry the operator has since changed (`stale`), each as a complete work order. BOTH authored shapes that carry a layer stack are scanned — a cast's slides and a `source: "slide"` playlist item's inline slide — because both are rewritten into an ordinary `image` by the same projection and so both really do reach a screen. The listing is computed from those authored rows themselves — there is no queue table to drift out of step with what is authored, so a layer disappears from here the moment its `asset_ref` and `derived_from` are written back, and reappears the moment its spec is edited.
+         */
+        get: operations["listPendingDerives"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/webhook-endpoints": {
         parameters: {
             query?: never;
@@ -1481,10 +1501,11 @@ export interface components {
         /** @description One positioned native element of a slide (`data-model/1` DAT-043). Layers are drawn in ARRAY ORDER — the index IS the z-order — inside a fixed 1920x1080 top-left-origin canvas a player scales to its panel, so geometry is authored against those bounds whatever the real resolution is. Every member beyond `kind` and the geometry is kind-specific. */
         SlideLayer: {
             /**
-             * @description The closed layer-kind set, and it MUST stay equal to `internal/shared/wire`'s own (`slideLayerKinds`) — same members, same order. The four LIVE kinds beyond the static three plus `clock` are the widgets: `date` and `countdown` are computed by the player from its own clock, `weather` and `entity` are resolved by the box at Lease issuance (`internal/slidelive`) and drawn verbatim. `video` is image's twin — the second kind whose substance is bytes in the content origin, authored as an `asset_ref` and fetched + content-address-verified by the player before it is presented — and the only moving element a slide can carry; a player draws it as a positioned Video node looped for the slide's dwell time. They are all listed here because this enum is the AUTHORING gate: a kind the player renders and this enum omits is a widget nothing can ever create — the shape of defect this repo keeps producing, and the one that shipped in wave 1 (the four widget kinds landed on the wire and the player, and `POST /casts` answered 422 for every one of them). `ping` and `nav` are the INTERACTIVE kinds — the first layers whose value flows from the screen back to the box. A `ping` is a labelled button the viewer focuses with the remote and presses OK on, raising a durable `screen.interaction` event an automation can trigger on; a `nav` is a D-pad menu whose items jump to another slide of the same cast. A `qr` kind is deliberately ABSENT: a QR code's substance is a raster, and the rasterizer that would mint its `asset_ref` does not exist in this deployment yet — publishing the kind before its producer is the same create-with-no-renderer defect wearing the other face.
+             * @description The closed layer-kind set, and it MUST stay equal to `internal/shared/wire`'s own (`slideLayerKinds` plus `authoredOnlyLayerKinds`) — same members, same order. The four LIVE kinds beyond the static three plus `clock` are the widgets: `date` and `countdown` are computed by the player from its own clock, `weather` and `entity` are resolved by the box at Lease issuance (`internal/slidelive`) and drawn verbatim. `video` is image's twin — the second kind whose substance is bytes in the content origin, authored as an `asset_ref` and fetched + content-address-verified by the player before it is presented — and the only moving element a slide can carry; a player draws it as a positioned Video node looped for the slide's dwell time. They are all listed here because this enum is the AUTHORING gate: a kind the player renders and this enum omits is a widget nothing can ever create — the shape of defect this repo keeps producing, and the one that shipped in wave 1 (the four widget kinds landed on the wire and the player, and `POST /casts` answered 422 for every one of them). `ping` and `nav` are the INTERACTIVE kinds — the first layers whose value flows from the screen back to the box. A `ping` is a labelled button the viewer focuses with the remote and presses OK on, raising a durable `screen.interaction` event an automation can trigger on; a `nav` is a D-pad menu whose items jump to another slide of the same cast.
+             *     `derive` is the one AUTHORING-ONLY member: it is the rasterized fallback for what no player node can draw, and both content projections rewrite it into an `image` layer before serving, so it appears here (an operator authors it) and never on a Lease. A standalone `qr` kind stays deliberately ABSENT: a QR code's substance is a raster, so it is authored as a `derive` layer carrying a `qr` `DeriveSpec` and minted by the off-appliance rasterizer, rather than as a top-level kind no player node could ever draw.
              * @enum {string}
              */
-            kind: "text" | "rect" | "image" | "clock" | "date" | "countdown" | "weather" | "entity" | "video" | "ping" | "nav";
+            kind: "text" | "rect" | "image" | "clock" | "date" | "countdown" | "weather" | "entity" | "video" | "ping" | "nav" | "derive";
             /** @description The stable name a press on this layer reports. A layer carrying one is FOCUSABLE: the player gives it a focus region the viewer can move the remote onto, and OK posts the press back to the relay, which raises a durable `screen.interaction` event carrying this exact value — the value a `rules/1` `event` trigger matches on. Required for `ping`, and OPTIONAL FOR EVERY OTHER KIND, which is what makes an ordinary widget (an `entity` reading, an `image`, a `rect` used as an invisible hotspot) an interactive one with no second mechanism. It is a slug rather than free text because an automation author retypes it into a trigger's match constraint, where "Front Desk " and "front desk" would look identical and never match. A layer carrying one must also be at least 48x48 canvas pixels: below that a focus outline cannot be told apart at television viewing distance, so a viewer cannot see what pressing OK would do. */
             ping_name?: string;
             /** @description A `nav` layer's ordered menu, and legal on NO other kind. The items are laid out inside the layer's own box along its longer axis — a wide nav is a horizontal row, a tall one a vertical column — so the drawn geometry alone decides the orientation and there is no second `layout` member that could contradict it. Bounded at eight because the items share the box: past that the per-item region is too small to read at viewing distance or to show focus on. Each item's own laid-out cell must likewise be at least 48x48 canvas pixels, which is a joint constraint on the menu's size and its item count. */
@@ -1512,6 +1533,115 @@ export interface components {
              * @enum {string}
              */
             align?: "left" | "center" | "right";
+            /** @description A `derive` layer's rasterization spec — what the off-appliance renderer must draw. Required for `derive` and REJECTED on every other kind: a derive block hung on a text layer would be ignored by every projection, which is a styling control that silently does nothing. */
+            derive?: components["schemas"]["DeriveSpec"];
+            /** @description The spec digest the layer's current `asset_ref` was rendered from, written by `waiveo-derive` alongside the `asset_ref`, never authored by hand. It is what distinguishes a CURRENT raster from one the operator has since edited past: the digest covers the spec AND the layer's `w`/`h`, so resizing a layer marks it for re-render exactly as changing its text does. A stale layer keeps serving its old PNG — an edit nobody has rendered yet must never blank a screen. */
+            derived_from?: string;
+        };
+        /** @description What the off-appliance rasterizer must draw for one `derive` layer. It is a CLOSED, declarative vocabulary rather than CSS or HTML on purpose: the renderer drives a real browser, so a spec that could carry markup would make an authored cast a script-injection vector into whichever machine runs the derive tool. Every member here is a scalar the renderer validates and then formats into markup it wrote itself. */
+        DeriveSpec: {
+            /**
+             * @description What to draw. `qr` is a scannable symbol — there is no player node that makes one, so this is the only way a slide can carry a QR code at all. `text` and `rect` are the STYLED forms of the two native kinds: use them only when the layer needs a gradient, a shadow, a rounded border or a custom face, because a native `text`/`rect` layer costs no content, needs no render, and re-styles instantly.
+             * @enum {string}
+             */
+            kind: "qr" | "text" | "rect";
+            /** @description The payload a `qr` spec encodes. The cap is well below the format's theoretical ceiling: a denser symbol is unreadable across a room, so accepting one would mean authoring a sign that cannot work. */
+            data?: string;
+            /**
+             * @description A `qr` spec's error-correction level. Optional; the default is `M`, which is what a sign read at an angle in bad light wants.
+             * @enum {string}
+             */
+            ec_level?: "L" | "M" | "Q" | "H";
+            /** @description The LITERAL string a `text` spec draws — never a format. A rasterized layer is a frozen picture, so a clock or a countdown must stay a native live layer and there is deliberately no way to ask for one here. */
+            text?: string;
+            /** @description Text size in canvas pixels. `text` only; the default is 64. Rejected on `qr` and `rect` for the same reason `align` is — the renderer writes it into the text rule and nowhere else, so a size there would be a control that silently does nothing. */
+            font_px?: number;
+            /** @description The family name the text is drawn in. With `font_asset_ref` it is the name the embedded face registers under; without one it must be a family the rendering host already has. `text` only, rejected on `qr` and `rect`. */
+            font_family?: string;
+            /**
+             * @description CUSTOM TYPOGRAPHY — a content-addressed reference to a font file (TTF/OTF/WOFF2) in the content origin, which the renderer fetches and embeds before drawing. It is a real content reference: it is checked to exist when the cast is written, and it is protected from the content retention sweep for as long as a cast names it.
+             *     `text` only, and rejected on `qr` and `rect` more firmly than the other two typography members: the embedded face can only be drawn in by a text run, so a face named on either of those would be inert AND would pin a font file against the retention sweep for a layer that never uses it.
+             */
+            font_asset_ref?: string;
+            /**
+             * @description Horizontal alignment of a `text` spec inside the layer box. Optional; default `left`. Rejected on `qr` and `rect` — a symbol is always centred and a rect fills its box, so an alignment there would be a control that silently does nothing.
+             * @enum {string}
+             */
+            align?: "left" | "center" | "right";
+            /**
+             * @description Vertical alignment of a `text` spec inside the layer box. Optional; default `top`. It exists because a rasterized layer's box is exactly the layer geometry — unlike a native Label there is no larger canvas to centre against later. Rejected on `qr` and `rect`.
+             * @enum {string}
+             */
+            valign?: "top" | "middle" | "bottom";
+            /** @description The foreground: text colour for `text`, DARK MODULE colour for `qr`. Optional; the default is `#FFFFFF`. Rejected on `rect`, which has no foreground — its picture is its `fill`, `border` and `shadow`. */
+            color?: string;
+            fill?: components["schemas"]["DeriveFill"];
+            shadow?: components["schemas"]["DeriveShadow"];
+            border?: components["schemas"]["DeriveBorder"];
+        };
+        /** @description The backing behind the foreground — the gradient no native node can draw. Absent means a TRANSPARENT background, so a derive layer composites over whatever native layers sit beneath it. */
+        DeriveFill: {
+            /**
+             * @description `solid` exists beside the two gradients so a spec can state a flat backing under a shadow or a rounded border without pretending to be a gradient with two equal stops.
+             * @enum {string}
+             */
+            kind: "solid" | "linear" | "radial";
+            /** @description The solid colour, or the gradient's first stop. */
+            from: string;
+            /** @description The gradient's second stop. Required for `linear`/`radial` and REJECTED for `solid` — a member the renderer would ignore is a setting that silently does nothing. */
+            to?: string;
+            /** @description A `linear` gradient's direction, CSS convention: 0 points up, 90 points right, increasing clockwise. Rejected on the other two kinds. */
+            angle_deg?: number;
+        };
+        /** @description A drop shadow cast by the layer box. Offsets and blur are canvas pixels. */
+        DeriveShadow: {
+            dx?: number;
+            dy?: number;
+            blur?: number;
+            /** @description Optional; the default is `#000000`. */
+            color?: string;
+            /** @description Shadow opacity as an integer PERCENT rather than a float, deliberately: the spec is hashed to produce the raster's content address, and a float would make that address depend on decimal formatting. */
+            opacity_pct?: number;
+        };
+        /** @description A stroked and/or rounded outline. A radius with a zero width is legal and useful — it rounds the FILL without stroking an edge. */
+        DeriveBorder: {
+            width?: number;
+            /** @description Required when `width` is non-zero. */
+            color?: string;
+            radius?: number;
+        };
+        /**
+         * @description One outstanding rasterization: a complete work order for `waiveo-derive`. It carries WHAT to draw (`spec`, at `w`x`h`) and WHERE the result goes (`source` + `resource_id`, then `slide_id` or `item_index`, then `layer_index`), so the tool needs no second read to act on it.
+         *     A `derive` layer lives in either of the two shapes that carry an authored layer stack — a cast slide, or a playlist item's inline `slide` — and both are rewritten into an ordinary `image` by the same projection, so both are reported here. `source` says which shape this job is in, and exactly one of the two locators is present with it.
+         */
+        DerivePendingLayer: {
+            /**
+             * @description Which authored shape carries the layer. `cast` — a cast slide, located by `slide_id`. `playlist` — a `source: "slide"` playlist item's inline slide, located by `item_index` (an inline slide has no id of its own).
+             * @enum {string}
+             */
+            source: "cast" | "playlist";
+            /** @description The id of the cast or playlist row the layer is authored in. */
+            resource_id: string;
+            /** @description That row's name, for a human reading the queue. */
+            resource_name?: string;
+            /** @description The cast slide's document-local id. Present when `source` is `cast` and absent otherwise. */
+            slide_id?: string;
+            /** @description The index of the playlist item whose inline slide carries the layer. Present when `source` is `playlist` and absent otherwise. */
+            item_index?: number;
+            layer_index: number;
+            /**
+             * @description `pending` — no PNG has ever been produced, so the projection omits the layer and the rest of the slide still draws. `stale` — a PNG exists but the spec or the geometry has changed since; the OLD picture keeps being served until the tool catches up, because an edit nobody has rendered yet must never blank a screen.
+             * @enum {string}
+             */
+            state: "pending" | "stale";
+            /** @description The digest the tool must write back as `derived_from` after uploading the PNG. Supplying it here rather than making the tool recompute it is what keeps one definition of the digest on the server side of the loop. */
+            spec_digest: string;
+            w: number;
+            h: number;
+            spec: components["schemas"]["DeriveSpec"];
+        };
+        DerivePendingList: {
+            derive_jobs: components["schemas"]["DerivePendingLayer"][];
         };
         /** @description One slide of a cast (`data-model/1` DAT-043): an id unique within its own cast, an optional dwell time, and the ordered layer stack a player draws. The id names a position in one authored document — what a reorder or an undo operates on — and is deliberately not a ULID, because nothing outside the cast ever references it. */
         CastSlide: {
@@ -4491,6 +4621,30 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             409: components["responses"]["Conflict"];
+        };
+    };
+    listPendingDerives: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The outstanding rasterizations: every cast's, then every playlist's, in row then slide then layer order within each. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DerivePendingList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
         };
     };
     listWebhookEndpoints: {

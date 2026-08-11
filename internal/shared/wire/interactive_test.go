@@ -246,7 +246,9 @@ func TestLeaseContentSlideIDIsOmittedWhenAbsent(t *testing.T) {
 // would be refused while the error claimed to list every legal value.
 func TestInteractiveKindsAreInTheClosedSet(t *testing.T) {
 	for _, kind := range []string{LayerKindPing, LayerKindNav} {
-		if !isSlideLayerKind(kind) {
+		// authoring=false: ping and nav are SERVE-side kinds, so they must be in
+		// the narrow set, not merely in the authoring-widened one.
+		if !isSlideLayerKind(kind, false) {
 			t.Errorf("%s must be a member of the closed kind set", kind)
 		}
 		if !strings.Contains(strings.Join(slideLayerKinds, "/"), kind) {

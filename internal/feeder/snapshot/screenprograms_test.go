@@ -652,6 +652,68 @@ func TestDerivedContentMatchesRelaySideProjection(t *testing.T) {
 			}
 			assertProjectionsAgree(t, s, oc)
 		})
+		// The rasterized fallback (parity row 2.4). A `derive` layer is the FIRST
+		// kind whose projection is not a pass-through with a url bolted on: it is
+		// rewritten into a different kind, or DROPPED, and which of those happens
+		// depends on state the layer carries. That is exactly the shape where two
+		// independent projections agree the day they are written and diverge later —
+		// and the divergence here is invisible, because both sides still produce a
+		// perfectly valid slide, just with a different number of layers in it.
+		//
+		// The slide carries all three states at once on purpose: a rendered layer
+		// (must become an image), an unrendered one (must be dropped by BOTH sides,
+		// or the two disagree on the layer count), and a stale one (must keep
+		// serving its previous picture on BOTH sides, or an operator's un-rendered
+		// edit blanks the layer at the next daypart boundary and not before).
+		t.Run("a cast slide carrying derive layers", func(t *testing.T) {
+			s := seededStore(t, asset)
+			rendered := wire.Layer{Kind: wire.LayerKindDerive, X: 1400, Y: 60, W: 400, H: 400,
+				Derive: &wire.DeriveSpec{Kind: wire.DeriveKindQR, Data: "https://waiveo.local/pair"}}
+			rendered.AssetRef = asset
+			rendered.DerivedFrom = wire.DeriveDigest(rendered)
+
+			stale := wire.Layer{Kind: wire.LayerKindDerive, X: 100, Y: 700, W: 900, H: 260,
+				Derive: &wire.DeriveSpec{Kind: wire.DeriveKindText, Text: "TODAY", FontPx: 120,
+					Fill: &wire.DeriveFill{Kind: wire.DeriveFillLinear, From: "#7C3AED", To: "#0EA5E9", AngleDeg: 90}}}
+			stale.AssetRef = asset
+			stale.DerivedFrom = "0000000000000000000000000000000000000000000000000000000000000000"
+
+			pending := wire.Layer{Kind: wire.LayerKindDerive, X: 40, Y: 40, W: 200, H: 200,
+				Derive: &wire.DeriveSpec{Kind: wire.DeriveKindRect,
+					Fill: &wire.DeriveFill{Kind: wire.DeriveFillSolid, From: "#101828"}}}
+
+			castID := writeCast(t, s, datamodel.Cast{
+				ID: "01J8ZCASTPAR1TYDER1VE00001", ScopeNode: castScopeNode, Name: "Derive",
+				Slides: []datamodel.CastSlide{{ID: "d1", DurationMS: 9000, Layers: []wire.Layer{
+					{Kind: wire.LayerKindText, X: 0, Y: 0, W: 800, H: 120, Text: "Welcome"},
+					rendered, stale, pending,
+				}}},
+			})
+			replaceSeedPlaylistItems(t, s, []datamodel.PlaylistItem{
+				{Source: datamodel.PlaylistSourceCast, CastID: castID},
+			})
+
+			// The premise, asserted rather than assumed: the app side really did
+			// rewrite two derive layers into images and drop the unrendered one, so
+			// the two-sided comparison below is comparing something.
+			prog := programForScreen(t, buildSnapshot(t, s).Sections.ScreenPrograms, store.SeedScreenID)
+			if len(prog.Content) != 1 {
+				t.Fatalf("content = %d items, want 1; got %+v", len(prog.Content), prog.Content)
+			}
+			layers := prog.Content[0].Layers
+			if len(layers) != 3 {
+				t.Fatalf("the projected slide has %d layers, want 3 (text + rendered + stale; the unrendered one is dropped): %+v", len(layers), layers)
+			}
+			for i, l := range layers[1:] {
+				if l.Kind != wire.LayerKindImage {
+					t.Fatalf("projected layer %d is %q, want an image — a derive kind reached the wire", i+1, l.Kind)
+				}
+				if l.URL == "" {
+					t.Fatalf("projected layer %d has no fetch url; the whole slide would be dropped at serve time", i+1)
+				}
+			}
+			assertProjectionsAgree(t, s, oc)
+		})
 	})
 }
 
@@ -1001,18 +1063,22 @@ func TestSeededDemoSlideValidatesAndDerives(t *testing.T) {
 // malformed — the producer half of the same refuse-don't-serve discipline the
 // relay applies. A valid asset item alongside it is unaffected.
 //
-// The bad row is injected into the DesiredStateResult rather than written
-// through the store, and that is a deliberate change rather than a shortcut. The
-// store now refuses an inline slide whose layers do not validate
-// (datamodel.slideLayerGate, PLAYLIST_ITEM_SLIDE_LAYERS_INVALID) — which is the
-// real fix for the operator, and is asserted over the HTTP surface in
-// internal/app/api. This drop remains the LAST line and still has to work: a
-// desired-state bundle also arrives from a restore and from a seed, and the
-// authoring gate is applied one step earlier than the serve gate on purpose
-// (a content-bearing layer's url is derived at projection, so a row that was
-// perfectly valid when authored can still be unprojectable here). Writing it
-// through the store would now assert the gate instead of the drop, and the drop
-// would go untested.
+// The shape driven here is one the AUTHORING gate accepts and the SERVE gate
+// cannot: a single, un-rendered `derive` layer. It used to be an off-canvas
+// rect, which the write itself now refuses — an inline slide's layer stack is
+// validated at authoring time by the same wire.ValidateAuthoredSlideLayers a
+// cast slide's is (datamodel.checkPlaylistItems), so that stack can no longer be
+// stored at all. This one still can, and must be: an operator authors a derive
+// layer BEFORE the off-appliance rasterizer has ever run, so "accepted, and not
+// yet projectable" is its normal first state. DeriveProjection omits the layer
+// (no PNG exists), which leaves the slide with no layers, which the serve-time
+// gate refuses — so the item is dropped rather than emitted empty.
+//
+// That the two gates sit one step apart is deliberate and is why the serve-side
+// drop still has to work even with the authoring gate in place: a desired-state
+// bundle also arrives from a restore and from a seed, and a content-bearing
+// layer's url is minted at projection, so a row that was perfectly valid when
+// authored can still be unprojectable here.
 func TestInvalidSlideItemIsSkipped(t *testing.T) {
 	ctx := context.Background()
 	id := testIdentity(t)
@@ -1023,10 +1089,10 @@ func TestInvalidSlideItemIsSkipped(t *testing.T) {
 	if err != nil || len(pls) != 1 {
 		t.Fatalf("list playlists: %v (got %d)", err, len(pls))
 	}
-	// A rect whose far edge runs past the canvas width — ValidateSlideLayers
-	// rejects it, so this slide item must not survive derivation.
 	badSlide := &datamodel.Slide{Layers: []wire.Layer{
-		{Kind: wire.LayerKindRect, X: 1900, Y: 0, W: 100, H: 100, Color: "#ffffff"},
+		{Kind: wire.LayerKindDerive, X: 0, Y: 0, W: 400, H: 400, Derive: &wire.DeriveSpec{
+			Kind: wire.DeriveKindQR, Data: "https://waiveo.local/pair/NOT-RENDERED-YET",
+		}},
 	}}
 	edited := datamodel.Playlist{
 		ID: pls[0].ID, ScopeNode: "01J8Z4DEM0SCREENF1RSTPH0TN", Name: "Playlist With A Bad Slide",
@@ -1039,15 +1105,14 @@ func TestInvalidSlideItemIsSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal playlist: %v", err)
 	}
-	// The store REFUSES this row now; confirming that here is what keeps this
-	// test honest about why it goes around it.
-	if _, err := s.Update(ctx, store.KindPlaylist, pls[0].ID, pls[0].Revision, body); err == nil {
-		t.Fatal("the store accepted a playlist whose inline slide does not validate; the authoring gate is gone")
+	// The store ACCEPTS this row: an un-rendered derive layer is a legal
+	// authored state. Confirming that here is what keeps the test honest about
+	// which of the two gates it is exercising.
+	if _, err := s.Update(ctx, store.KindPlaylist, pls[0].ID, pls[0].Revision, body); err != nil {
+		t.Fatalf("update playlist: %v", err)
 	}
-	ds := desiredState(t, s)
-	ds.Rows.Playlists = []json.RawMessage{body}
 
-	snap, _, err := BuildFromStore(ds, contenturl.Signer{Base: "https://origin.example"}, id, contentInstant(t))
+	snap, _, err := BuildFromStore(desiredState(t, s), contenturl.Signer{Base: "https://origin.example"}, id, contentInstant(t))
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}

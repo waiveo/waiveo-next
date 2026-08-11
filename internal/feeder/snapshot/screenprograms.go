@@ -486,9 +486,19 @@ func resolveSlideLayers(slide *datamodel.Slide, sign contenturl.Signer) ([]wire.
 // share one deadline; a stack with no content-bearing layer at all (a text or
 // clock slide) has nothing that expires and reports 0.
 func resolveLayers(authored []wire.Layer, sign contenturl.Signer) ([]wire.Layer, int64, bool) {
-	layers := make([]wire.Layer, len(authored))
+	layers := make([]wire.Layer, 0, len(authored))
 	var expiresAt int64
-	for i, l := range authored {
+	for _, a := range authored {
+		// A `derive` layer (the rasterized fallback, wire/derive.go) is rewritten
+		// into the plain `image` layer a player draws BEFORE anything else looks
+		// at it, through the one shared wire.DeriveProjection the relay-side
+		// projection also calls — so a screen never sees an authoring-only kind
+		// and no player learns anything new. A layer whose PNG has not been
+		// rendered yet is dropped rather than dropping the whole slide.
+		l, ok := wire.DeriveProjection(a)
+		if !ok {
+			continue
+		}
 		if wire.LayerFetchesContent(l.Kind) {
 			// A content-bearing layer's URL — an image's or a video's,
 			// wire.LayerFetchesContent naming the pair once — is minted from the
@@ -505,7 +515,7 @@ func resolveLayers(authored []wire.Layer, sign contenturl.Signer) ([]wire.Layer,
 			// never see disagree.
 			l.URL, expiresAt = sign.Mint(l.AssetRef)
 		}
-		layers[i] = l
+		layers = append(layers, l)
 	}
 	if err := wire.ValidateSlideLayers(layers); err != nil {
 		return nil, 0, false

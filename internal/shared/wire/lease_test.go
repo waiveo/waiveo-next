@@ -381,7 +381,7 @@ func TestLayerFetchesContentNamesEveryAssetBearingKind(t *testing.T) {
 	// predicate naming a kind validation rejects would be dead in one direction
 	// and misleading in the other.
 	for kind := range wantContentBearing {
-		if !isSlideLayerKind(kind) {
+		if !isSlideLayerKind(kind, false) {
 			t.Errorf("LayerFetchesContent names %q, which is not a legal layer kind", kind)
 		}
 	}

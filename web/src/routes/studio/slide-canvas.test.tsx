@@ -103,6 +103,10 @@ describe("the canvas preview of each LIVE widget kind", () => {
 
   it("draws rect and image without a text branch, and marks an unfinished image", () => {
     expect(draw(layer({ kind: "rect", color: "#101020" }))).toHaveStyle({ backgroundColor: "#101020" });
+    // ASSET_REF is the authored half; the url is DERIVED, and the listing is
+    // what resolves it. A layer carrying a url and NO ref is not a layer with
+    // bytes, it is a layer the server would refuse, and the canvas draws it as
+    // unfinished for the same reason describeLayer calls it "(none chosen)".
     expect(draw(layer({ kind: "image", asset_ref: "sha256:aa11" }))).toHaveAttribute(
       "src",
       LIBRARY.get("sha256:aa11"),
@@ -110,6 +114,7 @@ describe("the canvas preview of each LIVE widget kind", () => {
     // No bytes chosen yet: a labelled outline, not nothing — an invisible object
     // could not be found again on the canvas.
     expect(draw(layer({ kind: "image" }), "layer-image-empty")).not.toBeNull();
+    expect(draw(layer({ kind: "image", url: "blob:asset" }), "layer-image-empty")).not.toBeNull();
   });
 
   it("draws the LIBRARY's url for an asset_ref, and ignores a url carried on the layer", () => {

@@ -23,16 +23,15 @@ import { cn } from "@/lib/utils";
  * Load the content origin's listing: the assets, the failure (as a human
  * string), and a reload for after an upload.
  *
- * `enabled` exists because the Studio's picker is a MODAL that stays mounted
- * while closed — a hook that fetched on mount would pull the whole library on
- * every Studio page load, for a dialog the operator may never open. Gating the
- * fetch also means the listing is FRESH when it is opened, rather than a
- * snapshot from whenever the editor happened to mount.
+ * It reads ON MOUNT, unconditionally. It used to be gated behind an `enabled`
+ * flag so the Studio's picker — a modal that stays mounted while closed — did
+ * not pull the whole library for a dialog nobody opened. That gate is gone
+ * because the Studio needs the listing whether or not the picker is ever opened:
+ * a layer's fetch `url` is DERIVED, so resolving an authored `asset_ref` into
+ * something the canvas can draw is exactly this listing. Freshness is kept by
+ * `reload`, which the picker calls when it opens.
  */
-export function useContentLibrary(
-  api: WaiveoApi,
-  enabled = true,
-): {
+export function useContentLibrary(api: WaiveoApi): {
   assets: ContentAsset[] | null;
   error: string | null;
   reload: () => Promise<void>;
@@ -51,9 +50,8 @@ export function useContentLibrary(
   }, [api]);
 
   useEffect(() => {
-    if (!enabled) return;
     void reload();
-  }, [enabled, reload]);
+  }, [reload]);
 
   return { assets, error, reload };
 }
@@ -189,12 +187,28 @@ export function MediaGrid({
   );
 }
 
+/** What the picker offers to place. `image`/`video` pick BYTES onto a
+ * content-bearing layer; `font` picks the face a rasterized text layer embeds
+ * (`derive.font_asset_ref`). All three come out of the same content origin,
+ * which is exactly why they are one control rather than three. */
+export type PickerKind = "image" | "video" | "font";
+
+const PICKER_COPY: Record<PickerKind, string> = {
+  image: "Choose an image",
+  video: "Choose a video",
+  font: "Choose a font file",
+};
+
 /**
- * The content picker: the same grid in a modal, resolving `{asset_ref, url}`
- * onto a content-bearing slide layer. Both fields travel together and that is a
- * wire requirement, not a convenience — `wire.ValidateSlideLayers` refuses an
- * image or video layer holding one without the other, and the projector would
- * drop the whole slide.
+ * The content picker: the same grid in a modal, resolving an asset onto whatever
+ * the caller asked for.
+ *
+ * The LIBRARY IS THE HOST'S, not this component's. The Studio needs the same
+ * listing to resolve every layer's `asset_ref` into a drawable url — `url` is
+ * derived, so a cast written by anything but this picker carries only the ref —
+ * and two independent reads of one listing is two answers to one question, with
+ * the canvas and the picker able to disagree about which bytes exist. The host
+ * reads it once and passes it in; `onReload` refreshes both at the same instant.
  *
  * `kind` changes the WORDING and nothing else, deliberately: the origin is
  * content-addressed and knows no MIME type (see this file's header), so there is
@@ -204,28 +218,44 @@ export function MediaGrid({
 export function MediaPickerModal({
   open,
   onOpenChange,
-  api,
+  assets,
+  error,
+  onReload,
   kind = "image",
   selectedRef,
   onPick,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  api: WaiveoApi;
-  kind?: "image" | "video";
+  /** The host's content listing; `null` while it is still loading. */
+  assets: ContentAsset[] | null;
+  error: string | null;
+  /** Re-read the listing — called when the dialog opens, so what is offered is
+   * current even if something was uploaded elsewhere since the page loaded.
+   *
+   * It MUST be referentially stable (a `useCallback`, or the hook's own
+   * `reload`): the open-effect depends on it, so a fresh closure per render
+   * would re-fire the read on every render the read itself causes. */
+  onReload: () => void;
+  kind?: PickerKind;
   selectedRef?: string | undefined;
   onPick: (asset: ContentAsset) => void;
 }) {
-  const { assets, error, reload } = useContentLibrary(api, open);
+  // Refresh on OPEN rather than on mount: the dialog stays mounted while closed,
+  // so this is the moment an operator is actually about to choose.
+  useEffect(() => {
+    if (open) onReload();
+  }, [open, onReload]);
+
   return (
     <Modal
-      title={kind === "video" ? "Choose a video" : "Choose an image"}
+      title={PICKER_COPY[kind]}
       description="Everything the content origin is serving — it stores bytes by digest, not by file type, so every asset is listed. Uploads land on the Content page."
       size="xl"
       open={open}
       onOpenChange={onOpenChange}
       footer={
-        <Button variant="secondary" onClick={() => void reload()}>
+        <Button variant="secondary" onClick={onReload}>
           Refresh
         </Button>
       }
@@ -235,6 +265,12 @@ export function MediaPickerModal({
           assets={assets}
           error={error}
           selectedRef={selectedRef}
+          {...(kind === "font"
+            ? {
+                emptyHint:
+                  "Upload a TTF, OTF or WOFF2 on the Content page and it appears here, ready to attach to a rasterized text layer.",
+              }
+            : {})}
           onSelect={(asset) => {
             onPick(asset);
             onOpenChange(false);

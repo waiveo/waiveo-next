@@ -8,19 +8,21 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { ImageOff, VideoOff } from "lucide-react";
+import { ImageOff, QrCode, VideoOff } from "lucide-react";
 import { KitIcon } from "@/components/kit";
 import {
   SLIDE_CANVAS_HEIGHT,
   SLIDE_CANVAS_WIDTH,
+  deriveNeedsRender,
   isContentKind,
   isInteractiveLayer,
   navItemRects,
   type CastSlide,
+  type DeriveSpec,
   type SlideLayer,
 } from "@/api";
 import { cn } from "@/lib/utils";
-import { RESIZE_HANDLES, moveLayerBy, resizeLayerBy, type ResizeHandle } from "./cast-model";
+import { RESIZE_HANDLES, moveLayerBy, resizeLayerBy, staleRasterKey, type ResizeHandle } from "./cast-model";
 import { COUNTDOWN_DEFAULT_LAYOUT, formatCountdownLayout, formatGoTimeLayout } from "./go-time-layout";
 
 /**
@@ -47,6 +49,92 @@ import { COUNTDOWN_DEFAULT_LAYOUT, formatCountdownLayout, formatGoTimeLayout } f
 const NUDGE = 8;
 /** …and with Alt held, for placing something precisely. */
 const NUDGE_FINE = 1;
+
+/**
+ * The content origin's `asset_ref` → fetch-`url` map, or `null` when the origin
+ * has not answered — either because the listing is still in flight or because
+ * the read FAILED.
+ *
+ * The Studio needs it because `url` is DERIVED, not authored: the wire calls it
+ * "present on a SERVED slide", producers mint it at projection time, and no
+ * authored cast should carry one at all. Every producer writes the ref alone —
+ * `waiveo-derive` writes `asset_ref` + `derived_from` and nothing else, a pack
+ * import writes what the pack declared, an API caller writes what it likes —
+ * and a canvas that keyed off `url` showed every one of those as if it had no
+ * bytes at all. For a derive layer that meant the fake approximation and a
+ * NEEDS RENDER badge on a layer that HAD been rendered, forever.
+ *
+ * The server now refuses to STORE an authored one at all
+ * (`internal/app/store/derivedmembers.go`), because a content url is signed and
+ * expiring (`internal/feeder/contenturl`): the picker used to patch the
+ * listing's url into the layer, the save persisted it, and reopening the cast a
+ * day later drew a canvas of broken images against a url the origin had begun
+ * refusing. The Studio drops the member on load too
+ * (`cast-model.withoutDerivedLayerFields`), so inside the editor the listing is
+ * the only answer there is.
+ *
+ * `null` is one value for two situations on purpose, because they have the same
+ * consequence: the origin's answer is UNKNOWN, so nothing may be reported
+ * missing. Collapsing "failed" into "loaded and empty" is the second half of the
+ * same defect — the canvas then tells an operator whose box is briefly
+ * unreachable that the retention sweep ate every asset in the cast, and they go
+ * and re-upload or re-render bytes that were never gone.
+ */
+export type AssetUrls = ReadonlyMap<string, string> | null;
+
+/**
+ * The layers whose drawn raster is known to be OUT OF DATE, keyed
+ * `${slideId}#${layerIndex}`.
+ *
+ * A derive layer's PNG is rendered at its exact spec and geometry, so editing
+ * either makes the picture on the canvas a picture of the previous design. The
+ * layer keeps drawing it — never blanking a screen (or an editor) over an edit
+ * nobody has rendered yet is the same discipline the projection applies — but
+ * drawing it with nothing said is a lie about a finished layer, which is the
+ * class this whole file keeps closing. The badge says which truth it is.
+ *
+ * The console cannot compute this from a layer alone: `derived_from` is a hash
+ * of the server's own canonical encoding, and a second implementation of that
+ * encoding here is exactly the drifting copy this codebase keeps paying for.
+ * What it CAN see without one is the operator's own edit, which is the case they
+ * hit every time they nudge a font size — so staleness is computed in the
+ * Studio, by comparing the draft against the cast as it was read
+ * (cast-model.staleRasterKeys), and passed in.
+ */
+export type StaleRasters = ReadonlySet<string> | null;
+
+/** What the canvas can draw for one layer's bytes. */
+interface ResolvedAsset {
+  /** The URL to fetch, when there is one. */
+  url: string | undefined;
+  /** True only when the origin's listing HAS answered and does not carry the
+   * layer's ref — the bytes were swept, or never uploaded. Never true while the
+   * listing is in flight, and never true when the read failed. */
+  missing: boolean;
+}
+
+/**
+ * Resolve a layer's bytes from the content origin's own listing.
+ *
+ * The LISTING is authoritative, and an authored `url` is at most a fallback for
+ * when the listing is unknown. That order is the whole point: `url` is a DERIVED
+ * member that producers mint at projection time, so one sitting on an authored
+ * layer is a value nothing has re-checked — written by an older console, carried
+ * in from a workspace export, or (on the branch that makes content urls signed
+ * and expiring) already dead. Preferring it over the listing draws from the
+ * expired url AND reports `missing: false`, so there is no badge either: worse
+ * than either drawing nothing or saying so.
+ *
+ * When the origin has not answered, an authored url is better than nothing and
+ * cannot be contradicted by a listing we do not have — so it is used, and
+ * nothing is reported missing.
+ */
+function resolveLayerAsset(layer: SlideLayer, urls: AssetUrls): ResolvedAsset {
+  if (!layer.asset_ref) return { url: undefined, missing: false };
+  if (urls === null) return { url: layer.url, missing: false };
+  const url = urls.get(layer.asset_ref);
+  return { url, missing: url === undefined };
+}
 
 /** A ticking clock, shared by every clock layer on the stage (one timer, not one
  * per layer). The preview ticks for the same reason the player does: a frozen
@@ -103,7 +191,45 @@ export function describeLayer(layer: SlideLayer): string {
       return layer.items && layer.items.length > 0
         ? `Menu — ${layer.items.length} item${layer.items.length === 1 ? "" : "s"}`
         : "Menu — (no items yet)";
+    case "derive": {
+      const d = layer.derive;
+      const what = d?.kind === "qr" ? `QR — ${d.data ?? "(nothing to encode)"}`
+        : d?.kind === "text" ? `Styled text — ${d.text || "(empty)"}`
+        : d?.kind === "rect" ? "Styled panel"
+        : "Rasterized — (nothing to draw)";
+      return deriveNeedsRender(layer) ? `${what} — needs render` : what;
+    }
   }
+}
+
+/** The CSS that APPROXIMATES a derive spec in the editor.
+ *
+ * It is an approximation and the canvas says so (see the NEEDS RENDER badge):
+ * the authoritative pixels come from Chromium running off-appliance, and the
+ * browser drawing this preview is not necessarily the same Chromium, does not
+ * have the embedded font, and cannot encode a QR symbol. What it CAN do
+ * faithfully is the geometry and the styling — which is the whole reason an
+ * operator is looking at the canvas — so gradient, radius, border and shadow are
+ * built from the same members the page builder reads.
+ *
+ * Once a raster EXISTS the canvas stops approximating and draws the real PNG,
+ * so what an operator checks before shipping is the actual picture. */
+function deriveApproxStyle(spec: DeriveSpec | undefined): CSSProperties {
+  if (!spec) return {};
+  const out: CSSProperties = {};
+  const f = spec.fill;
+  if (f?.kind === "linear") out.background = `linear-gradient(${f.angle_deg ?? 0}deg, ${f.from} 0%, ${f.to} 100%)`;
+  else if (f?.kind === "radial") out.background = `radial-gradient(circle at 50% 50%, ${f.from} 0%, ${f.to} 100%)`;
+  else if (f) out.background = f.from;
+  const b = spec.border;
+  if (b?.width) out.border = `${b.width}px solid ${b.color ?? "#FFFFFF"}`;
+  if (b?.radius) out.borderRadius = b.radius;
+  const sh = spec.shadow;
+  if (sh) {
+    const pct = (sh.opacity_pct ?? 50) / 100;
+    out.boxShadow = `${sh.dx ?? 0}px ${sh.dy ?? 0}px ${sh.blur ?? 0}px rgba(0,0,0,${pct})`;
+  }
+  return out;
 }
 
 /** The string a live widget SHOWS in the editor's preview.
@@ -144,42 +270,41 @@ function liveWidgetPreview(layer: SlideLayer, now: Date): string {
  * a slide left open across midnight would otherwise show yesterday. */
 const TICKING_KINDS = ["clock", "date", "countdown"];
 
-/**
- * `asset_ref` → a fetch URL for those bytes, as of RIGHT NOW: the content
- * listing (`GET /content`), keyed for lookup.
+/** The badge a layer wears when what is drawn is not what the layer says.
  *
- * A content-bearing layer's URL is not part of the layer. It is minted by the
- * server per response and it EXPIRES (`internal/feeder/contenturl`), so the only
- * correct time to know one is the moment something is about to fetch it — which
- * is why the server refuses to store an authored one at all
- * (`internal/app/store/derivedmembers.go`) and why the canvas resolves through
- * this rather than reading `layer.url`.
- *
- * Reading `layer.url` is exactly what broke: the picker patched the listing's
- * url into the layer, the save persisted it, and reopening the cast a day later
- * drew a canvas of broken images against a url the origin had begun refusing.
- */
-export type AssetUrls = ReadonlyMap<string, string>;
-
-/** The fetch URL for a content-bearing layer's bytes, or undefined when there
- * are none to draw — no asset chosen yet, or one the library no longer holds
- * (an asset the retention sweep reclaimed). Both are undrawable, and both are
- * shown as the same "nothing here" outline. */
-function assetUrlFor(layer: SlideLayer, assetUrls: AssetUrls | undefined): string | undefined {
-  if (!layer.asset_ref) return undefined;
-  return assetUrls?.get(layer.asset_ref);
+ * It is one component because the three truths are one vocabulary and an
+ * operator has to be able to tell them apart at a glance: NEEDS RENDER (nothing
+ * was ever produced), NEEDS RE-RENDER (a picture is drawn, of the previous
+ * design), BYTES MISSING (a picture was produced and the origin is not serving
+ * it). Reporting any of the three as another sends the operator to do work that
+ * is either already done or will not help. */
+function LayerBadge({ label }: { label: string }) {
+  return (
+    <span
+      data-slot="layer-derive-badge"
+      className="absolute left-2 top-2 rounded bg-black/70 px-2 py-1 text-white"
+      style={{ fontSize: 28 }}
+    >
+      {label}
+    </span>
+  );
 }
 
 /** One layer, drawn the way the player draws it. Canvas-space coordinates. */
 export function LayerView({
   layer,
   now,
-  assetUrls,
+  assetUrls = null,
+  stale = false,
 }: {
   layer: SlideLayer;
   now: Date;
-  /** The content library, for a content-bearing layer's preview. See AssetUrls. */
-  assetUrls?: AssetUrls | undefined;
+  /** The content origin's ref→url listing, for a content-bearing layer's
+   * preview. See AssetUrls. */
+  assetUrls?: AssetUrls;
+  /** The drawn raster is a picture of a previous spec or geometry. See
+   * StaleRasters — the canvas cannot decide this for itself. */
+  stale?: boolean;
 }) {
   const box: CSSProperties = {
     position: "absolute",
@@ -193,23 +318,93 @@ export function LayerView({
     return <div data-slot="layer-rect" aria-hidden="true" style={{ ...box, backgroundColor: layer.color }} />;
   }
 
+  const asset = resolveLayerAsset(layer, assetUrls);
+
+  if (layer.kind === "derive") {
+    // A RENDERED derive layer is drawn as exactly what it becomes on the wire —
+    // an image — so the canvas stops approximating the moment the real pixels
+    // exist. That is not a nicety: the whole point of the rasterizer is styling
+    // this browser cannot reproduce, so an approximation that never gave way to
+    // the truth would be the last thing an operator saw before shipping.
+    //
+    // The URL is RESOLVED, never assumed: `waiveo-derive` writes the asset_ref
+    // and its digest and nothing else, so a canvas that waited for an authored
+    // `url` waited for something no rasterizer run has ever produced.
+    if (asset.url) {
+      // A STALE raster is still drawn — never blanking a layer over an edit
+      // nobody has rendered yet is the same discipline the projection applies —
+      // but it is drawn WITH the badge. Silently showing a picture of the
+      // previous font size is the "lie about a finished layer" this file's
+      // badges exist to end, seen from the one side that had no badge at all.
+      return (
+        <div data-slot="layer-derive" aria-hidden="true" style={box} className="relative">
+          <img src={asset.url} alt="" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+          {stale ? <LayerBadge label="NEEDS RE-RENDER" /> : null}
+        </div>
+      );
+    }
+    const spec = layer.derive;
+    // The badge states which of the two truths this is. NEEDS RENDER means no
+    // raster has ever been produced (deriveNeedsRender — the same predicate the
+    // layer list and the properties panel read). BYTES MISSING means one WAS
+    // produced and the content origin is not serving it: swept, or never
+    // uploaded. Reporting the second as the first would send an operator to run
+    // a tool that has already run.
+    const missing = asset.missing;
+    return (
+      <div data-slot="layer-derive-preview" aria-hidden="true" style={{ ...box, ...deriveApproxStyle(spec) }}
+        className="flex items-center justify-center overflow-hidden">
+        {spec?.kind === "text" ? (
+          <span
+            style={{
+              color: spec.color ?? "#FFFFFF",
+              fontSize: spec.font_px ?? 64,
+              lineHeight: 1.15,
+              textAlign: spec.align ?? "left",
+              width: "100%",
+              padding: "0 8px",
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {spec.text ?? ""}
+          </span>
+        ) : spec?.kind === "qr" ? (
+          <span style={{ color: spec.color ?? "#111827" }}>
+            <KitIcon icon={QrCode} decorative className="size-32" />
+          </span>
+        ) : null}
+        {deriveNeedsRender(layer) || missing ? (
+          <LayerBadge label={missing ? "BYTES MISSING" : "NEEDS RENDER"} />
+        ) : null}
+      </div>
+    );
+  }
+
   if (isContentKind(layer.kind)) {
-    // Resolved from the content library, never read off the layer: the layer
-    // holds the content-addressed `asset_ref`, and the url for those bytes is
-    // minted per response and expires. See AssetUrls.
-    const src = assetUrlFor(layer, assetUrls);
-    // A content-bearing layer with no bytes to draw is a labelled outline rather
-    // than nothing: it is a placed, selectable, movable object that simply is
-    // not finished, and an invisible one could not be found again.
-    if (!src) {
+    // A content-bearing layer with no bytes CHOSEN yet is drawn as a labelled
+    // outline rather than nothing: it is a placed, selectable, movable object
+    // that simply is not finished, and an invisible one could not be found
+    // again.
+    //
+    // A layer that NAMES bytes the origin is not serving gets the same outline,
+    // because it is equally undrawable — but it wears the badge, because it is
+    // not the same situation and the remedy is not the same. "Nothing chosen"
+    // is finished by picking bytes; "the origin has no such digest" means the
+    // bytes were swept or never uploaded, and an operator who reads that as the
+    // first goes looking for a picker that will not help. The `missing` signal
+    // was computed here and never read, which made the two indistinguishable —
+    // and it is never true while the origin's answer is unknown, so a slow or
+    // failed read cannot produce this badge.
+    if (!asset.url) {
       return (
         <div
           data-slot={`layer-${layer.kind}-empty`}
           aria-hidden="true"
           style={box}
-          className="flex items-center justify-center border-4 border-dashed border-[color:var(--wv-border)] bg-[color:var(--wv-surface-2)]"
+          className="relative flex items-center justify-center border-4 border-dashed border-[color:var(--wv-border)] bg-[color:var(--wv-surface-2)]"
         >
           <KitIcon icon={layer.kind === "video" ? VideoOff : ImageOff} decorative className="size-16 text-muted-foreground" />
+          {asset.missing ? <LayerBadge label="BYTES MISSING" /> : null}
         </div>
       );
     }
@@ -223,7 +418,7 @@ export function LayerView({
       return (
         <video
           data-slot="layer-video"
-          src={src}
+          src={asset.url}
           muted
           playsInline
           preload="metadata"
@@ -234,7 +429,7 @@ export function LayerView({
     return (
       <img
         data-slot="layer-image"
-        src={src}
+        src={asset.url}
         alt=""
         style={{ ...box, objectFit: "contain" }}
       />
@@ -331,13 +526,19 @@ export function SlideStage({
   slide,
   scale,
   className,
-  assetUrls,
+  assetUrls = null,
+  staleRasters = null,
 }: {
   slide: CastSlide;
   scale: number;
   className?: string;
-  /** The content library, for content-bearing layers' previews. See AssetUrls. */
-  assetUrls?: AssetUrls | undefined;
+  /** The content origin's ref→url listing, for content-bearing layers'
+   * previews. See AssetUrls. */
+  assetUrls?: AssetUrls;
+  /** Which layers' drawn rasters are out of date. See StaleRasters. The KEY is
+   * built here, not by the caller's loop, because this is the one place that
+   * holds both the slide's id and the layer's index. */
+  staleRasters?: StaleRasters;
 }) {
   const ticking = slide.layers.some((l) => TICKING_KINDS.includes(l.kind));
   const now = useNow(ticking);
@@ -356,7 +557,13 @@ export function SlideStage({
         }}
       >
         {slide.layers.map((layer, i) => (
-          <LayerView key={i} layer={layer} now={now} assetUrls={assetUrls} />
+          <LayerView
+            key={i}
+            layer={layer}
+            now={now}
+            assetUrls={assetUrls}
+            stale={staleRasters?.has(staleRasterKey(slide.id, i)) ?? false}
+          />
         ))}
       </div>
     </div>
@@ -397,8 +604,10 @@ export interface SlideCanvasProps {
   /** A keyboard resize, by a canvas-space delta on one grip. */
   onResizeBy: (index: number, handle: ResizeHandle, dx: number, dy: number) => void;
   onDelete: (index: number) => void;
-  /** The content library, for content-bearing layers' previews. See AssetUrls. */
-  assetUrls?: AssetUrls | undefined;
+  /** The content origin's ref→url listing (see AssetUrls). */
+  assetUrls?: AssetUrls;
+  /** Which layers' drawn rasters are out of date (see StaleRasters). */
+  staleRasters?: StaleRasters;
 }
 
 /** What a drag in progress is holding: which layer, which grip (null = move),
@@ -419,7 +628,8 @@ export function SlideCanvas({
   onNudge,
   onResizeBy,
   onDelete,
-  assetUrls,
+  assetUrls = null,
+  staleRasters = null,
 }: SlideCanvasProps) {
   const frameRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(1);
@@ -525,7 +735,13 @@ export function SlideCanvas({
         onPointerDown={() => onSelect(null)}
       >
         {/* The artwork, at 1:1 inside the scale transform. */}
-        <SlideStage slide={slide} scale={scale} assetUrls={assetUrls} className="pointer-events-none absolute left-0 top-0" />
+        <SlideStage
+          slide={slide}
+          scale={scale}
+          assetUrls={assetUrls}
+          staleRasters={staleRasters}
+          className="pointer-events-none absolute left-0 top-0"
+        />
 
         {/* The chrome, in screen pixels. One hit target per layer, topmost last
             so the z-order the operator sees is the z-order they click. */}

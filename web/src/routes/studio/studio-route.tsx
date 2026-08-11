@@ -11,6 +11,7 @@ import {
   validateCastSlides,
   type Cast,
   type Entity,
+  type DeriveKind,
   type LayerKind,
   type SlideLayer,
   type WaiveoApi,
@@ -18,9 +19,12 @@ import {
 import { MediaPickerModal, useContentLibrary } from "@/routes/media/media-library";
 import {
   EMPTY_STUDIO_STATE,
+  applyDerivePatch,
   currentSlide,
   defaultLayer,
+  deriveLayer,
   selectedLayer,
+  staleRasterKeys,
   studioReducer,
   studioStateToUpdate,
   type ResizeHandle,
@@ -82,35 +86,54 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
   const [saving, setSaving] = useState(false);
   /** Set when a save hit a 412; holds the server's current cast for review. */
   const [conflict, setConflict] = useState<{ cast: Cast; etag: string } | null>(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
+  /**
+   * What the content picker is choosing FOR, or null when it is closed.
+   *
+   * `layer` places bytes on an `image`/`video` layer; `font` attaches a face to
+   * a rasterized text layer's `derive.font_asset_ref`. One picker with a target
+   * rather than two dialogs: the origin holds one kind of thing (bytes with a
+   * digest), and a second copy of the same modal is a second place to forget a
+   * rule about it.
+   */
+  const [pickerFor, setPickerFor] = useState<"layer" | "font" | null>(null);
   const [leaveOpen, setLeaveOpen] = useState(false);
   /** Every entity the box knows, for an `entity` widget's subject picker. */
   const [entities, setEntities] = useState<Entity[]>([]);
 
-  // ── The content library, for drawing content-bearing layers ───────────────
+  // The content origin's listing, read ONCE for the whole editor and used for
+  // two things that must not disagree: resolving every layer's `asset_ref` into
+  // a url the canvas can draw, and stocking the picker. `url` is a DERIVED
+  // member — producers mint it at projection time and nothing should write one
+  // onto an authored layer — so a canvas that waited for an authored url drew
+  // nothing for every cast written by anything else, `waiveo-derive`'s rasters
+  // first among them.
   //
-  // Loaded unconditionally (not only when the picker opens) because the CANVAS
-  // needs it, not just the picker: a layer holds a content-addressed
-  // `asset_ref`, and the url for those bytes is minted per response and EXPIRES
-  // (internal/feeder/contenturl). So an image is drawn from a url resolved now,
-  // never from one saved with the cast.
+  // A failure is NOT surfaced as an editor error, for the same reason the entity
+  // read is not: taking a text-layout session down because the origin is briefly
+  // unreachable is a worse answer than degrading. But it IS surfaced, twice, and
+  // that is the correction: the origin has THREE states (in flight, answered,
+  // failed) and the canvas models two, so a failed read used to be
+  // indistinguishable from "answered, and the origin holds nothing" — which the
+  // canvas renders as BYTES MISSING on every finished layer in the cast. An
+  // operator who reads that goes and re-uploads or re-renders assets that were
+  // never gone.
   //
-  // Saving one is what broke: the picker patched the listing's url into the
-  // layer, the save persisted it, and reopening the cast after the deadline drew
-  // broken images against a url the origin refuses. The server now declines to
-  // store it at all (internal/app/store/derivedmembers.go); this is the other
-  // half — the live source it is dropped in favour of.
-  const { assets: contentAssets } = useContentLibrary(client);
-  // An asset picked THIS session is merged over the listing. The picker fetches
-  // its own, fresher listing when it opens, so an asset uploaded after the
-  // editor mounted is pickable but absent from the map above — and without this
-  // the operator would choose an image and watch the canvas keep showing the
-  // "nothing chosen" outline. It holds a url, not the document: this is the
-  // render-time lookup, and nothing here is ever saved.
-  const [pickedUrls, setPickedUrls] = useState<ReadonlyMap<string, string>>(new Map());
-  const assetUrls = useMemo(
-    () => new Map([...(contentAssets ?? []).map((a) => [a.asset_ref, a.url] as const), ...pickedUrls]),
-    [contentAssets, pickedUrls],
+  // So a failure leaves `assetUrls` NULL — the origin's answer is unknown, and
+  // nothing may be reported missing on the strength of a listing we do not have
+  // — and says so once, in a status line, rather than as a per-layer badge that
+  // states something false about each one.
+  const { assets: contentAssets, error: contentError, reload: reloadContent } = useContentLibrary(client);
+  const assetUrls = useMemo(() => {
+    if (contentError !== null || contentAssets === null) return null;
+    return new Map(contentAssets.map((a) => [a.asset_ref, a.url]));
+  }, [contentAssets, contentError]);
+
+  // Which drawn rasters this editing session has already invalidated. Computed
+  // against the cast AS READ, so it survives every edit without a round trip —
+  // see cast-model.staleRasterKeys for why it is not a recomputed digest.
+  const staleRasters = useMemo(
+    () => (loaded ? staleRasterKeys(loaded.slides, state.slides) : null),
+    [loaded, state.slides],
   );
 
   const slide = currentSlide(state);
@@ -239,6 +262,13 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
     (kind: LayerKind) => dispatch({ type: "insertLayer", layer: defaultLayer(kind, Date.now()) }),
     [],
   );
+  // A rasterized layer inserts through its own callback because `derive` is not
+  // one kind: the SPEC decides what is drawn, so "insert a derive layer" has no
+  // meaning without one.
+  const onInsertDerive = useCallback(
+    (kind: DeriveKind) => dispatch({ type: "insertLayer", layer: deriveLayer(kind) }),
+    [],
+  );
   const onSelectLayer = useCallback((index: number | null) => dispatch({ type: "selectLayer", index }), []);
   const onGeometry = useCallback(
     (index: number, geometry: Pick<SlideLayer, "x" | "y" | "w" | "h">) =>
@@ -325,6 +355,20 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
               ? "One slide won't draw yet, so saving is held: the server refuses the whole cast if any slide is invalid."
               : `${invalidSlideCount} slides won't draw yet, so saving is held: the server refuses the whole cast if any slide is invalid.`}{" "}
             The filmstrip marks them — open each and fix what the panel flags.
+          </p>
+        ) : null}
+
+        {/* The origin's listing failed. Said ONCE, here, rather than as a
+            per-layer badge: the canvas cannot tell "the origin has no such
+            digest" from "we could not ask", and badging every finished layer
+            BYTES MISSING because the box blinked is what sends an operator to
+            re-upload assets that were never gone. Layout, text and widget
+            editing all still work, so this is a status line and not an error
+            page. */}
+        {contentError !== null ? (
+          <p role="status" className="text-sm text-[color:var(--wv-warn)]">
+            Couldn't read the content library ({contentError}). Images, video and rendered layers can't be drawn
+            until it answers — nothing has gone missing, and your edits still save.
           </p>
         ) : null}
 
@@ -418,27 +462,29 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
           slides={state.slides}
           activeIndex={state.slideIndex}
           problemsBySlide={problemsBySlide}
+          assetUrls={assetUrls}
+          staleRasters={staleRasters}
           onSelect={(index) => dispatch({ type: "selectSlide", index })}
           onAdd={() => dispatch({ type: "addSlide", id: newSlideId() })}
           onDuplicate={(index) => dispatch({ type: "duplicateSlide", index, id: newSlideId() })}
           onDelete={(index) => dispatch({ type: "deleteSlide", index })}
           onMove={(from, to) => dispatch({ type: "moveSlide", from, to })}
-          assetUrls={assetUrls}
         />
 
         {slide ? (
           <div className="grid min-w-0 grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
             <div className="flex min-w-0 flex-col gap-3">
-              <InsertToolbar onInsert={onInsert} />
+              <InsertToolbar onInsert={onInsert} onInsertDerive={onInsertDerive} />
               <SlideCanvas
                 slide={slide}
                 selectedIndex={state.layerIndex}
+                assetUrls={assetUrls}
+                staleRasters={staleRasters}
                 onSelect={onSelectLayer}
                 onGeometry={onGeometry}
                 onNudge={onNudge}
                 onResizeBy={onResizeBy}
                 onDelete={onDeleteLayer}
-                assetUrls={assetUrls}
               />
               <p className="text-[12px] text-muted-foreground">
                 Drag a layer to move it, or drag a corner to resize. With a layer focused: arrow keys nudge,
@@ -463,7 +509,8 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
                   if (state.layerIndex === null) return;
                   dispatch({ type: "patchLayer", index: state.layerIndex, patch });
                 }}
-                onPickAsset={() => setPickerOpen(true)}
+                onPickAsset={() => setPickerFor("layer")}
+                onPickFont={() => setPickerFor("font")}
                 slides={state.slides}
                 slideIndex={state.slideIndex}
                 durationMs={slide.duration_ms}
@@ -481,24 +528,47 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
       </div>
 
       <MediaPickerModal
-        open={pickerOpen}
-        onOpenChange={setPickerOpen}
-        api={client}
+        open={pickerFor !== null}
+        onOpenChange={(open) => setPickerFor(open ? (pickerFor ?? "layer") : null)}
+        assets={contentAssets}
+        error={contentError}
+        // Passed straight through, NOT wrapped: the picker re-reads on open,
+        // and a closure minted per render would make that read re-fire on every
+        // render the read itself triggers.
+        onReload={reloadContent}
         // The origin holds one kind of thing (bytes with a digest), so the same
-        // picker serves an image layer and a video layer; only the wording
-        // follows the selected layer's kind.
-        kind={layer?.kind === "video" ? "video" : "image"}
-        selectedRef={layer?.asset_ref}
+        // picker serves an image layer, a video layer and a rasterized text
+        // layer's embedded face; only the wording follows what it is choosing
+        // for.
+        kind={pickerFor === "font" ? "font" : layer?.kind === "video" ? "video" : "image"}
+        selectedRef={pickerFor === "font" ? layer?.derive?.font_asset_ref : layer?.asset_ref}
         onPick={(asset) => {
           if (state.layerIndex === null) return;
-          // The asset_ref ALONE. `url` is derived — minted per response, with a
-          // deadline — so it belongs in the render-time lookup (assetUrls) and
-          // never in the document being edited: a draft carrying it would send
-          // it on save, and a stored copy is a link that dies. The server
-          // strips one anyway (internal/app/store/derivedmembers.go); not
+          if (pickerFor === "font") {
+            // The FACE goes on the spec, not the layer: `font_asset_ref` is part
+            // of what the rasterizer draws, so it belongs to the digest — which
+            // is what makes attaching a font mark the raster stale and get it
+            // re-rendered rather than silently keeping the old picture.
+            const spec = layer?.derive;
+            if (!spec) return;
+            dispatch({
+              type: "patchLayer",
+              index: state.layerIndex,
+              patch: { derive: applyDerivePatch(spec, { font_asset_ref: asset.asset_ref }) },
+            });
+            return;
+          }
+          // The REF is authored; the url is NOT, and this is the one writer that
+          // ever put one on a layer. `url` is DERIVED — producers mint it at
+          // projection time — so an authored one is a value nothing re-checks:
+          // it survives an export/restore, it outlives a signed url's expiry,
+          // and on any canvas that trusts it over the origin's listing it draws
+          // dead bytes while reporting nothing missing. The explicit `undefined`
+          // REMOVES the key (applyPatch deletes rather than serialising a null),
+          // so re-picking on a layer that carries a legacy url clears it. The
+          // server strips one anyway (internal/app/store/derivedmembers.go); not
           // putting it in the model is what makes that a backstop rather than
           // the only defence.
-          setPickedUrls((prev) => new Map(prev).set(asset.asset_ref, asset.url));
           dispatch({
             type: "patchLayer",
             index: state.layerIndex,

@@ -385,14 +385,49 @@ var slideLayerKinds = []string{
 	LayerKindPing, LayerKindNav,
 }
 
-// isSlideLayerKind reports whether kind is one of the closed set.
-func isSlideLayerKind(kind string) bool {
+// authoredOnlyLayerKinds are the kinds an OPERATOR may author but that never
+// reach a player. Today there is exactly one — LayerKindDerive, the rasterized
+// fallback (derive.go) — and it is authoring-only because a projection rewrites
+// it into a plain `image` before the serve-time gate ever sees it, so the wire a
+// screen reads stays the closed set every existing player already draws.
+//
+// It is a named set rather than an inline `kind == LayerKindDerive` in
+// validateSlideLayers for the reason that inline test would be wrong the day a
+// second such kind appears: the asymmetry between the two gates has to be
+// statable in ONE place, and the wire tests assert it from both directions
+// against this slice.
+var authoredOnlyLayerKinds = []string{LayerKindDerive}
+
+// isSlideLayerKind reports whether kind is one of the closed set. authoring
+// widens the set by authoredOnlyLayerKinds: the same question, asked at the two
+// times the two exported gates are asked it.
+func isSlideLayerKind(kind string, authoring bool) bool {
 	for _, k := range slideLayerKinds {
 		if k == kind {
 			return true
 		}
 	}
+	if authoring {
+		for _, k := range authoredOnlyLayerKinds {
+			if k == kind {
+				return true
+			}
+		}
+	}
 	return false
+}
+
+// legalLayerKinds names every kind a gate accepts, for its rejection message —
+// the ONE enumeration the message is built from, so it can never claim to list
+// values the gate does not actually take.
+func legalLayerKinds(authoring bool) []string {
+	if !authoring {
+		return slideLayerKinds
+	}
+	out := make([]string, 0, len(slideLayerKinds)+len(authoredOnlyLayerKinds))
+	out = append(out, slideLayerKinds...)
+	out = append(out, authoredOnlyLayerKinds...)
+	return out
 }
 
 // Layer is one positioned native element of a `slide` content item (native
@@ -517,6 +552,18 @@ type Layer struct {
 	// items on a `rect` is a producer that thinks it authored a menu, and
 	// silently drawing a rectangle instead is worse than refusing it.
 	Items []NavItem `json:"items,omitempty"`
+	// Derive is the RASTERIZED-FALLBACK spec of a `derive` layer: what the
+	// off-appliance renderer must draw for something no SceneGraph node can (a
+	// gradient, a drop shadow, a rounded border, a custom face, a QR symbol).
+	// Required for `derive`, unused by every other kind. See derive.go, which
+	// owns the shape, the gate and the projection.
+	Derive *DeriveSpec `json:"derive,omitempty"`
+	// DerivedFrom is the DeriveDigest of the spec+geometry the layer's current
+	// AssetRef was rendered from. It is what distinguishes a current raster from
+	// one an operator has since edited past, and it is filled by the derive tool
+	// alongside AssetRef, never authored by hand. Unused by every kind but
+	// `derive`.
+	DerivedFrom string `json:"derived_from,omitempty"`
 }
 
 // ValidateSlideLayers is the ONE gate a `slide` content item's layers pass
@@ -620,9 +667,14 @@ func validateSlideLayers(layers []Layer, requireContentURL bool) error {
 		return fmt.Errorf("wire: slide has no layers")
 	}
 	for i, l := range layers {
-		if !isSlideLayerKind(l.Kind) {
+		// requireContentURL is true exactly at SERVE time, which is also exactly
+		// when the authoring-only kinds are illegal — a `derive` layer that
+		// reached this gate is one a projection failed to rewrite into an
+		// `image`, and serving it would hand a player a kind it cannot draw.
+		authoring := !requireContentURL
+		if !isSlideLayerKind(l.Kind, authoring) {
 			return fmt.Errorf("wire: slide layer %d: unknown kind %q (want one of %s)",
-				i, l.Kind, strings.Join(slideLayerKinds, "/"))
+				i, l.Kind, strings.Join(legalLayerKinds(authoring), "/"))
 		}
 
 		if l.W <= 0 || l.H <= 0 {
@@ -706,6 +758,21 @@ func validateSlideLayers(layers []Layer, requireContentURL bool) error {
 					return fmt.Errorf("wire: slide layer %d (nav): item %d needs a target_slide_id of 1..%d characters", i, j, navTargetMaxLen)
 				}
 			}
+		case LayerKindDerive:
+			// The spec is required; the ASSET is not. A derive layer with no
+			// asset yet is the normal state of a freshly authored one — the
+			// off-appliance renderer has not run — and refusing it here would
+			// make it impossible to author the thing that the renderer is
+			// supposed to find and render.
+			if err := ValidateDeriveSpec(l.Derive); err != nil {
+				return fmt.Errorf("wire: slide layer %d (derive): %w", i, err)
+			}
+			if l.AssetRef != "" && !isAssetRef(l.AssetRef) {
+				return fmt.Errorf("wire: slide layer %d (derive): asset_ref %q is not a sha256:<64 hex> reference", i, l.AssetRef)
+			}
+			if l.DerivedFrom != "" && l.AssetRef == "" {
+				return fmt.Errorf("wire: slide layer %d (derive): derived_from names the spec an asset was rendered from, but there is no asset_ref", i)
+			}
 		}
 
 		// The two INTERACTIVE members are checked outside the per-kind switch,
@@ -751,6 +818,20 @@ func validateSlideLayers(layers []Layer, requireContentURL bool) error {
 		}
 		if len(l.Items) > 0 && l.Kind != LayerKindNav {
 			return fmt.Errorf("wire: slide layer %d (%s): only a nav layer may carry items", i, l.Kind)
+		}
+
+		// The derive members belong to the derive kind alone. A `derive` block
+		// hung on a text layer would be silently ignored by every projection —
+		// an operator styling a gradient that never appears, with nothing
+		// anywhere saying why — which is this codebase's signature defect seen
+		// from the authoring side rather than the serving side.
+		if l.Kind != LayerKindDerive {
+			if l.Derive != nil {
+				return fmt.Errorf("wire: slide layer %d (%s): a derive spec is only used by a %s layer", i, l.Kind, LayerKindDerive)
+			}
+			if l.DerivedFrom != "" {
+				return fmt.Errorf("wire: slide layer %d (%s): derived_from is only used by a %s layer", i, l.Kind, LayerKindDerive)
+			}
 		}
 
 		// A color, wherever present, must be a renderable #RRGGBB — required

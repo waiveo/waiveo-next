@@ -20,6 +20,8 @@ import {
   type Cast,
   type CastSlide,
   type CastUpdate,
+  type DeriveKind,
+  type DeriveSpec,
   type LayerKind,
   type SlideLayer,
 } from "@/api";
@@ -177,6 +179,59 @@ export function defaultLayer(kind: LayerKind, nowMs: number = Date.now()): Slide
       // Wide rather than tall, so the default orientation is the horizontal row
       // a signage menu almost always is (the layout axis follows the box).
       return { kind, x: 260, y: 900, w: 1400, h: 120, items: [], font_px: 44, color: "#FFFFFF" };
+    case "derive":
+      // A bare `derive` has no meaning — the spec decides what is drawn — so the
+      // toolbar always inserts through `deriveLayer` below and this arm exists
+      // only to keep the switch exhaustive. QR is the default because it is the
+      // one derive kind with no native alternative at all.
+      return deriveLayer("qr");
+  }
+}
+
+/**
+ * A new RASTERIZED layer of one derive kind, positioned and pre-styled.
+ *
+ * Each default is chosen so the layer looks like a finished thing the moment it
+ * lands, because a derive layer costs a render to see: an operator who has to
+ * set four properties before the first render is an operator who renders four
+ * times. A QR arrives with the light field a scanner needs; a panel arrives with
+ * a gradient (a flat one should be a NATIVE rect, which needs no render at all);
+ * styled text arrives with the drop shadow that is the usual reason to reach for
+ * it.
+ *
+ * None of them carries an `asset_ref`: a freshly authored derive layer is
+ * PENDING by definition, and it is the off-appliance `waiveo-derive` tool that
+ * fills that in.
+ */
+export function deriveLayer(kind: DeriveKind): SlideLayer {
+  switch (kind) {
+    case "qr":
+      return {
+        kind: "derive", x: 1400, y: 120, w: 400, h: 400,
+        derive: {
+          kind: "qr", data: "https://example.com", ec_level: "M", color: "#111827",
+          fill: { kind: "solid", from: "#FFFFFF" },
+          border: { radius: 24 },
+        },
+      };
+    case "text":
+      return {
+        kind: "derive", x: 160, y: 420, w: 1600, h: 280,
+        derive: {
+          kind: "text", text: "Styled text", font_px: 120, color: "#FFFFFF",
+          align: "center", valign: "middle",
+          shadow: { dy: 8, blur: 24, color: "#000000", opacity_pct: 55 },
+        },
+      };
+    case "rect":
+      return {
+        kind: "derive", x: 240, y: 240, w: 900, h: 420,
+        derive: {
+          kind: "rect",
+          fill: { kind: "linear", from: "#7C3AED", to: "#0EA5E9", angle_deg: 135 },
+          border: { radius: 32 },
+        },
+      };
   }
 }
 
@@ -199,6 +254,25 @@ type OptionalLayerField = Exclude<keyof SlideLayer, RequiredLayerField>;
 export type LayerPatch = Partial<Pick<SlideLayer, RequiredLayerField>> & {
   [K in OptionalLayerField]?: SlideLayer[K] | undefined;
 };
+
+/** The same "explicit undefined REMOVES the key" convention, one level down, for
+ * a derive layer's spec. It is needed for exactly the same reason and it bites
+ * harder: `wire.DeriveSpec` refuses a member the chosen kind does not use — a
+ * solid fill carrying a second stop, a border with a width and no colour — so a
+ * turned-off control that left `undefined` behind would serialise a key the
+ * server rejects, and the Studio's save would fail on a control the operator can
+ * no longer see. */
+export type DeriveSpecPatch = { [K in keyof DeriveSpec]?: DeriveSpec[K] | undefined };
+
+/** Merge a spec patch, DELETING the members whose value is undefined. */
+export function applyDerivePatch(spec: DeriveSpec, patch: DeriveSpecPatch): DeriveSpec {
+  const next = { ...spec } as DeriveSpec & Record<string, unknown>;
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) delete next[key];
+    else next[key] = value;
+  }
+  return next;
+}
 
 function applyPatch(layer: SlideLayer, patch: LayerPatch): SlideLayer {
   const next = { ...layer } as SlideLayer & Record<string, unknown>;
@@ -355,6 +429,63 @@ export function selectedLayer(state: StudioState): SlideLayer | undefined {
   const slide = currentSlide(state);
   if (!slide || state.layerIndex === null) return undefined;
   return slide.layers[state.layerIndex];
+}
+
+/** The key a stale raster is addressed by: the slide's document-local id and
+ * the layer's index within it. One function so the producer below and the
+ * consumer (slide-canvas SlideStage) cannot spell it differently. */
+export function staleRasterKey(slideId: string, layerIndex: number): string {
+  return `${slideId}#${layerIndex}`;
+}
+
+/**
+ * Which drawn rasters the DRAFT has invalidated: every `derive` layer that
+ * carries a PNG and whose spec or geometry no longer matches the cast as it was
+ * read.
+ *
+ * A derive layer's picture is rendered at its exact spec and its exact pixel
+ * size, so nudging a font size or dragging a corner makes the PNG on the canvas
+ * a picture of the previous design. The layer keeps drawing it — the projection
+ * serves a stale raster rather than blanking a screen over an edit nobody has
+ * rendered yet, and an editor that blanked it would be worse — but drawing it
+ * with nothing said is the "lie about a finished layer" the badges exist to end.
+ *
+ * It compares against the READ cast rather than recomputing `derived_from`,
+ * deliberately. That digest is a hash of the server's own canonical encoding,
+ * and a second implementation of that encoding in TypeScript is exactly the
+ * drifting copy this codebase keeps paying for: it would agree until the day a
+ * member was added, and then quietly stop reporting anything. What this
+ * comparison sees instead is the operator's own edit — which is the case they
+ * hit constantly, and the one no server round trip has told them about yet. A
+ * layer the SERVER already considers stale (edited in a previous session, or by
+ * another writer) is not visible here and is reported by GET /derive/pending;
+ * this closes the authoring-time half, and says so rather than claiming both.
+ *
+ * Slides are matched by their document-local id, not by position, so reordering
+ * or inserting slides does not make every raster in the cast look stale.
+ */
+export function staleRasterKeys(loaded: CastSlide[], draft: CastSlide[]): ReadonlySet<string> {
+  const before = new Map(loaded.map((s) => [s.id, s]));
+  const stale = new Set<string>();
+  for (const slide of draft) {
+    const original = before.get(slide.id);
+    if (!original) continue;
+    slide.layers.forEach((layer, i) => {
+      // Only a layer that HAS a raster can have a stale one. A pending layer is
+      // already badged NEEDS RENDER by the canvas, from the layer alone.
+      if (layer.kind !== "derive" || !layer.asset_ref) return;
+      const was = original.layers[i];
+      // A layer that has moved index is not the same layer to compare against;
+      // reporting it stale on that basis would badge a raster that is fine.
+      if (!was || was.kind !== "derive" || was.asset_ref !== layer.asset_ref) return;
+      const changed =
+        was.w !== layer.w ||
+        was.h !== layer.h ||
+        JSON.stringify(was.derive ?? null) !== JSON.stringify(layer.derive ?? null);
+      if (changed) stale.add(staleRasterKey(slide.id, i));
+    });
+  }
+  return stale;
 }
 
 /** The PATCH body a save sends. The editor never hand-builds this — the one

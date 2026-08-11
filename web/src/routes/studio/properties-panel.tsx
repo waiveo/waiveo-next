@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, FileVideo, ImagePlus, Plus, Trash2, X } from "lucide-react";
+import { AlertTriangle, FileVideo, ImagePlus, Plus, Trash2, Type, X } from "lucide-react";
 import { Button, FormField, KitIcon } from "@/components/kit";
 import {
   ENTITY_STATE_TOKEN,
@@ -10,6 +10,8 @@ import {
   isContentKind,
   isLabelKind,
   type CastSlide,
+  type DeriveBorder,
+  type DeriveSpec,
   type Entity,
   type LayerAlign,
   type NavItem,
@@ -17,7 +19,7 @@ import {
   type SlideProblem,
 } from "@/api";
 import { cn } from "@/lib/utils";
-import type { LayerPatch } from "./cast-model";
+import { applyDerivePatch, type DeriveSpecPatch, type LayerPatch } from "./cast-model";
 import { CLOCK_PRESETS, COUNTDOWN_PRESETS, DATE_PRESETS } from "./go-time-layout";
 import { describeLayer } from "./slide-canvas";
 
@@ -59,6 +61,10 @@ export interface PropertiesPanelProps {
    * (`image` or `video` — one picker, because the origin holds one kind of
    * thing: bytes with a digest). */
   onPickAsset: () => void;
+  /** Open that same picker for a rasterized TEXT layer's embedded face
+   * (`derive.font_asset_ref`). A font file is content in the same origin, so it
+   * is chosen the same way — see DeriveFields' custom-face control. */
+  onPickFont: () => void;
   /** The current slide's hold time, and how to change it. */
   durationMs: number | undefined;
   onDurationChange: (durationMs: number | null) => void;
@@ -85,6 +91,7 @@ export function PropertiesPanel({
   layerIndex,
   onPatch,
   onPickAsset,
+  onPickFont,
   durationMs,
   onDurationChange,
   entities,
@@ -318,6 +325,24 @@ export function PropertiesPanel({
             </>
           ) : null}
 
+          {layer.kind === "derive" && layer.derive ? (
+            <DeriveFields
+              spec={layer.derive}
+              rendered={Boolean(layer.asset_ref)}
+              onPickFont={onPickFont}
+              onSpec={(patch) => {
+                const spec = layer.derive;
+                if (!spec) return;
+                // The whole spec is rewritten on every edit, and `derived_from`
+                // is deliberately LEFT ALONE. It records which spec the current
+                // raster came from, so the server can tell CURRENT from STALE;
+                // clearing it here would report every edited layer as never
+                // rendered and drop its picture off the wall until the tool ran.
+                onPatch({ derive: applyDerivePatch(spec, patch) });
+              }}
+            />
+          ) : null}
+
           {layer.kind === "rect" ? (
             <ColorField
               label="Fill colour"
@@ -532,6 +557,331 @@ function NavItemsField({
       </div>
     </div>
   );
+}
+
+/**
+ * The controls for a RASTERIZED layer's spec.
+ *
+ * Every member the spec vocabulary carries is editable here, and that is the
+ * point rather than thoroughness for its own sake: a layer an operator can
+ * insert and not edit is the defect this codebase keeps shipping, and it is
+ * worse for a derive layer than for any other kind — a QR whose payload cannot
+ * be changed is a sign pointing at example.com, rendered, uploaded, and put on a
+ * wall.
+ *
+ * The render state is stated at the top for the same reason. A derive layer is
+ * the ONE kind whose appearance does not follow from saving: it needs
+ * `waiveo-derive` to be run, off the box, by a human. An editor that did not say
+ * so would leave an operator waiting for a picture nothing was ever going to
+ * produce.
+ */
+function DeriveFields({
+  spec,
+  rendered,
+  onSpec,
+  onPickFont,
+}: {
+  spec: DeriveSpec;
+  rendered: boolean;
+  onSpec: (patch: DeriveSpecPatch) => void;
+  /** Open the content picker for the embedded face. */
+  onPickFont: () => void;
+}) {
+  const fill = spec.fill;
+  const shadow = spec.shadow;
+  const border = spec.border;
+  return (
+    <div className="flex flex-col gap-3 rounded-md border border-[color:var(--wv-border)] p-3">
+      <p className="text-[13px] text-muted-foreground">
+        {rendered
+          ? "Rendered. Any edit here needs waiveo-derive run again before the screen shows it; the previous picture keeps playing until then."
+          : "Not rendered yet. This layer will not appear on a screen until waiveo-derive has run over it — it runs on your machine, never on the box."}
+      </p>
+
+      {spec.kind === "qr" ? (
+        <>
+          <FormField label="Encoded link or text" help="What a phone receives when the code is scanned.">
+            {(field) => (
+              <input
+                {...field}
+                type="text"
+                className={inputClass}
+                value={spec.data ?? ""}
+                onChange={(e) => onSpec({ data: e.target.value })}
+              />
+            )}
+          </FormField>
+          <FormField
+            label="Error correction"
+            help="How much of the code can be obscured and still scan. Higher makes the symbol denser."
+          >
+            {(field) => (
+              <select
+                {...field}
+                className={inputClass}
+                value={spec.ec_level ?? "M"}
+                onChange={(e) => onSpec({ ec_level: e.target.value as NonNullable<DeriveSpec["ec_level"]> })}
+              >
+                <option value="L">L — lowest, densest payload</option>
+                <option value="M">M — the default for a sign</option>
+                <option value="Q">Q</option>
+                <option value="H">H — highest, most robust</option>
+              </select>
+            )}
+          </FormField>
+          <ColorField label="Module colour" value={spec.color ?? "#111827"} onCommit={(color) => onSpec({ color })} />
+        </>
+      ) : null}
+
+      {spec.kind === "text" ? (
+        <>
+          <FormField label="Text">
+            {(field) => (
+              <textarea
+                {...field}
+                rows={2}
+                className={cn(inputClass, "resize-y")}
+                value={spec.text ?? ""}
+                onChange={(e) => onSpec({ text: e.target.value })}
+              />
+            )}
+          </FormField>
+          <div className="grid grid-cols-2 gap-3">
+            <NumberField
+              label="Font size"
+              value={spec.font_px ?? 64}
+              max={SLIDE_CANVAS_HEIGHT}
+              onCommit={(font_px) => onSpec({ font_px })}
+            />
+            <ColorField label="Text colour" value={spec.color ?? "#FFFFFF"} onCommit={(color) => onSpec({ color })} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <FormField label="Align">
+              {(field) => (
+                <select
+                  {...field}
+                  className={inputClass}
+                  value={spec.align ?? "left"}
+                  onChange={(e) => onSpec({ align: e.target.value as LayerAlign })}
+                >
+                  <option value="left">Left</option>
+                  <option value="center">Centre</option>
+                  <option value="right">Right</option>
+                </select>
+              )}
+            </FormField>
+            <FormField label="Vertical">
+              {(field) => (
+                <select
+                  {...field}
+                  className={inputClass}
+                  value={spec.valign ?? "top"}
+                  onChange={(e) => onSpec({ valign: e.target.value as NonNullable<DeriveSpec["valign"]> })}
+                >
+                  <option value="top">Top</option>
+                  <option value="middle">Middle</option>
+                  <option value="bottom">Bottom</option>
+                </select>
+              )}
+            </FormField>
+          </div>
+          <FormField
+            label="Font family"
+            help="A face the renderer must have, or the name an uploaded font file registers under."
+          >
+            {(field) => (
+              <input
+                {...field}
+                type="text"
+                className={inputClass}
+                value={spec.font_family ?? ""}
+                onChange={(e) => onSpec({ font_family: e.target.value || undefined })}
+              />
+            )}
+          </FormField>
+
+          {/* CUSTOM TYPOGRAPHY — the whole reason "a font the device does not
+              ship" is one of the five things this layer kind exists for.
+              Everything downstream of it was already built: the write-time check
+              that the face is really in the origin, the retention hold that
+              stops the sweep reclaiming it while a cast names it, and the
+              renderer's fetch-and-@font-face embed. Without a control the member
+              was reachable only by hand-rolled JSON — an operator could upload a
+              TTF on the Content page and then had no way at all to attach it,
+              which is the half-built shape this panel's own doc promises not to
+              ship. */}
+          <div className="flex flex-col gap-2">
+            <span className="text-sm font-medium">Custom font file</span>
+            {spec.font_asset_ref ? (
+              <code
+                data-slot="derive-font-ref"
+                className="min-w-0 truncate rounded-input bg-[color:var(--wv-surface-2)] px-2 py-1 font-mono text-[12px] text-muted-foreground"
+              >
+                {spec.font_asset_ref}
+              </code>
+            ) : (
+              <p className="text-[13px] text-muted-foreground">
+                None — the renderer draws with whatever face its own machine has for that family. Attach an
+                uploaded TTF/OTF/WOFF2 to pin it.
+              </p>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="secondary" icon={Type} onClick={onPickFont}>
+                {spec.font_asset_ref ? "Replace font file" : "Choose font file"}
+              </Button>
+              {spec.font_asset_ref ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon={X}
+                  // Only the REF is dropped. `font_family` stays, because
+                  // without a file it is still meaningful — the family the
+                  // rendering host must already have — and clearing a control
+                  // the operator did not touch is its own surprise.
+                  onClick={() => onSpec({ font_asset_ref: undefined })}
+                >
+                  Clear
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      {/* Fill, shadow and border apply to all three kinds — they are the reason
+          a layer is rasterized at all. */}
+      <FormField label="Fill">
+        {(field) => (
+          <select
+            {...field}
+            className={inputClass}
+            value={fill?.kind ?? "none"}
+            onChange={(e) => {
+              const next = e.target.value;
+              if (next === "none") return onSpec({ fill: undefined });
+              // `to` and `angle_deg` are dropped when switching to solid: the
+              // server REFUSES a solid fill carrying a second stop, so keeping
+              // them would make the layer unsavable with nothing on screen
+              // explaining which control did it.
+              if (next === "solid") return onSpec({ fill: { kind: "solid", from: fill?.from ?? "#FFFFFF" } });
+              if (next === "radial") {
+                return onSpec({ fill: { kind: "radial", from: fill?.from ?? "#7C3AED", to: fill?.to ?? "#0EA5E9" } });
+              }
+              return onSpec({
+                fill: { kind: "linear", from: fill?.from ?? "#7C3AED", to: fill?.to ?? "#0EA5E9", angle_deg: fill?.angle_deg ?? 135 },
+              });
+            }}
+          >
+            <option value="none">None (transparent)</option>
+            <option value="solid">Solid</option>
+            <option value="linear">Linear gradient</option>
+            <option value="radial">Radial gradient</option>
+          </select>
+        )}
+      </FormField>
+      {fill ? (
+        <div className="grid grid-cols-2 gap-3">
+          <ColorField
+            label={fill.kind === "solid" ? "Fill colour" : "Gradient from"}
+            value={fill.from}
+            onCommit={(from) => onSpec({ fill: { ...fill, from } })}
+          />
+          {fill.kind !== "solid" ? (
+            <ColorField
+              label="Gradient to"
+              value={fill.to ?? "#0EA5E9"}
+              onCommit={(to) => onSpec({ fill: { ...fill, to } })}
+            />
+          ) : null}
+        </div>
+      ) : null}
+      {fill?.kind === "linear" ? (
+        <NumberField
+          label="Gradient angle"
+          value={fill.angle_deg ?? 0}
+          max={359}
+          onCommit={(angle_deg) => onSpec({ fill: { ...fill, angle_deg } })}
+        />
+      ) : null}
+
+      <FormField
+        label="Drop shadow"
+        help="The layer box is the shadow's OUTER bounds — the renderer insets the artwork so nothing is clipped, so a big shadow leaves less room for the artwork."
+      >
+        {(field) => (
+          <input
+            {...field}
+            type="checkbox"
+            className="size-4"
+            checked={Boolean(shadow)}
+            onChange={(e) =>
+              onSpec({ shadow: e.target.checked ? { dy: 8, blur: 24, color: "#000000", opacity_pct: 55 } : undefined })
+            }
+          />
+        )}
+      </FormField>
+      {shadow ? (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <NumberField label="Offset X" value={shadow.dx ?? 0} max={200} onCommit={(dx) => onSpec({ shadow: { ...shadow, dx } })} />
+            <NumberField label="Offset Y" value={shadow.dy ?? 0} max={200} onCommit={(dy) => onSpec({ shadow: { ...shadow, dy } })} />
+            <NumberField label="Blur" value={shadow.blur ?? 0} max={200} onCommit={(blur) => onSpec({ shadow: { ...shadow, blur } })} />
+            <NumberField
+              label="Opacity %"
+              value={shadow.opacity_pct ?? 55}
+              max={100}
+              onCommit={(opacity_pct) => onSpec({ shadow: { ...shadow, opacity_pct } })}
+            />
+          </div>
+          <ColorField
+            label="Shadow colour"
+            value={shadow.color ?? "#000000"}
+            onCommit={(color) => onSpec({ shadow: { ...shadow, color } })}
+          />
+        </>
+      ) : null}
+
+      <div className="grid grid-cols-2 gap-3">
+        <NumberField
+          label="Corner radius"
+          value={border?.radius ?? 0}
+          max={400}
+          onCommit={(radius) => onSpec({ border: normaliseBorder({ ...border, radius }) })}
+        />
+        <NumberField
+          label="Border width"
+          value={border?.width ?? 0}
+          max={100}
+          onCommit={(width) => onSpec({ border: normaliseBorder({ ...border, width }) })}
+        />
+      </div>
+      {border?.width ? (
+        <ColorField
+          label="Border colour"
+          value={border.color ?? "#FFFFFF"}
+          onCommit={(color) => onSpec({ border: normaliseBorder({ ...border, color }) })}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** A border with neither a width nor a radius does nothing, and the server
+ * REFUSES it rather than ignoring it — so zeroing both controls must drop the
+ * whole member instead of leaving `{width: 0, radius: 0}` behind to hold the
+ * save. A stroked border also gains a default colour here, because a width with
+ * no colour is the other refusal. */
+function normaliseBorder(b: DeriveBorder): DeriveBorder | undefined {
+  const width = b.width ?? 0;
+  const radius = b.radius ?? 0;
+  if (width === 0 && radius === 0) return undefined;
+  const out: DeriveBorder = {};
+  if (width > 0) {
+    out.width = width;
+    out.color = b.color ?? "#FFFFFF";
+  }
+  if (radius > 0) out.radius = radius;
+  return out;
 }
 
 /**

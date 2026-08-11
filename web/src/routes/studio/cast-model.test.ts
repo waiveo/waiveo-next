@@ -17,6 +17,8 @@ import {
   reorder,
   resizeLayerBy,
   selectedLayer,
+  staleRasterKey,
+  staleRasterKeys,
   studioReducer,
   studioStateFromCast,
   studioStateToUpdate,
@@ -363,5 +365,70 @@ describe("inserting a layer of each kind", () => {
     // A template with no token would render as its own literal text forever —
     // a widget that is, on the wall, indistinguishable from a text layer.
     expect(defaultLayer("weather", NOW).text).toMatch(/\{temp\}/);
+  });
+});
+
+describe("staleRasterKeys — which drawn rasters the draft has invalidated", () => {
+  /** A derive layer that has already been through waiveo-derive. */
+  function rendered(overrides: Partial<SlideLayer> = {}): SlideLayer {
+    return {
+      kind: "derive", x: 0, y: 0, w: 400, h: 400,
+      asset_ref: "sha256:aa11", derived_from: "digest-1",
+      derive: { kind: "text", text: "SCAN", font_px: 96 },
+      ...overrides,
+    } as SlideLayer;
+  }
+  const slide = (layers: SlideLayer[], id = "s1"): CastSlide => ({ id, layers });
+
+  it("reports a spec edit — the PNG is now a picture of the previous design", () => {
+    const before = [slide([rendered()])];
+    const after = [slide([rendered({ derive: { kind: "text", text: "SCAN", font_px: 120 } } as Partial<SlideLayer>)])];
+    expect([...staleRasterKeys(before, after)]).toEqual([staleRasterKey("s1", 0)]);
+  });
+
+  it("reports a RESIZE — the raster is rendered at the layer's exact pixel size", () => {
+    // Geometry is in the server's own digest for this reason, and a console that
+    // only watched the spec would leave a resized layer drawing a stretched PNG
+    // with nothing said.
+    const before = [slide([rendered()])];
+    const after = [slide([rendered({ w: 800 })])];
+    expect([...staleRasterKeys(before, after)]).toEqual([staleRasterKey("s1", 0)]);
+  });
+
+  it("ignores a MOVE — position is deliberately not part of the picture", () => {
+    const before = [slide([rendered()])];
+    const after = [slide([rendered({ x: 600, y: 40 })])];
+    expect([...staleRasterKeys(before, after)]).toEqual([]);
+  });
+
+  it("says nothing about a layer with no raster — the canvas already badges it", () => {
+    const pending = {
+      kind: "derive", x: 0, y: 0, w: 400, h: 400,
+      derive: { kind: "text", text: "SCAN", font_px: 96 },
+    } as SlideLayer;
+    const before = [slide([pending])];
+    const after = [slide([{ ...pending, w: 900 } as SlideLayer])];
+    expect([...staleRasterKeys(before, after)]).toEqual([]);
+  });
+
+  it("matches slides by ID, so reordering the cast does not badge every raster", () => {
+    // Position-matching would report every layer of every moved slide as stale,
+    // which is a badge on work that is perfectly current — and a badge that
+    // cries wolf is a badge nobody reads.
+    const a = slide([rendered()], "a");
+    const b = slide([rendered({ asset_ref: "sha256:bb22" })], "b");
+    expect([...staleRasterKeys([a, b], [b, a])]).toEqual([]);
+  });
+
+  it("says nothing about a slide or a layer that did not exist at load", () => {
+    const before = [slide([rendered()])];
+    const after = [slide([rendered()]), slide([rendered()], "s2")];
+    expect([...staleRasterKeys(before, after)]).toEqual([]);
+  });
+
+  it("says nothing when the REF itself changed — that is a different picture, not a stale one", () => {
+    const before = [slide([rendered()])];
+    const after = [slide([rendered({ asset_ref: "sha256:bb22", derived_from: "digest-2", derive: { kind: "text", text: "OTHER" } } as Partial<SlideLayer>)])];
+    expect([...staleRasterKeys(before, after)]).toEqual([]);
   });
 });

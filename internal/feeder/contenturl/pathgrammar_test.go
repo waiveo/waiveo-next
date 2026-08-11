@@ -132,6 +132,7 @@ var requiredTrees = map[string]int{
 	"internal/archive":       4,  // 8: the export/restore path
 	"internal/manifest":      8,  // 14: pack manifests, which declare playable content
 	"internal/datamodel":     4,  // 8: where Layer and Slide are declared
+	"internal/derive":        5,  // 11: the off-appliance rasterizer, incl. derive/qr
 	"internal/deviceclass":   3,  // 6
 	"internal/virtualplayer": 2,  // 4: the synthetic player, which consumes served urls
 	"internal/tools":         1,  // 3
@@ -200,6 +201,12 @@ var allowedSpellings = map[string]string{
 	// route and then fetches the url the SERVER returned — it constructs no
 	// content-origin url of its own, which is the entire point of the loop.
 	"scripts/contentloop/": "the make-dev smoke posts to /api/v1/content and fetches the url the server returned, never one it built",
+	// The off-appliance rasterizer's API client, which talks to that same
+	// /api/v1/content route: it POSTs the PNG it rendered, and to READ bytes back
+	// it GETs the listing and fetches the url the SERVER published for the ref
+	// (Client.FetchAsset). It composes no content-origin url of its own — the
+	// same shape, and the same reason, as the contentloop entry above.
+	"internal/derive/client.go": "waiveo-derive posts to /api/v1/content and fetches the url the listing returned, never one it built",
 }
 
 // pathSegmentSpelled matches a string literal that carries `content` with a

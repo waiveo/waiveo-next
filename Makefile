@@ -1,4 +1,4 @@
-.PHONY: dev dev-up dev-down dev-key smoke web-dev web-check web-build web-sse-check web-e2e example-pack player-sideload
+.PHONY: dev dev-up dev-down dev-key smoke web-dev web-check web-build web-sse-check web-e2e example-pack player-sideload derive
 # Repo-local run dir (git-ignored): pidfiles + the built binaries live here, so teardown
 # is exact (by PID, not `pkill -f`) and nothing lands in a shared /tmp.
 RUNDIR := $(CURDIR)/.dev
@@ -86,6 +86,16 @@ example-pack:
 # Not part of `make dev`: this touches real hardware.
 player-sideload:
 	@go run ./scripts/fleetsideload $(SIDELOAD_ARGS)
+
+# Run the OFF-APPLIANCE rasterizer over the local dev stack: render every
+# outstanding `derive` slide layer, upload each PNG, and write the reference
+# back. See docs/waiveo-derive.md.
+#
+# Deliberately NOT part of `make dev`: it needs a Chromium, and the whole point
+# of this tool is that the appliance does not have one. Pass flags through
+# DERIVE_ARGS, e.g. `make derive DERIVE_ARGS="-api https://192.168.50.12:7420"`.
+derive:
+	@go run ./cmd/waiveo-derive sync -api https://127.0.0.1:7420 -insecure-tls $(DERIVE_ARGS)
 
 dev-down:
 	@[ -f $(RUNDIR)/feeder.pid ] && kill $$(cat $(RUNDIR)/feeder.pid) 2>/dev/null || true
