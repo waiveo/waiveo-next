@@ -159,6 +159,17 @@ type server struct {
 	// mints and delivers the grant either way, and answers with an honest
 	// code_unavailable_reason when unwired.
 	pairingRelays PairingRelayDirectory
+	// platformLog is the running process's captured log the diagnostics read
+	// serves (diagnostics.go, parity row 7.4). Optional (WithPlatformLog): the
+	// route mounts either way and answers an empty page with capacity 0, which
+	// is distinguishable from a wired-but-quiet box.
+	platformLog PlatformLogSource
+	// health carries the deployment facts the health summary cannot derive from
+	// its own state — process start, build version, and the data directory whose
+	// filesystem headroom is measured. Optional (WithSystemHealth): without it
+	// the summary still reports services, relays and screens, with uptime and
+	// disk `unknown` rather than zero.
+	health *SystemHealthConfig
 }
 
 // authExemptPaths are the api/1 operations that declare their own
@@ -371,6 +382,12 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// relay's own discovery and adoption plane, with no revision to condition a
 	// write on (devices.go).
 	srv.mountDevicePlane(rt)
+	// The two operator diagnostics reads (parity row 7.4, diagnostics.go): the
+	// running process's own captured log, and the health summary that names the
+	// disk, the relays and the fleet. Not resourceConfig mounts — neither has an
+	// id, a revision or a collection; both are a read of what IS rather than of
+	// what was authored.
+	srv.mountDiagnostics(rt)
 
 	// The session-management half of the auth family rides the AUTHENTICATED
 	// mux: both operations act on the caller's own live session, so neither has

@@ -134,6 +134,13 @@ tags:
       contract. An endpoint's signing secret is never a member of its
       representation: it is installed and rotated through its own operation and
       appears in no response body.
+  - name: diagnostics
+    description: >-
+      Operator diagnostics: the running process's captured log and the health
+      summary that names the disk, the relays and the fleet. Neither is authored
+      state, neither has a revision, and both are workspace-wide reads reserved
+      to `owner` — a log line or a relay's advertised address is a map of the
+      whole deployment, and there is no scope node to narrow either to.
   - name: "mcp:read"
     description: Curation tag — every operation carrying this tag is exposed as a non-mutating MCP tool. Not a resource family; see `contracts/api-1.md#mcp-operation-tag-curation`.
   - name: "mcp:act"
@@ -2240,6 +2247,149 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+  # ---------------------------------------------------------------------
+  # diagnostics — "what is wrong with this box", without an SSH session.
+  #
+  # Two reads, both workspace-wide and neither scope-narrowable, so both are
+  # `owner` for the same reason the data-subject operations are: there is no
+  # node to narrow to, and a log line or a relay address is a map of the whole
+  # deployment.
+  # ---------------------------------------------------------------------
+  /platform-logs:
+    get:
+      operationId: listPlatformLogs
+      summary: Read the running process's captured log
+      description: >-
+        Returns the most recent lines this process has written, newest first,
+        optionally narrowed by level, source or substring.
+
+
+        `level` and `source` are DERIVED by reading each line, not declared by
+        whoever wrote it: this is a capture of the process's own log output, so
+        that every line the binary already writes is present with nothing to
+        remember at the call site. `raw` always carries the whole line, so a
+        reader is never shown a classification without the text it came from.
+
+
+        This is NOT the audit trail. `security-model/1` SEC-150 makes
+        `events/1`'s `audit.event` the platform's sole audit mechanism; it is
+        durable, scoped, and read through the event stream. This buffer is
+        volatile operational chatter and must not be relied on as a record of
+        who did what.
+
+
+        It is also NOT journald. In production the feeder runs as a systemd
+        unit and journald holds the same lines PLUS every previous boot's —
+        including the crash that caused the restart an operator is most likely
+        investigating. This buffer starts empty at boot. The response publishes
+        its own limits rather than leaving them to be inferred:
+        `retained_from_ms` is how far back it can see, `dropped` is how many
+        lines have already been overwritten, and `capacity` is its size. A
+        deployment that captures nothing answers an empty page with
+        `capacity: 0`, which is distinguishable from a wired-but-quiet box.
+      tags: [diagnostics, "mcp:read"]
+      parameters:
+        - name: level
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [error, warn, info]
+          description: >-
+            Keep only lines at exactly this derived level — not "at or above".
+            An operator filtering to `warn` means the warnings; a threshold
+            would quietly re-show the errors they just filtered away from. A
+            value outside the enum is refused 400 rather than silently matching
+            nothing, because an empty diagnostics page reads as a quiet box.
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Keep only lines whose derived source is exactly this. The full set of retained sources rides every response.
+        - name: contains
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Keep only lines whose raw text contains this, case-insensitively.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 200
+          description: >-
+            How many of the NEWEST matching lines to return. There is no cursor:
+            a keyset cursor names a position in a stable ordering, and this
+            buffer's oldest end is overwritten while a client reads it, so a
+            cursor into it would name a record that no longer exists.
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: A window over the newest matching lines, plus what the buffer is not showing.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlatformLogPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+  /system-health:
+    get:
+      operationId: getSystemHealth
+      summary: Summarize this deployment's health
+      description: >-
+        Answers the question `/healthz` cannot: not "is this process
+        listening" — if it were not, this request would not have arrived — but
+        "which part of this box is not working".
+
+
+        `status` is DERIVED as the WORST grade any component carries, so a
+        summary can never read `ok` while a component reads `down`. `unknown`
+        ranks above `ok` and below `degraded`: a check that could not run is not
+        a passing check and is not an outage.
+
+
+        Disk headroom is graded on ABSOLUTE free bytes rather than a percentage,
+        because what matters is whether the next image deploy fits and that is a
+        number of gigabytes on any size of disk. When the filesystem cannot be
+        measured the byte members are OMITTED rather than zeroed — a
+        `free_bytes` of 0 on a page whose job is to warn about a full disk would
+        manufacture the emergency it exists to detect.
+      tags: [diagnostics, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The health summary.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemHealth"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/TooManyRequests"
   # ---------------------------------------------------------------------
@@ -4650,6 +4800,230 @@ components:
             $ref: "#/components/schemas/ScreenStatus"
         cursor:
           $ref: "#/components/schemas/Cursor"
+
+    PlatformLogRecord:
+      type: object
+      description: >-
+        One captured log line. `level` and `source` are DERIVED by reading the
+        text — the process's log output is lines, not structured events — so
+        `raw` always carries the whole line and a reader can judge the
+        classification against what was actually written.
+      required: [seq, ts_ms, level, source, message, raw]
+      additionalProperties: false
+      properties:
+        seq:
+          type: integer
+          format: int64
+          description: >-
+            A monotonic per-process counter assigned at capture. It exists so
+            two identical lines are distinguishable and so ordering survives a
+            clock that steps backwards mid-boot, which an appliance's does
+            before NTP settles — `ts_ms` alone can do neither.
+        ts_ms:
+          type: integer
+          format: int64
+          description: >-
+            The app clock at capture, epoch milliseconds UTC. NOT read out of
+            the line's own prefix, which the standard logger writes in local
+            time with no zone.
+        level:
+          type: string
+          enum: [error, warn, info]
+          description: >-
+            The derived severity. Three values, because that is as much as can
+            be read out of a line honestly. A line carrying both an error and a
+            warning marker is classified at the higher severity: a warning shown
+            among the errors costs a glance, an error hidden among the warnings
+            costs the investigation.
+        source:
+          type: string
+          description: The derived component prefix, or `platform` for a line that carries none.
+        message:
+          type: string
+          description: The line with the parts that became `source` (and the logger's own timestamp) removed.
+        raw:
+          type: string
+          description: The whole line as written, minus only the standard logger's date/time prefix.
+
+    PlatformLogPage:
+      type: object
+      description: >-
+        A bounded window over the newest matching lines, PLUS the facts a reader
+        needs to interpret a short or empty list honestly. Deliberately not the
+        standard `{items, cursor}` page: this buffer's oldest end is overwritten
+        while a client reads it, so a keyset cursor into it would name a record
+        that no longer exists.
+      required: [items, matched, retained, capacity, dropped, retained_from_ms, sources, level_counts]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          description: The matching lines, NEWEST FIRST, capped at `limit`.
+          items:
+            $ref: "#/components/schemas/PlatformLogRecord"
+        matched:
+          type: integer
+          description: How many lines matched the filter before `limit` cut the window, so a page showing 200 of 4000 can say so.
+        retained:
+          type: integer
+          description: How many lines the buffer currently holds, at any level, regardless of the filter.
+        capacity:
+          type: integer
+          description: >-
+            The buffer's size. `0` means this deployment captures nothing —
+            distinguishable from a wired-but-quiet box, which reports a capacity
+            with nothing yet retained.
+        dropped:
+          type: integer
+          format: int64
+          description: >-
+            How many lines have been overwritten since this process started.
+            Non-zero means the oldest lines of this boot are already gone, which
+            is exactly when an operator should be reading journald instead.
+        retained_from_ms:
+          type: integer
+          format: int64
+          description: The oldest retained line's instant, or `0` when nothing is retained. How far back this page can see — never "since boot".
+        sources:
+          type: array
+          description: >-
+            Every distinct source currently retained, sorted. The WHOLE set, not
+            the filtered one: a source control built from filtered results can
+            only ever offer the option already chosen.
+          items:
+            type: string
+        level_counts:
+          type: object
+          description: Retained line count per level, unfiltered, so a header can say "3 errors" while the page shows an info-only view.
+          additionalProperties:
+            type: integer
+
+    ServiceHealth:
+      type: object
+      description: One named component's grade. `detail` is always populated, including for `ok` — "readable, 12 rows" is what distinguishes a check that ran from one that was skipped.
+      required: [name, status, detail]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [ok, degraded, down, unknown]
+        detail:
+          type: string
+
+    StorageHealth:
+      type: object
+      description: >-
+        Disk headroom on the filesystem holding this workspace's data. Graded on
+        ABSOLUTE free bytes, not a percentage: 10% of a 39 GB appliance disk and
+        10% of a 2 TB disk are completely different operational situations, and
+        what matters is whether the next image deploy fits.
+
+
+        The three byte members are OMITTED, never zeroed, when the filesystem
+        could not be measured — a `free_bytes` of 0 would render as a full disk
+        and manufacture the emergency this check exists to detect.
+      required: [path, status, detail]
+      additionalProperties: false
+      properties:
+        path:
+          type: string
+          description: The directory measured, or `""` when this deployment publishes none.
+        status:
+          type: string
+          enum: [ok, low, critical, unknown]
+        total_bytes:
+          type: integer
+          format: int64
+        free_bytes:
+          type: integer
+          format: int64
+          description: Bytes available to THIS process — not the raw free count, which on a unix filesystem includes blocks reserved for root that the feeder may not use.
+        used_percent:
+          type: number
+        detail:
+          type: string
+
+    RelayHealth:
+      type: object
+      description: One connected relay. A relay that is not connected does not appear — the relays are the only path to every screen and device, so an empty list is the whole fleet being unreachable and is graded `down`.
+      required: [relay_id, address, screen_count]
+      additionalProperties: false
+      properties:
+        relay_id:
+          type: string
+        address:
+          type: string
+          description: The canonical address this relay declared at hello (`relay/1` REL-037) — what a player is told to dial.
+        screen_count:
+          type: integer
+          description: How many screens this relay is currently reporting on. A connected relay reporting zero is a real failure, and a distinct one from a relay that is not connected.
+
+    ScreenHealth:
+      type: object
+      description: >-
+        The fleet roll-up, built from the SAME join `/screen-status` serves —
+        authored rows filled in by relay reports — rather than from the reports
+        alone. A screen no relay has ever mentioned is the most alarming row
+        there is, and a count built from reports is silent about exactly it.
+      required: [total, live, stale, never_seen, paired, overridden, live_window_ms]
+      additionalProperties: false
+      properties:
+        total:
+          type: integer
+        live:
+          type: integer
+        stale:
+          type: integer
+        never_seen:
+          type: integer
+        paired:
+          type: integer
+        overridden:
+          type: integer
+          description: How many screens currently carry an operator's push-now override.
+        live_window_ms:
+          type: integer
+          format: int64
+          description: The threshold live/stale was decided by, republished so the roll-up can be checked against the line it was drawn at.
+
+    SystemHealth:
+      type: object
+      required: [status, checked_at_ms, uptime_ms, version, services, storage, relays, screens]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down, unknown]
+          description: The WORST grade any component carries. Derived, never asserted — a summary that could read `ok` while a component reads `down` would be the one line an operator trusts and the one line that is wrong.
+        checked_at_ms:
+          type: integer
+          format: int64
+        uptime_ms:
+          type: integer
+          format: int64
+          description: >-
+            How long this process has been serving, or `-1` when the deployment
+            publishes no start time — the same never-observed sentinel
+            `/screen-status` uses. When a screen went dark five minutes ago,
+            "this box restarted four minutes ago" is the single most useful
+            number on the page.
+        version:
+          type: string
+          description: The running build, or `unknown`.
+        services:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceHealth"
+        storage:
+          $ref: "#/components/schemas/StorageHealth"
+        relays:
+          type: array
+          items:
+            $ref: "#/components/schemas/RelayHealth"
+        screens:
+          $ref: "#/components/schemas/ScreenHealth"
 
     PairingCodeResult:
       type: object

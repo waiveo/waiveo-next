@@ -73,6 +73,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
 	"github.com/maaxton/waiveo-next/internal/app/devices"
+	"github.com/maaxton/waiveo-next/internal/app/platformlog"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/app/webhookdeliver"
 	"github.com/maaxton/waiveo-next/internal/app/workspacekey"
@@ -359,6 +360,15 @@ type schemaProbeEnv struct {
 	// needs one, because adoption writes an authored row and a row's placement
 	// must be a node that actually exists in the tree.
 	registry *devices.Registry
+	// logs is the SAME captured-log buffer the handler serves the diagnostics
+	// read from, kept so the platform-logs probe can put a line in it. That
+	// operation's item schema declares required members, so an empty page would
+	// leave them unchecked — this check's own guard against a vacuous probe.
+	logs *platformlog.Buffer
+	// dataDir is the directory the health summary measures headroom on, kept so
+	// a probe can assert the storage members were populated from a real statfs
+	// rather than left at the unmeasured degrade.
+	dataDir string
 }
 
 func newSchemaProbeEnv(t *testing.T) *schemaProbeEnv {
@@ -396,6 +406,8 @@ func newSchemaProbeEnv(t *testing.T) *schemaProbeEnv {
 
 	content := origin.New()
 	jobs := api.NewJobRunner()
+	logs := platformlog.New(64, clock)
+	dataDir := t.TempDir()
 	ts := httptest.NewServer(api.New(st, apihttp.NewIdempotencyStore(clock, 0), clock, ulid.Monotonic(),
 		content, testContentBase, fixture.Auth,
 		api.WithJobRunner(jobs),
@@ -411,13 +423,26 @@ func newSchemaProbeEnv(t *testing.T) *schemaProbeEnv {
 		// A one-relay pairing directory, so the pairing-code probe validates
 		// the response's FULLER shape (pairing_code + relay_id present) rather
 		// than only the no-relay degrade.
-		api.WithPairing(rsPairingDirectory(t))))
+		api.WithPairing(rsPairingDirectory(t)),
+		// The two diagnostics reads' collaborators. Both are wired REAL rather
+		// than left unwired: an unwired platform log answers an empty page, and
+		// an empty `items` array would leave PlatformLogRecord's required
+		// members unchecked — exactly the vacuous probe this file's guards
+		// exist to refuse.
+		api.WithPlatformLog(logs),
+		api.WithSystemHealth(api.SystemHealthConfig{
+			StartedAtMs: fixedNowMs - 60_000,
+			Version:     "test-build",
+			DataDir:     dataDir,
+		})))
 	t.Cleanup(ts.Close)
 
 	return &schemaProbeEnv{
 		testEnv:   &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture, jobs: jobs},
 		authStore: fixture.Store,
 		registry:  registry,
+		logs:      logs,
+		dataDir:   dataDir,
 	}
 }
 
@@ -968,6 +993,20 @@ var probes = map[string]probe{
 	"enableWebhookEndpoint": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		id := e.mintWebhookEndpoint(t, e.mintOrg(t))
 		return e.do(t, http.MethodPost, "/api/v1/webhook-endpoints/"+id+"/enable", []byte(`{}`), nil)
+	},
+	"listPlatformLogs": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// Both reads are `owner` at the workspace's org node, so the org has to
+		// exist before either can answer anything but 404.
+		e.mintOrg(t)
+		// A real line, written through the ordinary logger the buffer tees, so
+		// the probed page carries an item and PlatformLogRecord's required
+		// members are actually checked.
+		fmt.Fprintln(e.logs, "waiveo-feeder: response-schema probe line")
+		return e.do(t, http.MethodGet, "/api/v1/platform-logs", nil, nil)
+	},
+	"getSystemHealth": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		e.mintOrg(t)
+		return e.do(t, http.MethodGet, "/api/v1/system-health", nil, nil)
 	},
 	"getWebhookDeliveryState": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		id := e.mintWebhookEndpoint(t, e.mintOrg(t))

@@ -132,6 +132,21 @@ export {
 } from "./casts";
 
 export {
+  createDiagnosticsModule,
+  LOG_LEVELS,
+  type DiagnosticsModule,
+  type PlatformLogRecord,
+  type PlatformLogPage,
+  type PlatformLogQuery,
+  type LogLevel,
+  type SystemHealth,
+  type ServiceHealth,
+  type StorageHealth,
+  type RelayHealth,
+  type ScreenHealth,
+} from "./diagnostics";
+
+export {
   createPacksModule,
   packData,
   encodePackPagePath,

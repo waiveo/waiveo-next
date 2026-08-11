@@ -18,6 +18,7 @@ import DesignRoute from "@/routes/design/design-route";
 import PagesRoute from "@/routes/pages/pages-route";
 import PackPageRoute from "@/routes/packs/pack-page-route";
 import SecurityRoute from "@/routes/security/security-route";
+import SystemRoute from "@/routes/system/system-route";
 
 // The application root. The ThemeProvider owns the Dusk/Daybreak theme for the
 // whole app (default Dusk, persisted, reflected as data-theme on <html>). The
@@ -88,6 +89,12 @@ export default function App() {
                 console resource, so it does not belong beside the resource
                 families. */}
             <Route path="/security" element={<SecurityRoute />} />
+            {/* Operator diagnostics (parity row 7.4): the box's own health and
+                its captured log, in one place, so "why is that screen dark"
+                does not start with an SSH session. Both reads are owner-only —
+                the page renders that refusal as an explanation rather than as a
+                blank panel. */}
+            <Route path="/system" element={<SystemRoute />} />
             <Route path="/design" element={<DesignRoute />} />
           </Route>
         </Routes>

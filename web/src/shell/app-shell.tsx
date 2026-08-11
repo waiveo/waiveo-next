@@ -6,6 +6,7 @@ import {
   CalendarClock,
   FileText,
   Film,
+  HeartPulse,
   Images,
   LayoutDashboard,
   LayoutTemplate,
@@ -59,6 +60,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/automations", label: "Automations", icon: Workflow },
   { to: "/activity", label: "Activity", icon: Activity },
   { to: "/pages", label: "Pages", icon: LayoutTemplate },
+  { to: "/system", label: "System", icon: HeartPulse },
   { to: "/design", label: "Design kit", icon: Palette },
 ];
 

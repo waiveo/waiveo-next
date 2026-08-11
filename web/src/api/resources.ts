@@ -33,6 +33,7 @@ import {
   type PacksModule,
 } from "./packs";
 import { createCastsModule, type CastsModule } from "./casts";
+import { createDiagnosticsModule, type DiagnosticsModule } from "./diagnostics";
 
 // ── Generated (contract-canonical) types ────────────────────────────────────
 
@@ -459,6 +460,10 @@ export interface WaiveoApi {
    * (MAN-051/052) — the SAME ResourceModule shape every core family uses, so a
    * pack's data is a first-class citizen (If-Match, Idempotency-Key, cursor). */
   packData(packId: string, collection: string): ResourceModule<PackRow, PackRowWrite, PackRowWrite>;
+  /** The operator diagnostics reads (parity row 7.4): this box's own captured
+   * log and its health summary. Both are `owner`-only and neither is authored
+   * state, so this is not a ResourceModule — see api/diagnostics.ts. */
+  diagnostics: DiagnosticsModule;
 }
 
 /** Build the whole console API surface over one ApiClient (one shared ETag map,
@@ -480,6 +485,7 @@ export function createApi(opts?: ApiClientOptions): WaiveoApi {
     casts: createCastsModule(client),
     packs: createPacksModule(client),
     packData: (packId, collection) => packData(client, packId, collection),
+    diagnostics: createDiagnosticsModule(client),
   };
 }
 
