@@ -23,6 +23,7 @@ import {
   type LayerKind,
   type SlideLayer,
 } from "@/api";
+import { COUNTDOWN_DEFAULT_LAYOUT } from "./go-time-layout";
 
 /** The smallest a layer may be dragged down to. A layer with no area is
  * invisible AND unselectable — it cannot be grabbed again to fix it — so the
@@ -80,15 +81,38 @@ export function resizeLayerBy(
   return clampLayer({ ...layer, x: left, y: top, w: right - left, h: bottom - top });
 }
 
+/** The default countdown target: the start of the NEXT local day.
+ *
+ * A countdown's `target_ms` must be a positive absolute instant or the layer is
+ * refused, so an inserted countdown has to arrive with SOME target — and a
+ * meaningless one (the epoch, or "now") would render as a finished countdown of
+ * all zeroes, which reads on the canvas as a broken widget rather than as a
+ * placeholder. Midnight tonight is a real, obviously-provisional instant that
+ * counts down visibly the moment it is inserted, so the operator can see the
+ * widget working while they go and set the date they actually meant. */
+function nextMidnightMs(nowMs: number): number {
+  const d = new Date(nowMs);
+  d.setHours(24, 0, 0, 0);
+  return d.getTime();
+}
+
 /** A freshly inserted layer of `kind`, placed somewhere visible and valid.
  *
- * Every kind but `image` lands VALID: it has the fields wire.ValidateSlideLayers
- * requires, so inserting it and saving immediately produces a slide that
- * renders. An image cannot — its bytes must be chosen from the content origin —
- * so it lands deliberately incomplete and the properties panel asks for the one
- * missing thing rather than the editor inventing an asset_ref that resolves to
- * nothing. */
-export function defaultLayer(kind: LayerKind): SlideLayer {
+ * Every kind but `image` and `entity` lands VALID: it has the fields
+ * wire.ValidateSlideLayers requires, so inserting it and saving immediately
+ * produces a slide that renders. Those two cannot — an image's bytes must be
+ * chosen from the content origin and an entity's subject from the device plane —
+ * so each lands deliberately incomplete and the properties panel asks for the
+ * one missing thing rather than the editor inventing an `asset_ref` or an
+ * `entity_id` that resolves to nothing. The save gate holds until it is chosen,
+ * which is the honest sequence: a slide referencing a nonexistent entity would
+ * be accepted by the server and then draw a dash forever.
+ *
+ * `nowMs` is a PARAMETER rather than a `Date.now()` read inside, for the same
+ * reason `newSlide` takes its id: it is the one input here that is not a
+ * constant, and passing it keeps "what does inserting a countdown produce" a
+ * question a test can answer exactly. Only `countdown` consults it. */
+export function defaultLayer(kind: LayerKind, nowMs: number = Date.now()): SlideLayer {
   switch (kind) {
     case "text":
       return { kind, x: 160, y: 420, w: 1600, h: 240, text: "New text", font_px: 96, color: "#FFFFFF", align: "left" };
@@ -98,6 +122,27 @@ export function defaultLayer(kind: LayerKind): SlideLayer {
       return { kind, x: 1160, y: 120, w: 600, h: 200, text: "3:04 PM", font_px: 120, color: "#FFFFFF", align: "right" };
     case "image":
       return { kind, x: 240, y: 200, w: 960, h: 540 };
+    case "date":
+      // Same formatter and same layout grammar as the clock — a date IS a time
+      // format on this wire — so the default is a layout, not a rendered string.
+      return { kind, x: 160, y: 200, w: 1200, h: 160, text: "Monday, January 2", font_px: 84, color: "#FFFFFF", align: "left" };
+    case "countdown":
+      return {
+        kind, x: 160, y: 600, w: 1200, h: 220,
+        text: COUNTDOWN_DEFAULT_LAYOUT,
+        target_ms: nextMidnightMs(nowMs),
+        font_px: 140, color: "#FFFFFF", align: "left",
+      };
+    case "weather":
+      // The template is what the BOX substitutes into ({temp} °F, {cond}); the
+      // literal degree sign and spacing are the author's and survive verbatim,
+      // which is why a default that already looks like a finished widget is the
+      // right starting point rather than a bare token.
+      return { kind, x: 1080, y: 100, w: 720, h: 160, text: "{temp}\u00B0 {cond}", font_px: 88, color: "#FFFFFF", align: "right" };
+    case "entity":
+      // No entity_id: see this function's doc. The template defaults to the
+      // bare state token, which is also what the box assumes for an empty one.
+      return { kind, x: 160, y: 860, w: 1200, h: 140, text: "{state}", font_px: 72, color: "#FFFFFF", align: "left" };
   }
 }
 
@@ -171,6 +216,14 @@ export function reorder<T>(list: T[], from: number, to: number): T[] {
  * that draft differs from what was last read or saved. */
 export interface StudioState {
   name: string;
+  /** The cast-wide default dwell time, or null for "no cast-wide default".
+   *
+   * `null` rather than `undefined` because it is what the PATCH SENDS: a body
+   * shallow-merges over the stored row, so omitting the member means "leave it
+   * alone" and there would be no way to turn a default back off. An editor whose
+   * state could not express "cleared" would have a control that only ever goes
+   * one way. */
+  defaultDurationMs: number | null;
   slides: CastSlide[];
   /** The slide on the canvas. Always a valid index while `slides` is non-empty. */
   slideIndex: number;
@@ -189,6 +242,7 @@ export type StudioAction =
    * punish saving often, which is the habit an editor wants. */
   | { type: "saved"; cast: Cast }
   | { type: "rename"; name: string }
+  | { type: "setDefaultDuration"; durationMs: number | null }
   | { type: "selectSlide"; index: number }
   | { type: "addSlide"; id: string }
   | { type: "duplicateSlide"; index: number; id: string }
@@ -206,15 +260,29 @@ export type StudioAction =
 /** The initial state before anything has loaded — an empty draft, not dirty. */
 export const EMPTY_STUDIO_STATE: StudioState = {
   name: "",
+  defaultDurationMs: null,
   slides: [],
   slideIndex: 0,
   layerIndex: null,
   dirty: false,
 };
 
-/** The state a loaded cast starts the editor in. */
+/** The state a loaded cast starts the editor in.
+ *
+ * `default_duration_ms` normalizes to null through `?? null` because the server
+ * expresses "no cast-wide default" two ways that mean the same thing: the member
+ * absent (never set) and the member null (set once and then cleared, which is
+ * how a shallow-merge PATCH clears it and therefore what a cleared row is
+ * SERVED as). The editor holds one of those, not both. */
 export function studioStateFromCast(cast: Cast): StudioState {
-  return { name: cast.name, slides: cast.slides, slideIndex: 0, layerIndex: null, dirty: false };
+  return {
+    name: cast.name,
+    defaultDurationMs: cast.default_duration_ms ?? null,
+    slides: cast.slides,
+    slideIndex: 0,
+    layerIndex: null,
+    dirty: false,
+  };
 }
 
 /** The current slide, or undefined when the cast has none yet. */
@@ -233,7 +301,12 @@ export function selectedLayer(state: StudioState): SlideLayer | undefined {
  * place the draft becomes a wire body, so what the tests assert on is what the
  * server would receive. */
 export function studioStateToUpdate(state: StudioState): CastUpdate {
-  return { name: state.name, slides: state.slides };
+  // `default_duration_ms` is ALWAYS present, carrying null when there is no
+  // cast-wide default. Omitting it when null would leave a previously-set
+  // default stored forever (the body shallow-merges), so "cleared it and saved"
+  // would silently not clear it — a control that accepts the work and never
+  // performs it.
+  return { name: state.name, slides: state.slides, default_duration_ms: state.defaultDurationMs };
 }
 
 /** Replace the current slide's layers, marking the draft dirty. */
@@ -260,6 +333,7 @@ export function studioReducer(state: StudioState, action: StudioAction): StudioS
     case "saved":
       return {
         name: action.cast.name,
+        defaultDurationMs: action.cast.default_duration_ms ?? null,
         slides: action.cast.slides,
         slideIndex: clampIndex(state.slideIndex, action.cast.slides.length),
         // The layer selection survives only if the layer is still there. A
@@ -276,6 +350,16 @@ export function studioReducer(state: StudioState, action: StudioAction): StudioS
     case "rename":
       if (action.name === state.name) return state;
       return { ...state, name: action.name, dirty: true };
+
+    case "setDefaultDuration": {
+      // Rounded and floored at 1ms rather than 0: zero is not a dwell time, it
+      // is the absent value, and the server's own schema refuses it (minimum 1).
+      // Clearing is `null`, which is a different statement and reaches here as
+      // one.
+      const next = action.durationMs === null ? null : Math.max(1, Math.round(action.durationMs));
+      if (next === state.defaultDurationMs) return state;
+      return { ...state, defaultDurationMs: next, dirty: true };
+    }
 
     case "selectSlide": {
       if (action.index === state.slideIndex) return state;

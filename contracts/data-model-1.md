@@ -120,11 +120,11 @@ An implementation MUST NOT read this as licence to resolve a `screen_id` without
 
 An item's projection onto delivered content is one-to-one for `asset` and `playable`. It is NOT for `cast`: a cast item MUST project to one content item per slide of the referenced cast, in that cast's own slide order, spliced into the playlist's own order at the position the item occupies. This is what lets an operator schedule an authored slidecast as a single playlist entry.
 
-**[DAT-042]** `duration_seconds`, when present on an `items` entry, overrides whatever duration that item would otherwise resolve to; when absent, an `asset` item's duration is source-driven and a `playable` item's duration follows its own declared `durationSemantics` (`manifest/1` MAN-080) — this contract does not itself resolve either, only defines the override column. For a `cast` item the override applies per PROJECTED SLIDE and is the weaker of the two statements: a slide that declares its own `duration_ms` (DAT-043) keeps it, and only a slide that declares none takes the item's `duration_seconds`.
+**[DAT-042]** `duration_seconds`, when present on an `items` entry, overrides whatever duration that item would otherwise resolve to; when absent, an `asset` item's duration is source-driven and a `playable` item's duration follows its own declared `durationSemantics` (`manifest/1` MAN-080) — this contract does not itself resolve either, only defines the override column. For a `cast` item the override applies per PROJECTED SLIDE and is the weaker of the two statements: a slide that declares its own `duration_ms` (DAT-043) keeps it, and only a slide that declares none takes the item's `duration_seconds`. A slide that declares none and whose item declares none falls through to the cast's own `default_duration_ms` (DAT-043) before reaching the player's default, so the full per-slide dwell-time resolution is exactly: slide `duration_ms` → item `duration_seconds` → cast `default_duration_ms` → the player's own default. The item override sits ABOVE the cast default deliberately — `duration_seconds` is a statement about one PLACEMENT of the cast and a `default_duration_ms` is a statement about slides that said nothing, so a cast-wide default that outranked a placement override would make the override unreachable for every cast item.
 
 ### Scheduling core: cast
 
-**[DAT-043]** A cast row MUST be `{id, scope_node, name, slides, external_id?, labels?, revision, created_at, updated_at}` (Cast, Wire shapes) — the Resource-row baseline (DAT-005–008) plus a non-empty `name` (`CAST_NAME_MISSING`) and `slides`.
+**[DAT-043]** A cast row MUST be `{id, scope_node, name, slides, default_duration_ms?, template?, external_id?, labels?, revision, created_at, updated_at}` (Cast, Wire shapes) — the Resource-row baseline (DAT-005–008) plus a non-empty `name` (`CAST_NAME_MISSING`) and `slides`.
 
 A cast is the authored unit an operator builds and schedules: an ordered set of slides, each a positioned stack of native layers. It is a row rather than a shape inlined into a playlist item precisely so that one cast may be referenced from several playlists (DAT-041) and one edit reaches every screen playing it.
 
@@ -134,7 +134,11 @@ A cast is the authored unit an operator builds and schedules: an ordered set of 
 - `duration_ms`, when present, MUST be a positive integer (`CAST_SLIDE_DURATION_INVALID`) and is that slide's dwell time. When absent, the slide inherits the referencing playlist item's `duration_seconds` (DAT-042); when neither is stated, the player applies its own default.
 - `layers` MUST be a non-empty ordered stack of positioned native elements — the same layer shape `player/1` renders (`player/1` PLY-083's `slide` content type) — and MUST satisfy that shape's own validity rules: a layer kind from the closed set, geometry wholly inside the fixed canvas, and the required fields of each kind. A stack that does not satisfy them MUST be rejected (`CAST_SLIDE_LAYERS_INVALID`), because a slide that cannot be drawn is dropped silently at serve time and an operator would have no way to learn why their screen is short a slide.
 
-An `image` layer inside a slide names its bytes by content-addressed `asset_ref` alone, exactly as an `asset` playlist item does (DAT-041); its fetch URL is derived by the producer that projects the slide onto delivered content, never authored. Validation at authoring time therefore requires the `asset_ref` and MUST NOT require the derived URL.
+An `image` layer inside a slide names its bytes by content-addressed `asset_ref` alone, exactly as an `asset` playlist item does (DAT-041); its fetch URL is derived by the producer that projects the slide onto delivered content, never authored. Validation at authoring time therefore requires the `asset_ref` and MUST NOT require the derived URL. The same authored/derived split governs a live widget layer (`weather`, `entity`): the row authors the SUBJECT (`entity_id`) and the display template (`text`), and the resolved display string is filled by the producer at serve time, never authored — so authoring-time validation MUST NOT require it, and a forecast service that cannot answer degrades one widget rather than invalidating the slide.
+
+`default_duration_ms`, when present, MUST be a positive integer (`CAST_DEFAULT_DURATION_INVALID`). It is the cast's OWN default dwell time, applied to every slide of it that states no `duration_ms` of its own and whose referencing playlist item states no `duration_seconds` (the full order is DAT-042's). It exists because a slidecast's slides overwhelmingly share one timing: without it "hold every slide for eight seconds" is an edit of every slide, and adding a slide silently gets whatever the player defaults to rather than what the rest of the deck does.
+
+`template`, when present, MUST be a boolean. A cast with `template: true` is a STARTING POINT an operator creates new casts from, not a document a screen plays, and a playlist item MUST NOT reference one (`CAST_TEMPLATE_NOT_SCHEDULABLE`). A template is a flavor of cast rather than a resource of its own because it is, exactly, a cast whose slides nothing has scheduled yet: giving it its own kind would duplicate the slide shape, its layer gate, its asset-reference projection (the sweep must not reclaim a template's images either) and its editor, and the two copies would drift. Scheduling one is refused rather than allowed because a template's whole purpose is to be edited as the source of future casts — a screen playing it would change every time someone improved the starting point.
 
 A cast row that is referenced by any playlist item MUST NOT be deleted (`REFERENCE_INVALID`) — the reference would otherwise survive as a playlist entry that contributes nothing, and the screen would play a shorter rotation than the playlist states.
 
@@ -336,6 +340,7 @@ This is the **window** analog of, and is deliberately distinct from, `rules/1`'s
   "id": "01JCAST0LUNCHMENU00000000X",
   "scope_node": "01JGRPNDE1PG2X7R5JQC42EJ5E",
   "name": "Lunch Menu",
+  "default_duration_ms": 8000,
   "slides": [
     {
       "id": "title",
@@ -349,7 +354,8 @@ This is the **window** analog of, and is deliberately distinct from, `rules/1`'s
     {
       "id": "photo",
       "layers": [
-        { "kind": "image", "x": 200, "y": 200, "w": 800, "h": 600, "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" }
+        { "kind": "image", "x": 200, "y": 200, "w": 800, "h": 600, "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+        { "kind": "weather", "x": 1200, "y": 820, "w": 560, "h": 120, "text": "{temp}° {cond}", "font_px": 64 }
       ]
     }
   ],
@@ -528,6 +534,8 @@ These are per-field codes only. They never appear as a Problem's top-level
 | `CAST_SLIDE_ID_INVALID` | A slide's `id` is absent, or repeats another slide's within the same cast (DAT-043). A duplicate makes "the slide the operator moved" ambiguous to any editor that addresses slides by id. | no — give every slide a distinct id |
 | `CAST_SLIDE_DURATION_INVALID` | A slide's stated `duration_ms` is not positive (DAT-043). Omitting it is the sanctioned way to inherit the playlist item's own `duration_seconds`; a non-positive value is a dwell time nothing can honour. | no — state a positive duration or omit it |
 | `CAST_SLIDE_LAYERS_INVALID` | A slide's `layers` stack is empty or violates the layer shape's own rules — an unknown kind, a zero-area or off-canvas geometry, a missing per-kind required field, an unparseable color (DAT-043). Refused at authoring time rather than dropped at serve time, so an operator learns which slide is wrong instead of finding their screen a slide short. | no — fix the named slide's layers |
+| `CAST_DEFAULT_DURATION_INVALID` | A cast's stated `default_duration_ms` is not positive (DAT-043). Omitting it is the sanctioned way to say "no cast-wide default"; a non-positive value is a dwell time nothing can honour, and zero is indistinguishable from the absent field on the wire. | no — state a positive default or omit it |
+| `CAST_TEMPLATE_NOT_SCHEDULABLE` | A playlist item's `cast_id` resolves to a cast marked `template: true` (DAT-043). Given its own code rather than reusing `REFERENCE_INVALID` because the reference resolves perfectly well — the row is there — and telling an operator their cast "does not exist" when it is sitting in their template gallery sends them looking for the wrong problem. | no — create a cast from the template and schedule that |
 
 ## Conformance notes
 

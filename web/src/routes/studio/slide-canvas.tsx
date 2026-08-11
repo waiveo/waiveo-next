@@ -13,7 +13,7 @@ import { KitIcon } from "@/components/kit";
 import { SLIDE_CANVAS_HEIGHT, SLIDE_CANVAS_WIDTH, type CastSlide, type SlideLayer } from "@/api";
 import { cn } from "@/lib/utils";
 import { RESIZE_HANDLES, moveLayerBy, resizeLayerBy, type ResizeHandle } from "./cast-model";
-import { formatGoTimeLayout } from "./go-time-layout";
+import { COUNTDOWN_DEFAULT_LAYOUT, formatCountdownLayout, formatGoTimeLayout } from "./go-time-layout";
 
 /**
  * The Studio's canvas: the 1920×1080 slide, scaled to fit, with the selected
@@ -71,8 +71,59 @@ export function describeLayer(layer: SlideLayer): string {
       return `Rectangle — ${layer.color ?? "(no colour)"}`;
     case "image":
       return layer.asset_ref ? `Image — ${layer.asset_ref.replace(/^sha256:/, "").slice(0, 10)}…` : "Image — (none chosen)";
+    case "date":
+      return `Date — ${layer.text ?? "(no format)"}`;
+    case "countdown":
+      // The TARGET, not the layout: two countdowns on one slide differ by what
+      // they count to, and a list that showed both as "HH:MM:SS" would be
+      // useless for telling them apart.
+      return layer.target_ms
+        ? `Countdown — to ${new Date(layer.target_ms).toLocaleString()}`
+        : "Countdown — (no target set)";
+    case "weather":
+      return `Weather — ${layer.text ?? "(no template)"}`;
+    case "entity":
+      return layer.entity_id ? `Entity — ${layer.entity_id}` : "Entity — (none chosen)";
   }
 }
+
+/** The string a live widget SHOWS in the editor's preview.
+ *
+ * `date` and `countdown` are exact: the player computes them from its own clock
+ * through the very grammars this file's formatters mirror, so what the canvas
+ * draws is what the wall draws (modulo the second it is read in).
+ *
+ * `weather` and `entity` cannot be. Their value is substituted by the BOX at
+ * Lease issuance (internal/slidelive) from a forecast service and the device
+ * plane, neither of which the console is asking here. So the preview renders the
+ * author's template with the value tokens replaced by a STAND-IN in the shape of
+ * a real answer — "72° Clear", "on" — which shows the layout, the font and the
+ * box the widget will need, and never pretends to be today's weather. That is
+ * the same honesty the box itself applies when a source cannot answer, where it
+ * substitutes an em dash rather than blanking the slide. */
+function liveWidgetPreview(layer: SlideLayer, now: Date): string {
+  switch (layer.kind) {
+    case "clock":
+    case "date":
+      return formatGoTimeLayout(layer.text ?? "", now);
+    case "countdown":
+      return formatCountdownLayout(layer.text || COUNTDOWN_DEFAULT_LAYOUT, (layer.target_ms ?? 0) - now.getTime());
+    case "weather":
+      return (layer.text ?? "")
+        .replaceAll("{temp}", "72")
+        .replaceAll("{tempc}", "22")
+        .replaceAll("{cond}", "Clear");
+    case "entity":
+      return (layer.text || "{state}").replaceAll("{state}", "on");
+    default:
+      return layer.text ?? "";
+  }
+}
+
+/** The kinds whose preview changes every second, and so make the stage tick. A
+ * date only turns over at midnight, but it costs the same one shared timer and
+ * a slide left open across midnight would otherwise show yesterday. */
+const TICKING_KINDS = ["clock", "date", "countdown"];
 
 /** One layer, drawn the way the player draws it. Canvas-space coordinates. */
 export function LayerView({ layer, now }: { layer: SlideLayer; now: Date }) {
@@ -114,12 +165,15 @@ export function LayerView({ layer, now }: { layer: SlideLayer; now: Date }) {
     );
   }
 
-  // text | clock — the same Label on the player; the only difference is where
-  // the string comes from.
-  const content = layer.kind === "clock" ? formatGoTimeLayout(layer.text ?? "", now) : (layer.text ?? "");
+  // Every remaining kind is a Label on the player — text, clock, date,
+  // countdown, weather, entity — differing only in where the string comes from.
+  // One branch for all six is deliberate: they share the font, colour, alignment
+  // and box behaviour exactly, and six near-identical JSX blocks is six places
+  // for the preview to drift from the wall.
+  const content = layer.kind === "text" ? (layer.text ?? "") : liveWidgetPreview(layer, now);
   return (
     <div
-      data-slot={layer.kind === "clock" ? "layer-clock" : "layer-text"}
+      data-slot={`layer-${layer.kind}`}
       style={{
         ...box,
         color: layer.color ?? "#FFFFFF",
@@ -150,8 +204,8 @@ export function SlideStage({
   scale: number;
   className?: string;
 }) {
-  const hasClock = slide.layers.some((l) => l.kind === "clock");
-  const now = useNow(hasClock);
+  const ticking = slide.layers.some((l) => TICKING_KINDS.includes(l.kind));
+  const now = useNow(ticking);
   return (
     <div
       data-slot="slide-stage"

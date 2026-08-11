@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
@@ -213,5 +213,133 @@ describe("Casts library", () => {
     await user.click(await screen.findByRole("button", { name: "Delete Lobby loop" }));
     await user.click(await screen.findByRole("button", { name: "Delete" }));
     expect(await screen.findByText(/a schedule still plays this cast/i)).toBeInTheDocument();
+  });
+});
+
+/**
+ * Templates (parity row 1.8) — a template is a cast carrying `template: true`,
+ * so everything here is asserted on the ONE cast list and the ordinary
+ * `POST /casts` a create sends.
+ *
+ * The assertions land on the request body for the same reason the rest of this
+ * file's do: "a template appeared in a dropdown" and "the cast that was created
+ * carries the template's slides" are different claims, and an operator only
+ * cares about the second.
+ */
+describe("Casts library — templates", () => {
+  /** A saved template row: an ordinary cast with the flag set. */
+  const savedTemplate = cast({
+    id: ULID_B,
+    name: "House style",
+    template: true,
+    default_duration_ms: 9000,
+    slides: [
+      { id: "tpl-1", layers: [{ kind: "rect", x: 0, y: 0, w: 1920, h: 1080, color: "#123456" }] },
+    ],
+  });
+
+  /** Capture the create POST and answer with a plausible created row. */
+  function capturingCreate(seen: { body?: Record<string, unknown> }) {
+    return http.post("*/api/v1/casts", async ({ request }) => {
+      seen.body = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json(cast({ id: ULID_A, name: String(seen.body.name ?? "") }), {
+        status: 201,
+        headers: { ETag: '"1"', "Trace-Id": TRACE_ID },
+      });
+    });
+  }
+
+  it("keeps templates out of the schedulable list and shows them as starting points", async () => {
+    server.use(...listing([cast(), savedTemplate]));
+    renderCasts();
+
+    // The schedulable table holds the cast and NOT the template — a template a
+    // playlist cannot reference has no business in the list of things to
+    // schedule, and the server refuses one anyway.
+    const casts = await screen.findByRole("table", { name: "Casts" });
+    expect(within(casts).getByText("Lobby loop")).toBeInTheDocument();
+    expect(within(casts).queryByText("House style")).not.toBeInTheDocument();
+
+    const templates = screen.getByRole("table", { name: "Templates" });
+    expect(within(templates).getByText("House style")).toBeInTheDocument();
+    expect(within(templates).queryByText("Lobby loop")).not.toBeInTheDocument();
+  });
+
+  it("creates a cast FROM a built-in template, carrying its slides and its default duration", async () => {
+    const seen: { body?: Record<string, unknown> } = {};
+    server.use(...listing([]), capturingCreate(seen));
+    const user = userEvent.setup();
+    renderCasts();
+
+    await user.click(await screen.findByRole("button", { name: "New cast" }));
+    await user.selectOptions(await screen.findByLabelText("Start from"), "builtin:menu-board");
+    // The description is shown before anything is created — the names alone do
+    // not tell a menu board from a welcome board.
+    expect(screen.getByText(/heading and four priced rows/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /create and open/i }));
+
+    await screen.findByRole("heading", { name: `Studio for ${ULID_A}` });
+    const body = seen.body ?? {};
+    // The template's own name is the default, so an operator who names nothing
+    // still gets something findable rather than "Untitled cast".
+    expect(body.name).toBe("Menu board");
+    expect(body.default_duration_ms).toBe(12_000);
+    // The slides are the template's, and — the claim that matters — every one
+    // of them is DRAWABLE, so the new cast is schedulable with no further edit.
+    const slides = body.slides as CastSlide[];
+    expect(slides).toHaveLength(2);
+    expect(slides.every((s) => validateSlide(s).length === 0)).toBe(true);
+    expect(slides[0]?.layers.some((l) => l.text === "Today's Menu")).toBe(true);
+    // A created cast is an ORDINARY cast: nothing marks it as template-derived,
+    // which is what lets it be scheduled immediately.
+    expect(body.template).toBeUndefined();
+  });
+
+  it("creates a cast from a SAVED template, deep-copying its slides under fresh ids", async () => {
+    const seen: { body?: Record<string, unknown> } = {};
+    server.use(...listing([savedTemplate]), capturingCreate(seen));
+    const user = userEvent.setup();
+    renderCasts();
+
+    const templates = await screen.findByRole("table", { name: "Templates" });
+    await user.click(within(templates).getByRole("button", { name: `New cast from ${savedTemplate.name}` }));
+    // The dialog opens already pointed at that template.
+    expect(await screen.findByLabelText("Start from")).toHaveValue(`cast:${ULID_B}`);
+    await user.click(screen.getByRole("button", { name: /create and open/i }));
+
+    await screen.findByRole("heading", { name: `Studio for ${ULID_A}` });
+    const body = seen.body ?? {};
+    expect(body.name).toBe("House style");
+    expect(body.default_duration_ms).toBe(9000);
+    expect(body.template).toBeUndefined();
+    const slides = body.slides as CastSlide[];
+    expect(slides).toHaveLength(1);
+    expect(slides[0]?.layers[0]).toMatchObject({ kind: "rect", color: "#123456" });
+    // Fresh id: the copy is its own document, not the template's slide under a
+    // second name.
+    expect(slides[0]?.id).not.toBe("tpl-1");
+  });
+
+  it("saves an existing cast AS a template, leaving the original untouched", async () => {
+    const seen: { body?: Record<string, unknown> } = {};
+    server.use(...listing([cast()]), capturingCreate(seen));
+    const user = userEvent.setup();
+    renderCasts();
+
+    await user.click(await screen.findByRole("button", { name: "Save Lobby loop as a template" }));
+    const name = await screen.findByLabelText("Template name");
+    expect(name).toHaveValue("Lobby loop template");
+    await user.click(screen.getByRole("button", { name: /save template/i }));
+
+    await screen.findByText(/saved .* as a template/i);
+    const body = seen.body ?? {};
+    // A COPY carrying the flag — never the original flipped. Flipping would
+    // take a cast screens are playing out of service, and the server would
+    // refuse it outright while it is referenced by a playlist.
+    expect(body.template).toBe(true);
+    expect(body.name).toBe("Lobby loop template");
+    expect((body.slides as CastSlide[])[0]?.layers).toHaveLength(3);
+    // No PATCH went anywhere near the original: the only request was the POST.
+    expect(seen.body).toBeDefined();
   });
 });
