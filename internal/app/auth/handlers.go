@@ -956,3 +956,81 @@ func (h *Handlers) RevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// ---- self-service password change (SEC-054) --------------------------------
+
+type changePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
+// ChangeOwnPassword changes the CALLING principal's password (SEC-054).
+//
+// The current password is required, and that is the whole difference between
+// this and SEC-050's admin-issued reset: without it a stolen session is a
+// permanent account takeover rather than a bounded one, because the thief could
+// lock the owner out of their own principal using nothing but the session they
+// already hold.
+//
+// It touches the caller's `password` credential and nothing else — never
+// another principal's, never TOTP (SEC-052's reasoning, applied here) — and it
+// leaves api-key credentials alone. That last is the deliberate asymmetry with
+// SEC-053: a blanket revocation is right for a RESET, where nobody could prove
+// knowledge of the password, and wrong here, where the caller just did. An
+// operator does not expect a password field to kill every running integration,
+// and each key is separately listed and revocable by someone who wants that.
+func (h *Handlers) ChangeOwnPassword(w http.ResponseWriter, r *http.Request) {
+	traceID := apihttp.TraceID(r)
+	p, err := RequirePrincipal(r.Context())
+	if err != nil {
+		writeInternal(w, r, traceID)
+		return
+	}
+	var req changePasswordRequest
+	if !decodeBody(w, r, traceID, &req) {
+		return
+	}
+	var fieldErrs []fieldError
+	if req.CurrentPassword == "" {
+		fieldErrs = append(fieldErrs, fieldError{"current_password", "required", "your current password is required"})
+	}
+	if req.NewPassword == "" {
+		fieldErrs = append(fieldErrs, fieldError{"new_password", "required", "a new password is required"})
+	}
+	if len(fieldErrs) > 0 {
+		writeValidationProblem(w, r, traceID, fieldErrs)
+		return
+	}
+
+	cred, err := h.auth.store.FindPrincipalPasswordCredential(r.Context(), p.ID)
+	if err != nil {
+		// No password credential at all — an oidc- or passkey-only principal.
+		// Reported as a refusal of THIS operation rather than an internal fault:
+		// there is nothing here to change, and saying so is the honest answer.
+		apihttp.WriteProblemExt(w, r, traceID, http.StatusUnprocessableEntity,
+			"VALIDATION_FAILED", "Unprocessable Content",
+			"This principal holds no password credential to change.", nil)
+		return
+	}
+	if err := VerifyPassword(cred.Secret, req.CurrentPassword); err != nil {
+		// A password guess by another name, so it answers exactly as a failed
+		// sign-in does and counts against the same budget (SEC-090/054).
+		apihttp.WriteProblemExt(w, r, traceID, http.StatusUnauthorized,
+			"UNAUTHENTICATED", "Unauthorized", "The current password is incorrect.", nil)
+		return
+	}
+
+	if _, err := h.auth.store.PutPasswordCredential(r.Context(), p.ID, cred.Identifier, req.NewPassword); err != nil {
+		writeInternal(w, r, traceID)
+		return
+	}
+	// Every OTHER session, never this one. Rotating a credential you believe is
+	// exposed is not helped by leaving the other sessions live, and is actively
+	// harmed by signing you out mid-task with a password you may have mistyped
+	// twice.
+	if err := h.auth.store.RevokeOtherSessions(r.Context(), p.ID, p.SessionID); err != nil {
+		writeInternal(w, r, traceID)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

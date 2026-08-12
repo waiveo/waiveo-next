@@ -388,6 +388,7 @@ wins.
 | SEC-051 | `contracts/security-model.md#credential-reset-grants` | `SEC-050-valid-credential-reset-grant-flow`, `SEC-034-valid-grant-audit-carries-purpose-and-issued-via` | covered |
 | SEC-052 | `contracts/security-model.md#credential-reset-grants` | `SEC-050-valid-credential-reset-grant-flow` | TBD-wave1 |
 | SEC-053 | `contracts/security-model.md#credential-reset-grants` | `SEC-050-valid-credential-reset-grant-flow` | covered |
+| SEC-054 | `contracts/security-model.md#credential-reset-grants` | - | TBD-wave1 |
 | SEC-060 | `contracts/security-model.md#break-glass-recovery` | - | TBD-wave1 |
 | SEC-061 | `contracts/security-model.md#break-glass-recovery` | - | TBD-wave1 |
 | SEC-062 | `contracts/security-model.md#break-glass-recovery` | - | TBD-wave1 |

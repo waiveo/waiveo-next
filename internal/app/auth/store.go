@@ -1184,3 +1184,31 @@ func (s *Store) ListAPIKeys(ctx context.Context, principalID string) ([]APIKeyRo
 	}
 	return out, nil
 }
+
+// RevokeOtherSessions revokes every session of principalID EXCEPT keepID
+// (SEC-054).
+//
+// The exception is the point. A self-service password change must not sign the
+// operator out of the session they made it from — they have just proved
+// knowledge of the old password and typed a new one, and ending their session
+// there hands them a fresh login with a credential they may have mistyped
+// twice. Every other session goes, because a rotation that leaves them live
+// protects nothing.
+//
+// API-key credentials are deliberately untouched; see ChangeOwnPassword for
+// why that differs from SEC-053's blanket revocation on a reset.
+func (s *Store) RevokeOtherSessions(ctx context.Context, principalID, keepID string) error {
+	ids, err := s.ListSessionIDs(ctx, principalID)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if id == keepID {
+			continue
+		}
+		if err := s.RevokeSession(ctx, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}

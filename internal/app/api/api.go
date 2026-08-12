@@ -455,6 +455,7 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// that mutates: the admin issuing a reset for somebody else is signed in as
 	// themselves, so there is nothing circular about requiring a session here.
 	// SEC-012's `admin` floor is enforced inside the store's issuance function.
+	rt.HandleFunc("PUT "+apiPrefix+"/auth/password", srv.withDeclaredMembers("ChangeOwnPasswordRequest", authHandlers.ChangeOwnPassword))
 	rt.HandleFunc("GET "+apiPrefix+"/auth/api-keys", authHandlers.ListAPIKeys)
 	// Idempotent by wrapper, not by convention: a retry-on-timeout that
 	// re-minted would leave a SECOND live credential the operator never saw

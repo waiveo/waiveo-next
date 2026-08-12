@@ -586,6 +586,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Change your own password
+         * @description security-model SEC-054. Changes the CALLING principal's `password` credential, presenting the current password alongside the new one.
+         *     Requiring the current password is what separates this from SEC-050's admin-issued reset, and it is not optional: without it a stolen session is a permanent account takeover rather than a bounded one, because the thief could lock the owner out using nothing but the session they already hold. A wrong current password is refused and counts against the same attempt budget a sign-in does (SEC-090) — it is a password guess by another name.
+         *     It changes only the caller's own password. Never another principal's (that is SEC-050, which exists so changing someone else's credential carries an audit trail naming an admin), and never TOTP enrollment, for the reason SEC-052 withholds TOTP from a reset grant.
+         *     On success every OTHER session of the caller is revoked and the one that made the change is kept: rotating a credential you believe is exposed is not helped by leaving other sessions live, and is actively harmed by being signed out mid-task with a password you may have mistyped twice.
+         *     API-key credentials are NOT revoked — the deliberate asymmetry with SEC-053, whose blanket revocation is right for a reset (nobody could prove knowledge of the password) and wrong here (the caller just did). Silently killing every running integration is not a consequence an operator expects from a password field; each key is separately listed and revocable.
+         */
+        put: operations["changeOwnPassword"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/credential-reset": {
         parameters: {
             query?: never;
@@ -1703,6 +1727,13 @@ export interface components {
             identifier: string;
             /** Format: password */
             password: string;
+        };
+        /** @description A self-service password change (SEC-054). The current password is a REQUIRED member rather than an optional proof: without it a stolen session is a permanent account takeover, since the thief could lock the owner out using only the session they already hold. */
+        ChangeOwnPasswordRequest: {
+            /** Format: password */
+            current_password: string;
+            /** Format: password */
+            new_password: string;
         };
         /** @description Who is being reset. There is deliberately no credential-bearing member: SEC-050 says the issuing admin "MUST NOT be shown, and MUST have no path to choose, the credential value the target user eventually sets", and `additionalProperties: false` is what makes that a property of the wire rather than of a handler's discipline. */
         CredentialResetRequest: {
@@ -4312,6 +4343,35 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    changeOwnPassword: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangeOwnPasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description Changed. Other sessions are revoked; this one continues. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["TooManyRequests"];
         };
     };
     issueCredentialReset: {

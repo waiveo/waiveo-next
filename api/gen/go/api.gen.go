@@ -1473,6 +1473,12 @@ type CastUpdate struct {
 	Template *CastTemplateFlag `json:"template,omitempty"`
 }
 
+// ChangeOwnPasswordRequest A self-service password change (SEC-054). The current password is a REQUIRED member rather than an optional proof: without it a stolen session is a permanent account takeover, since the thief could lock the owner out using only the session they already hold.
+type ChangeOwnPasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
 // ClaimRequest A first-boot claim (SEC-120): the one-time setup code, plus the credential the first owner is choosing.
 type ClaimRequest struct {
 	// Code The one-time `setup`-purpose grant code the installer presented. At least 128 bits of entropy (SEC-032).
@@ -3097,6 +3103,12 @@ type LogoutParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// ChangeOwnPasswordParams defines parameters for ChangeOwnPassword.
+type ChangeOwnPasswordParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // GetSessionParams defines parameters for GetSession.
 type GetSessionParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
@@ -3975,6 +3987,9 @@ type RedeemCredentialResetJSONRequestBody = CredentialResetRedeemRequest
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
+// ChangeOwnPasswordJSONRequestBody defines body for ChangeOwnPassword for application/json ContentType.
+type ChangeOwnPasswordJSONRequestBody = ChangeOwnPasswordRequest
+
 // ClaimWorkspaceJSONRequestBody defines body for ClaimWorkspace for application/json ContentType.
 type ClaimWorkspaceJSONRequestBody = ClaimRequest
 
@@ -4191,6 +4206,11 @@ type ClientInterface interface {
 
 	// Logout request
 	Logout(ctx context.Context, params *LogoutParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ChangeOwnPasswordWithBody request with any body
+	ChangeOwnPasswordWithBody(ctx context.Context, params *ChangeOwnPasswordParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ChangeOwnPassword(ctx context.Context, params *ChangeOwnPasswordParams, body ChangeOwnPasswordJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetSession request
 	GetSession(ctx context.Context, params *GetSessionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4745,6 +4765,30 @@ func (c *Client) Login(ctx context.Context, params *LoginParams, body LoginJSONR
 
 func (c *Client) Logout(ctx context.Context, params *LogoutParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewLogoutRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ChangeOwnPasswordWithBody(ctx context.Context, params *ChangeOwnPasswordParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewChangeOwnPasswordRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ChangeOwnPassword(ctx context.Context, params *ChangeOwnPasswordParams, body ChangeOwnPasswordJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewChangeOwnPasswordRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -6949,6 +6993,61 @@ func NewLogoutRequest(server string, params *LogoutParams) (*http.Request, error
 	if err != nil {
 		return nil, err
 	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewChangeOwnPasswordRequest calls the generic ChangeOwnPassword builder with application/json body
+func NewChangeOwnPasswordRequest(server string, params *ChangeOwnPasswordParams, body ChangeOwnPasswordJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewChangeOwnPasswordRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewChangeOwnPasswordRequestWithBody generates requests for ChangeOwnPassword with any type of body
+func NewChangeOwnPasswordRequestWithBody(server string, params *ChangeOwnPasswordParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/auth/password")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	if params != nil {
 
@@ -13270,6 +13369,11 @@ type ClientWithResponsesInterface interface {
 	// LogoutWithResponse request
 	LogoutWithResponse(ctx context.Context, params *LogoutParams, reqEditors ...RequestEditorFn) (*LogoutResponse, error)
 
+	// ChangeOwnPasswordWithBodyWithResponse request with any body
+	ChangeOwnPasswordWithBodyWithResponse(ctx context.Context, params *ChangeOwnPasswordParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ChangeOwnPasswordResponse, error)
+
+	ChangeOwnPasswordWithResponse(ctx context.Context, params *ChangeOwnPasswordParams, body ChangeOwnPasswordJSONRequestBody, reqEditors ...RequestEditorFn) (*ChangeOwnPasswordResponse, error)
+
 	// GetSessionWithResponse request
 	GetSessionWithResponse(ctx context.Context, params *GetSessionParams, reqEditors ...RequestEditorFn) (*GetSessionResponse, error)
 
@@ -14007,6 +14111,39 @@ func (r LogoutResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r LogoutResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ChangeOwnPasswordResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON429 *TooManyRequests
+}
+
+// Status returns HTTPResponse.Status
+func (r ChangeOwnPasswordResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ChangeOwnPasswordResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ChangeOwnPasswordResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -17345,6 +17482,23 @@ func (c *ClientWithResponses) LogoutWithResponse(ctx context.Context, params *Lo
 	return ParseLogoutResponse(rsp)
 }
 
+// ChangeOwnPasswordWithBodyWithResponse request with arbitrary body returning *ChangeOwnPasswordResponse
+func (c *ClientWithResponses) ChangeOwnPasswordWithBodyWithResponse(ctx context.Context, params *ChangeOwnPasswordParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ChangeOwnPasswordResponse, error) {
+	rsp, err := c.ChangeOwnPasswordWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseChangeOwnPasswordResponse(rsp)
+}
+
+func (c *ClientWithResponses) ChangeOwnPasswordWithResponse(ctx context.Context, params *ChangeOwnPasswordParams, body ChangeOwnPasswordJSONRequestBody, reqEditors ...RequestEditorFn) (*ChangeOwnPasswordResponse, error) {
+	rsp, err := c.ChangeOwnPassword(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseChangeOwnPasswordResponse(rsp)
+}
+
 // GetSessionWithResponse request returning *GetSessionResponse
 func (c *ClientWithResponses) GetSessionWithResponse(ctx context.Context, params *GetSessionParams, reqEditors ...RequestEditorFn) (*GetSessionResponse, error) {
 	rsp, err := c.GetSession(ctx, params, reqEditors...)
@@ -19005,6 +19159,53 @@ func ParseLogoutResponse(rsp *http.Response) (*LogoutResponse, error) {
 			return nil, err
 		}
 		response.ApplicationproblemJSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseChangeOwnPasswordResponse parses an HTTP response from a ChangeOwnPasswordWithResponse call
+func ParseChangeOwnPasswordResponse(rsp *http.Response) (*ChangeOwnPasswordResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ChangeOwnPasswordResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
 
 	}
 
