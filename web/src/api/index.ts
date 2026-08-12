@@ -63,6 +63,7 @@ export {
   type AutomationCreate,
   type AutomationUpdate,
   type AutomationRunResult,
+  type AutomationVersion,
   type Schedule,
   type ScheduleCreate,
   type ScheduleUpdate,

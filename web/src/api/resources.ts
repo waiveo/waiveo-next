@@ -343,9 +343,24 @@ export function etagForRevision(revision: number): string {
 // is deferred here is the client surface and the UI that would use it, so
 // neither ships until it has one; resources.type-test.ts locks that out.
 
+/** One definition a rule used to have (rules/1 RUL-394). */
+export interface AutomationVersion {
+  /** The revision this definition HELD — not the one that replaced it. */
+  revision: number;
+  superseded_at: number;
+  definition: Record<string, unknown>;
+}
+
 export interface AutomationsModule extends ResourceModule<Automation, AutomationCreate, AutomationUpdate> {
   /** Run one automation now; returns its mode-evaluation disposition. */
   run(id: string, context?: Record<string, unknown>): Promise<AutomationRunResult>;
+  /** The definitions this rule used to have, newest first (RUL-394). */
+  versions(id: string): Promise<AutomationVersion[]>;
+  /** Put an earlier definition back, as a NEW update (RUL-394).
+   *
+   * Does NOT change whether the rule is enabled: restoring the logic of a rule
+   * you disabled while debugging is not a request for it to start firing. */
+  restoreVersion(id: string, revision: number): Promise<void>;
 }
 
 function automationsModule(client: ApiClient): AutomationsModule {
@@ -356,6 +371,19 @@ function automationsModule(client: ApiClient): AutomationsModule {
       return client.action<AutomationRunResult>(
         `/automations/${encodeURIComponent(id)}/run`,
         context ? { context } : undefined,
+      );
+    },
+    async versions(id) {
+      const page = await client.list<AutomationVersion>(
+        `/automations/${encodeURIComponent(id)}/versions`,
+      );
+      return page.items;
+    },
+    async restoreVersion(id, revision) {
+      // `action`, so the POST carries an Idempotency-Key: a retry-on-timeout
+      // must not append a second identical restore to the history.
+      await client.action<unknown>(
+        `/automations/${encodeURIComponent(id)}/versions/${revision}/restore`,
       );
     },
   };

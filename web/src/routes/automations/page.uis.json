@@ -3,6 +3,9 @@
   "context": {
     "entities": {
       "collection": "entities"
+    },
+    "versions": {
+      "collection": "versions"
     }
   },
   "fragments": {
@@ -56,7 +59,7 @@
           "type": "text",
           "props": {
             "value": {
-              "lit": "This condition has no builder form \u2014 edit it in the JSON view."
+              "lit": "This condition has no builder form — edit it in the JSON view."
             }
           }
         },
@@ -266,7 +269,7 @@
                       "type": "text",
                       "props": {
                         "value": {
-                          "lit": "This condition kind has no builder form \u2014 edit it in the JSON view."
+                          "lit": "This condition kind has no builder form — edit it in the JSON view."
                         }
                       }
                     },
@@ -774,7 +777,7 @@
                           "type": "text",
                           "props": {
                             "value": {
-                              "lit": "This trigger kind has no builder form \u2014 edit it in the JSON view."
+                              "lit": "This trigger kind has no builder form — edit it in the JSON view."
                             }
                           }
                         },
@@ -1439,7 +1442,7 @@
                           "type": "text",
                           "props": {
                             "value": {
-                              "lit": "This action kind has no builder form \u2014 edit it in the JSON view."
+                              "lit": "This action kind has no builder form — edit it in the JSON view."
                             }
                           }
                         },
@@ -1556,7 +1559,7 @@
                               "type": "text",
                               "props": {
                                 "value": {
-                                  "lit": "A choose action nests conditions and actions per branch \u2014 edit its branches in the JSON view."
+                                  "lit": "A choose action nests conditions and actions per branch — edit its branches in the JSON view."
                                 }
                               }
                             }
@@ -1694,7 +1697,7 @@
                               "type": "text",
                               "props": {
                                 "value": {
-                                  "lit": "rules/1 declares pack_action, but this deployment's rule compiler does not implement it yet \u2014 a rule using it is refused on save. Pick another action kind."
+                                  "lit": "rules/1 declares pack_action, but this deployment's rule compiler does not implement it yet — a rule using it is refused on save. Pick another action kind."
                                 }
                               }
                             }
@@ -1777,6 +1780,54 @@
                     "lit": "parallel"
                   }
                 ]
+              }
+            }
+          ]
+        },
+        {
+          "type": "section",
+          "id": "history-section",
+          "props": {
+            "titleMsg": "msg:auto.h.title"
+          },
+          "children": [
+            {
+              "type": "text",
+              "props": {
+                "value": {
+                  "lit": "Every edit keeps the definition it replaced. Choose one to put it back — it lands as a new revision, so you can restore back, and it will not switch a disabled rule on."
+                }
+              }
+            },
+            {
+              "type": "table",
+              "id": "History",
+              "props": {
+                "source": "$context.versions",
+                "columns": [
+                  {
+                    "headerMsg": "msg:auto.h.col.revision",
+                    "cell": "item.revision"
+                  },
+                  {
+                    "headerMsg": "msg:auto.h.col.superseded",
+                    "cell": "item.superseded_at"
+                  }
+                ]
+              },
+              "on": {
+                "rowPress": {
+                  "verb": "call-action",
+                  "action": "automation.restoreVersion",
+                  "params": {
+                    "revision": "item.revision"
+                  },
+                  "confirm": {
+                    "titleMsg": "msg:auto.h.confirm.title",
+                    "bodyMsg": "msg:auto.h.confirm.body",
+                    "confirmLabelMsg": "msg:auto.h.confirm.ok"
+                  }
+                }
               }
             }
           ]

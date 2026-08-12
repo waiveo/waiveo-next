@@ -1452,3 +1452,61 @@ describe("Automations builder — a clock-based trigger says it will not fire (H
     expect(screen.queryByText(/will not fire yet/i)).not.toBeInTheDocument();
   });
 });
+
+// Rule version history in the builder (rules/1 RUL-394).
+//
+// Authored in the page DOCUMENT rather than as React, because the ownership map
+// has this UI moving into `waiveo/automation-ui`: the evaluator stays core
+// forever, the builder does not. A hand-written panel here is a panel thrown
+// away at that boundary.
+describe("earlier versions", () => {
+  it("lists what the rule used to say, and restores the chosen one", async () => {
+    let restored: string | null = null;
+    server.use(
+      ...liveLists([automation({ id: ULID_A, name: "Open the doors" })], HQ),
+      http.get("*/api/v1/automations/:id/versions", () =>
+        page([{ revision: 2, superseded_at: 1_753_000_000_000, definition: {} }]),
+      ),
+      http.post("*/api/v1/automations/:id/versions/:revision/restore", ({ params }) => {
+        restored = String(params.revision);
+        return HttpResponse.json({ id: ULID_A, revision: 4, restored_from: 2 }, { headers: { "Trace-Id": TRACE_ID } });
+      }),
+    );
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+
+    const history = group("Earlier versions");
+    expect(within(history).getByRole("table", { name: "History" })).toBeInTheDocument();
+    expect(within(history).getByText("2")).toBeInTheDocument();
+    // The copy carries what an operator cannot infer: a restore is itself a new
+    // revision, and it does not switch a disabled rule on.
+    expect(within(history).getByText(/lands as a new revision/i)).toBeInTheDocument();
+    expect(within(history).getByText(/will not switch a disabled rule on/i)).toBeInTheDocument();
+
+    // A row press rewrites the rule, so it confirms — and the dialog names the
+    // consequence rather than asking whether the operator is sure.
+    await user.click(within(history).getByText("2").closest("tr") as HTMLElement);
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/triggers, conditions and actions are replaced/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/whether the rule is enabled does not change/i)).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Restore" }));
+    await waitFor(() => expect(restored).toBe("2"));
+  });
+
+  it("says plainly when a rule has never been edited", async () => {
+    server.use(
+      ...liveLists([automation({ id: ULID_A, name: "Open the doors" })], HQ),
+      http.get("*/api/v1/automations/:id/versions", () => page([])),
+    );
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+
+    const history = group("Earlier versions");
+    // The table is there and empty rather than the section being absent: a
+    // missing panel reads as a missing feature.
+    expect(within(history).getByRole("table", { name: "History" })).toBeInTheDocument();
+  });
+});

@@ -11,6 +11,7 @@ import {
   type Status,
 } from "@/components/kit";
 import {
+  type AutomationVersion,
   ApiError,
   collectPages,
   createApi,
@@ -205,6 +206,19 @@ const messages: Record<string, string> = {
 
   // Mode.
   "msg:auto.m.title": "When it is already running",
+  // RUL-394's history panel. The copy carries the two things an operator cannot
+  // infer: that restoring does NOT re-enable a rule they switched off, and that
+  // the restore is itself a new revision, so choosing the wrong one is undoable.
+  "msg:auto.h.title": "Earlier versions",
+  "msg:auto.h.help":
+    "Every edit keeps the definition it replaced. Choose one to put it back — it lands as a new revision, so you can restore back, and it will not switch a disabled rule on.",
+  "msg:auto.h.col.revision": "Revision",
+  "msg:auto.h.col.superseded": "Replaced",
+  "msg:auto.h.empty": "No earlier versions — this rule has not been edited since it was created.",
+  "msg:auto.h.confirm.title": "Put this definition back?",
+  "msg:auto.h.confirm.body":
+    "The rule's triggers, conditions and actions are replaced by this earlier version. It lands as a new revision, so you can restore back. Whether the rule is enabled does not change.",
+  "msg:auto.h.confirm.ok": "Restore",
   "msg:auto.m.mode": "Mode",
   "msg:auto.m.max": "Max parallel runs",
 
@@ -381,6 +395,15 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
   // while the second round trip is still in flight.
   const [entities, setEntities] = useState<Entity[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // The definitions the SELECTED rule used to have (RUL-394). Fetched per
+  // selection rather than with the list: a rule's history is only interesting
+  // once you are looking at that rule, and pulling every rule's history to
+  // render one panel would make opening the page cost N requests.
+  const [versions, setVersions] = useState<AutomationVersion[]>([]);
+  // Bumped by a restore so the panel re-reads: a restore APPENDS to the history
+  // (it is a new update, not a rewind), so the list an operator is looking at
+  // is stale the moment they use it.
+  const [versionsToken, setVersionsToken] = useState(0);
   const selectedIdRef = useRef<string | null>(null);
   // Whether a create draft was open on the last `$ui` we saw, so a fresh draft
   // opening (New→Cancel→New, which keeps `$ui.selected` null) is detectable below.
@@ -493,6 +516,28 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
     await load();
     setVersion((v) => v + 1);
   }, [load]);
+
+  useEffect(() => {
+    if (!selectedId) {
+      setVersions([]);
+      return;
+    }
+    let live = true;
+    void (async () => {
+      try {
+        const vs = await client.automations.versions(selectedId);
+        if (live) setVersions(vs);
+      } catch {
+        // A history that cannot be read is shown as no history rather than as a
+        // page-level failure: the rule itself is fine and editable, and the
+        // panel below says plainly when it is empty.
+        if (live) setVersions([]);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [client, selectedId, versionsToken]);
 
   const selected = useMemo(
     () => (automations ?? []).find((a) => a.id === selectedId) ?? null,
@@ -611,6 +656,26 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
       // to place it on — say so plainly rather than POST a body the server would
       // reject. The create carries an Idempotency-Key (the client owns that
       // convention).
+      // RUL-394's restore, reached from the version table's rowPress. The page
+      // declares the INTENT by name and this binds it — the same seam every
+      // other non-CRUD verb on this page uses, which is what keeps the document
+      // portable into `waiveo/automation-ui` when the builder becomes a pack.
+      callAction: async (name, params) => {
+        if (name !== "automation.restoreVersion") return;
+        const id = selectedIdRef.current;
+        const revision = Number(params.revision);
+        if (!id || !Number.isFinite(revision)) return;
+        try {
+          await client.automations.restoreVersion(id, revision);
+          setVersionsToken((n) => n + 1);
+          await reload();
+          toast.success(`Restored the definition from revision ${revision}. It is a new revision, so you can restore back.`);
+        } catch (err: unknown) {
+          toast.error(
+            err instanceof ApiError ? (err.detail ?? err.title ?? err.code) : String(err),
+          );
+        }
+      },
       create: async (_target, itemDefault) => {
         setConflictReview(false);
         setEnableConflict(false);
@@ -898,7 +963,17 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
             <PageRenderer
               key={version}
               doc={automationsPageDoc}
-              data={{ automations: boundAutomations, entities: entities ?? [] }}
+              data={{
+                automations: boundAutomations,
+                entities: entities ?? [],
+                // RUL-394's history for the selected rule. A named collection
+                // like any other, so the panel below is an ordinary table in
+                // the document rather than a bespoke React pane.
+                versions: versions.map((v) => ({
+                  revision: v.revision,
+                  superseded_at: new Date(v.superseded_at).toLocaleString(),
+                })),
+              }}
               initialUi={{ selected: selectedId }}
               messages={messages}
               handler={handler}
