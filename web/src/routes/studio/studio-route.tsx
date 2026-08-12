@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
-import { ArrowLeft, Grid3x3, Redo2, Save, Undo2 } from "lucide-react";
+import { ArrowLeft, Grid3x3, PlayCircle, Redo2, Save, Undo2 } from "lucide-react";
 import { Badge, Button, ConfirmModal, KitIcon, Modal, Toaster, Tooltip, toast } from "@/components/kit";
 import {
   ApiError,
@@ -28,6 +28,7 @@ import {
   type WaiveoApi,
 } from "@/api";
 import { MediaPickerModal, useContentLibrary } from "@/routes/media/media-library";
+import { CastPlayer } from "@/routes/preview/cast-player";
 import {
   alignPatch,
   applyDerivePatch,
@@ -184,6 +185,13 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
   const [widgetPickerOpen, setWidgetPickerOpen] = useState(false);
   const [derivePickerOpen, setDerivePickerOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  // The preview is an OVERLAY, not a navigation, and that is the whole reason it
+  // can be offered here at all. `/preview?id=…` reads the SAVED cast; this
+  // editor's whole point is the cast that is not saved yet, and leaving the
+  // route to go and look at it would trip the unsaved-changes guard on the way
+  // out and discard the undo history on the way back. Mounted over the editor,
+  // the same player watches the live document and the session survives it.
+  const [previewOpen, setPreviewOpen] = useState(false);
   /** Every entity the box knows, for an `entity` widget's subject picker. */
   const [entities, setEntities] = useState<Entity[]>([]);
 
@@ -656,6 +664,7 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
         { id: "zoom-fit", label: "Fit to window", shortcut: keys.zoomFit, run: () => runCommand("zoomFit") },
         { id: "actual", label: "Actual size", shortcut: keys.actualSize, run: () => runCommand("actualSize") },
         { id: "sep-1", separator: true },
+        { id: "preview", label: "Preview cast", run: () => setPreviewOpen(true) },
         { id: "guides", label: "Guides", checked: showGuides, run: () => setShowGuides((v) => !v) },
         { id: "sep-2", separator: true },
         { id: "p-slides", label: "Slides panel", checked: railOpen, run: () => setRailOpen((v) => !v) },
@@ -851,6 +860,16 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
                   onClick={() => dispatch({ type: "redo" })}
                 >
                   <span className="hidden lg:inline">Redo</span>
+                </Button>
+              </Tooltip>
+              {/* Preview sits immediately before Save, and it opens on the
+                  UNSAVED document on purpose: the question it answers is "is
+                  this edit right", which is asked before the save and not
+                  after. It is an overlay rather than a link to /preview for the
+                  same reason — see the previewOpen state's note. */}
+              <Tooltip tip="Watch this cast play, with the edits you have not saved yet">
+                <Button variant="ghost" size="sm" icon={PlayCircle} onClick={() => setPreviewOpen(true)}>
+                  <span className="hidden lg:inline">Preview</span>
                 </Button>
               </Tooltip>
               {/* No ETag means no read happened, and there is no
@@ -1242,6 +1261,25 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
       />
 
       <ShortcutsModal open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+
+      {/* The preview, over the editor, on the LIVE document. Rendered
+          conditionally rather than hidden with CSS: the player runs an animation
+          frame loop and plays video, and a "closed" preview that kept both
+          running behind the canvas would tax every drag in the editor. Its door
+          closes the overlay instead of navigating, so the cast, the selection
+          and the undo history are all exactly where they were left. */}
+      {previewOpen ? (
+        <CastPlayer
+          cast={{ name: state.name, slides: state.slides, default_duration_ms: state.defaultDurationMs }}
+          assetUrls={assetUrls}
+          originError={contentError}
+          door={
+            <Button variant="ghost" size="sm" icon={ArrowLeft} onClick={() => setPreviewOpen(false)}>
+              Back to editing
+            </Button>
+          }
+        />
+      ) : null}
 
       <ConfirmModal
         open={leaveOpen}

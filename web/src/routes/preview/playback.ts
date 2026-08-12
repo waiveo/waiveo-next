@@ -196,22 +196,17 @@ export interface Program {
  *  3. `wire.ValidateSlideLayers` over what is left. Failure drops the WHOLE
  *     SLIDE — silently, on the box.
  *
- * `assetRefs` is the set of refs the content origin is actually serving, or
- * `null` when its answer is unknown (in flight, or the read failed). It is
- * `null`-tolerant for the reason the Studio's canvas is: an origin that has not
- * answered must not cause anything to be reported missing, or a briefly
- * unreachable box tells an operator every asset in the cast was swept.
- *
- * Note what is NOT modelled: bytes ABSENT from the origin do not drop a slide.
- * `Mint` signs any well-formed digest without asking whether the origin holds
- * it, so the player gets a URL that 404s — a fetch failure at the screen, not a
- * projection failure at the box. The fidelity ledger reports it as its own
- * thing; pretending it were a dropped slide would be a different lie.
+ * It deliberately takes NO content-origin listing, and the omission is the
+ * decision rather than an oversight. Bytes absent from the origin do not drop a
+ * slide: `Mint` (contenturl.go:390) signs any well-formed digest without asking
+ * whether the origin holds it, so the projection succeeds and the PLAYER gets a
+ * URL that 404s — a fetch failure at the screen, which the player degrades per
+ * layer (PLY-087), not a projection failure at the box. Feeding the listing in
+ * here so that "missing bytes" could join this list would be a different lie
+ * from the one it was trying to fix: the stage draws the player's own degraded
+ * placeholder for that case, which is what the wall does.
  */
-export function projectCast(
-  cast: Pick<Cast, "slides" | "default_duration_ms">,
-  assetRefs: ReadonlySet<string> | null = null,
-): Program {
+export function projectCast(cast: Pick<Cast, "slides" | "default_duration_ms">): Program {
   const slides: ProjectedSlide[] = [];
   const skipped: SkippedSlide[] = [];
 
@@ -237,7 +232,7 @@ export function projectCast(
       layers.push(layer);
     });
 
-    const reason = slideRefusal(slide.id, layers, authoredIndex);
+    const reason = slideRefusal(slide.id, layers);
     if (reason !== null) {
       skipped.push({ id: slide.id, authoredIndex, reason });
       return;
@@ -251,13 +246,12 @@ export function projectCast(
     });
   });
 
-  void assetRefs; // Deliberately unread — see the note in this function's doc.
   return { slides, skipped };
 }
 
 /** Why the serve gate would refuse this projected stack, or `null` if it would
  * not. The message is what an operator can act on, not the validator's text. */
-function slideRefusal(_id: string, layers: SlideLayer[], _index: number): string | null {
+function slideRefusal(id: string, layers: SlideLayer[]): string | null {
   if (layers.length === 0) {
     return "Nothing left to draw — every layer on it was dropped, or it never had one.";
   }
@@ -265,7 +259,7 @@ function slideRefusal(_id: string, layers: SlideLayer[], _index: number): string
   // side runs (`wire.validateSlideLayers`) bar one rule, so running it here is
   // running the projector's own refusal — see validateSlide's doc for why the
   // console mirrors the authoring arm rather than the serving one.
-  const problems = validateSlide({ id: _id, layers });
+  const problems = validateSlide({ id, layers });
   if (problems.length > 0) {
     const first = problems[0];
     return first.index === null

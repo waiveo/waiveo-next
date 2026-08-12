@@ -317,6 +317,11 @@ export const OFF_RAIL_ROUTES: OffRailRoute[] = [
       "Opened on a cast from the Casts library (`/studio?id=…`). It is a tool applied to a cast, not a destination — a rail entry would open it on nothing. It is also the one route mounted OUTSIDE this shell while still inside the session gate: a full-screen editor whose canvas and four docked panels want the whole viewport, and whose own header carries the door back (a 'Back to casts' that asks before discarding unsaved work). The rail would be dead weight there — every one of its destinations abandons the cast being edited.",
   },
   {
+    to: "/preview",
+    reachedVia:
+      "The Preview button in the Studio's header, and the Preview action on a row of the Casts library — both open it on a cast (`/preview?id=…`). It is a tool applied to a cast exactly as the Studio is, so a rail entry would open it on nothing; and like the Studio it is mounted OUTSIDE the shell while still inside the session gate, because a 1920×1080 stage, a transport and a fidelity panel want the whole viewport and every rail destination abandons the thing being watched. Its own header carries the door back. Note the Studio ALSO hosts this player as an overlay over its unsaved document — that is not this route, and it is not reachable by URL: a navigation would discard the edits being previewed.",
+  },
+  {
     to: "/security",
     reachedVia:
       "The header's account link. It acts on the signed-in principal rather than on a console resource, so it does not belong beside the resource families.",
