@@ -55,6 +55,11 @@ function mockFeeder(options: {
   /** What GET .../update reports (MKT-095). Defaults to "nothing waiting", so
    * every pre-existing case keeps describing a box that is current. */
   availability?: Record<string, unknown> | null;
+  /** What GET /packs/catalog serves (MKT-096). Named `marketplace`, not
+   * `catalog`: this fixture already had a `catalog` meaning the pack's LOCALE
+   * catalog, and two options one letter apart in meaning is how a test ends up
+   * asserting against the wrong mock. */
+  marketplace?: Record<string, unknown>[] | null;
 } = {}) {
   const state = {
     packs: options.packs ?? [],
@@ -68,6 +73,14 @@ function mockFeeder(options: {
     ),
     http.get("*/api/v1/packs/:publisher/:name/installs", () =>
       jsonBody({ items: state.records, cursor: null }),
+    ),
+    // The catalog (MKT-096). Its literal segment must not be read as a
+    // publisher, which is the same collision the server's route ordering
+    // guards against.
+    http.get("*/api/v1/packs/catalog", () =>
+      options.marketplace === null
+        ? problem(503, "UNAVAILABLE", "No registry sources answered.")
+        : jsonBody({ sources: options.marketplace ?? [] }),
     ),
     // The availability REPORT (MKT-095). Distinct from the POST on the same
     // path: if this were missing the console would silently render its
@@ -140,8 +153,13 @@ describe("Extensions console — seeing what is installed", () => {
   it("reports the box being unreachable rather than showing an empty, healthy-looking list", async () => {
     server.use(http.get("*/api/v1/packs", () => problem(500, "INTERNAL", "An unexpected server error occurred.")));
     renderRoute();
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(/could not be read/i);
+    // Scoped to the INSTALLED region, which is what this test is about. The
+    // page now has a second, independently-failing region (the catalog reads a
+    // different endpoint and a registry can be down while the box is fine), so
+    // an unscoped alert query asserts "the page has exactly one problem" —
+    // which was never the claim.
+    const installed = await screen.findByRole("region", { name: /installed/i });
+    expect(await within(installed).findByRole("alert")).toHaveTextContent(/could not be read/i);
     expect(screen.queryByText("No extensions installed")).not.toBeInTheDocument();
   });
 
@@ -769,4 +787,109 @@ it("reports a failed availability read rather than claiming the pack is current"
   const card = await packCard(PACK_ID);
   expect(within(card).getByText(/Could not read the channel/)).toBeInTheDocument();
   expect(within(card).queryByText("Up to date")).not.toBeInTheDocument();
+});
+
+// ---------------------------------------------------------------------------
+// MKT-096 in the console: an operator can SEE what the sources offer and pick
+// from it, instead of having to already know a publisher/name/channel to type.
+// ---------------------------------------------------------------------------
+
+const CATALOG_ENTRY = {
+  id: "acme/menu-board",
+  version: "2.0.0",
+  kind: "pack",
+  source: "example-registry",
+  trust_channel: "community",
+  status: "active",
+};
+
+it("lists what a source offers, attributed to that source", async () => {
+  mockFeeder({
+    packs: [],
+    marketplace: [{ source: "example-registry", trust_channel: "community", entries: [CATALOG_ENTRY] }],
+  });
+  renderRoute();
+
+  const region = await screen.findByRole("region", { name: /browse the catalog/i });
+  expect(within(region).getByText("acme/menu-board")).toBeInTheDocument();
+  // Attribution is the point, not decoration: source order is a resolution
+  // preference and never a trust decision, so an operator has to see which
+  // source served what.
+  expect(within(region).getByRole("heading", { name: "example-registry" })).toBeInTheDocument();
+  expect(
+    within(region).getByRole("button", { name: /Install acme\/menu-board 2\.0\.0 from example-registry/ }),
+  ).toBeInTheDocument();
+});
+
+// The distinction the whole section rests on: an unreachable registry is not an
+// empty catalog, and rendering the first as the second tells an operator
+// nothing is on offer when the truth is that nobody asked successfully.
+it("reports an unreadable source instead of showing it as offering nothing", async () => {
+  mockFeeder({
+    packs: [],
+    marketplace: [
+      {
+        source: "example-registry",
+        trust_channel: "community",
+        entries: [],
+        unavailable: "the source did not answer",
+      },
+    ],
+  });
+  renderRoute();
+
+  const region = await screen.findByRole("region", { name: /browse the catalog/i });
+  expect(within(region).getByRole("alert")).toHaveTextContent(/could not be read/i);
+  expect(within(region).queryByText(/answered and offers nothing/)).not.toBeInTheDocument();
+});
+
+// An index is untrusted transport, so its channel is a bare string that may name
+// anything. The console checks it against the channels it implements rather than
+// sending a value it can already see is wrong.
+it("refuses to install an entry naming a trust channel it does not implement", async () => {
+  mockFeeder({
+    packs: [],
+    marketplace: [
+      {
+        source: "example-registry",
+        trust_channel: "community",
+        entries: [{ ...CATALOG_ENTRY, trust_channel: "totally-made-up" }],
+      },
+    ],
+  });
+  renderRoute();
+
+  const region = await screen.findByRole("region", { name: /browse the catalog/i });
+  await userEvent.click(within(region).getByRole("button", { name: /Install acme\/menu-board/ }));
+  expect(await within(region).findByText(/does not implement/)).toBeInTheDocument();
+});
+
+// Installing from a listing goes through the ordinary resolve-and-verify path —
+// which is exactly why picking from an untrusted catalog is safe.
+it("installs the exact reference a catalog row names", async () => {
+  let installed: Record<string, unknown> | null = null;
+  mockFeeder({
+    packs: [],
+    marketplace: [{ source: "example-registry", trust_channel: "community", entries: [CATALOG_ENTRY] }],
+  });
+  server.use(
+    http.post("*/api/v1/packs", async ({ request }) => {
+      installed = (await request.json()) as Record<string, unknown>;
+      return jsonBody({ id: "acme/menu-board", version: "2.0.0", pages: [], collections: [], locales: [] });
+    }),
+  );
+  renderRoute();
+
+  const region = await screen.findByRole("region", { name: /browse the catalog/i });
+  await userEvent.click(within(region).getByRole("button", { name: /Install acme\/menu-board 2\.0\.0/ }));
+
+  await waitFor(() => expect(installed).not.toBeNull());
+  // The EXACT entry, not a channel-following resolve: the operator picked a
+  // version off a list and that is the version they get.
+  expect(installed).toMatchObject({
+    pack_id: "acme/menu-board",
+    trust_channel: "community",
+    source: "example-registry",
+    version: "2.0.0",
+  });
 });

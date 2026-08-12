@@ -196,6 +196,8 @@ export {
   type PackManifestField,
   type PackInstallResult,
   type PackInstallRecord,
+  type CatalogEntry,
+  type CatalogSource,
   type PackUpdateAction,
   type PackUpdateAvailability,
   type PackUpdateResult,

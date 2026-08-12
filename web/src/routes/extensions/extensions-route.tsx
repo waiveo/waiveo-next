@@ -26,6 +26,8 @@ import {
   collectPages,
   createApi,
   TRUST_CHANNELS,
+  type CatalogEntry,
+  type CatalogSource,
   type Pack,
   type PackInstallRecord,
   type TrustChannel,
@@ -228,6 +230,11 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
   const [cards, setCards] = useState<PackCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<{ sources: CatalogSource[]; error: string | null }>({
+    sources: [],
+    error: null,
+  });
+  const [catalogLoading, setCatalogLoading] = useState(false);
 
   // Required status is not published by any route (see the file header), so it is
   // LEARNED — from the box's own refusal — and remembered for the session so the
@@ -327,6 +334,10 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
 
   useEffect(() => {
     void refresh();
+    // One request, whatever the source count — the box fetches each index
+    // server-side — and its own state, so a slow registry never delays the
+    // installed list.
+    void loadCatalog();
   }, [refresh]);
 
   /** The identity+version of what is installed right now — what an install's
@@ -393,6 +404,63 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
     }
   }, [client, installedNow, refChannel, refPackId, refSource, refVersion, refresh, setOutcome]);
 
+  /** Load what the configured sources offer (MKT-096). Kept OUT of `refresh`
+   * so a slow or unreachable registry never delays the installed list, which is
+   * the answer an operator needs most and the one this box can always give. */
+  const loadCatalog = useCallback(async () => {
+    setCatalogLoading(true);
+    try {
+      const sources = await client.packs.catalog();
+      if (alive.current) setCatalog({ sources, error: null });
+    } catch (err: unknown) {
+      if (alive.current) setCatalog({ sources: [], error: describeRefusal(err).detail });
+    } finally {
+      if (alive.current) setCatalogLoading(false);
+    }
+  }, [client]);
+
+  /** Install one browsed entry, by the exact reference it names. The listing is
+   * untrusted (see CatalogEntry) — what makes acting on it safe is that this
+   * goes through the same resolve-and-verify path a typed reference does. */
+  const installFromCatalog = useCallback(
+    async (entry: CatalogEntry) => {
+      const key = `catalog:${entry.source}:${entry.id}:${entry.version}`;
+      // The channel arrives as a bare string from an index this box does not
+      // verify, so it is CHECKED against the channels this client knows rather
+      // than cast into the union. An entry naming a channel we do not
+      // implement is one we cannot install, and saying so beats sending a
+      // value we could see was wrong and letting the server reject it.
+      const channel = TRUST_CHANNELS.find((c) => c === entry.trust_channel);
+      if (!channel) {
+        setOutcome(key, {
+          kind: "ok",
+          message: `${entry.id} names trust channel "${entry.trust_channel}", which this console does not implement. It cannot be installed from here.`,
+        });
+        return;
+      }
+      setOutcome(key, { kind: "busy", message: `Resolving ${entry.id} ${entry.version}…` });
+      try {
+        const installed = await collectPages<Pack>((cursor) => client.packs.list({ cursor }));
+        const result = await client.packs.installRef({
+          pack_id: entry.id,
+          trust_channel: channel,
+          source: entry.source,
+          version: entry.version,
+        });
+        if (!alive.current) return;
+        setOutcome(key, {
+          kind: "ok",
+          message: describeInstall(result.id, result.version, installed),
+        });
+        await refresh();
+        notifyPacksChanged();
+      } catch (err: unknown) {
+        if (alive.current) setOutcome(key, { kind: "refused", refusal: describeRefusal(err) });
+      }
+    },
+    [client, refresh, setOutcome],
+  );
+
   const checkUpdate = useCallback(
     async (id: string) => {
       setOutcome(id, { kind: "busy", message: "Checking the pinned channel…" });
@@ -457,6 +525,9 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
   }, []);
 
   const autoTracked = cards.filter((c) => c.provenance.autoTracked).length;
+  // What is already on this box, so a catalog row can say so rather than
+  // offering an install that would be a no-op or a downgrade.
+  const installedVersions = new Map(cards.map((c) => [c.pack.id, c.pack.version]));
   const updatesWaiting = cards.filter((c) => c.availability?.waiting).length;
   // Counted apart from updatesWaiting on purpose — see describeAvailability:
   // a withdrawn running version is a fault, not an upgrade, and the two must
@@ -668,6 +739,92 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
               <OutcomeBanner outcome={outcomes["install-ref"]} />
             </div>
           </div>
+        </section>
+
+        <section aria-labelledby="catalog-heading" className="flex flex-col gap-3">
+          <h2 id="catalog-heading" className="text-lg font-semibold">
+            Browse the catalog
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            What the configured registry sources say they offer. A listing is not a guarantee:
+            this box has not verified anything about an artifact at the point it is listed. What
+            it verifies is the install — the same resolution and signature checks a typed
+            reference goes through, which is why picking from here is no riskier than typing it.
+          </p>
+
+          {catalog.error ? (
+            <p className="text-sm text-[color:var(--wv-err)]" role="alert">
+              The catalog could not be read: {catalog.error}
+            </p>
+          ) : catalogLoading ? (
+            <p className="text-sm text-muted-foreground" role="status">
+              Reading the registry sources…
+            </p>
+          ) : catalog.sources.length === 0 ? (
+            <EmptyState
+              title="No registry sources configured"
+              description="This deployment resolves packs from uploaded files only. A source list is host-provisioned."
+            />
+          ) : (
+            <div className="flex flex-col gap-4">
+              {catalog.sources.map((src) => (
+                <div key={src.source} className="rounded-input border border-border p-3">
+                  <div className="flex flex-wrap items-baseline gap-2">
+                    <h3 className="font-medium">{src.source}</h3>
+                    <span className="text-xs text-muted-foreground">{src.trust_channel}</span>
+                  </div>
+                  {src.unavailable ? (
+                    /* Reported, never omitted: an empty catalog and an
+                       unreachable registry are different facts. */
+                    <p className="mt-2 text-sm text-[color:var(--wv-err)]" role="alert">
+                      This source could not be read: {src.unavailable}
+                    </p>
+                  ) : src.entries.length === 0 ? (
+                    <p className="mt-2 text-sm text-muted-foreground">
+                      This source answered and offers nothing.
+                    </p>
+                  ) : (
+                    <ul className="mt-2 flex flex-col gap-2">
+                      {src.entries.map((entry) => {
+                        const key = `catalog:${entry.source}:${entry.id}:${entry.version}`;
+                        const installed = installedVersions.get(entry.id);
+                        return (
+                          <li key={key} className="flex flex-col gap-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-mono text-sm">{entry.id}</span>
+                              <span className="text-sm text-muted-foreground">{entry.version}</span>
+                              {entry.status !== "active" ? (
+                                <span className="text-xs text-muted-foreground">
+                                  {entry.status}
+                                </span>
+                              ) : null}
+                              {installed === entry.version ? (
+                                <span className="text-xs text-muted-foreground">installed</span>
+                              ) : installed ? (
+                                <span className="text-xs text-muted-foreground">
+                                  installed: {installed}
+                                </span>
+                              ) : null}
+                              <Button
+                                variant="secondary"
+                                icon={Store}
+                                disabled={installed === entry.version}
+                                onClick={() => void installFromCatalog(entry)}
+                                aria-label={`Install ${entry.id} ${entry.version} from ${entry.source}`}
+                              >
+                                {installed ? "Switch to this version" : "Install"}
+                              </Button>
+                            </div>
+                            <OutcomeBanner outcome={outcomes[key]} />
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </section>
 
         <section aria-labelledby="installed-heading" className="flex flex-col gap-3">

@@ -191,6 +191,38 @@ export interface PackUpdateAvailability {
   source: string;
 }
 
+/** One artifact a registry source offers (MKT-096).
+ *
+ * What a listing is NOT: an endorsement. Until channel-index/1's signature
+ * chain is enforced an index is untrusted transport, so this says "the source
+ * named below claims to have this" and nothing more. Installing it runs the
+ * full resolution and install-time verification, which is what makes acting on
+ * an untrusted listing safe — so the UI must offer the INSTALL, never present
+ * the listing itself as a guarantee.
+ *
+ * There is deliberately no digest, size or download url: those are resolution
+ * inputs, and a client that had them might act on the listing directly. */
+export interface CatalogEntry {
+  id: string;
+  version: string;
+  kind: string;
+  source: string;
+  trust_channel: string;
+  status: string;
+}
+
+/** One source's offerings, or the reason it could not be read.
+ *
+ * `unavailable` non-empty and `entries` empty are DIFFERENT from `entries`
+ * empty alone: the first is a registry this box could not reach, the second is
+ * a registry that answered and offers nothing. */
+export interface CatalogSource {
+  source: string;
+  trust_channel: string;
+  entries: CatalogEntry[];
+  unavailable?: string;
+}
+
 // ── Pack page-path confinement ───────────────────────────────────────────────
 
 /**
@@ -248,6 +280,10 @@ export interface PacksModule {
    * installed, reverted, or recorded. This is the call that answers "is there
    * an update" — `update` is the one that takes it. */
   updateAvailability(id: string): Promise<PackUpdateAvailability>;
+  /** What the configured registry sources currently OFFER (MKT-096) — the
+   * discovery half. Grouped by source and never merged: source order is a
+   * resolution preference, never a trust decision. */
+  catalog(): Promise<CatalogSource[]>;
   /** List a pack's append-only install history, oldest first (MKT-094b). The last
    * entry is the current pin. A pack that is not installed is a 404. */
   installs(id: string, params?: ListParams): Promise<Page<PackInstallRecord>>;
@@ -309,6 +345,12 @@ export function createPacksModule(client: ApiClient): PacksModule {
       // `.read` is the plain-GET seam here; the ETag it captures is not used
       // because this addresses no mutable resource, only a computed answer.
       return client.read<PackUpdateAvailability>(`${base}/${id}/update`).then((r) => r.data);
+    },
+    catalog() {
+      // One literal segment, so it can never be read as a `publisher/name`.
+      return client
+        .read<{ sources: CatalogSource[] }>(`${base}/catalog`)
+        .then((r) => r.data.sources ?? []);
     },
     installs(id, params = {}) {
       // No `selector`: install records are not label-selectable — the route
