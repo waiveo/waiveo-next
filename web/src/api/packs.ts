@@ -174,6 +174,23 @@ export interface PackUpdateResult {
   locales?: string[];
 }
 
+/** What an update check WOULD do, reported without doing it (MKT-095).
+ *
+ * `action` reuses PackUpdateAction deliberately: a client that has learned to
+ * read one outcome vocabulary should not have to learn a second for the report
+ * of it. `reverted` is the one to surface loudly — the running version has been
+ * revoked, and a check would replace it. */
+export interface PackUpdateAvailability {
+  action: PackUpdateAction;
+  id: string;
+  from_version: string;
+  to_version: string;
+  /** The pin the answer was resolved through. "An update is waiting" is not
+   * actionable without knowing which channel is offering it. */
+  trust_channel: string;
+  source: string;
+}
+
 // ── Pack page-path confinement ───────────────────────────────────────────────
 
 /**
@@ -226,6 +243,11 @@ export interface PacksModule {
    * what stops a host silently choosing a provenance tier. A pack installed
    * directly (no channel pinned) is REFUSED rather than defaulted onto one. */
   update(id: string): Promise<PackUpdateResult>;
+  /** Report whether an update is waiting, WITHOUT applying one (MKT-095). The
+   * same resolution `update` performs, read rather than run: nothing is
+   * installed, reverted, or recorded. This is the call that answers "is there
+   * an update" — `update` is the one that takes it. */
+  updateAvailability(id: string): Promise<PackUpdateAvailability>;
   /** List a pack's append-only install history, oldest first (MKT-094b). The last
    * entry is the current pin. A pack that is not installed is a 404. */
   installs(id: string, params?: ListParams): Promise<Page<PackInstallRecord>>;
@@ -281,6 +303,12 @@ export function createPacksModule(client: ApiClient): PacksModule {
       // lives in the install record server-side). The pack id's single slash is a
       // real path separator, exactly as in `get`.
       return client.action<PackUpdateResult>(`${base}/${id}/update`);
+    },
+    updateAvailability(id) {
+      // A GET on the same path as `update`'s POST — one question, two verbs.
+      // `.read` is the plain-GET seam here; the ETag it captures is not used
+      // because this addresses no mutable resource, only a computed answer.
+      return client.read<PackUpdateAvailability>(`${base}/${id}/update`).then((r) => r.data);
     },
     installs(id, params = {}) {
       // No `selector`: install records are not label-selectable — the route

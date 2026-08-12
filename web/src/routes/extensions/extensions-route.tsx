@@ -38,6 +38,8 @@ import {
   describeInstall,
   describeRefusal,
   describeUpdate,
+  describeAvailability,
+  type AvailabilityNote,
   hasCode,
   packHealth,
   packProvenance,
@@ -122,6 +124,15 @@ interface PackCard {
   records: PackInstallRecord[];
   /** Why the install history could not be read, when it could not. */
   recordsError: string | null;
+  /** What an update check WOULD do (MKT-095), read without running one.
+   *
+   * `null` while it is still being fetched, or when the pack is not
+   * auto-tracked and there is no channel to ask. A FAILED read is `null` too,
+   * and `availabilityError` says why: a source that cannot be reached is not
+   * evidence that nothing is waiting, and rendering "Up to date" from a failed
+   * lookup would be the console telling a comfortable lie. */
+  availability: AvailabilityNote | null;
+  availabilityError: string | null;
 }
 
 /** A per-pack or per-form outcome: what happened, in the box's own words. */
@@ -275,15 +286,31 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
           } catch (err: unknown) {
             recordsError = describeRefusal(err).detail;
           }
+          const provenance = packProvenance(records);
+          // Only auto-tracked packs have a channel to ask about. A direct
+          // install has nothing to resolve through (MKT-094a) and the endpoint
+          // refuses it, so asking would spend a request to be told what the
+          // records already say.
+          let availability: AvailabilityNote | null = null;
+          let availabilityError: string | null = null;
+          if (provenance.autoTracked) {
+            try {
+              availability = describeAvailability(await client.packs.updateAvailability(pack.id));
+            } catch (err: unknown) {
+              availabilityError = describeRefusal(err).detail;
+            }
+          }
           return {
             pack,
             title: resolveTitle(messages, pack.manifest.displayName),
             titleResolved: typeof messages[pack.manifest.displayName] === "string",
             messages,
             health: packHealth(pack),
-            provenance: packProvenance(records),
+            provenance,
             records,
             recordsError,
+            availability,
+            availabilityError,
           };
         }),
       );
@@ -430,6 +457,11 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
   }, []);
 
   const autoTracked = cards.filter((c) => c.provenance.autoTracked).length;
+  const updatesWaiting = cards.filter((c) => c.availability?.waiting).length;
+  // Counted apart from updatesWaiting on purpose — see describeAvailability:
+  // a withdrawn running version is a fault, not an upgrade, and the two must
+  // never be summed into one number.
+  const withdrawn = cards.filter((c) => c.availability?.tone === "warn").length;
   const refReady = refPackId.trim() !== "" && refChannel !== "" && !busy;
 
   return (
@@ -486,6 +518,22 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
             value={String(cards.length - autoTracked)}
             hint="no channel — not auto-tracked"
           />
+          <StatCard
+            label="Updates waiting"
+            value={String(updatesWaiting)}
+            hint={
+              updatesWaiting === 0
+                ? "every tracked pack is current"
+                : "a newer version is published; nothing applied"
+            }
+          />
+          {withdrawn > 0 ? (
+            <StatCard
+              label="Withdrawn"
+              value={String(withdrawn)}
+              hint="running a version its publisher pulled"
+            />
+          ) : null}
         </div>
 
         <section aria-labelledby="add-heading" className="flex flex-col gap-3">
@@ -786,15 +834,44 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
                       </div>
                     </dl>
 
+                    {card.availability ? (
+                      <p
+                        className={
+                          card.availability.tone === "warn"
+                            ? "rounded-input border border-[color:var(--wv-err)] px-3 py-2 text-sm"
+                            : card.availability.tone === "info"
+                              ? "rounded-input border border-border px-3 py-2 text-sm"
+                              : "text-sm text-muted-foreground"
+                        }
+                      >
+                        <strong>{card.availability.label}</strong>{" "}
+                        <span className="text-muted-foreground">{card.availability.detail}</span>
+                      </p>
+                    ) : card.availabilityError ? (
+                      // Never rendered as "Up to date": a lookup that failed is
+                      // not evidence that nothing is waiting.
+                      <p className="text-sm text-muted-foreground">
+                        Could not read the channel for {id}: {card.availabilityError}
+                      </p>
+                    ) : null}
+
                     <div className="flex flex-wrap items-center gap-2">
                       <Button
-                        variant="secondary"
+                        variant={card.availability?.waiting ? "default" : "secondary"}
                         icon={RefreshCw}
                         disabled={!card.provenance.autoTracked}
                         onClick={() => void checkUpdate(id)}
-                        aria-label={`Check ${id} for updates`}
+                        aria-label={
+                          card.availability?.waiting
+                            ? `Update ${id} to ${card.availability.label.replace(/^.*— /, "")}`
+                            : `Check ${id} for updates`
+                        }
                       >
-                        Check for updates
+                        {card.availability?.waiting
+                          ? "Update now"
+                          : card.availability?.tone === "warn"
+                            ? "Roll back now"
+                            : "Check for updates"}
                       </Button>
                       <Button
                         variant="ghost"

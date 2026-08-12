@@ -8,7 +8,7 @@
 // as a destination the nav has silently dropped. A pure function can be driven
 // against the exact refusal the server emits; a JSX branch cannot.
 
-import { ApiError, encodePackPagePath, type Pack, type PackInstallRecord, type PackUpdateResult, type ValidationFieldError } from "@/api";
+import { ApiError, encodePackPagePath, type Pack, type PackInstallRecord, type PackUpdateAvailability, type PackUpdateResult, type ValidationFieldError } from "@/api";
 
 // ── Refusals ─────────────────────────────────────────────────────────────────
 
@@ -185,6 +185,51 @@ export function describeUpdate(result: PackUpdateResult): string {
       return `Updated ${result.from_version} → ${result.to_version}. It is live now; the box was not restarted.`;
     case "reverted":
       return `Reverted ${result.from_version} → ${result.to_version}. The version that was running has been withdrawn by its publisher, so the box went back to the most recent version it had successfully run.`;
+  }
+}
+
+/** What a pack's update state IS, before anyone acts on it (MKT-095).
+ *
+ * The counterpart to describeUpdate, which says what a check DID. Reporting is
+ * the half that was missing: until this endpoint existed the only way to learn
+ * whether an update was waiting was to take it, so the console could offer
+ * nothing but a button whose outcome was unknown until pressed.
+ *
+ * `waiting` is what the page counts and what a card highlights. It is FALSE for
+ * `reverted`, deliberately: a withdrawn running version is not an upgrade
+ * someone might like, it is a fault, and rolling it into an "N updates
+ * available" tally would file the most urgent state this endpoint can report
+ * under the least urgent word on the page. */
+export interface AvailabilityNote {
+  waiting: boolean;
+  tone: "ok" | "info" | "warn";
+  label: string;
+  detail: string;
+}
+
+export function describeAvailability(a: PackUpdateAvailability): AvailabilityNote {
+  switch (a.action) {
+    case "unchanged":
+      return {
+        waiting: false,
+        tone: "ok",
+        label: "Up to date",
+        detail: `${a.trust_channel} still points at ${a.to_version}, the version running here.`,
+      };
+    case "updated":
+      return {
+        waiting: true,
+        tone: "info",
+        label: `Update available — ${a.to_version}`,
+        detail: `${a.trust_channel} now points at ${a.to_version}; this box is running ${a.from_version}. Nothing has been applied.`,
+      };
+    case "reverted":
+      return {
+        waiting: false,
+        tone: "warn",
+        label: `Running version withdrawn — ${a.from_version}`,
+        detail: `${a.from_version} has been withdrawn by its publisher. Checking for updates will roll this box back to ${a.to_version}, the most recent version it ran successfully.`,
+      };
   }
 }
 

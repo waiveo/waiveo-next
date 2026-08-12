@@ -52,6 +52,9 @@ function mockFeeder(options: {
   packs?: Record<string, unknown>[];
   records?: Record<string, unknown>[];
   catalog?: Record<string, string> | null;
+  /** What GET .../update reports (MKT-095). Defaults to "nothing waiting", so
+   * every pre-existing case keeps describing a box that is current. */
+  availability?: Record<string, unknown> | null;
 } = {}) {
   const state = {
     packs: options.packs ?? [],
@@ -65,6 +68,24 @@ function mockFeeder(options: {
     ),
     http.get("*/api/v1/packs/:publisher/:name/installs", () =>
       jsonBody({ items: state.records, cursor: null }),
+    ),
+    // The availability REPORT (MKT-095). Distinct from the POST on the same
+    // path: if this were missing the console would silently render its
+    // could-not-read branch for every pack, and every assertion below about
+    // update state would pass against a page that had asked nothing.
+    http.get("*/api/v1/packs/:publisher/:name/update", () =>
+      options.availability === null
+        ? problem(503, "UNAVAILABLE", "The registry source did not answer.")
+        : jsonBody(
+            options.availability ?? {
+              action: "unchanged",
+              id: PACK_ID,
+              from_version: "1.0.0",
+              to_version: "1.0.0",
+              trust_channel: "community",
+              source: "registry",
+            },
+          ),
     ),
   );
   return state;
@@ -670,4 +691,82 @@ describe("Extensions console — the real example pack, installed end to end", (
     expect(within(card).queryByText(/unreachable/i)).not.toBeInTheDocument();
     expect(within(card).queryByText(/did not resolve/i)).not.toBeInTheDocument();
   });
+});
+
+// ---------------------------------------------------------------------------
+// MKT-095 in the console: telling an operator an update is waiting, BEFORE they
+// press anything. Until the report endpoint existed the page could offer only a
+// button whose outcome was unknown until pressed.
+// ---------------------------------------------------------------------------
+
+it("says an update is waiting, counts it, and offers to take it", async () => {
+  mockFeeder({
+    packs: [pack()],
+    availability: {
+      action: "updated",
+      id: PACK_ID,
+      from_version: "1.0.0",
+      to_version: "2.0.0",
+      trust_channel: "community",
+      source: "registry",
+    },
+  });
+  renderRoute();
+
+  const card = await packCard(PACK_ID);
+  expect(within(card).getByText(/Update available — 2\.0\.0/)).toBeInTheDocument();
+  // The report must not read as though it applied anything.
+  expect(within(card).getByText(/Nothing has been applied/)).toBeInTheDocument();
+  // The action offered changes from "look" to "take", because now the page
+  // knows the answer looking would give.
+  expect(within(card).getByRole("button", { name: /Update .* to 2\.0\.0/ })).toBeInTheDocument();
+
+  // Asserted through the tile's own HINT rather than by walking up to the
+  // value node: the hint states the meaning ("a newer version is published;
+  // nothing applied"), so this survives a layout change and fails on a
+  // behaviour change, which is the right way round.
+  expect(await screen.findByText(/a newer version is published/)).toBeInTheDocument();
+  expect(screen.queryByText("Withdrawn")).not.toBeInTheDocument();
+});
+
+// The one that matters most, and the reason `waiting` and `tone` are separate
+// fields: a withdrawn running version is a FAULT, not an upgrade. Counting it
+// under "Updates waiting" would file the most urgent thing this endpoint can
+// report under the least urgent word on the page.
+it("does not count a withdrawn running version as an available update", async () => {
+  mockFeeder({
+    packs: [pack()],
+    availability: {
+      action: "reverted",
+      id: PACK_ID,
+      from_version: "2.0.0",
+      to_version: "1.0.0",
+      trust_channel: "community",
+      source: "registry",
+    },
+  });
+  renderRoute();
+
+  const card = await packCard(PACK_ID);
+  expect(within(card).getByText(/Running version withdrawn/)).toBeInTheDocument();
+  // And the button says what pressing it would DO — a rollback, not an upgrade.
+  expect(within(card).getByText("Roll back now")).toBeInTheDocument();
+  expect(within(card).queryByText("Check for updates")).not.toBeInTheDocument();
+
+  // Nothing is "waiting" — the tally says every tracked pack is current, which
+  // is true: there is no newer version, there is a broken one.
+  expect(await screen.findByText(/every tracked pack is current/)).toBeInTheDocument();
+  // And the fault gets its own tile, which only renders when there is one.
+  expect(await screen.findByText("Withdrawn")).toBeInTheDocument();
+});
+
+// A source that cannot be reached is not evidence that nothing is waiting, so
+// the page must not render its "up to date" branch from a failed lookup.
+it("reports a failed availability read rather than claiming the pack is current", async () => {
+  mockFeeder({ packs: [pack()], availability: null });
+  renderRoute();
+
+  const card = await packCard(PACK_ID);
+  expect(within(card).getByText(/Could not read the channel/)).toBeInTheDocument();
+  expect(within(card).queryByText("Up to date")).not.toBeInTheDocument();
 });

@@ -197,6 +197,7 @@ export {
   type PackInstallResult,
   type PackInstallRecord,
   type PackUpdateAction,
+  type PackUpdateAvailability,
   type PackUpdateResult,
   type MarketplaceRef,
   type TrustChannel,

@@ -9,6 +9,7 @@ import {
   packHealth,
   packProvenance,
   REQUIRED_PACK_FLOOR,
+  describeAvailability,
 } from "./pack-console";
 
 // The Extensions console's decisions, driven directly: which refusal this is,
@@ -212,5 +213,56 @@ describe("describeInstall", () => {
     expect(
       describeInstall("acme/menu-board", "1.0.0", [{ id: "acme/menu-board", version: "1.0.0" }]),
     ).toMatch(/re-installed/i);
+  });
+});
+
+describe("describeAvailability — what a pack's update state IS, before anyone acts", () => {
+  const base = { id: "acme/menu-board", trust_channel: "community", source: "registry" };
+
+  it("counts a newer version as waiting, and says nothing has been applied", () => {
+    const note = describeAvailability({
+      ...base,
+      action: "updated",
+      from_version: "1.0.0",
+      to_version: "2.0.0",
+    });
+    expect(note.waiting).toBe(true);
+    expect(note.label).toContain("2.0.0");
+    // The report must not read as though it did something: the whole point of
+    // MKT-095 is that looking is not taking.
+    expect(note.detail).toContain("Nothing has been applied");
+    // Which channel is offering it — "an update is waiting" is not actionable
+    // without it.
+    expect(note.detail).toContain("community");
+  });
+
+  it("does NOT count a withdrawn running version as an available update", () => {
+    const note = describeAvailability({
+      ...base,
+      action: "reverted",
+      from_version: "2.0.0",
+      to_version: "1.0.0",
+    });
+    // This is the assertion that matters. A withdrawn version is a fault, not an
+    // upgrade someone might like; rolling it into an "N updates available" tally
+    // would file the most urgent state this endpoint reports under the least
+    // urgent word on the page.
+    expect(note.waiting).toBe(false);
+    expect(note.tone).toBe("warn");
+    expect(note.label).toContain("withdrawn");
+    // And it must say what pressing the button would DO, since that is a
+    // rollback rather than an upgrade.
+    expect(note.detail).toContain("1.0.0");
+  });
+
+  it("reports an up-to-date pack without inviting an action", () => {
+    const note = describeAvailability({
+      ...base,
+      action: "unchanged",
+      from_version: "1.0.0",
+      to_version: "1.0.0",
+    });
+    expect(note.waiting).toBe(false);
+    expect(note.tone).toBe("ok");
   });
 });
