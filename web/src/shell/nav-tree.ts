@@ -13,6 +13,7 @@ import {
   Radio,
   Server,
   Settings,
+  KeyRound,
   Tv,
   Upload,
   Variable,
@@ -269,6 +270,10 @@ export const NAV_TREE: NavNode[] = [
       // buried Settings third in a flat CORE list between Backups and Jobs,
       // which is exactly the interleaving the owner objected to.
       { kind: "leaf", to: "/settings", label: "Settings", icon: Settings },
+      // Beside Settings rather than in its own area: an api-key is a property
+      // of the box's identity surface, and the rail reserves top-level slots
+      // for pages belonging to no area.
+      { kind: "leaf", to: "/api-keys", label: "API keys", icon: KeyRound },
       { kind: "leaf", to: "/activity", label: "Activity", icon: Activity },
       { kind: "leaf", to: "/system", label: "System", icon: HeartPulse },
       { kind: "leaf", to: "/backup", label: "Backup", icon: DatabaseBackup },

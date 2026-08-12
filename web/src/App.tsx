@@ -25,6 +25,7 @@ import DesignRoute from "@/routes/design/design-route";
 import PagesRoute from "@/routes/pages/pages-route";
 import PackPageRoute from "@/routes/packs/pack-page-route";
 import ExtensionsRoute from "@/routes/extensions/extensions-route";
+import ApiKeysRoute from "@/routes/apikeys/api-keys-route";
 import SecurityRoute from "@/routes/security/security-route";
 import SystemRoute from "@/routes/system/system-route";
 import SettingsRoute from "@/routes/settings/settings-route";
@@ -164,6 +165,7 @@ export default function App() {
                 `/p/...` routes below, which OPEN an installed pack's own page —
                 this one manages the packs themselves. */}
             <Route path="/extensions" element={<ExtensionsRoute />} />
+            <Route path="/api-keys" element={<ApiKeysRoute />} />
             {/* An installed pack's page: `/p/{publisher}/{name}/{path}` — the
                 pack id is two path segments, the page path a trailing splat. */}
             <Route path="/p/:publisher/:name/*" element={<PackPageRoute />} />

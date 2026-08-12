@@ -87,6 +87,33 @@ export interface ClaimRequest {
   password: string;
 }
 
+/** One api-key as a LISTING describes it (SEC-003e).
+ *
+ * There is no secret member and there never will be: the plaintext is returned
+ * exactly once, by the mint, and SEC-003e forbids returning it — or any PREFIX
+ * of it — afterwards. A prefix is a shortcut for an attacker holding a partial
+ * capture and buys a legitimate operator nothing a label does not. */
+export interface ApiKey {
+  id: string;
+  label: string;
+  created_at: number;
+  /** 0 / absent when the key has never been presented. */
+  last_used_at?: number;
+  /** 0 / absent when the key does not expire (SEC-003d). */
+  expires_at?: number;
+}
+
+/** A freshly minted key — the ONLY shape that ever carries the plaintext. */
+export interface MintedApiKey {
+  id: string;
+  label: string;
+  /** The plaintext, returned exactly once (SEC-003e). Nothing can retrieve it
+   * again; a caller that loses it must revoke the key and mint another. */
+  key: string;
+  created_at: number;
+  expires_at?: number;
+}
+
 export interface AuthModule {
   /** Exchange credentials for a session. Throws ApiError on failure — 401 for a
    * bad identifier or password (deliberately indistinguishable, so the response
@@ -100,6 +127,13 @@ export interface AuthModule {
    * "am I signed in?" is exactly the question whose negative response is a 401,
    * so a null return is the honest result and not a failure to report. */
   session(): Promise<SessionSummary | null>;
+  /** The caller's own live api-keys (SEC-003e). Never carries a secret. */
+  apiKeys(): Promise<ApiKey[]>;
+  /** Mint an api-key for the CALLER, returning its plaintext exactly once
+   * (SEC-003a–e). Requires admin at the workspace root. */
+  mintApiKey(body: { label: string; expires_at?: number }): Promise<MintedApiKey>;
+  /** Revoke one of the caller's own keys (SEC-020). */
+  revokeApiKey(id: string): Promise<void>;
   /** Claim an unclaimed workspace by redeeming the one-time setup code, minting
    * the first `owner` principal and its session.
    *
@@ -144,6 +178,19 @@ export function createAuthModule(client: ApiClient): AuthModule {
     },
     async session() {
       return client.getOrNull<SessionSummary>("/auth/session");
+    },
+    async apiKeys() {
+      const page = await client.list<ApiKey>("/auth/api-keys");
+      return page.items;
+    },
+    async mintApiKey(body) {
+      // `action`, so the POST carries an Idempotency-Key: a retry-on-timeout
+      // that re-minted would leave a SECOND live credential whose plaintext
+      // was never shown, and SEC-003e means it can never be shown again.
+      return client.action<MintedApiKey>("/auth/api-keys", body);
+    },
+    async revokeApiKey(id) {
+      await client.discard(`/auth/api-keys/${encodeURIComponent(id)}`);
     },
     async claim(body) {
       // Same exemption as `login`: an unredeemable setup code answers 401, and

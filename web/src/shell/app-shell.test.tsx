@@ -128,7 +128,7 @@ describe("AppShell — locked-left responsive shell", () => {
         // and what local time it keeps, which is the same subject the other
         // four report on or act on. It is first because it is the only member
         // that CONFIGURES — the rest read a deployment this page describes.
-        children: ["Settings", "Activity", "System", "Backup", "Pages", "Design kit"],
+        children: ["Settings", "API keys", "Activity", "System", "Backup", "Pages", "Design kit"],
       },
     ]);
   });

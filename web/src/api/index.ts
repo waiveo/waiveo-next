@@ -8,6 +8,8 @@ export {
   createAuthModule,
   secondFactorRequired,
   type AuthModule,
+  type ApiKey,
+  type MintedApiKey,
   type SessionSummary,
   type LoginRequest,
   type ClaimRequest,
