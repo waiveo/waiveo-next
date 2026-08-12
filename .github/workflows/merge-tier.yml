@@ -60,6 +60,13 @@ jobs:
           go vet ./...
       - name: no new unreachable Go code
         run: node scripts/validate-deadcode.mjs
+      # See pr-tier's own note: the runner ships a Chromium, Ubuntu 24.04
+      # restricts the unprivileged user namespaces its sandbox needs, and
+      # internal/derive's real-render tests therefore died at launch — red here
+      # every run since the rasterizer landed. Enabling userns keeps the sandbox
+      # ON, so CI exercises the production default rather than --no-sandbox.
+      - name: allow Chromium's sandbox (internal/derive renders through a real browser)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Go unit tests (incl. internal/virtualplayer's software first-photon)
         run: go test ./...
       # conformance suites append here as they exist

@@ -62,6 +62,18 @@ jobs:
       # is already warm and the analysis itself is a few seconds.
       - name: no new unreachable Go code
         run: node scripts/validate-deadcode.mjs
+      # internal/derive renders through a REAL Chromium, and the runner has one
+      # preinstalled — so its tests neither skip nor pass, they fail. Ubuntu
+      # 24.04 (this image) restricts unprivileged user namespaces via AppArmor,
+      # and Chromium's sandbox needs them: it dies at launch before announcing a
+      # DevTools endpoint.
+      #
+      # Enabling userns rather than passing --no-sandbox is deliberate. The
+      # sandbox is ON by default in production (BrowserOptions.NoSandbox), and a
+      # rasterizer only ever exercised with the sandbox off is one whose default
+      # configuration nothing tests. This keeps CI on the production path.
+      - name: allow Chromium's sandbox (internal/derive renders through a real browser)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Go unit tests (incl. internal/virtualplayer's software first-photon)
         run: go test ./...
       - name: conformance — player/1 + relay/1 executable drivers (§10 differential oracle vs. the live stack)

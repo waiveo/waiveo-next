@@ -133,6 +133,32 @@ func (b *Browser) Render(ctx context.Context, page Page) ([]byte, error) {
 	return shot, nil
 }
 
+// readStderrTail reports what Chromium printed before it gave up, for an error
+// message. It NEVER blocks the caller: on the launch-timeout path the reader
+// goroutine is still running and will not have sent anything, and an error
+// report is not worth hanging a render on — so a brief wait, then say so.
+//
+// The tail is capped because Chromium is capable of thousands of lines of GPU
+// and font chatter, and the useful part ("Failed to move to new namespace",
+// "error while loading shared libraries") is always at the END, immediately
+// before it exits.
+func readStderrTail(ch <-chan string) string {
+	var out string
+	select {
+	case out = <-ch:
+	case <-time.After(2 * time.Second):
+		return "(chromium is still running; no exit output to report)"
+	}
+	if out == "" {
+		return "(empty)"
+	}
+	const max = 1500
+	if len(out) > max {
+		out = "…" + out[len(out)-max:]
+	}
+	return out
+}
+
 // launch starts Chromium and waits for its DevTools endpoint.
 func (b *Browser) launch(ctx context.Context, profileDir string, page Page) (*os.Process, string, error) {
 	args := []string{
@@ -181,6 +207,15 @@ func (b *Browser) launch(ctx context.Context, profileDir string, page Page) (*os
 	}
 
 	found := make(chan string, 1)
+	// Chromium says WHY it died on the very stream we are scanning, and this
+	// used to drop it: the reader accumulated stderr into `buf` purely to find
+	// the DevTools banner, then on pipe close returned and let `buf` go out of
+	// scope. The caller reported "chromium exited before announcing a DevTools
+	// endpoint" — a sentence that is true of a missing shared library, a
+	// sandbox that cannot initialize, a bad flag and a killed process alike.
+	// Twelve consecutive CI failures produced no evidence for that reason.
+	// Handing the tail back costs one channel.
+	stderrTail := make(chan string, 1)
 	go func() {
 		defer func() { _, _ = io.Copy(io.Discard, stderr) }()
 		buf := make([]byte, 0, 4096)
@@ -200,6 +235,7 @@ func (b *Browser) launch(ctx context.Context, profileDir string, page Page) (*os
 				}
 			}
 			if rerr != nil {
+				stderrTail <- strings.TrimSpace(string(buf))
 				close(found)
 				return
 			}
@@ -210,12 +246,12 @@ func (b *Browser) launch(ctx context.Context, profileDir string, page Page) (*os
 	case url, ok := <-found:
 		if !ok || url == "" {
 			killTree(cmd.Process)
-			return nil, "", errors.New("derive: chromium exited before announcing a DevTools endpoint")
+			return nil, "", fmt.Errorf("derive: chromium exited before announcing a DevTools endpoint; chromium stderr: %s", readStderrTail(stderrTail))
 		}
 		return cmd.Process, url, nil
 	case <-time.After(b.opt.LaunchTimeout):
 		killTree(cmd.Process)
-		return nil, "", fmt.Errorf("derive: chromium did not announce a DevTools endpoint within %s", b.opt.LaunchTimeout)
+		return nil, "", fmt.Errorf("derive: chromium did not announce a DevTools endpoint within %s; chromium stderr: %s", b.opt.LaunchTimeout, readStderrTail(stderrTail))
 	case <-ctx.Done():
 		killTree(cmd.Process)
 		return nil, "", ctx.Err()
