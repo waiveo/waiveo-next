@@ -256,3 +256,62 @@ describe("Extensions nav — pack icons (never broken)", () => {
     expect(dupes, `rail sections sharing a label: ${dupes.join(", ")}`).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// The rail's updates badge (MKT-095). The register's row: "an operator is never
+// told a pack has a newer version; they must learn it out of band."
+//
+// These tests exist because the hook swallows a failed lookup by design — a
+// source that cannot be reached is not evidence that an update is waiting — and
+// that same catch will happily swallow a MISSING MOCK. Without a case that
+// asserts the badge is PRESENT, the whole feature passes while asking nothing.
+// ---------------------------------------------------------------------------
+
+describe("Extensions nav — updates badge", () => {
+  function availability(over: Record<string, unknown> = {}) {
+    return {
+      action: "unchanged",
+      id: "acme/menu-board",
+      from_version: "1.0.0",
+      to_version: "1.0.0",
+      trust_channel: "community",
+      source: "registry",
+      ...over,
+    };
+  }
+
+  function mountWith(report: Record<string, unknown>) {
+    server.use(
+      http.get("*/api/v1/packs", () => jsonBody({ items: [pack()], cursor: null })),
+      http.get("*/api/v1/packs/acme/menu-board/messages/en", () => jsonBody(PACK_EN_CATALOG)),
+      http.get("*/api/v1/packs/acme/menu-board/update", () => jsonBody(report)),
+    );
+    renderShell();
+  }
+
+  it("counts a waiting update on the Extensions heading, in words a screen reader can use", async () => {
+    mountWith(availability({ action: "updated", to_version: "2.0.0" }));
+
+    // Found through the CONTROL's accessible name, not by hunting a span: the
+    // badge is only useful if it reaches the name of the thing it annotates.
+    const toggle = await screen.findByRole("button", { name: /Extensions.*1 update waiting/s });
+    expect(within(toggle).getByText("1")).toBeInTheDocument();
+  });
+
+  it("says 'need attention' when a running version has been withdrawn", async () => {
+    mountWith(availability({ action: "reverted", from_version: "2.0.0", to_version: "1.0.0" }));
+
+    // Summed into the same badge deliberately — the rail answers "is there
+    // something in Extensions to look at", and the PAGE is where an upgrade is
+    // told apart from a fault. But the WORDING has to change, or the badge
+    // would call a withdrawn version an available update.
+    await screen.findByRole("button", { name: /Extensions.*1 extension needs attention/s });
+  });
+
+  it("shows no badge when every tracked pack is current", async () => {
+    mountWith(availability());
+
+    const toggle = await screen.findByRole("button", { name: /Extensions/ });
+    expect(toggle.querySelector('[data-slot="nav-group-badge"]')).toBeNull();
+  });
+});

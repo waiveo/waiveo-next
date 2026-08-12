@@ -17,6 +17,7 @@ import { useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
 import type { WaiveoApi } from "@/api";
 import { useInstalledPackNav, type PackNavGroup } from "@/routes/packs/use-installed-packs";
+import { useUpdatesWaiting } from "@/routes/packs/use-updates-waiting";
 import { resolvePackIcon } from "./pack-icon";
 import { NAV_TREE, groupOwning, type NavGroup, type NavLeaf } from "./nav-tree";
 
@@ -196,12 +197,18 @@ function NavGroupSection({
   onToggle,
   collapsed,
   onNavigate,
+  badge,
 }: {
   group: NavGroup;
   open: boolean;
   onToggle: (id: string) => void;
   collapsed?: boolean | undefined;
   onNavigate?: (() => void) | undefined;
+  /** A count to surface on the heading, with the words that make it mean
+   * something. Rendered inside the toggle so it reaches the accessible NAME of
+   * the control — a bare "2" beside "Extensions" is a number a screen reader
+   * announces and nobody can act on. */
+  badge?: { count: number; description: string } | undefined;
 }) {
   const panelId = `nav-group-${group.id}`;
   return (
@@ -220,11 +227,24 @@ function NavGroupSection({
       >
         <KitIcon icon={group.icon} decorative className="size-4 shrink-0" />
         <span className={cn(collapsed && "sr-only")}>{group.label}</span>
+        {badge && badge.count > 0 ? (
+          <span
+            data-slot="nav-group-badge"
+            className={cn(
+              "rounded-full bg-[color:var(--wv-accent)] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-[color:var(--wv-on-accent)]",
+              collapsed ? "absolute top-1 right-1" : "ml-auto",
+            )}
+          >
+            {badge.count}
+            {/* The count alone is not a fact anyone can act on. */}
+            <span className="sr-only"> {badge.description}</span>
+          </span>
+        ) : null}
         {collapsed ? null : (
           <KitIcon
             icon={open ? ChevronDown : ChevronRight}
             decorative
-            className="ml-auto size-3.5 shrink-0"
+            className={cn("size-3.5 shrink-0", badge && badge.count > 0 ? "ml-1.5" : "ml-auto")}
           />
         )}
       </button>
@@ -266,6 +286,26 @@ function ShellNav({
   openGroups: OpenGroups;
   onToggleGroup: (id: string) => void;
 }) {
+  const updates = useUpdatesWaiting();
+  // Withdrawn packs ride the same badge as waiting updates, because the badge
+  // answers one question — "is there something in Extensions I need to look
+  // at?" — and both answers are yes. The PAGE is where the two are told apart;
+  // splitting them in the rail would put a distinction in the place with the
+  // least room to explain it.
+  const needsAttention = updates.count + updates.withdrawn;
+  const extensionsBadge =
+    needsAttention > 0
+      ? {
+          count: needsAttention,
+          description:
+            updates.withdrawn > 0
+              ? // The verb agrees too. This string is the badge's whole meaning
+                // to a screen-reader user, and "1 extension need attention" is
+                // the kind of wrongness that reads as machine output.
+                `${needsAttention} extension${needsAttention === 1 ? " needs" : "s need"} attention`
+              : `${needsAttention} update${needsAttention === 1 ? "" : "s"} waiting`,
+        }
+      : undefined;
   return (
     <div className="flex flex-col gap-4">
       {/* A real list inside the landmark: a screen reader announces "6 items"
@@ -284,6 +324,7 @@ function ShellNav({
                   onToggle={onToggleGroup}
                   collapsed={collapsed}
                   onNavigate={onNavigate}
+                  badge={node.id === "extensions" ? extensionsBadge : undefined}
                 />
               )}
             </li>
