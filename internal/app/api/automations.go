@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -461,4 +463,163 @@ func (srv *server) idempotent(w http.ResponseWriter, r *http.Request, raw []byte
 // the generic resource handlers emit through rs.problem.
 func writeProblem(w http.ResponseWriter, r *http.Request, status int, code, title, detail string) {
 	apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), status, code, title, detail, nil)
+}
+
+// ---- rule version history (rules/1 RUL-394) --------------------------------
+
+type automationVersionWire struct {
+	Revision     int64           `json:"revision"`
+	SupersededAt int64           `json:"superseded_at"`
+	Definition   json.RawMessage `json:"definition"`
+}
+
+// listAutomationVersions serves the definitions this rule used to have.
+func (srv *server) listAutomationVersions(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, ok, err := srv.store.Get(r.Context(), store.KindAutomation, id); err != nil {
+		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
+		return
+	} else if !ok {
+		writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No such automation.")
+		return
+	}
+	versions, err := srv.store.ListAutomationVersions(r.Context(), id)
+	if err != nil {
+		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
+		return
+	}
+	items := make([]automationVersionWire, 0, len(versions))
+	for _, v := range versions {
+		items = append(items, automationVersionWire{
+			Revision: v.Revision, SupersededAt: v.SupersededAt, Definition: v.Body,
+		})
+	}
+	writeJSONValue(w, http.StatusOK, map[string]any{"items": items, "cursor": nil})
+}
+
+// restoreAutomationVersion writes an earlier definition back as a NEW update
+// (RUL-394).
+//
+// A new update rather than a rewind: the restore is itself recorded, so the
+// history only grows and an operator who restores the wrong version can restore
+// back. Re-validation comes free and is REQUIRED — the update path runs
+// RUL-020's compile gate over the merged body, so a version that compiled under
+// an earlier build and does not compile now is refused with the compiler's own
+// message, and the rule is left exactly as it was.
+func (srv *server) restoreAutomationVersion(w http.ResponseWriter, r *http.Request) {
+	srv.idempotent(w, r, nil, func(w http.ResponseWriter) { srv.restoreAutomationVersionExec(w, r) })
+}
+
+func (srv *server) restoreAutomationVersionExec(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	revision, err := strconv.ParseInt(r.PathValue("revision"), 10, 64)
+	if err != nil {
+		writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No such version.")
+		return
+	}
+
+	current, ok, err := srv.store.Get(r.Context(), store.KindAutomation, id)
+	if err != nil {
+		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
+		return
+	}
+	if !ok {
+		writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No such automation.")
+		return
+	}
+
+	versions, err := srv.store.ListAutomationVersions(r.Context(), id)
+	if err != nil {
+		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
+		return
+	}
+	var target json.RawMessage
+	for _, v := range versions {
+		if v.Revision == revision {
+			target = v.Body
+			break
+		}
+	}
+	if target == nil {
+		writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No such version.")
+		return
+	}
+
+	patch, err := restorePatch(target, current.Body)
+	if err != nil {
+		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
+		return
+	}
+	res, err := srv.store.Update(r.Context(), store.KindAutomation, id, current.Revision, patch)
+	if err != nil {
+		// Includes the compile gate's refusal for a version this build cannot
+		// run, surfaced with the compiler's own field and message.
+		writeRestoreError(w, r, err)
+		return
+	}
+	writeJSONValue(w, http.StatusOK, map[string]any{"id": id, "revision": res.Revision, "restored_from": revision})
+}
+
+// writeRestoreError renders the refusals a restore can actually produce.
+//
+// Deliberately narrow rather than a call into resource.writeStoreError: the
+// branches that helper carries for external-id conflicts and delete guards
+// cannot arise here (a restore supplies no external_id and deletes nothing),
+// and reaching for a *resource just to reuse two unreachable arms would tie
+// this handler to the CRUD mount's config for no gain.
+//
+// The one that matters is the COMPILE failure. RUL-394 requires a restored
+// definition to be re-validated exactly as an authored one is, and this is
+// where that refusal surfaces — with the compiler's own message and offending
+// member, so an operator learns the version cannot run on this build rather
+// than that "restore failed".
+func writeRestoreError(w http.ResponseWriter, r *http.Request, err error) {
+	var cerr *compile.CompileError
+	if errors.As(err, &cerr) {
+		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
+			"VALIDATION_FAILED", "Validation Failed", cerr.Message, compileErrorExtra(cerr))
+		return
+	}
+	var verr *store.ValidationError
+	if errors.As(err, &verr) {
+		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
+			"VALIDATION_FAILED", "Validation Failed",
+			"One or more fields failed validation.", validationExtra(verr.Errors))
+		return
+	}
+	writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error",
+		"An unexpected server error occurred.")
+}
+
+// restorePatch is the restored definition with the CURRENT enablement kept
+// (RUL-394).
+//
+// An operator restoring the logic of a rule they disabled while debugging it
+// has not thereby asked for it to start firing, so `enabled` is taken from the
+// live row rather than from the version. Every other member comes from the
+// version.
+//
+// One honest limit: the update path shallow-merges, so a member the CURRENT
+// definition has and the restored one does not is left in place rather than
+// removed. For today's rule shape that set is empty — the members are fixed —
+// but a member added to the grammar later would persist across a restore of a
+// version that predates it, and the fix then is a replace verb rather than a
+// patch, not a special case here.
+func restorePatch(version, current json.RawMessage) (json.RawMessage, error) {
+	var out map[string]any
+	if err := json.Unmarshal(version, &out); err != nil {
+		return nil, err
+	}
+	var cur struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.Unmarshal(current, &cur); err != nil {
+		return nil, err
+	}
+	if cur.Enabled != nil {
+		out["enabled"] = *cur.Enabled
+	} else {
+		delete(out, "enabled")
+	}
+	return json.Marshal(out)
 }

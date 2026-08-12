@@ -3199,6 +3199,21 @@ type RunAutomationParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// ListAutomationVersionsParams defines parameters for ListAutomationVersions.
+type ListAutomationVersionsParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// RestoreAutomationVersionParams defines parameters for RestoreAutomationVersion.
+type RestoreAutomationVersionParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // ListCastsParams defines parameters for ListCasts.
 type ListCastsParams struct {
 	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
@@ -4257,6 +4272,12 @@ type ClientInterface interface {
 
 	RunAutomation(ctx context.Context, automationId Ulid, params *RunAutomationParams, body RunAutomationJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ListAutomationVersions request
+	ListAutomationVersions(ctx context.Context, automationId Ulid, params *ListAutomationVersionsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RestoreAutomationVersion request
+	RestoreAutomationVersion(ctx context.Context, automationId Ulid, revision int64, params *RestoreAutomationVersionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListCasts request
 	ListCasts(ctx context.Context, params *ListCastsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -4993,6 +5014,30 @@ func (c *Client) RunAutomationWithBody(ctx context.Context, automationId Ulid, p
 
 func (c *Client) RunAutomation(ctx context.Context, automationId Ulid, params *RunAutomationParams, body RunAutomationJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewRunAutomationRequest(c.Server, automationId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListAutomationVersions(ctx context.Context, automationId Ulid, params *ListAutomationVersionsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListAutomationVersionsRequest(c.Server, automationId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RestoreAutomationVersion(ctx context.Context, automationId Ulid, revision int64, params *RestoreAutomationVersionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRestoreAutomationVersionRequest(c.Server, automationId, revision, params)
 	if err != nil {
 		return nil, err
 	}
@@ -7707,6 +7752,122 @@ func NewRunAutomationRequestWithBody(server string, automationId Ulid, params *R
 	}
 
 	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewListAutomationVersionsRequest generates requests for ListAutomationVersions
+func NewListAutomationVersionsRequest(server string, automationId Ulid, params *ListAutomationVersionsParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "automation_id", automationId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/automations/%s/versions", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewRestoreAutomationVersionRequest generates requests for RestoreAutomationVersion
+func NewRestoreAutomationVersionRequest(server string, automationId Ulid, revision int64, params *RestoreAutomationVersionParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "automation_id", automationId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "revision", revision, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "integer", Format: "int64"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/automations/%s/versions/%s/restore", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
 
 	if params != nil {
 
@@ -13419,6 +13580,12 @@ type ClientWithResponsesInterface interface {
 
 	RunAutomationWithResponse(ctx context.Context, automationId Ulid, params *RunAutomationParams, body RunAutomationJSONRequestBody, reqEditors ...RequestEditorFn) (*RunAutomationResponse, error)
 
+	// ListAutomationVersionsWithResponse request
+	ListAutomationVersionsWithResponse(ctx context.Context, automationId Ulid, params *ListAutomationVersionsParams, reqEditors ...RequestEditorFn) (*ListAutomationVersionsResponse, error)
+
+	// RestoreAutomationVersionWithResponse request
+	RestoreAutomationVersionWithResponse(ctx context.Context, automationId Ulid, revision int64, params *RestoreAutomationVersionParams, reqEditors ...RequestEditorFn) (*RestoreAutomationVersionResponse, error)
+
 	// ListCastsWithResponse request
 	ListCastsWithResponse(ctx context.Context, params *ListCastsParams, reqEditors ...RequestEditorFn) (*ListCastsResponse, error)
 
@@ -14521,6 +14688,69 @@ func (r RunAutomationResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r RunAutomationResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ListAutomationVersionsResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r ListAutomationVersionsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListAutomationVersionsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListAutomationVersionsResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type RestoreAutomationVersionResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r RestoreAutomationVersionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RestoreAutomationVersionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r RestoreAutomationVersionResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -17646,6 +17876,24 @@ func (c *ClientWithResponses) RunAutomationWithResponse(ctx context.Context, aut
 	return ParseRunAutomationResponse(rsp)
 }
 
+// ListAutomationVersionsWithResponse request returning *ListAutomationVersionsResponse
+func (c *ClientWithResponses) ListAutomationVersionsWithResponse(ctx context.Context, automationId Ulid, params *ListAutomationVersionsParams, reqEditors ...RequestEditorFn) (*ListAutomationVersionsResponse, error) {
+	rsp, err := c.ListAutomationVersions(ctx, automationId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListAutomationVersionsResponse(rsp)
+}
+
+// RestoreAutomationVersionWithResponse request returning *RestoreAutomationVersionResponse
+func (c *ClientWithResponses) RestoreAutomationVersionWithResponse(ctx context.Context, automationId Ulid, revision int64, params *RestoreAutomationVersionParams, reqEditors ...RequestEditorFn) (*RestoreAutomationVersionResponse, error) {
+	rsp, err := c.RestoreAutomationVersion(ctx, automationId, revision, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRestoreAutomationVersionResponse(rsp)
+}
+
 // ListCastsWithResponse request returning *ListCastsResponse
 func (c *ClientWithResponses) ListCastsWithResponse(ctx context.Context, params *ListCastsParams, reqEditors ...RequestEditorFn) (*ListCastsResponse, error) {
 	rsp, err := c.ListCasts(ctx, params, reqEditors...)
@@ -19821,6 +20069,79 @@ func ParseRunAutomationResponse(rsp *http.Response) (*RunAutomationResponse, err
 			return nil, err
 		}
 		response.ApplicationproblemJSON429 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListAutomationVersionsResponse parses an HTTP response from a ListAutomationVersionsWithResponse call
+func ParseListAutomationVersionsResponse(rsp *http.Response) (*ListAutomationVersionsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListAutomationVersionsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRestoreAutomationVersionResponse parses an HTTP response from a RestoreAutomationVersionWithResponse call
+func ParseRestoreAutomationVersionResponse(rsp *http.Response) (*RestoreAutomationVersionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RestoreAutomationVersionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
 
 	}
 

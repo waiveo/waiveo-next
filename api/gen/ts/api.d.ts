@@ -100,6 +100,56 @@ export interface paths {
         patch: operations["updateAutomation"];
         trace?: never;
     };
+    "/automations/{automation_id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                automation_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        /**
+         * The definitions this rule used to have
+         * @description rules/1 RUL-394. Every update records the definition it REPLACED, in that update's own transaction, so an operator who breaks a working rule can read back the one that worked instead of retyping it from memory or restoring the whole workspace.
+         *     Newest first. Each entry carries the revision it HELD — not the one that replaced it — so the sequence read here is the sequence that happened. A rule that has never been updated has no versions; a create records none, because there is no prior definition and a phantom "version 0" would claim a change nobody made.
+         */
+        get: operations["listAutomationVersions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/automations/{automation_id}/versions/{revision}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                automation_id: components["schemas"]["Ulid"];
+                /** @description The revision to restore, as `listAutomationVersions` reports it. */
+                revision: number;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Put back a definition this rule used to have
+         * @description rules/1 RUL-394. Writes the named version's definition as a NEW update rather than rewinding: the restore is itself recorded, the history only grows, and an operator who restores the wrong version can restore back.
+         *     It does NOT change whether the rule is enabled. An operator restoring the logic of a rule they disabled while debugging it has not thereby asked for it to start firing, so the current enablement is preserved over whatever the old definition carried.
+         *     The restored definition is re-validated exactly as an authored one is (RUL-020's compile gate). A version that compiled under an earlier build of this platform is not thereby valid under this one, and restoring it unchecked would place a rule the evaluator cannot run into a slot the console reports as healthy — such a restore is refused, and the rule is left as it was.
+         *     Carries an Idempotency-Key: a retry-on-timeout must not append a second identical restore to the history.
+         */
+        post: operations["restoreAutomationVersion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/automations/{automation_id}/run": {
         parameters: {
             query?: never;
@@ -3479,6 +3529,61 @@ export interface operations {
             412: components["responses"]["PreconditionFailed"];
             422: components["responses"]["UnprocessableContent"];
             428: components["responses"]["PreconditionRequired"];
+        };
+    };
+    listAutomationVersions: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                automation_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The superseded definitions, newest first. Shape stub, matching the rest of this surface. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    restoreAutomationVersion: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                automation_id: components["schemas"]["Ulid"];
+                /** @description The revision to restore, as `listAutomationVersions` reports it. */
+                revision: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The rule as restored. Shape stub, matching the rest of this surface. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["UnprocessableContent"];
         };
     };
     runAutomation: {

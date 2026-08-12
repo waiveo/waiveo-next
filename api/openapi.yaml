@@ -501,6 +501,86 @@ paths:
           $ref: "#/components/responses/PreconditionFailed"
         "428":
           $ref: "#/components/responses/PreconditionRequired"
+  /automations/{automation_id}/versions:
+    parameters:
+      - name: automation_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    get:
+      operationId: listAutomationVersions
+      summary: The definitions this rule used to have
+      description: >-
+        rules/1 RUL-394. Every update records the definition it REPLACED, in
+        that update's own transaction, so an operator who breaks a working rule
+        can read back the one that worked instead of retyping it from memory or
+        restoring the whole workspace.
+
+        Newest first. Each entry carries the revision it HELD — not the one
+        that replaced it — so the sequence read here is the sequence that
+        happened. A rule that has never been updated has no versions; a create
+        records none, because there is no prior definition and a phantom
+        "version 0" would claim a change nobody made.
+      tags: [automations, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The superseded definitions, newest first. Shape stub, matching the rest of this surface.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /automations/{automation_id}/versions/{revision}/restore:
+    parameters:
+      - name: automation_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+      - name: revision
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+        description: The revision to restore, as `listAutomationVersions` reports it.
+    post:
+      operationId: restoreAutomationVersion
+      summary: Put back a definition this rule used to have
+      description: >-
+        rules/1 RUL-394. Writes the named version's definition as a NEW update
+        rather than rewinding: the restore is itself recorded, the history only
+        grows, and an operator who restores the wrong version can restore back.
+
+        It does NOT change whether the rule is enabled. An operator restoring
+        the logic of a rule they disabled while debugging it has not thereby
+        asked for it to start firing, so the current enablement is preserved
+        over whatever the old definition carried.
+
+        The restored definition is re-validated exactly as an authored one is
+        (RUL-020's compile gate). A version that compiled under an earlier build
+        of this platform is not thereby valid under this one, and restoring it
+        unchecked would place a rule the evaluator cannot run into a slot the
+        console reports as healthy — such a restore is refused, and the rule is
+        left as it was.
+
+        Carries an Idempotency-Key: a retry-on-timeout must not append a second
+        identical restore to the history.
+      tags: [automations, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The rule as restored. Shape stub, matching the rest of this surface.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
   /automations/{automation_id}/run:
     parameters:
       - name: automation_id

@@ -378,6 +378,8 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// fleet-mutating bulk enable/disable returning an api/1 Job (bulkEnableAutomations).
 	// The literal `bulk-enable` segment is unambiguous — the generic mount registers
 	// no POST on `automations/{id}` — and `{id}/run` has its own two-segment shape.
+	rt.HandleFunc("GET "+apiPrefix+"/automations/{id}/versions", srv.listAutomationVersions)
+	rt.HandleFunc("POST "+apiPrefix+"/automations/{id}/versions/{revision}/restore", srv.restoreAutomationVersion)
 	rt.HandleFunc("POST "+apiPrefix+"/automations/{id}/run", srv.runAutomation)
 	rt.HandleFunc("POST "+apiPrefix+"/automations/bulk-enable", srv.bulkEnableAutomations)
 	// The screens family adds one operation beyond plain resource CRUD: minting
