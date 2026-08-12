@@ -59,13 +59,23 @@
 //      every contract defined under contracts/ has exactly one row (a
 //      deleted row is caught, not just a wrong sum over whatever rows
 //      remain).
-import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
+//  11. A "covered" row is affirmed against the requirement TEXT it was read
+//      against, via a digest in conformance/coverage-digests.json. Checks
+//      1-10 all key on requirement ID, and IDs here are paragraph-sized and
+//      carry several MUSTs each — so a new obligation added INSIDE an
+//      already-covered requirement satisfies every one of them while being
+//      exercised by nothing. Refresh with `--affirm` after re-reading the
+//      cases. See checkCoveredTextDigest for what this does not do.
+import { readdirSync, readFileSync, statSync, existsSync, writeFileSync } from "node:fs";
 import { join, basename, dirname } from "node:path";
+import { createHash } from "node:crypto";
 
 const CONTRACTS_ROOT = "contracts";
 const TRACEABILITY_ROOT = join("conformance", "traceability");
 const CORPORA_ROOT = join("conformance", "corpora");
 const MANIFEST_PATH = join("conformance", "driven-manifest.json");
+const DIGESTS_PATH = join("conformance", "coverage-digests.json");
+const AFFIRM = process.argv.includes("--affirm");
 const EXEMPT_CONTRACT_NAMES = new Set(["README.md", "TEMPLATE.md"]);
 const EXEMPT_TRACEABILITY_NAMES = new Set(["README.md", "INDEX.md"]);
 
@@ -116,7 +126,72 @@ function parseContractFile(path) {
     const m = REQUIREMENT_ID_RE.exec(line);
     if (m) requirementIds.add(m[1]);
   }
-  return { path, contractValue, requirementIds };
+  return { path, contractValue, requirementIds, requirementText: parseRequirementBlocks(lines) };
+}
+
+// A requirement's BLOCK — everything from its `**[ID]**` line up to the next
+// requirement ID, the next heading, or end of file.
+//
+// Not just the ID's own line, and the difference is the whole point. Most
+// requirements here are one (very long) source line, but six are not: DAT-119,
+// EVT-081, MKT-043, MKT-060a and SUR-060 carry their normative clauses in a
+// list underneath — sometimes after a blank line — and SEC-003f is followed
+// immediately by SEC-004 with no blank line between them. A first-line-only
+// digest would be blind to an edit to exactly the kind of enumerated `(a)/(b)`
+// clause most likely to gain a new obligation, which is the failure this whole
+// mechanism exists to catch.
+//
+// Trailing non-normative prose (the `*Note: …*` under DAT-075, say) lands in
+// the block too, and that is deliberate rather than tolerated: such a note
+// constrains what the requirement's cases may assert — DAT-075's says the
+// contract intentionally leaves `playlist_id` unconstrained against
+// `display_power` — so an edit to one is worth the glance at its cases that
+// re-affirming costs.
+//
+// Fences are carried through verbatim: a fenced example inside a block is part
+// of the requirement's meaning, and its lines must not be read as new
+// requirements or headings while inside the fence.
+function parseRequirementBlocks(lines) {
+  const blocks = new Map();
+  let currentId = null;
+  let buf = [];
+  let inFence = false;
+  const flush = () => {
+    if (currentId) blocks.set(currentId, buf.join("\n"));
+    currentId = null;
+    buf = [];
+  };
+  for (const line of lines) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      if (currentId) buf.push(line);
+      continue;
+    }
+    if (!inFence) {
+      const m = REQUIREMENT_ID_RE.exec(line);
+      if (m) {
+        flush();
+        currentId = m[1];
+        buf.push(line);
+        continue;
+      }
+      if (/^#{1,6}\s/.test(line)) {
+        flush();
+        continue;
+      }
+    }
+    if (currentId) buf.push(line);
+  }
+  flush();
+  return blocks;
+}
+
+// The digest a coverage claim is affirmed against. Whitespace is collapsed
+// before hashing so that re-wrapping a paragraph — which changes no
+// obligation — does not re-open every row in the file and train everyone to
+// re-affirm without reading. Any change to the WORDS still moves it.
+function digestOf(text) {
+  return createHash("sha256").update(text.replace(/\s+/g, " ").trim()).digest("hex").slice(0, 16);
 }
 
 for (const path of walkMarkdown(CONTRACTS_ROOT)) {
@@ -147,6 +222,21 @@ if (!existsSync(MANIFEST_PATH)) {
     failures.push(`${MANIFEST_PATH}: invalid JSON: ${err.message}`);
   }
 }
+
+// Step 2b: load the affirmed requirement-text digests (check #11). A missing
+// file is not a failure on its own — every covered row reports its own missing
+// digest, which says what to do about it in the place it matters.
+let digests = {};
+if (existsSync(DIGESTS_PATH)) {
+  try {
+    digests = JSON.parse(readFileSync(DIGESTS_PATH, "utf8")).contracts ?? {};
+  } catch (err) {
+    failures.push(`${DIGESTS_PATH}: invalid JSON: ${err.message}`);
+  }
+}
+// "<stem>/<REQ-ID>" -> digest, filled as covered rows are checked. Doubles as
+// the affirm-mode output and as the set the stale-entry sweep is taken against.
+const affirmed = new Map();
 
 
 // ---------------------------------------------------------------------------
@@ -266,6 +356,60 @@ function namedCaseIds(cell) {
     .filter(Boolean);
 }
 
+// ---------------------------------------------------------------------------
+// Check #11: a "covered" row is affirmed against the requirement TEXT it was
+// read against.
+//
+// Every other check here answers "is this requirement ID cited by some case?"
+// That is the citation half. The question that decides whether the corpus
+// means anything is "is every OBLIGATION exercised?", and requirement IDs are
+// far too coarse to stand in for it: they are paragraph-sized and routinely
+// carry several MUSTs. DAT-075 alone carries a dozen.
+//
+// The hole that produced this check: a new normative MUST was added INSIDE
+// DAT-075, which was already `covered` by two cases about fall-through and
+// DST. Neither touches the new clause, and no gate could notice, because the
+// row still cited cases and the ID was still real. A fresh obligation slid in
+// under a satisfied row, and nothing in the pipeline was capable of seeing it.
+//
+// So: record the digest of the text a coverage claim was affirmed against.
+// When the text changes, the claim is no longer known to hold and the row
+// re-opens until a human looks at the cases again and re-affirms with
+// `node scripts/validate-coverage.mjs --affirm`.
+//
+// WHAT THIS DOES NOT DO, stated plainly because the gate's name oversells it:
+// it cannot find an obligation that is ALREADY unexercised. Bootstrapping
+// records today's text as affirmed, DAT-075's uncovered clause included. This
+// stops the corpus drifting further behind the contract; it does not measure
+// how far behind it already is. Closing that needs a case-cites-a-clause
+// grammar or a MUST-count rule, both of which re-tag the whole corpus.
+function checkCoveredTextDigest(stem, reqId, loc, caseIdsCell) {
+  const text = contractsByStem.get(stem)?.requirementText?.get(reqId);
+  if (text === undefined) return; // validate-contracts owns "the ID is real"
+  const actual = digestOf(text);
+  affirmed.set(`${stem}/${reqId}`, actual);
+  if (AFFIRM) return;
+
+  const recorded = digests[stem]?.[reqId];
+  if (recorded === undefined) {
+    failures.push(
+      `${loc}: ${reqId} is covered but ${DIGESTS_PATH} records no digest for it — a coverage claim ` +
+        `nothing has affirmed against the requirement's text. Read ${caseIdsCell || "its cases"} against ` +
+        `the requirement, then run \`node scripts/validate-coverage.mjs --affirm\``,
+    );
+    return;
+  }
+  if (recorded !== actual) {
+    failures.push(
+      `${loc}: ${reqId}'s normative text CHANGED since its coverage was affirmed ` +
+        `(${recorded} -> ${actual}). Its cases were read against the old wording, so "covered" is no ` +
+        `longer a claim anyone has checked — an added MUST inside an already-covered requirement is ` +
+        `exactly the drift this catches. Re-read ${caseIdsCell || "its cases"} against the new text, add ` +
+        `a case if the obligation is new, then \`node scripts/validate-coverage.mjs --affirm\``,
+    );
+  }
+}
+
 function checkTraceabilityFile(path) {
   const stem = basename(path).replace(/\.md$/, "");
   const lines = readFileSync(path, "utf8").split("\n");
@@ -291,6 +435,7 @@ function checkTraceabilityFile(path) {
       failures.push(`${loc}: ${reqId} status "${status}" — must be exactly "covered" or "TBD-wave1"`);
     } else if (status === "covered") {
       covered++;
+      checkCoveredTextDigest(stem, reqId, loc, caseIdsCell);
     } else {
       tbd++;
     }
@@ -437,6 +582,76 @@ function checkIndex() {
 checkIndex();
 
 // ---------------------------------------------------------------------------
+// Check #11's other half: the digest file must not carry entries for rows that
+// are no longer covered. A file that only ever grows rots into a list nobody
+// can read, and a stale entry is worse than absent — it is an affirmation of a
+// claim the traceability map has since withdrawn.
+// ---------------------------------------------------------------------------
+function sweepAndWriteDigests() {
+  if (!AFFIRM) {
+    for (const [stem, byId] of Object.entries(digests)) {
+      for (const reqId of Object.keys(byId)) {
+        if (!affirmed.has(`${stem}/${reqId}`)) {
+          failures.push(
+            `${DIGESTS_PATH}: carries a digest for ${stem}/${reqId}, which is no longer a covered row — ` +
+              `run \`node scripts/validate-coverage.mjs --affirm\` to prune it`,
+          );
+        }
+      }
+    }
+    return;
+  }
+
+  const next = {};
+  for (const [key, digest] of [...affirmed.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const idx = key.lastIndexOf("/");
+    const stem = key.slice(0, idx);
+    const reqId = key.slice(idx + 1);
+    (next[stem] ??= {})[reqId] = digest;
+  }
+  let added = 0;
+  let changed = 0;
+  for (const [stem, byId] of Object.entries(next)) {
+    for (const [reqId, digest] of Object.entries(byId)) {
+      const before = digests[stem]?.[reqId];
+      if (before === undefined) added++;
+      else if (before !== digest) changed++;
+    }
+  }
+  let removed = 0;
+  for (const [stem, byId] of Object.entries(digests)) {
+    for (const reqId of Object.keys(byId)) if (next[stem]?.[reqId] === undefined) removed++;
+  }
+
+  const body = {
+    _README: [
+      "Machine-maintained. Do not hand-edit: run `node scripts/validate-coverage.mjs --affirm`.",
+      "One digest per `covered` traceability row: the hash of the requirement's normative text",
+      "(its whole block, whitespace-collapsed) AT THE MOMENT ITS COVERAGE WAS AFFIRMED.",
+      "",
+      "It exists because every other coverage check keys on requirement ID, and IDs here are",
+      "paragraph-sized and carry several MUSTs each. A new obligation added inside an already",
+      "covered requirement is invisible to an ID-keyed gate -- it happened to DAT-075 -- so the",
+      "corpus can drift arbitrarily far behind the contract while reporting full coverage.",
+      "",
+      "A changed digest is not an error in itself. It means the requirement's wording moved and",
+      "nobody has since checked that its cases still exercise it. Re-read the cases against the",
+      "new text, add one if the obligation is new, and affirm.",
+      "",
+      "It cannot find an obligation that was ALREADY unexercised when a digest was first taken.",
+      "This stops further drift; it does not measure the drift already there.",
+    ],
+    contracts: next,
+  };
+  writeFileSync(DIGESTS_PATH, `${JSON.stringify(body, null, 2)}\n`);
+  console.log(
+    `validate-coverage: --affirm wrote ${DIGESTS_PATH} — ${affirmed.size} covered row(s): ` +
+      `${added} added, ${changed} updated, ${removed} pruned`,
+  );
+}
+
+sweepAndWriteDigests();
+
 if (failures.length) {
   console.error(failures.join("\n"));
   console.log(`SUMMARY: validate-coverage: FAILED — ${failures.length} issue(s); first: ${failures[0]}`);

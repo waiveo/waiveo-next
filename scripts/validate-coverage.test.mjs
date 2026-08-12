@@ -4,7 +4,7 @@
 // the real repo would itself trip the validator it's meant to test.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -92,8 +92,23 @@ function runValidator(cwd) {
   return spawnSync(process.execPath, [VALIDATOR], { cwd, encoding: "utf8" });
 }
 
+// Affirm the requirement-text digests of whatever tree was just built (check
+// #11). Every fixture gets this, because "the digests are up to date" is the
+// normal state of the repo and the state every other check wants to be tested
+// against — an un-affirmed tree would fail on the digest check before reaching
+// the one under test.
+//
+// It is the REAL --affirm path, not a hand-written digest file, and that is
+// deliberate: a fixture that computed the hash itself would agree with a broken
+// implementation. Its exit status is ignored on purpose — a deliberately-bad
+// fixture is still expected to fail; affirming only writes the digest file.
+function affirmDigests(cwd) {
+  spawnSync(process.execPath, [VALIDATOR, "--affirm"], { cwd, encoding: "utf8" });
+}
+
 function withFixture(build, fn) {
   const root = makeFixture(build);
+  affirmDigests(root);
   try {
     fn(root);
   } finally {
@@ -581,4 +596,100 @@ test("INDEX.md row for a contract slug nobody defines fails loudly rather than b
       assert.match(res.stdout, /SUMMARY: validate-coverage: FAILED/);
     }
   );
+});
+
+// ---------------------------------------------------------------------------
+// Check #11 — a covered row is affirmed against the requirement TEXT.
+//
+// These are the gate's own mutation evidence, kept executable. The first is the
+// defect that produced the check: a new MUST added inside an already-covered
+// requirement, which every ID-keyed check in this file is blind to by
+// construction.
+// ---------------------------------------------------------------------------
+
+// The real DAT-075 case, reduced: XXX-001 is covered, and a new obligation is
+// appended to its text without touching the row, the case, or the manifest.
+test("a NEW obligation added inside an ALREADY-COVERED requirement fails, which no ID-keyed check can see", () => {
+  withFixture(writeGoodTree, (root) => {
+    writeFileSync(
+      join(root, "contracts/example-1.md"),
+      GOOD_CONTRACT.replace(
+        "**[XXX-001]** The example MUST do a thing.",
+        "**[XXX-001]** The example MUST do a thing. It MUST also do a second, newer thing.",
+      ),
+    );
+    const res = runValidator(root);
+    assert.equal(res.status, 1, `expected exit 1, got ${res.status}\n${res.stdout}${res.stderr}`);
+    assert.match(res.stderr, /XXX-001's normative text CHANGED since its coverage was affirmed/);
+    // The message has to name the cases to re-read, or it tells someone a row
+    // is stale without telling them what to go and look at.
+    assert.match(res.stderr, /XXX-001-basic/);
+  });
+});
+
+// The counterweight. A gate that fires on re-wrapping a paragraph gets
+// re-affirmed reflexively, and a reflexive affirm is worth nothing.
+test("re-wrapping a requirement's text without changing a word does NOT re-open it", () => {
+  withFixture(writeGoodTree, (root) => {
+    writeFileSync(
+      join(root, "contracts/example-1.md"),
+      GOOD_CONTRACT.replace(
+        "**[XXX-001]** The example MUST do a thing.",
+        "**[XXX-001]** The example MUST\n   do a    thing.",
+      ),
+    );
+    const res = runValidator(root);
+    assert.equal(res.status, 0, `expected exit 0, got ${res.status}\n${res.stdout}${res.stderr}`);
+  });
+});
+
+// A digest file is not optional cover: deleting it must not silently switch the
+// check off, which is the failure mode of every gate that skips when its
+// baseline is absent.
+test("a covered row with no recorded digest fails rather than being skipped", () => {
+  withFixture(writeGoodTree, (root) => {
+    rmSync(join(root, "conformance/coverage-digests.json"), { force: true });
+    const res = runValidator(root);
+    assert.equal(res.status, 1, `expected exit 1, got ${res.status}\n${res.stdout}${res.stderr}`);
+    assert.match(res.stderr, /records no digest for it/);
+  });
+});
+
+// The file has to stay readable, so it must not accumulate rows that are no
+// longer covered — a stale entry affirms a claim the map has since withdrawn.
+test("a digest for a row that is no longer covered fails, and --affirm prunes it", () => {
+  withFixture(writeGoodTree, (root) => {
+    const path = join(root, "conformance/coverage-digests.json");
+    const body = JSON.parse(readFileSync(path, "utf8"));
+    body.contracts["example-1"]["XXX-404"] = "deadbeefdeadbeef";
+    writeFileSync(path, JSON.stringify(body, null, 2));
+
+    const stale = runValidator(root);
+    assert.equal(stale.status, 1, `expected exit 1, got ${stale.status}\n${stale.stdout}${stale.stderr}`);
+    assert.match(stale.stderr, /carries a digest for example-1\/XXX-404, which is no longer a covered row/);
+
+    affirmDigests(root);
+    assert.equal(
+      JSON.parse(readFileSync(path, "utf8")).contracts["example-1"]["XXX-404"],
+      undefined,
+      "--affirm left a stale digest in place",
+    );
+    assert.equal(runValidator(root).status, 0);
+  });
+});
+
+// A TBD-wave1 row makes no coverage claim, so there is nothing to affirm and
+// nothing to re-open when its text moves.
+test("an uncovered (TBD-wave1) requirement's text may change freely", () => {
+  withFixture(writeGoodTree, (root) => {
+    writeFileSync(
+      join(root, "contracts/example-1.md"),
+      GOOD_CONTRACT.replace(
+        "**[XXX-002]** The example SHOULD do another thing.",
+        "**[XXX-002]** The example MUST do a completely different thing now.",
+      ),
+    );
+    const res = runValidator(root);
+    assert.equal(res.status, 0, `expected exit 0, got ${res.status}\n${res.stdout}${res.stderr}`);
+  });
 });
