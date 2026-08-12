@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/relay/clocktrust"
+	"github.com/maaxton/waiveo-next/internal/relay/relayconn"
 )
 
 // renderNode prints an AST node back to source, so a wiring assertion can
@@ -303,16 +304,26 @@ func TestIsTrustPinMismatchSurvivesTheRealWrapping(t *testing.T) {
 }
 
 // TestConnHolderClearDropsTheClient: the corpse-clearing half of HV-22.
+//
+// The held value is a real non-nil pointer, which is the whole test. An
+// earlier version stored nil "because the holder never dereferences it" —
+// and a clear() that did nothing at all passed it, since clearing nil is
+// indistinguishable from leaving nil. Caught by mutation.
 func TestConnHolderClearDropsTheClient(t *testing.T) {
 	h := &connHolder{}
 	if h.get() != nil {
 		t.Fatal("a fresh holder is not nil")
 	}
-	// A non-nil pointer is all this needs; the holder never dereferences it.
-	h.set(nil)
+
+	held := &relayconn.Client{}
+	h.set(held)
+	if h.get() != held {
+		t.Fatal("set did not store the client")
+	}
+
 	h.clear()
-	if h.get() != nil {
-		t.Fatal("clear left a client in the holder")
+	if got := h.get(); got != nil {
+		t.Fatalf("clear left %p in the holder; every reporter would go on writing to a dead connection, which is HV-22", got)
 	}
 }
 

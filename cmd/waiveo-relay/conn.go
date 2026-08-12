@@ -240,11 +240,16 @@ func newConnReporter(logf func(string, ...any), now func() time.Time) *connRepor
 // transport noticed and how long the connection had lasted. err comes
 // straight from relayconn.Client.Err, which labels the half (read, write, or
 // heartbeat) precisely so this line can be specific.
+// One outage has exactly two edges, and each owns its own bookkeeping:
+// disconnected STARTS the outage clock, connected ENDS it and clears
+// everything the outage accumulated. Resetting the counters here as well
+// would be redundant — every disconnect is preceded by a connect, which has
+// already cleared them — and a redundant reset is a line no test can
+// falsify. (Confirmed by mutation: deleting a duplicate reset here survived
+// the whole suite, because the real one lives in connected.)
 func (r *connReporter) disconnected(err error, connectedFor time.Duration) {
 	r.mu.Lock()
 	r.downSince = r.now()
-	r.attempts = 0
-	r.pinToldOnce = false
 	r.mu.Unlock()
 	r.logf("waiveo-relay: app-peer connection LOST after %s up (%v) — screens keep playing the last applied generation offline (REL-055/061), but nothing new reaches them until it is back; re-dialling", connectedFor.Round(time.Second), err)
 }

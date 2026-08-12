@@ -114,20 +114,6 @@ func writeUntilFailure(t *testing.T, c *Client) error {
 	return nil
 }
 
-// deadPeerClient returns a client whose peer accepted the upgrade and then
-// vanished without reading — the shape an app-peer process exit produces.
-func deadPeerClient(t *testing.T) *Client {
-	t.Helper()
-	closed := make(chan struct{})
-	srv := wsEcho(t, func(_ context.Context, ws *websocket.Conn) {
-		_ = ws.CloseNow()
-		close(closed)
-	})
-	c := newLiveClient(t, srv)
-	<-closed
-	return c
-}
-
 func waitDone(t *testing.T, c *Client, within time.Duration, what string) {
 	t.Helper()
 	select {
@@ -141,15 +127,25 @@ func waitDone(t *testing.T, c *Client, within time.Duration, what string) {
 // test: a frame that cannot be written must make the CONNECTION dead, not
 // merely return an error to whoever tried to write it.
 //
-// The server accepts the upgrade and then hard-closes the socket WITHOUT
-// reading, so the write fails. Before the fix, Done stayed open (the read
-// loop is the only closer) and Err() stayed nil, which is precisely how a
-// relay came to hold a corpse it kept writing to.
+// The read loop is deliberately NOT running. With it running this test
+// passes no matter what sendCtx does — the read loop notices the same dead
+// peer and closes done itself — which would make it a test that cannot fail
+// for the reason it claims. (Confirmed by mutation: deleting the write-side
+// fail left the read-loop version green.) Silent reads beside failing
+// writes is also HV-22's own shape, so the isolation is the realistic case,
+// not a contrivance.
 func TestWriteFailureMarksTheConnectionDead(t *testing.T) {
-	c := deadPeerClient(t)
+	closed := make(chan struct{})
+	srv := wsEcho(t, func(_ context.Context, ws *websocket.Conn) {
+		_ = ws.CloseNow() // peer gone: no reader, no close handshake
+		close(closed)
+	})
+	c := newWriteOnlyClient(t, srv)
+	<-closed
+
 	writeUntilFailure(t, c)
 
-	waitDone(t, c, 2*time.Second, "after a failed write")
+	waitDone(t, c, 2*time.Second, "after a failed write with no read loop running")
 	if err := c.Err(); err == nil {
 		t.Fatal("Err() is nil after a failed write; the connection does not know it is dead")
 	}
@@ -191,8 +187,20 @@ func TestErrNamesTheHalfThatNoticed(t *testing.T) {
 	})
 
 	t.Run("heartbeat", func(t *testing.T) {
-		c := newLiveClient(t, wsEcho(t, func(ctx context.Context, ws *websocket.Conn) { <-ctx.Done() }))
-		c.fail(sideHeartbeat, errors.New("failed to wait for pong: context deadline exceeded"))
+		// The REAL loop, not a direct fail() call. An earlier version of
+		// this subtest called c.fail(sideHeartbeat, …) itself, which tested
+		// fail's labelling and said nothing about whether the heartbeat is
+		// wired to it — mutation confirmed that: reverting the heartbeat to
+		// a bare CloseNow survived.
+		//
+		// The peer is up but never READS, so it never answers a ping: the
+		// pong times out, which is the half-open case this loop exists for
+		// (Config.PingInterval's doc). No read loop, so the heartbeat is
+		// the only half that can notice.
+		c := newWriteOnlyClient(t, wsEcho(t, func(ctx context.Context, ws *websocket.Conn) { <-ctx.Done() }))
+		c.startHeartbeat(10*time.Millisecond, 30*time.Millisecond)
+
+		waitDone(t, c, 5*time.Second, "after the ping round-trip failed")
 		if got := c.Err(); got == nil || !strings.Contains(got.Error(), "on the heartbeat side") {
 			t.Fatalf("Err() = %v, want an error naming the HEARTBEAT side", got)
 		}

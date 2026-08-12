@@ -262,68 +262,63 @@ func TestOnConnectFailedCountsConsecutiveFailures(t *testing.T) {
 	}
 }
 
-// TestOnConnectFailedReportsTheDelayActuallySlept: retryIn must be the
-// JITTERED value the loop sleeps, not the un-jittered ladder rung. An owner
-// printing "retrying in 30s" while the loop waits 17s is telling an
-// operator watching a log a thing that will not happen.
-func TestOnConnectFailedReportsTheDelayActuallySlept(t *testing.T) {
-	firstAt := make(chan time.Time, 1)
-	secondAt := make(chan time.Time, 1)
+// TestOnConnectFailedReportsTheJitteredDelay: retryIn must be the JITTERED
+// value the loop actually sleeps, not the un-jittered ladder rung. An owner
+// printing "retrying in 30s" while the loop waits 17s is telling an operator
+// watching a log a thing that will not happen — and the two are easy to
+// confuse, because the rung is right there in the same scope.
+//
+// Pinned by VARIANCE rather than by timing. The ladder is held flat
+// (InitialBackoff == MaxBackoff), so the rung is one constant on every
+// attempt while jitter spreads the real delay uniformly over [0.5d, 1.5d).
+// A report of the rung is therefore the same number every time, and a
+// report of the jittered value is not — twelve identical draws from a
+// continuous uniform distribution do not happen.
+//
+// The earlier version of this test compared the reported figure against the
+// OBSERVED gap between attempts with a tolerance wide enough to absorb
+// scheduler noise. That tolerance also absorbed the bug: mutating the call
+// to pass the rung SURVIVED it. Timing tolerance and jitter range are the
+// same order of magnitude here, so no wall-clock comparison can separate
+// them.
+func TestOnConnectFailedReportsTheJitteredDelay(t *testing.T) {
+	const rung = 20 * time.Millisecond
 	var mu sync.Mutex
-	var reported time.Duration
-	attempt := 0
+	var reported []time.Duration
 
 	s := StartSupervisor(SupervisorConfig{
 		Connect: func() (*Client, error) {
-			mu.Lock()
-			attempt++
-			n := attempt
-			mu.Unlock()
-			switch n {
-			case 1:
-				firstAt <- time.Now()
-			case 2:
-				secondAt <- time.Now()
-			}
 			return nil, errors.New("dial tcp: connection refused")
 		},
-		OnConnectFailed: func(_ error, consecutive int, retryIn time.Duration) {
-			if consecutive == 1 {
-				mu.Lock()
-				reported = retryIn
-				mu.Unlock()
-			}
+		OnConnectFailed: func(_ error, _ int, retryIn time.Duration) {
+			mu.Lock()
+			reported = append(reported, retryIn)
+			mu.Unlock()
 		},
-		// Large enough that jitter is measurable against scheduler noise.
-		InitialBackoff: 200 * time.Millisecond,
-		MaxBackoff:     2 * time.Second,
+		InitialBackoff: rung,
+		MaxBackoff:     rung, // flat ladder: the un-jittered value never moves
 	})
 	defer stopAndWait(t, s)
 
-	var t1, t2 time.Time
-	select {
-	case t1 = <-firstAt:
-	case <-time.After(5 * time.Second):
-		t.Fatal("no first attempt")
-	}
-	select {
-	case t2 = <-secondAt:
-	case <-time.After(5 * time.Second):
-		t.Fatal("no second attempt")
-	}
+	waitForCount(t, func() int64 {
+		mu.Lock()
+		defer mu.Unlock()
+		return int64(len(reported))
+	}, 12, "reported connect failures")
 
 	mu.Lock()
-	got := reported
+	got := append([]time.Duration(nil), reported...)
 	mu.Unlock()
-	if got <= 0 {
-		t.Fatalf("reported retryIn = %v, want positive", got)
+
+	distinct := map[time.Duration]bool{}
+	for _, d := range got {
+		distinct[d] = true
+		if d < rung/2 || d >= rung+rung/2 {
+			t.Fatalf("reported retryIn %v is outside jitter's [%v, %v) window — it is not a delay this loop would sleep", d, rung/2, rung+rung/2)
+		}
 	}
-	// The un-jittered rung is exactly InitialBackoff; jitter spreads it over
-	// [100ms, 300ms). Asserting the report tracks the OBSERVED gap is what
-	// catches a report of the rung instead of the jittered value.
-	actual := t2.Sub(t1)
-	if actual < got-50*time.Millisecond || actual > got+500*time.Millisecond {
-		t.Fatalf("reported retryIn %v but the loop actually waited %v — the report is not the delay slept", got, actual)
+	if len(distinct) < 2 {
+		t.Fatalf("every reported retryIn was identical (%v) across %d attempts on a flat ladder — that is the un-jittered rung, not the delay actually slept", got[0], len(got))
 	}
 }
 

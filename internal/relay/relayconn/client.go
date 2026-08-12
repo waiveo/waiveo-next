@@ -295,19 +295,33 @@ func Dial(cfg Config) (*Client, error) {
 	if pingTimeout == 0 {
 		pingTimeout = defaultPingTimeout
 	}
+	c.startHeartbeat(pingInterval, pingTimeout)
+	return c, nil
+}
+
+// startHeartbeat runs the dead-peer detection loop on its own goroutine
+// until the connection dies (Config.PingInterval's doc).
+//
+// A failed round-trip goes through fail rather than a bare CloseNow, so
+// Err() names the HEARTBEAT as the cause. A hard close alone would surface
+// as whatever generic error the read loop then tripped over — "use of
+// closed network connection", which tells an operator nothing about why the
+// connection went away and actively misdirects them toward the read path.
+//
+// Split out of Dial so it can be driven without the authenticated
+// handshake: this is the third half that can notice death, and the two that
+// live in the read and write paths are exactly the pair whose asymmetry
+// caused HV-22. A detector nothing can test is a detector nothing can prove
+// is wired.
+func (c *Client) startHeartbeat(interval, timeout time.Duration) {
 	go func() {
 		hbCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		go func() { <-c.done; cancel() }()
-		if err := heartbeat.Run(hbCtx, c.ws, pingInterval, pingTimeout); err != nil {
-			// Through fail rather than a bare CloseNow, so Err() names the
-			// heartbeat as the cause. A hard close alone would surface as
-			// whatever generic error the read loop then tripped over,
-			// which tells an operator nothing about WHY.
+		if err := heartbeat.Run(hbCtx, c.ws, interval, timeout); err != nil {
 			c.fail(sideHeartbeat, err)
 		}
 	}()
-	return c, nil
 }
 
 // noteGeneration folds one state.changed announcement into the nudge cell:
@@ -818,8 +832,12 @@ func (c *Client) Done() <-chan struct{} { return c.done }
 // connection is down" without which half stopped working is the report
 // HV-22 gave an operator for two and a half hours.
 //
-// Err is non-nil if and only if Done is closed; the two are set under one
-// lock, so a caller that has observed Done can never read nil here.
+// A caller that has observed Done can never read nil here: fail sets the
+// cause and closes done under one lock. (The load-bearing direction is that
+// one — Done closed implies Err set. Closing inside the lock also makes the
+// converse hold, which is stronger than any caller needs and is a choice
+// rather than something a test can pin: the window it removes is a few
+// nanoseconds wide.)
 func (c *Client) Err() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
