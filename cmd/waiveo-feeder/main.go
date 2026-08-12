@@ -122,8 +122,27 @@ type config struct {
 	contentPath    string // directory the content origin persists uploaded asset bytes to
 	archiveDir     string // directory the data-subject export writes archive/1 containers into
 	keyDir         string // directory the workspace signing key + data key persist in — NEVER the archive dir
-	demoCast       string // "" (default, single first-photon image) or "multi" (the real 3-item demo cast)
-	packTrustPath  string // trust-anchors document pack-artifact signatures verify against (marketplace/1 MKT-009b)
+	// identityDir holds THE identity every relay pins at enrollment: this
+	// deployment's signing key and its TLS leaf. enrollDir holds the enrollment
+	// registry that remembers which relays were issued against it.
+	//
+	// Both were hardcoded RELATIVE constants with no override, which made the
+	// deployment's cryptographic identity a function of the process's working
+	// directory — and because signing.LoadOrCreate CREATES when it finds
+	// nothing, a wrong cwd did not fail. It silently minted a NEW identity,
+	// after which every enrolled relay's pinned SPKI fails at TLS (REL-137),
+	// permanently, with no path back but re-enrolling the fleet by hand.
+	//
+	// That is not hypothetical: two worktrees in two working directories
+	// presented two identities on one port and stranded the lab relay for 2h33m
+	// (HV-22/HV-23). On an appliance the same mistake is a systemd unit with the
+	// wrong WorkingDirectory. absHostFilePath's own doc already makes this
+	// argument for the trust anchors; the identity deserves it more, because a
+	// substituted trust root is consulted while a missing identity is invented.
+	identityDir   string
+	enrollDir     string
+	demoCast      string // "" (default, single first-photon image) or "multi" (the real 3-item demo cast)
+	packTrustPath string // trust-anchors document pack-artifact signatures verify against (marketplace/1 MKT-009b)
 	// requiredPacksPath is the required-pack roster document this deployment
 	// declares its floors in (marketplace/1 MKT-093a). Absent ⇒ no pack is
 	// required; unreadable/malformed ⇒ the feeder refuses to start.
@@ -323,6 +342,8 @@ func loadConfig(env func(string) string) config {
 		contentPath:    envOr(env, "WAIVEO_FEEDER_CONTENT_DIR", defaultContentPath),
 		archiveDir:     envOr(env, "WAIVEO_FEEDER_ARCHIVE_DIR", defaultArchiveDir),
 		keyDir:         envOr(env, "WAIVEO_FEEDER_KEY_DIR", defaultWorkspaceKeyDir),
+		identityDir:    absHostFilePath(envOr(env, "WAIVEO_FEEDER_IDENTITY_DIR", signing.DefaultDir)),
+		enrollDir:      absHostFilePath(envOr(env, "WAIVEO_FEEDER_ENROLL_DIR", defaultEnrollDir)),
 		demoCast:       envOr(env, "WAIVEO_FEEDER_DEMO_CAST", ""),
 		packTrustPath:  absHostFilePath(envOr(env, "WAIVEO_FEEDER_PACK_TRUST", defaultPackTrustPath)),
 
@@ -583,11 +604,24 @@ func main() {
 		log.Printf("waiveo-feeder: registry sources document %s configures no source — a marketplace reference refuses (marketplace/1 MKT-060)", cfg.packSourcesPath)
 	}
 
-	id, err := signing.LoadOrCreate(signing.DefaultDir)
+	// Whether this boot MINTS an identity is decided before the call, because
+	// LoadOrCreate cannot tell us afterwards and the difference is the whole
+	// point: loading is routine, minting is a once-per-deployment act that
+	// invalidates every relay pin already issued. A mint that scrolls past in a
+	// boot log looks exactly like a load.
+	minting := !signing.HasIdentity(cfg.identityDir)
+	id, err := signing.LoadOrCreate(cfg.identityDir)
 	if err != nil {
 		log.Fatalf("waiveo-feeder: load identity: %v", err)
 	}
-	log.Printf("waiveo-feeder identity loaded (signing pub %s)", hex.EncodeToString(id.SigningPub()))
+	if minting {
+		log.Printf("waiveo-feeder: MINTED A NEW IDENTITY in %s (signing pub %s) — this is correct on a first boot and is a FLEET-WIDE OUTAGE on any other. "+
+			"Every relay already enrolled pinned the previous certificate and will now refuse this one at TLS (REL-137) until it is re-enrolled. "+
+			"If this box has run before, the likeliest cause is a working directory or WAIVEO_FEEDER_IDENTITY_DIR that does not point at the existing identity.",
+			cfg.identityDir, hex.EncodeToString(id.SigningPub()))
+	} else {
+		log.Printf("waiveo-feeder identity loaded from %s (signing pub %s)", cfg.identityDir, hex.EncodeToString(id.SigningPub()))
+	}
 
 	// The content origin is dir-backed so operator-uploaded assets survive a
 	// restart in lock-step with the persisted playlists that reference them
@@ -840,7 +874,7 @@ func main() {
 	// hello from an already-enrolled relay fails channel-binding verification
 	// (CHANNEL_BINDING_INVALID, REL-032) even though nothing about that
 	// relay's own identity changed. See enroll.Server.EnablePersistence's doc.
-	if err := enrollSrv.EnablePersistence(defaultEnrollDir); err != nil {
+	if err := enrollSrv.EnablePersistence(cfg.enrollDir); err != nil {
 		log.Fatalf("waiveo-feeder: enable enrollment persistence: %v", err)
 	}
 

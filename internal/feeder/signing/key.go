@@ -244,3 +244,15 @@ func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
+
+// HasIdentity reports whether dir already holds this deployment's identity.
+//
+// It exists so a caller can tell a LOAD from a MINT, which LoadOrCreate cannot
+// report and which is the difference between a routine boot and a fleet-wide
+// outage: minting invalidates the certificate every enrolled relay pinned. The
+// check is the same one LoadOrCreate branches on — the signing key's presence —
+// named once so the two cannot drift into disagreeing about what "already has
+// an identity" means.
+func HasIdentity(dir string) bool {
+	return fileExists(filepath.Join(dir, signingKeyFile))
+}
