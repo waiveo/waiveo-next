@@ -147,3 +147,97 @@ func (s *Store) EdgeRuleBodies(ctx context.Context) ([]json.RawMessage, string, 
 	}
 	return bodies, rulesMinorVersion, generation, nil
 }
+
+// automationVersionsSchema retains an automation's superseded definitions
+// (rules/1 RUL-394).
+//
+// Keyed by (automation id, the revision it was superseded AT) so the sequence an
+// operator reads is the sequence that happened, and so a replay of the same
+// revision cannot produce two rows claiming to be the same moment.
+//
+// ON DELETE is not expressed as a foreign key because the resource tables are
+// generated per-kind and carry none; deleteAutomationVersions is called from the
+// delete path instead. The rule it enforces is RUL-394's: the versions of a
+// deleted rule go with it, on the same terms its own rows do.
+const automationVersionsSchema = `
+CREATE TABLE IF NOT EXISTS automation_versions (
+	automation_id  TEXT NOT NULL,
+	revision       INTEGER NOT NULL,
+	body           TEXT NOT NULL,
+	superseded_at  INTEGER NOT NULL,
+	PRIMARY KEY (automation_id, revision)
+);
+CREATE INDEX IF NOT EXISTS automation_versions_by_id ON automation_versions(automation_id);
+`
+
+// AutomationVersion is one superseded definition.
+type AutomationVersion struct {
+	// Revision the definition was superseded AT — the revision it HELD, not the
+	// one that replaced it. An operator restoring "revision 4" gets the rule as
+	// it read at revision 4.
+	Revision     int64
+	Body         json.RawMessage
+	SupersededAt int64
+}
+
+// recordAutomationVersion snapshots the definition an update is about to
+// replace, inside that update's own transaction (RUL-394).
+//
+// In the transaction and not beside it, because a version captured outside can
+// be missing for exactly the write that mattered: the process dies between the
+// UPDATE and the snapshot, and the definition an operator wants back is the one
+// that was never recorded.
+//
+// A no-op for every other kind — only automations are versioned here, because
+// only they are a thing an operator AUTHORS and can break in a way that is hard
+// to retype.
+func recordAutomationVersion(ctx context.Context, tx *sql.Tx, kind Kind, id string, priorRevision int64, priorBody string, nowMs int64) error {
+	if kind != KindAutomation {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT OR REPLACE INTO automation_versions (automation_id, revision, body, superseded_at)
+		 VALUES (?, ?, ?, ?)`,
+		id, priorRevision, priorBody, nowMs); err != nil {
+		return fmt.Errorf("store: record automation version: %w", err)
+	}
+	return nil
+}
+
+// deleteAutomationVersions removes a deleted automation's history (RUL-394).
+func deleteAutomationVersions(ctx context.Context, tx *sql.Tx, kind Kind, id string) error {
+	if kind != KindAutomation {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM automation_versions WHERE automation_id = ?`, id); err != nil {
+		return fmt.Errorf("store: delete automation versions: %w", err)
+	}
+	return nil
+}
+
+// ListAutomationVersions returns id's superseded definitions, newest first.
+func (s *Store) ListAutomationVersions(ctx context.Context, id string) ([]AutomationVersion, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT revision, body, superseded_at FROM automation_versions
+		  WHERE automation_id = ? ORDER BY revision DESC`, id)
+	if err != nil {
+		return nil, fmt.Errorf("store: list automation versions: %w", err)
+	}
+	defer rows.Close()
+	out := []AutomationVersion{}
+	for rows.Next() {
+		var v AutomationVersion
+		var body string
+		if err := rows.Scan(&v.Revision, &body, &v.SupersededAt); err != nil {
+			return nil, fmt.Errorf("store: scan automation version: %w", err)
+		}
+		v.Body = json.RawMessage(body)
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate automation versions: %w", err)
+	}
+	return out, nil
+}

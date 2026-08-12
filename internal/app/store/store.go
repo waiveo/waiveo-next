@@ -385,6 +385,10 @@ func Open(dsn string, nowMs func() int64) (*Store, error) {
 	// The declarative-packs tables (packs + pack_files + pack_rows) are a
 	// self-contained subsystem with their own dedicated CRUD (packs.go), not a
 	// generic resource Kind, so they are migrated from their own DDL here.
+	if _, err := db.Exec(automationVersionsSchema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: create automation_versions: %w", err)
+	}
 	if _, err := db.Exec(packsSchema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate packs: %w", err)
@@ -867,6 +871,12 @@ func (s *Store) Update(ctx context.Context, kind Kind, id string, rev int64, pat
 		if err := setExecutionClass(ctx, tx, kind, id, executionClass); err != nil {
 			return err
 		}
+		// RUL-394: the definition this write REPLACED, captured in the same
+		// transaction. Outside it, the one write that mattered is the one whose
+		// version can be missing.
+		if err := recordAutomationVersion(ctx, tx, kind, id, curRev, curBody, now); err != nil {
+			return err
+		}
 		if err := bumpGeneration(ctx, tx); err != nil {
 			return err
 		}
@@ -942,6 +952,12 @@ func (s *Store) Delete(ctx context.Context, kind Kind, id string, rev int64, gua
 			if err := g(txDeleteView{ctx: ctx, tx: tx}); err != nil {
 				return err
 			}
+		}
+		// RUL-394: a deleted rule's versions go with it, on the same terms its
+		// own rows do — restoring a version must not be a way to resurrect a
+		// rule somebody removed.
+		if err := deleteAutomationVersions(ctx, tx, kind, id); err != nil {
+			return err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE id = ?`, id); err != nil {
 			return fmt.Errorf("store: delete %s: %w", kind, err)

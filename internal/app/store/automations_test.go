@@ -432,3 +432,95 @@ func TestUpdateRecompilesAndReclassifies(t *testing.T) {
 		t.Fatalf("app-reclassified rule still rides edge_rules: got %d bodies, want 0", len(bodies))
 	}
 }
+
+// Rule version history (rules/1 RUL-394).
+//
+// The capability answers a specific bad day: an operator edits a working rule,
+// breaks it, and has no way back except retyping it from memory or restoring
+// the whole workspace — which reverts everything else with it.
+
+func TestUpdatingAnAutomationRecordsTheDefinitionItReplaced(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+
+	created, err := s.Create(ctx, store.KindAutomation, edgeAutomation(autoEdgeRuleID))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// A create records NO version: there is no prior definition to keep, and a
+	// phantom "version 0" would make the history claim a change nobody made.
+	if vs, err := s.ListAutomationVersions(ctx, autoEdgeRuleID); err != nil || len(vs) != 0 {
+		t.Fatalf("versions after create = %d (err=%v), want 0", len(vs), err)
+	}
+
+	if _, err := s.Update(ctx, store.KindAutomation, autoEdgeRuleID, created.Revision,
+		json.RawMessage(`{"name":"renamed once"}`)); err != nil {
+		t.Fatalf("update 1: %v", err)
+	}
+	if _, err := s.Update(ctx, store.KindAutomation, autoEdgeRuleID, created.Revision+1,
+		json.RawMessage(`{"name":"renamed twice"}`)); err != nil {
+		t.Fatalf("update 2: %v", err)
+	}
+
+	vs, err := s.ListAutomationVersions(ctx, autoEdgeRuleID)
+	if err != nil {
+		t.Fatalf("list versions: %v", err)
+	}
+	if len(vs) != 2 {
+		t.Fatalf("versions = %d, want 2 (one per update)", len(vs))
+	}
+	// Newest first, and each carries the revision it HELD — not the one that
+	// replaced it. An operator restoring "revision 1" gets the rule as it read
+	// at revision 1.
+	if vs[0].Revision != 2 || vs[1].Revision != 1 {
+		t.Fatalf("revisions = %d,%d, want 2,1 newest-first", vs[0].Revision, vs[1].Revision)
+	}
+	// Each version must carry the body as it read AT that revision. Asserting
+	// exact contents rather than "not the newest": recording the body a write
+	// PRODUCED instead of the one it REPLACED shifts the whole history by one,
+	// and every version then still looks plausible — measured, that mutation
+	// survives a not-equal check and fails this one.
+	nameAt := func(v store.AutomationVersion) string {
+		var b struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(v.Body, &b); err != nil {
+			t.Fatalf("decode version %d: %v", v.Revision, err)
+		}
+		return b.Name
+	}
+	// Revision 1 is the rule as CREATED, which set no name at all.
+	if got := nameAt(vs[1]); got != "" {
+		t.Fatalf("version at revision 1 has name %q, want the as-created empty name — the history is shifted by one write", got)
+	}
+	// Revision 2 is what the first update produced and the second replaced.
+	if got := nameAt(vs[0]); got != "renamed once" {
+		t.Fatalf("version at revision 2 has name %q, want \"renamed once\"", got)
+	}
+}
+
+// RUL-394: a deleted rule's versions go with it. Restoring a version must not be
+// a way to resurrect a rule somebody removed.
+func TestDeletingAnAutomationTakesItsVersionsWithIt(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+
+	created, err := s.Create(ctx, store.KindAutomation, edgeAutomation(autoEdgeRuleID))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := s.Update(ctx, store.KindAutomation, autoEdgeRuleID, created.Revision,
+		json.RawMessage(`{"name":"renamed"}`)); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if vs, _ := s.ListAutomationVersions(ctx, autoEdgeRuleID); len(vs) != 1 {
+		t.Fatalf("versions before delete = %d, want 1", len(vs))
+	}
+
+	if err := s.Delete(ctx, store.KindAutomation, autoEdgeRuleID, created.Revision+1); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if vs, err := s.ListAutomationVersions(ctx, autoEdgeRuleID); err != nil || len(vs) != 0 {
+		t.Fatalf("versions after delete = %d (err=%v), want 0 — a deleted rule's history goes with it", len(vs), err)
+	}
+}

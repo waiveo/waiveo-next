@@ -142,3 +142,4 @@ tested; the relay half is not. See the note in `internal/relay/automationhost/ho
 | RUL-391 | `contracts/rules-1.md#compile-time-closure` | `RUL-150-variable-condition-constant-folded` | covered |
 | RUL-392 | `contracts/rules-1.md#compile-time-closure` | - | TBD-wave1 |
 | RUL-393 | `contracts/rules-1.md#compile-time-closure` | - | TBD-wave1 |
+| RUL-394 | `contracts/rules-1.md#compile-time-closure` | - | TBD-wave1 |
