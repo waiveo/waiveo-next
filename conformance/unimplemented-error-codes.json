@@ -53,8 +53,11 @@
     },
     {
       "contract": "ctx-1.md",
-      "reason": "ctx/1's VERB DISPATCH does not exist yet: no host process supervises packs, no verb is routed, no egress broker runs. The codes left here all belong to that half \u2014 a data verb naming an unowned collection, an undeclared event, a payload failing its schema, an egress target off the allowlist or resolving to a private address, a verb past its removal. The wire's own codes are no longer listed: internal/ctxproto implements the framing, envelope and handshake, so FRAME_TOO_LARGE, MALFORMED_FRAME and INCOMPATIBLE_RANGE are raised by real code and scripts/ctxprobe drives all three against a live pack process. PROTOCOL_VIOLATION is now raised here too, as well as by the app-to-relay connection that already reused the name.",
+      "reason": "ctx/1 is the pack runtime's wire protocol, and there is no pack runtime: no host process, no verb dispatch, no egress broker. The three ctx/1 codes that ARE implemented (NOT_FOUND, REVISION_CONFLICT, PROTOCOL_VIOLATION) are spelled by the app-to-relay connection, which reuses them by name \u2014 not by a ctx/1 host. Nine remain with nothing to emit them: the two frame refusals, the negotiate range refusal, collection ownership, event declaration, payload schema, both egress refusals, and the removed-verb refusal. State (a).",
       "codes": [
+        "FRAME_TOO_LARGE",
+        "MALFORMED_FRAME",
+        "INCOMPATIBLE_RANGE",
         "COLLECTION_NOT_OWNED",
         "EVENT_NOT_DECLARED",
         "PAYLOAD_SCHEMA_INVALID",
