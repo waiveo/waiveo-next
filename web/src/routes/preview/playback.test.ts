@@ -6,7 +6,6 @@ import {
   advance,
   dwellSource,
   initialTransport,
-  isBelowInteractiveFloor,
   nextIndex,
   playerDwellMs,
   projectCast,
@@ -391,10 +390,27 @@ describe("transport commands", () => {
   });
 });
 
-describe("the interactive floor", () => {
-  it("flags a region below wire.MinInteractiveSide on either side", () => {
-    expect(isBelowInteractiveFloor([0, 0, 47, 200], 48)).toBe(true);
-    expect(isBelowInteractiveFloor([0, 0, 200, 47], 48)).toBe(true);
-    expect(isBelowInteractiveFloor([0, 0, 48, 48], 48)).toBe(false);
+describe("the interactive floor is the SERVE GATE's, not a preview check", () => {
+  it("SKIPS a slide whose pressable layer is below 48px, rather than playing it with a warning", () => {
+    // wire.ValidateSlideLayers:809 refuses it, so no screen ever receives the
+    // slide. The preview's job is to report that, not to draw it and caution.
+    const program = projectCast({
+      slides: [slide({ id: "tiny", layers: [layer({ kind: "ping", w: 300, h: 40, text: "Tap", ping_name: "tap" })] })],
+      default_duration_ms: null,
+    });
+    expect(program.slides).toEqual([]);
+    expect(program.skipped[0].reason).toMatch(/at least 48/);
+  });
+
+  it("SKIPS a nav whose CELLS fall below the floor, even though the layer itself is large", () => {
+    // The per-item arm (lease.go:803). Eight items in a 300px-wide row is 37px
+    // each — a layer that looks generous and a menu nobody can aim at.
+    const items = Array.from({ length: 8 }, (_, i) => ({ label: `${i}`, target_slide_id: "x" }));
+    const program = projectCast({
+      slides: [slide({ id: "menu", layers: [layer({ kind: "nav", w: 300, h: 200, items })] })],
+      default_duration_ms: null,
+    });
+    expect(program.slides).toEqual([]);
+    expect(program.skipped[0].reason).toMatch(/at least 48/);
   });
 });
