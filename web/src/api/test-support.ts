@@ -125,6 +125,9 @@ export function pack(over: Record<string, unknown> = {}) {
     created_at: 1_753_000_000,
     updated_at: 1_753_000_000,
     manifest: packManifest(),
+    // Enabled unless a case says otherwise (MKT-097): an installed pack is
+    // being served, and every pre-existing case describes one that is.
+    enabled: true,
     ...over,
   };
 }

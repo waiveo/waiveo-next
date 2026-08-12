@@ -144,13 +144,18 @@ type packEnvelope struct {
 	CreatedAt        int64           `json:"created_at"`
 	UpdatedAt        int64           `json:"updated_at"`
 	Manifest         json.RawMessage `json:"manifest"`
+	// Enabled is MKT-097's withdrawal state. Always present rather than
+	// `omitempty`: a false that vanished from the wire would be read as "this
+	// build does not report enablement" by a client that has to tell a disabled
+	// pack from an old server, and those need different UI.
+	Enabled bool `json:"enabled"`
 }
 
 func packEnvelopeOf(p store.Pack) packEnvelope {
 	return packEnvelope{
 		ID: p.ID, Revision: p.Revision, Version: p.Version,
 		DataModelVersion: p.DataModelVersion, CreatedAt: p.CreatedAt,
-		UpdatedAt: p.UpdatedAt, Manifest: p.Manifest,
+		UpdatedAt: p.UpdatedAt, Manifest: p.Manifest, Enabled: p.Enabled,
 	}
 }
 

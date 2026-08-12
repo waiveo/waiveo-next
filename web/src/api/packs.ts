@@ -81,6 +81,10 @@ export interface Pack {
   created_at: number;
   updated_at: number;
   manifest: PackManifest;
+  /** MKT-097's withdrawal state. A DISABLED pack is still installed and keeps
+   * everything — rows, records, bundle — and stops being served: its pages are
+   * refused and it is not a navigable destination. */
+  enabled: boolean;
 }
 
 /** A successful install's summary (201 fresh | 200 reinstall) — the identity plus
@@ -284,6 +288,10 @@ export interface PacksModule {
    * discovery half. Grouped by source and never merged: source order is a
    * resolution preference, never a trust decision. */
   catalog(): Promise<CatalogSource[]>;
+  /** Turn a pack off, or back on (MKT-097). A PUT of the STATE, not a toggle:
+   * a retry after a timeout re-asserts what was asked rather than flipping the
+   * pack back on. Disabling preserves everything an uninstall would remove. */
+  setEnabled(id: string, enabled: boolean): Promise<void>;
   /** List a pack's append-only install history, oldest first (MKT-094b). The last
    * entry is the current pin. A pack that is not installed is a 404. */
   installs(id: string, params?: ListParams): Promise<Page<PackInstallRecord>>;
@@ -351,6 +359,13 @@ export function createPacksModule(client: ApiClient): PacksModule {
       return client
         .read<{ sources: CatalogSource[] }>(`${base}/catalog`)
         .then((r) => r.data.sources ?? []);
+    },
+    setEnabled(id, enabled) {
+      // `replace` is the PUT verb — "the latest instruction wins", which is
+      // exactly the semantics of asserting a state. Deliberately NOT `update`:
+      // that carries an If-Match, and enablement is not a revisioned edit to
+      // the pack (the server does not bump its revision either).
+      return client.replace<void>(`${base}/${id}/enabled`, { enabled }).then(() => undefined);
     },
     installs(id, params = {}) {
       // No `selector`: install records are not label-selectable — the route

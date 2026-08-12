@@ -315,3 +315,35 @@ describe("Extensions nav — updates badge", () => {
     expect(toggle.querySelector('[data-slot="nav-group-badge"]')).toBeNull();
   });
 });
+
+// MKT-097: a disabled pack is not a navigable destination.
+//
+// This is the rail's HALF of the withdrawal, never the whole of it — the server
+// refuses the page route too. A nav that merely omits a pack whose route still
+// answers has hidden a destination rather than withdrawn one, and the URL an
+// operator already has in a tab keeps working.
+it("does not list a disabled pack's pages", async () => {
+  server.use(
+    http.get("*/api/v1/packs", () =>
+      jsonBody({ items: [pack({ enabled: false })], cursor: null }),
+    ),
+    http.get("*/api/v1/packs/acme/menu-board/messages/en", () => jsonBody(PACK_EN_CATALOG)),
+    http.get("*/api/v1/packs/acme/menu-board/update", () =>
+      jsonBody({
+        action: "unchanged",
+        id: "acme/menu-board",
+        from_version: "1.0.0",
+        to_version: "1.0.0",
+        trust_channel: "community",
+        source: "registry",
+      }),
+    ),
+  );
+  renderShell();
+
+  // The Extensions landmark carries installed packs' pages; with the only pack
+  // disabled there is nothing for it to carry, so it does not appear at all.
+  await screen.findByRole("navigation", { name: "Primary" });
+  expect(screen.queryByRole("navigation", { name: "Extensions" })).not.toBeInTheDocument();
+  expect(screen.queryByText("Menu Board")).not.toBeInTheDocument();
+});

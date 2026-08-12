@@ -4,6 +4,8 @@ import {
   FileText,
   History,
   PackagePlus,
+  Power,
+  PowerOff,
   RefreshCw,
   Store,
   Trash2,
@@ -461,6 +463,31 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
     [client, refresh, setOutcome],
   );
 
+  /** Turn a pack off, or back on (MKT-097). The reversible alternative to
+   * uninstalling a pack that is misbehaving — which is the only other thing an
+   * operator can do to one, and it destroys their authored rows. */
+  const setEnabled = useCallback(
+    async (id: string, enabled: boolean) => {
+      setOutcome(id, { kind: "busy", message: enabled ? "Enabling…" : "Disabling…" });
+      try {
+        await client.packs.setEnabled(id, enabled);
+        if (!alive.current) return;
+        setOutcome(id, {
+          kind: "ok",
+          message: enabled
+            ? "Enabled. Its pages are being served again."
+            : "Disabled. Its pages are withdrawn; its data, install history and the pack itself are untouched.",
+        });
+        await refresh();
+        // The rail lists only enabled packs, so it has to re-resolve.
+        notifyPacksChanged();
+      } catch (err: unknown) {
+        if (alive.current) setOutcome(id, { kind: "refused", refusal: describeRefusal(err) });
+      }
+    },
+    [client, refresh, setOutcome],
+  );
+
   const checkUpdate = useCallback(
     async (id: string) => {
       setOutcome(id, { kind: "busy", message: "Checking the pinned channel…" });
@@ -884,6 +911,7 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
                         <StatusBadge status="ok">v{card.pack.version}</StatusBadge>
+                        {!card.pack.enabled ? <StatusBadge status="off">Disabled</StatusBadge> : null}
                         {required ? <StatusBadge status="warn">Required</StatusBadge> : null}
                         {card.provenance.channel ? (
                           <StatusBadge status="pending">{card.provenance.channel}</StatusBadge>
@@ -892,6 +920,22 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
                         )}
                       </div>
                     </div>
+
+                    {!card.pack.enabled ? (
+                      // Said in full, not left to a badge. "Disabled" alone does
+                      // not tell an operator whether their data survived, and
+                      // that is the single thing they need to know before
+                      // trusting the control enough to use it instead of
+                      // uninstalling.
+                      <p className="rounded-input border border-border px-3 py-2 text-sm">
+                        <strong>This extension is turned off.</strong>{" "}
+                        <span className="text-muted-foreground">
+                          Its pages are not served and it does not appear in the navigation. Its
+                          data, its install history and the extension itself are untouched —
+                          enabling it puts everything back.
+                        </span>
+                      </p>
+                    ) : null}
 
                     {card.pack.manifest.description ? (
                       <p className="text-sm text-muted-foreground">
@@ -1013,6 +1057,18 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
                     ) : null}
 
                     <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        variant="secondary"
+                        icon={card.pack.enabled ? PowerOff : Power}
+                        onClick={() => void setEnabled(id, !card.pack.enabled)}
+                        aria-label={
+                          card.pack.enabled
+                            ? `Disable ${id}, keeping its data`
+                            : `Enable ${id}`
+                        }
+                      >
+                        {card.pack.enabled ? "Disable" : "Enable"}
+                      </Button>
                       <Button
                         variant={card.availability?.waiting ? "default" : "secondary"}
                         icon={RefreshCw}

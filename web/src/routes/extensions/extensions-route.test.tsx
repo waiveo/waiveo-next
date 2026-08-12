@@ -893,3 +893,57 @@ it("installs the exact reference a catalog row names", async () => {
     version: "2.0.0",
   });
 });
+
+// ---------------------------------------------------------------------------
+// MKT-097 in the console: the reversible alternative to uninstalling.
+// ---------------------------------------------------------------------------
+
+it("turns a pack off through the real control, and says the data survived", async () => {
+  let sent: Record<string, unknown> | null = null;
+  mockFeeder({ packs: [pack()] });
+  server.use(
+    http.put("*/api/v1/packs/acme/menu-board/enabled", async ({ request }) => {
+      sent = (await request.json()) as Record<string, unknown>;
+      return jsonBody({ id: "acme/menu-board", enabled: false });
+    }),
+  );
+  renderRoute();
+
+  const card = await packCard(PACK_ID);
+  await userEvent.click(within(card).getByRole("button", { name: /Disable acme\/menu-board, keeping its data/ }));
+
+  await waitFor(() => expect(sent).toEqual({ enabled: false }));
+  // The outcome has to say what SURVIVED. "Disabled" alone does not tell an
+  // operator whether their rows are gone, and that is the one thing they need
+  // before using this instead of uninstalling.
+  expect(await within(card).findByText(/data, install history and the pack itself are untouched/i)).toBeInTheDocument();
+});
+
+it("shows a disabled pack as off, and offers to enable it", async () => {
+  mockFeeder({ packs: [pack({ enabled: false })] });
+  renderRoute();
+
+  const card = await packCard(PACK_ID);
+  expect(within(card).getByText("Disabled")).toBeInTheDocument();
+  // Stated in full on the card, not left to a badge.
+  expect(within(card).getByText(/This extension is turned off/)).toBeInTheDocument();
+  expect(within(card).getByText(/enabling it puts everything back/i)).toBeInTheDocument();
+  expect(within(card).getByRole("button", { name: /Enable acme\/menu-board/ })).toBeInTheDocument();
+  expect(within(card).queryByRole("button", { name: /Disable/ })).not.toBeInTheDocument();
+});
+
+// The refusal a required pack gets, surfaced rather than swallowed: a control
+// that fails silently is worse than one that is absent.
+it("reports the refusal when a required pack cannot be disabled", async () => {
+  mockFeeder({ packs: [pack()] });
+  server.use(
+    http.put("*/api/v1/packs/acme/menu-board/enabled", () =>
+      problem(422, "REQUIRED_PACK_FLOOR", "acme/menu-board is a required pack on this deployment (floor 1.0.0)."),
+    ),
+  );
+  renderRoute();
+
+  const card = await packCard(PACK_ID);
+  await userEvent.click(within(card).getByRole("button", { name: /Disable acme\/menu-board/ }));
+  expect(await within(card).findByText(/required pack on this deployment/i)).toBeInTheDocument();
+});

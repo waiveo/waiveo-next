@@ -72,7 +72,12 @@ export function useInstalledPackNav(api?: WaiveoApi): PackNavGroup[] {
       try {
         const packs = await collectPages<Pack>((cursor) => client.packs.list({ cursor }));
         const built = await Promise.all(
-          packs.map(async (pack): Promise<PackNavGroup> => {
+          // A DISABLED pack contributes no destinations (MKT-097). The server
+          // refuses its pages too — the rail is the second half of "not a
+          // navigable destination", never the whole of it, because a nav that
+          // merely omits a pack whose route still answers has hidden it rather
+          // than withdrawn it.
+          packs.filter((p) => p.enabled).map(async (pack): Promise<PackNavGroup> => {
             const messages = await loadPackCatalog(client.packs, pack.id);
             const pages = (pack.manifest.ui?.pages ?? []).flatMap((p) => {
               // The manifest path is untrusted (the engine does not constrain its
