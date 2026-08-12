@@ -3778,6 +3778,61 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /packs/{publisher}/{name}/enabled:
+    parameters:
+      - $ref: "#/components/parameters/PackPublisherParam"
+      - $ref: "#/components/parameters/PackNameParam"
+    put:
+      operationId: setPackEnabled
+      summary: Turn an installed pack off, or back on
+      description: >-
+        marketplace/1 MKT-097. Disabling WITHDRAWS a pack's surfaces — its
+        `ui.pages` stop being served and it stops being a navigable
+        destination — and preserves everything uninstalling would remove: its
+        authored rows, its install records, and the pack itself.
+
+        That preservation is why the operation exists. Without it the only
+        remedies for a pack misbehaving on a live deployment are to leave it
+        running or to uninstall it and destroy the operator's data with it,
+        and an operator who cannot do the reversible thing will do the
+        destructive one.
+
+        Enabling restores exactly what disabling withdrew. It re-runs no
+        installation: nothing was removed, so nothing is resolved, verified or
+        re-applied.
+
+        Pre-`ctx/1` a pack carries no executable code, so withdrawing its
+        surfaces is the whole of what disabling can stop. A required pack
+        (MKT-093a) cannot be disabled — a floor that forbids removing a pack
+        forbids equally the state in which it is present and does nothing.
+
+        Idempotent by construction: PUT of a state, not a toggle, so a retry
+        cannot flip a pack back on.
+      tags: [packs, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              additionalProperties: false
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        "200":
+          description: The pack's enablement after the write. Shape stub, matching the rest of this surface.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
   /packs/{publisher}/{name}/update:
     parameters:
       - $ref: "#/components/parameters/PackPublisherParam"

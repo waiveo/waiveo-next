@@ -450,6 +450,10 @@ func Open(dsn string, nowMs func() int64) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate pairing grants: %w", err)
 	}
+	if err := migratePacksSchema(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: migrate packs: %w", err)
+	}
 	if err := migratePackInstallsSchema(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate pack installs: %w", err)

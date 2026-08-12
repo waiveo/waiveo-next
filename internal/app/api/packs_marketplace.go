@@ -426,3 +426,44 @@ type packCatalogSourceWire struct {
 	Entries      []packCatalogEntryWire `json:"entries"`
 	Unavailable  string                 `json:"unavailable,omitempty"`
 }
+
+// setPackEnabled turns an installed pack off or back on (marketplace/1
+// MKT-097) — the reversible middle ground between leaving a misbehaving pack
+// running and uninstalling it, which destroys the operator's data with it.
+//
+// PUT of a STATE rather than POST of a toggle, and that is the whole reason it
+// needs no Idempotency-Key: a retry after a timeout re-asserts the same state
+// instead of flipping the pack back on, which is exactly the failure a toggle
+// would have and the one a client cannot detect.
+//
+// Gated on packLifecycleWritable with install/update/remove: withdrawing a
+// pack's surfaces changes what the deployment serves, which is lifecycle
+// authority even though nothing is installed or removed.
+func (srv *server) setPackEnabled(w http.ResponseWriter, r *http.Request) {
+	if !srv.packLifecycleWritable(w, r) {
+		return
+	}
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<16))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil || body.Enabled == nil {
+		// A POINTER, so an absent `enabled` is refused rather than read as
+		// false: a body that forgot the field would otherwise DISABLE the pack,
+		// which is the most destructive reading of a malformed request.
+		srv.packProblem(w, r, http.StatusBadRequest, "VALIDATION_FAILED", "Bad Request",
+			`The body must be {"enabled": true} or {"enabled": false}.`)
+		return
+	}
+	packID := packIDFromPath(r)
+	if err := srv.installer.SetEnabled(r.Context(), packID, *body.Enabled); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			srv.packNotFound(w, r)
+			return
+		}
+		srv.writeInstallError(w, r, err)
+		return
+	}
+	writeJSONValue(w, http.StatusOK, map[string]any{"id": packID, "enabled": *body.Enabled})
+}

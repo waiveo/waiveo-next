@@ -3436,6 +3436,17 @@ type UpdatePackRowParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// SetPackEnabledJSONBody defines parameters for SetPackEnabled.
+type SetPackEnabledJSONBody struct {
+	Enabled bool `json:"enabled"`
+}
+
+// SetPackEnabledParams defines parameters for SetPackEnabled.
+type SetPackEnabledParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // ListPackInstallsParams defines parameters for ListPackInstalls.
 type ListPackInstallsParams struct {
 	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
@@ -3967,6 +3978,9 @@ type SendEntityCommandJSONRequestBody = EntityCommandRequest
 // InstallPackJSONRequestBody defines body for InstallPack for application/json ContentType.
 type InstallPackJSONRequestBody = MarketplaceRef
 
+// SetPackEnabledJSONRequestBody defines body for SetPackEnabled for application/json ContentType.
+type SetPackEnabledJSONRequestBody SetPackEnabledJSONBody
+
 // CreatePlaylistJSONRequestBody defines body for CreatePlaylist for application/json ContentType.
 type CreatePlaylistJSONRequestBody = PlaylistCreate
 
@@ -4280,6 +4294,11 @@ type ClientInterface interface {
 
 	// UpdatePackRow request
 	UpdatePackRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *UpdatePackRowParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SetPackEnabledWithBody request with any body
+	SetPackEnabledWithBody(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	SetPackEnabled(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, body SetPackEnabledJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListPackInstalls request
 	ListPackInstalls(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *ListPackInstallsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5270,6 +5289,30 @@ func (c *Client) GetPackRow(ctx context.Context, publisher PackPublisherParam, n
 
 func (c *Client) UpdatePackRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *UpdatePackRowParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewUpdatePackRowRequest(c.Server, publisher, name, collection, entityId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SetPackEnabledWithBody(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSetPackEnabledRequestWithBody(c.Server, publisher, name, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SetPackEnabled(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, body SetPackEnabledJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSetPackEnabledRequest(c.Server, publisher, name, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -9380,6 +9423,75 @@ func NewUpdatePackRowRequest(server string, publisher PackPublisherParam, name P
 	return req, nil
 }
 
+// NewSetPackEnabledRequest calls the generic SetPackEnabled builder with application/json body
+func NewSetPackEnabledRequest(server string, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, body SetPackEnabledJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewSetPackEnabledRequestWithBody(server, publisher, name, params, "application/json", bodyReader)
+}
+
+// NewSetPackEnabledRequestWithBody generates requests for SetPackEnabled with any type of body
+func NewSetPackEnabledRequestWithBody(server string, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "publisher", publisher, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/packs/%s/%s/enabled", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewListPackInstallsRequest generates requests for ListPackInstalls
 func NewListPackInstallsRequest(server string, publisher PackPublisherParam, name PackNameParam, params *ListPackInstallsParams) (*http.Request, error) {
 	var err error
@@ -13045,6 +13157,11 @@ type ClientWithResponsesInterface interface {
 	// UpdatePackRowWithResponse request
 	UpdatePackRowWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *UpdatePackRowParams, reqEditors ...RequestEditorFn) (*UpdatePackRowResponse, error)
 
+	// SetPackEnabledWithBodyWithResponse request with any body
+	SetPackEnabledWithBodyWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetPackEnabledResponse, error)
+
+	SetPackEnabledWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, body SetPackEnabledJSONRequestBody, reqEditors ...RequestEditorFn) (*SetPackEnabledResponse, error)
+
 	// ListPackInstallsWithResponse request
 	ListPackInstallsWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *ListPackInstallsParams, reqEditors ...RequestEditorFn) (*ListPackInstallsResponse, error)
 
@@ -14913,6 +15030,39 @@ func (r UpdatePackRowResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r UpdatePackRowResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type SetPackEnabledResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r SetPackEnabledResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SetPackEnabledResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r SetPackEnabledResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -17269,6 +17419,23 @@ func (c *ClientWithResponses) UpdatePackRowWithResponse(ctx context.Context, pub
 		return nil, err
 	}
 	return ParseUpdatePackRowResponse(rsp)
+}
+
+// SetPackEnabledWithBodyWithResponse request with arbitrary body returning *SetPackEnabledResponse
+func (c *ClientWithResponses) SetPackEnabledWithBodyWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetPackEnabledResponse, error) {
+	rsp, err := c.SetPackEnabledWithBody(ctx, publisher, name, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSetPackEnabledResponse(rsp)
+}
+
+func (c *ClientWithResponses) SetPackEnabledWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, body SetPackEnabledJSONRequestBody, reqEditors ...RequestEditorFn) (*SetPackEnabledResponse, error) {
+	rsp, err := c.SetPackEnabled(ctx, publisher, name, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSetPackEnabledResponse(rsp)
 }
 
 // ListPackInstallsWithResponse request returning *ListPackInstallsResponse
@@ -20438,6 +20605,53 @@ func ParseUpdatePackRowResponse(rsp *http.Response) (*UpdatePackRowResponse, err
 			return nil, err
 		}
 		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseSetPackEnabledResponse parses an HTTP response from a SetPackEnabledWithResponse call
+func ParseSetPackEnabledResponse(rsp *http.Response) (*SetPackEnabledResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SetPackEnabledResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
 
 	}
 

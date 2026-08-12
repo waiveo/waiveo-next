@@ -3,6 +3,8 @@ package packs
 import (
 	"context"
 	"sort"
+
+	"github.com/maaxton/waiveo-next/internal/app/store"
 )
 
 // Catalog browse (marketplace/1 MKT-096): what the configured registry sources
@@ -149,4 +151,51 @@ func (in *Installer) BrowseCatalog(ctx context.Context) []CatalogSource {
 		return []CatalogSource{}
 	}
 	return in.market.Browse(ctx)
+}
+
+// SetEnabled turns an installed pack off or back on (MKT-097).
+//
+// Disabling withdraws the pack's surfaces and preserves everything an uninstall
+// would remove — bundle, rows, records. Enabling restores exactly that and
+// re-runs no installation: nothing was removed, so there is nothing to resolve,
+// verify or re-apply.
+//
+// A REQUIRED pack cannot be disabled. MKT-093b refuses removing one below its
+// floor, and a required pack that is present and serving nothing is removal in
+// everything but name — a deployment that declared it cannot run without a pack
+// has not agreed to run without its surfaces either. The same
+// REQUIRED_PACK_FLOOR the uninstall path returns, so a client that already
+// renders that refusal renders this one.
+//
+// Enabling is never refused on those grounds: restoring a required pack is the
+// direction the floor exists to protect.
+func (in *Installer) SetEnabled(ctx context.Context, packID string, enabled bool) error {
+	pack, found, err := in.store.GetPack(ctx, packID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return store.ErrNotFound
+	}
+	if !enabled {
+		if floor, required := in.store.RequiredFloor(packID); required {
+			return artifactErr("REQUIRED_PACK_FLOOR",
+				"%s is a required pack on this deployment (floor %s), so it cannot be disabled: a pack that is present and serving nothing is removal in everything but name (marketplace/1 MKT-097, MKT-093b)",
+				packID, floor)
+		}
+	}
+	if pack.Enabled == enabled {
+		// Already in the requested state. PUT of a state, so this is a success
+		// rather than a conflict — a retry must not be an error.
+		return nil
+	}
+	ok, err := in.store.SetPackEnabled(ctx, packID, enabled)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		// Uninstalled between the read and the write.
+		return store.ErrNotFound
+	}
+	return nil
 }

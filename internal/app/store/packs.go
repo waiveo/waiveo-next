@@ -41,7 +41,10 @@ CREATE TABLE IF NOT EXISTS packs (
 	data_model_version INTEGER NOT NULL,
 	manifest           TEXT NOT NULL,
 	created_at         INTEGER NOT NULL,
-	updated_at         INTEGER NOT NULL
+	updated_at         INTEGER NOT NULL,
+	-- marketplace/1 MKT-097. Defaults to enabled, which is what every pack
+	-- installed before this column existed was, and what an install means.
+	enabled            INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS pack_files (
 	pack_id   TEXT NOT NULL,
@@ -86,6 +89,10 @@ type Pack struct {
 	Manifest         json.RawMessage
 	CreatedAt        int64
 	UpdatedAt        int64
+	// Enabled is MKT-097's withdrawal switch. A disabled pack keeps everything
+	// — bundle, rows, records — and stops being SERVED: its pages are refused
+	// and it is not a navigable destination.
+	Enabled bool
 }
 
 // PackFile is one bundled file: its kind (page|locale), its name (a page path or
@@ -176,9 +183,9 @@ func getPack(ctx context.Context, q interface {
 	var p Pack
 	var body string
 	err := q.QueryRowContext(ctx,
-		`SELECT id, revision, version, data_model_version, manifest, created_at, updated_at
+		`SELECT id, revision, version, data_model_version, manifest, created_at, updated_at, enabled
 		 FROM packs WHERE id = ?`, id).
-		Scan(&p.ID, &p.Revision, &p.Version, &p.DataModelVersion, &body, &p.CreatedAt, &p.UpdatedAt)
+		Scan(&p.ID, &p.Revision, &p.Version, &p.DataModelVersion, &body, &p.CreatedAt, &p.UpdatedAt, &p.Enabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Pack{}, false, nil
 	}
@@ -196,7 +203,7 @@ func (s *Store) ListPacks(ctx context.Context) ([]Pack, error) {
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, revision, version, data_model_version, manifest, created_at, updated_at
+		`SELECT id, revision, version, data_model_version, manifest, created_at, updated_at, enabled
 		 FROM packs ORDER BY id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list packs: %w", err)
@@ -207,7 +214,7 @@ func (s *Store) ListPacks(ctx context.Context) ([]Pack, error) {
 	for rows.Next() {
 		var p Pack
 		var body string
-		if err := rows.Scan(&p.ID, &p.Revision, &p.Version, &p.DataModelVersion, &body, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Revision, &p.Version, &p.DataModelVersion, &body, &p.CreatedAt, &p.UpdatedAt, &p.Enabled); err != nil {
 			return nil, fmt.Errorf("store: scan pack: %w", err)
 		}
 		p.Manifest = json.RawMessage(body)
@@ -773,4 +780,68 @@ func paramsToDB(params json.RawMessage) string {
 		return ""
 	}
 	return string(params)
+}
+
+// migratePacksSchema adds MKT-097's `enabled` column to a store created before
+// it existed, on the same terms migratePackInstallsSchema states: a PRAGMA read
+// rather than a blind `ALTER TABLE ... ADD COLUMN` whose "duplicate column"
+// error is swallowed, because swallowing an error class to make a statement
+// idempotent swallows the unrelated failures sharing it.
+//
+// Existing rows default to ENABLED, and that is the only defensible back-fill:
+// every pack installed before this column existed was being served, so reading
+// them as disabled would silently withdraw working surfaces on upgrade — the
+// exact outcome MKT-097 exists to make deliberate.
+func migratePacksSchema(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(packs)`)
+	if err != nil {
+		return fmt.Errorf("inspect packs: %w", err)
+	}
+	defer rows.Close()
+
+	hasEnabled := false
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			return fmt.Errorf("scan packs column: %w", err)
+		}
+		if name == "enabled" {
+			hasEnabled = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate packs columns: %w", err)
+	}
+	if hasEnabled {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE packs ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`); err != nil {
+		return fmt.Errorf("add packs.enabled: %w", err)
+	}
+	return nil
+}
+
+// SetPackEnabled records MKT-097's withdrawal switch. It touches nothing else:
+// no bundle, no rows, no records, and NOT the pack's revision — enablement is
+// not an edit to the pack, and bumping the revision would make a disable look
+// like a new version to anything comparing them.
+//
+// Returns false when no such pack exists, so a caller can 404 rather than
+// silently succeed at nothing.
+func (s *Store) SetPackEnabled(ctx context.Context, id string, enabled bool) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.ExecContext(ctx, `UPDATE packs SET enabled = ? WHERE id = ?`, enabled, id)
+	if err != nil {
+		return false, fmt.Errorf("store: set pack enabled: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: set pack enabled: %w", err)
+	}
+	return n > 0, nil
 }

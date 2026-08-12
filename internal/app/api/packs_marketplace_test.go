@@ -841,3 +841,71 @@ func TestBrowsePackCatalogOverHTTP(t *testing.T) {
 		t.Fatalf("get of an uninstalled pack = %d, want 404 (%s)", resp.StatusCode, raw)
 	}
 }
+
+// TestDisablingAPackWithdrawsItsPages: the half that makes disabling mean
+// anything (MKT-097).
+//
+// A nav that omits a pack while its route still answers has HIDDEN a
+// destination, not withdrawn it — the URL an operator already has in a tab
+// keeps working, and a pack turned off because it is misbehaving carries on
+// being served. Only this level can catch that, because the package test can
+// see the flag and not the route.
+func TestDisablingAPackWithdrawsItsPages(t *testing.T) {
+	e := newEnv(t)
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, packManifest()), nil); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("install status = %d, want 201 (%s)", resp.StatusCode, raw)
+	}
+
+	// Enabled: the page is served.
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/pages/menu-items", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("page status while enabled = %d, want 200 (%s)", resp.StatusCode, raw)
+	}
+
+	if resp, raw := e.do(t, http.MethodPut, "/api/v1/packs/acme/menu-board/enabled",
+		mustJSON(t, map[string]any{"enabled": false}), jsonHeaders); resp.StatusCode != http.StatusOK {
+		t.Fatalf("disable status = %d, want 200 (%s)", resp.StatusCode, raw)
+	}
+
+	// Withdrawn: the same URL is gone.
+	if resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/pages/menu-items", nil, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("page status while DISABLED = %d, want 404 — a disabled pack that still serves its pages has been hidden, not withdrawn (%s)", resp.StatusCode, raw)
+	}
+
+	// Still installed, and its locale catalog still resolves — the console has
+	// to be able to NAME a pack it is offering to re-enable.
+	if resp, _ := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board", nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("a disabled pack reads as uninstalled: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/messages/en", nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("a disabled pack's locale catalog was withheld: %d — it would render as its raw msg: key", resp.StatusCode)
+	}
+
+	// And enabling brings the page back.
+	if resp, raw := e.do(t, http.MethodPut, "/api/v1/packs/acme/menu-board/enabled",
+		mustJSON(t, map[string]any{"enabled": true}), jsonHeaders); resp.StatusCode != http.StatusOK {
+		t.Fatalf("enable status = %d, want 200 (%s)", resp.StatusCode, raw)
+	}
+	if resp, _ := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/pages/menu-items", nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("the page did not come back after enabling: %d", resp.StatusCode)
+	}
+}
+
+// An absent `enabled` must be REFUSED, never read as false: a body that forgot
+// the field would otherwise disable the pack, the most destructive reading of a
+// malformed request.
+func TestSetPackEnabledRefusesABodyWithNoState(t *testing.T) {
+	e := newEnv(t)
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, packManifest()), nil); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("install status = %d, want 201 (%s)", resp.StatusCode, raw)
+	}
+
+	resp, raw := e.do(t, http.MethodPut, "/api/v1/packs/acme/menu-board/enabled",
+		mustJSON(t, map[string]any{}), jsonHeaders)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for a body with no `enabled` (%s)", resp.StatusCode, raw)
+	}
+	if resp, _ := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/pages/menu-items", nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatal("a refused request disabled the pack anyway")
+	}
+}

@@ -1411,6 +1411,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/packs/{publisher}/{name}/enabled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The publisher half of a pack's `<publisher>/<name>` identity (manifest/1 MAN-001). It is its own path segment rather than half of one percent-encoded value, so a pack id is addressable without the client having to escape the slash inside it. */
+                publisher: components["parameters"]["PackPublisherParam"];
+                /** @description The name half of a pack's `<publisher>/<name>` identity (manifest/1 MAN-001). */
+                name: components["parameters"]["PackNameParam"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Turn an installed pack off, or back on
+         * @description marketplace/1 MKT-097. Disabling WITHDRAWS a pack's surfaces — its `ui.pages` stop being served and it stops being a navigable destination — and preserves everything uninstalling would remove: its authored rows, its install records, and the pack itself.
+         *     That preservation is why the operation exists. Without it the only remedies for a pack misbehaving on a live deployment are to leave it running or to uninstall it and destroy the operator's data with it, and an operator who cannot do the reversible thing will do the destructive one.
+         *     Enabling restores exactly what disabling withdrew. It re-runs no installation: nothing was removed, so nothing is resolved, verified or re-applied.
+         *     Pre-`ctx/1` a pack carries no executable code, so withdrawing its surfaces is the whole of what disabling can stop. A required pack (MKT-093a) cannot be disabled — a floor that forbids removing a pack forbids equally the state in which it is present and does nothing.
+         *     Idempotent by construction: PUT of a state, not a toggle, so a retry cannot flip a pack back on.
+         */
+        put: operations["setPackEnabled"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/packs/{publisher}/{name}/update": {
         parameters: {
             query?: never;
@@ -6149,6 +6178,42 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    setPackEnabled: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                /** @description The publisher half of a pack's `<publisher>/<name>` identity (manifest/1 MAN-001). It is its own path segment rather than half of one percent-encoded value, so a pack id is addressable without the client having to escape the slash inside it. */
+                publisher: components["parameters"]["PackPublisherParam"];
+                /** @description The name half of a pack's `<publisher>/<name>` identity (manifest/1 MAN-001). */
+                name: components["parameters"]["PackNameParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    enabled: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description The pack's enablement after the write. Shape stub, matching the rest of this surface. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["UnprocessableContent"];
         };
     };
     getPackUpdateAvailability: {

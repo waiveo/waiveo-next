@@ -115,6 +115,7 @@ func (srv *server) mountPacks(rt *router) {
 	rt.HandleFunc("GET "+base+"/{publisher}/{name}/messages/{locale}", srv.getPackMessages)
 	rt.HandleFunc("GET "+base+"/{publisher}/{name}/installs", srv.listPackInstalls)
 	rt.HandleFunc("GET "+base+"/{publisher}/{name}/update", srv.getPackUpdateAvailability)
+	rt.HandleFunc("PUT "+base+"/{publisher}/{name}/enabled", srv.setPackEnabled)
 	rt.HandleFunc("POST "+base+"/{publisher}/{name}/update", srv.updatePack)
 
 	// The pack-data surface: CRUD over a declared collection's universal-envelope
@@ -427,11 +428,43 @@ func (srv *server) deletePack(w http.ResponseWriter, r *http.Request) {
 // by its ui.pages[].path. The document is stored data; it is returned as-is for
 // the console to render (or, on an invalid doc, to fall back to the standard
 // error EmptyState — the renderer's concern, not this endpoint's).
+// getPackPage serves one installed page document — unless the pack is DISABLED
+// (marketplace/1 MKT-097), in which case its surfaces are withdrawn and this is
+// a 404.
+//
+// The refusal lives here rather than only in the nav, and that distinction is
+// the whole of whether disabling means anything: a nav that omits a pack while
+// its route still answers has hidden a destination, not withdrawn it, and the
+// URL an operator already has in a tab keeps working. A pack turned off because
+// it is misbehaving must actually stop being served.
+//
+// 404, not 403: a disabled pack HAS no page surface, which is what the status
+// says. A 403 would report a permission this caller might obtain, and there is
+// no permission that makes a withdrawn page appear.
+//
+// Locale catalogs are deliberately NOT withheld — see servePackFile.
 func (srv *server) getPackPage(w http.ResponseWriter, r *http.Request) {
+	pack, found, err := srv.store.GetPack(r.Context(), packIDFromPath(r))
+	if err != nil {
+		srv.packProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error",
+			"An unexpected server error occurred.")
+		return
+	}
+	if !found || !pack.Enabled {
+		srv.packNotFound(w, r)
+		return
+	}
 	srv.servePackFile(w, r, store.PackFilePage, r.PathValue("path"))
 }
 
 // getPackMessages serves one installed locale catalog verbatim, keyed by locale.
+//
+// NOT withheld from a disabled pack (MKT-097), deliberately. A catalog is how
+// anything renders the pack's own NAME, and the console still has to name a
+// disabled pack — in the installed list, in the control that re-enables it.
+// Withholding it would make a pack an operator has turned off render as its raw
+// `msg:` key, which is a worse console for no security gain: a locale catalog
+// is display strings the box already served.
 func (srv *server) getPackMessages(w http.ResponseWriter, r *http.Request) {
 	srv.servePackFile(w, r, store.PackFileLocale, r.PathValue("locale"))
 }
