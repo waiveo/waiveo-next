@@ -168,7 +168,11 @@ type Client struct {
 	mu      sync.Mutex
 	pending map[string]chan wire.Frame
 	done    chan struct{}
-	readErr error
+	// connErr is the FIRST cause that ended this connection, whichever half
+	// noticed it, already labelled with that half (fail). It is the sole
+	// death flag: nil means live, non-nil means done is closed. Set only by
+	// fail, under mu, exactly once.
+	connErr error
 
 	// The single-slot latest-wins nudge cell (Config.OnGenerationAdvance's
 	// doc): nudgeGen holds the highest generation announced and not yet
@@ -296,7 +300,11 @@ func Dial(cfg Config) (*Client, error) {
 		defer cancel()
 		go func() { <-c.done; cancel() }()
 		if err := heartbeat.Run(hbCtx, c.ws, pingInterval, pingTimeout); err != nil {
-			_ = c.ws.CloseNow()
+			// Through fail rather than a bare CloseNow, so Err() names the
+			// heartbeat as the cause. A hard close alone would surface as
+			// whatever generic error the read loop then tripped over,
+			// which tells an operator nothing about WHY.
+			c.fail(sideHeartbeat, err)
 		}
 	}()
 	return c, nil
@@ -440,15 +448,7 @@ func (c *Client) readLoop() {
 	for {
 		var f wire.Frame
 		if err := c.readFrame(context.Background(), &f); err != nil {
-			c.mu.Lock()
-			c.readErr = err
-			pending := c.pending
-			c.pending = map[string]chan wire.Frame{}
-			c.mu.Unlock()
-			for _, ch := range pending {
-				close(ch)
-			}
-			close(c.done)
+			c.fail(sideRead, err)
 			return
 		}
 		c.record(false, f)
@@ -482,6 +482,70 @@ func (c *Client) readLoop() {
 		// Unknown server-initiated frame type: REL-004 additive tolerance —
 		// a newer app peer's new verb is ignored, never a failure.
 	}
+}
+
+// The three halves that can notice this connection has died, named so
+// Err() can say which one did. An operator reading a relay's log needs to
+// tell "the peer stopped answering" (read) from "we could not get a frame
+// out" (write) from "the peer stopped acknowledging pings" (heartbeat) —
+// they send you to different places, and before fail existed only the read
+// half could report at all.
+const (
+	sideRead      = "read"
+	sideWrite     = "write"
+	sideHeartbeat = "heartbeat"
+)
+
+// fail marks this connection dead, from ONE place, whichever half noticed
+// first. It is the only writer of connErr and the only closer of done.
+//
+// EVERY half that can observe death routes through here — the read loop, a
+// failed frame write (sendCtx), and the heartbeat's unanswered ping — which
+// is the point: HV-22 was diagnosed against a client whose read loop was
+// the sole detector, so a write error told its caller and told the
+// connection nothing, and callers went on writing to a corpse. A detector
+// wired on one path and not the others is the shape this repo keeps
+// shipping; there is now one path and adding a fourth caller means calling
+// this.
+//
+// Concurrency contract, since two halves racing is the normal case (a peer
+// that exits fails a write and a read at once):
+//   - The FIRST cause wins. A later half finds connErr already set and
+//     returns without disturbing it, so Err() reports what actually killed
+//     the connection rather than whichever goroutine was scheduled last.
+//   - done closes EXACTLY once, under the same mutex that decides the
+//     first-cause race, so "done is closed" and "connErr is set" are one
+//     atomic fact — a caller that sees done closed can never read a nil
+//     Err().
+//   - In-flight requests are drained here, so a Pull blocked on a reply
+//     returns immediately with the real cause instead of waiting out
+//     requestTimeout.
+//
+// It then hard-closes the transport. That is not tidiness: without it the
+// underlying socket stays open in CLOSE_WAIT for the life of the process
+// (measured on a real relay after an app-peer restart — one leaked fd, plus
+// the heartbeat goroutine's, per death), and a relay whose peer flaps is on
+// a slow path to fd exhaustion. CloseNow is idempotent and safe to call
+// while the read loop is blocked in Read — it is what unblocks it.
+func (c *Client) fail(side string, cause error) {
+	if cause == nil {
+		return
+	}
+	c.mu.Lock()
+	if c.connErr != nil {
+		c.mu.Unlock()
+		return // a half already recorded the first cause
+	}
+	c.connErr = fmt.Errorf("relayconn: connection died on the %s side: %w", side, cause)
+	pending := c.pending
+	c.pending = map[string]chan wire.Frame{}
+	for _, ch := range pending {
+		close(ch) // never blocks; safe to do under mu
+	}
+	close(c.done)
+	c.mu.Unlock()
+
+	_ = c.ws.CloseNow()
 }
 
 // handleDeviceCommand answers ONE app-initiated `device.command` (REL-112):
@@ -552,8 +616,8 @@ func (c *Client) Pull(traceID string, sinceGeneration *int64) (wire.Frame, error
 
 	ch := make(chan wire.Frame, 1)
 	c.mu.Lock()
-	if c.readErr != nil {
-		err := c.readErr
+	if c.connErr != nil {
+		err := c.connErr
 		c.mu.Unlock()
 		return wire.Frame{}, fmt.Errorf("relayconn: Pull: connection is down: %w", err)
 	}
@@ -703,8 +767,8 @@ func (c *Client) SendPairingRedeemed(body wire.PairingRedeemedBody) error {
 
 	ch := make(chan wire.Frame, 1)
 	c.mu.Lock()
-	if c.readErr != nil {
-		err := c.readErr
+	if c.connErr != nil {
+		err := c.connErr
 		c.mu.Unlock()
 		return fmt.Errorf("relayconn: SendPairingRedeemed: connection is down: %w", err)
 	}
@@ -749,11 +813,17 @@ func (c *Client) HelloAck() hello.HelloAckBody { return c.ackBody }
 // client never reconnects itself — the owner re-Dials.
 func (c *Client) Done() <-chan struct{} { return c.done }
 
-// Err reports the read-loop error that ended the connection, nil while live.
+// Err reports what ended the connection, nil while live. The error names
+// the half that noticed — read, write, or heartbeat (fail) — because "the
+// connection is down" without which half stopped working is the report
+// HV-22 gave an operator for two and a half hours.
+//
+// Err is non-nil if and only if Done is closed; the two are set under one
+// lock, so a caller that has observed Done can never read nil here.
 func (c *Client) Err() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.readErr
+	return c.connErr
 }
 
 // Close tears the connection down: a proper RFC 6455 close handshake when
@@ -786,9 +856,21 @@ func (c *Client) send(f wire.Frame) error {
 func (c *Client) sendCtx(ctx context.Context, f wire.Frame) error {
 	data, err := json.Marshal(f)
 	if err != nil {
+		// An unencodable frame is this side's own bug and says nothing
+		// about the connection — nothing left the socket, so the
+		// connection is not dead and must not be torn down.
 		return fmt.Errorf("relayconn: encode frame: %w", err)
 	}
 	if err := c.ws.Write(ctx, websocket.MessageText, data); err != nil {
+		// A frame that could not be written means this connection can no
+		// longer carry one, and that has to become the CONNECTION's fact,
+		// not just this caller's return value. send's own doc already
+		// declared this posture ("a write that cannot complete within the
+		// deadline closes the connection") — before HV-22 nothing
+		// implemented it, so the supervisor above never learned, callers
+		// kept writing to the same dead socket, and the transport had a
+		// death detector on the read path only.
+		c.fail(sideWrite, err)
 		return err
 	}
 	c.record(true, f)
