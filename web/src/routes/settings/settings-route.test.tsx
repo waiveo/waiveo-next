@@ -65,6 +65,26 @@ async function openSite(user: ReturnType<typeof userEvent.setup>, name: string) 
   await screen.findByLabelText("Site name");
 }
 
+/** The time-zone control.
+ *
+ * It is NOT a `<select>`: `Intl.supportedValuesOf` enumerates 446 zones, which
+ * is past the renderer's SELECT_SEARCH_THRESHOLD, so the `select` widget paints
+ * the kit's searchable Combobox instead. The zone that is currently stored reads
+ * off the trigger's own text. */
+function zoneControl(): HTMLElement {
+  return screen.getByLabelText("Time zone");
+}
+
+/** Pick a zone the way an operator does: open the picker, type enough of the
+ * name to find it among 446 rows, click the row. */
+async function pickZone(user: ReturnType<typeof userEvent.setup>, zone: string) {
+  await user.click(zoneControl());
+  const search = await screen.findByPlaceholderText(/search time zone/i);
+  await user.type(search, zone);
+  await user.click(await screen.findByRole("option", { name: zone }));
+  await waitFor(() => expect(zoneControl()).toHaveTextContent(zone));
+}
+
 describe("Settings — the ui-schema document", () => {
   it("its page.uis.json passes validatePage (the same gate an extension page clears)", () => {
     const result = validatePage(settingsPageDoc);
@@ -121,8 +141,11 @@ describe("Settings — reading what the box is configured with", () => {
     const user = userEvent.setup();
     renderSettings();
     await openSite(user, "The Hangar");
-    const select = screen.getByLabelText("Time zone") as HTMLSelectElement;
-    expect(select.value).toBe("Antarctica/Troll");
+    // The trigger shows the stored zone, and the zone is findable in the list.
+    expect(zoneControl()).toHaveTextContent("Antarctica/Troll");
+    await user.click(zoneControl());
+    await user.type(await screen.findByPlaceholderText(/search time zone/i), "Troll");
+    expect(await screen.findByRole("option", { name: "Antarctica/Troll" })).toBeInTheDocument();
   });
 
   it("does not signpost a second restart control — it links to the one that exists", async () => {
@@ -153,7 +176,7 @@ describe("Settings — saving a site, driven", () => {
     renderSettings();
     await openSite(user, "The Hangar");
 
-    await user.selectOptions(screen.getByLabelText("Time zone"), "Europe/London");
+    await pickZone(user, "Europe/London");
     await user.click(screen.getByRole("button", { name: "Save this site" }));
 
     await screen.findByText("Saved. This site now keeps local time in Europe/London.");
@@ -216,11 +239,11 @@ describe("Settings — saving a site, driven", () => {
     renderSettings();
     await openSite(user, "The Hangar");
 
-    await user.selectOptions(screen.getByLabelText("Time zone"), "Europe/London");
+    await pickZone(user, "Europe/London");
     await user.click(screen.getByRole("button", { name: "Save this site" }));
     await screen.findByText("Saved. This site now keeps local time in Europe/London.");
 
-    await user.selectOptions(screen.getByLabelText("Time zone"), "Asia/Tokyo");
+    await pickZone(user, "Asia/Tokyo");
     await user.click(screen.getByRole("button", { name: "Save this site" }));
     await screen.findByText("Saved. This site now keeps local time in Asia/Tokyo.");
 
@@ -320,14 +343,14 @@ describe("Settings — refusals", () => {
     const user = userEvent.setup();
     renderSettings();
     await openSite(user, "The Hangar");
-    await user.selectOptions(screen.getByLabelText("Time zone"), "Asia/Tokyo");
+    await pickZone(user, "Asia/Tokyo");
     await user.click(screen.getByRole("button", { name: "Save this site" }));
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Renamed elsewhere");
     expect(alert).toHaveTextContent("Europe/Paris");
     // The operator's own edit is NOT discarded behind their back.
-    expect((screen.getByLabelText("Time zone") as HTMLSelectElement).value).toBe("Asia/Tokyo");
+    expect(zoneControl()).toHaveTextContent("Asia/Tokyo");
     expect(screen.getByRole("button", { name: "Reload this site" })).toBeInTheDocument();
   });
 

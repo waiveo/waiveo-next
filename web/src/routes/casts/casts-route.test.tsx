@@ -426,9 +426,66 @@ describe("Casts library — portability (.cast bundles)", () => {
 
     const link = await screen.findByRole("link", { name: /export lobby loop as a \.cast bundle/i });
     // An anchor, not a fetch: a bundle carries every image the design draws, and
-    // the browser streams it straight to disk from a link.
+    // the browser streams it straight to disk from a link. It is now the kit's
+    // DownloadLink, so the same guarantee is one component instead of a
+    // hand-rolled copy of the icon-button class string.
     expect(link).toHaveAttribute("href", `/api/v1/casts/${ULID_A}/export`);
     expect(link).toHaveAttribute("download");
+    // …and the bare attribute, never download="true" — the browser would save
+    // every bundle as a file literally called `true`.
+    expect(link.getAttribute("download")).not.toBe("true");
+  });
+
+  it("downloads from the export link WITHOUT the pressable row also navigating", async () => {
+    // The row opens the Studio and the export link sits inside it, so the link
+    // has to stop its own click. Moving the anchor into the kit's DownloadLink
+    // is exactly the change that could drop the handler — and the symptom would
+    // be a download that ALSO abandons the page.
+    const user = userEvent.setup();
+    server.use(...listing([cast()]));
+    renderCasts();
+    await user.click(
+      await screen.findByRole("link", { name: /export lobby loop as a \.cast bundle/i }),
+    );
+    expect(screen.queryByRole("heading", { name: `Studio for ${ULID_A}` })).toBeNull();
+  });
+});
+
+describe("Casts library — a row of glyphs that can be read before it is pressed", () => {
+  // Five icon-only actions per row. Before the kit Tooltip, the ONLY way to
+  // learn what any of them did was to press it — the aria-label named them for a
+  // screen reader and for nobody else.
+  it("names each row action on hover", async () => {
+    const user = userEvent.setup();
+    server.use(...listing([cast()]));
+    renderCasts();
+
+    await user.hover(await screen.findByRole("button", { name: /duplicate lobby loop/i }));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Duplicate");
+  });
+
+  it("names each row action on KEYBOARD FOCUS, which a native title never did", async () => {
+    const user = userEvent.setup();
+    server.use(...listing([cast()]));
+    renderCasts();
+
+    const del = await screen.findByRole("button", { name: /delete lobby loop/i });
+    del.focus();
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Delete");
+    // The tip DESCRIBES; the button keeps its own, record-specific name.
+    expect(screen.getByRole("button", { name: "Delete Lobby loop" })).toBe(del);
+    await user.keyboard("{Escape}");
+  });
+
+  it("still performs the action it now explains", async () => {
+    // Wrapping five live buttons in tooltip triggers is exactly the change that
+    // silently swallows an onClick — this console has shipped a dead button
+    // before, and it passed every render-only test.
+    const user = userEvent.setup();
+    server.use(...listing([cast()]));
+    renderCasts();
+    await user.click(await screen.findByRole("button", { name: /delete lobby loop/i }));
+    expect(await screen.findByRole("dialog")).toHaveTextContent(/delete lobby loop/i);
   });
 
   it("imports a bundle at the placement the operator chose, and renames on request", async () => {

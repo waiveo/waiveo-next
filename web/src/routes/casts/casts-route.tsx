@@ -5,12 +5,14 @@ import {
   Button,
   ConfirmModal,
   DataTable,
+  DownloadLink,
   EmptyState,
   FormField,
   Modal,
   PageHeader,
   StatCard,
   Toaster,
+  Tooltip,
   toast,
   type ColumnDef,
 } from "@/components/kit";
@@ -550,64 +552,77 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
           // open the confirm AND navigate away from the page showing it, and
           // "Duplicate" would leave for the original rather than staying to see
           // the copy appear.
+          // Five glyphs in a row, and until now the only way to learn what any
+          // of them did was to press it — the aria-label named each one for a
+          // screen reader and for nobody else. Each is wrapped in the kit
+          // Tooltip, which opens on hover AND on keyboard focus.
           rowActions={(cast) => (
             <div className="flex items-center justify-end gap-1">
-              <Button
-                size="icon"
-                variant="ghost"
-                icon={Pencil}
-                aria-label={`Open ${cast.name} in the Studio`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  openStudio(cast);
-                }}
-              />
-              <Button
-                size="icon"
-                variant="ghost"
-                icon={Copy}
-                aria-label={`Duplicate ${cast.name}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void duplicate(cast);
-                }}
-              />
+              <Tooltip tip="Open in the Studio">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  icon={Pencil}
+                  aria-label={`Open ${cast.name} in the Studio`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openStudio(cast);
+                  }}
+                />
+              </Tooltip>
+              <Tooltip tip="Duplicate">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  icon={Copy}
+                  aria-label={`Duplicate ${cast.name}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void duplicate(cast);
+                  }}
+                />
+              </Tooltip>
               {/* Export is an ANCHOR, not a button: a bundle carries every
                   image the design draws, and the browser streams it straight to
                   disk from a link. A fetch-into-a-Blob would hold the whole
                   thing in the tab for no benefit. The row itself is pressable,
                   so the click must stop here or the download would also
                   navigate to the Studio. */}
-              <a
-                className="inline-flex size-8 items-center justify-center rounded-btn hover:bg-accent"
-                href={client.casts.exportUrl(cast.id)}
-                download
-                aria-label={`Export ${cast.name} as a .cast bundle`}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <Download aria-hidden className="size-4" />
-              </a>
-              <Button
-                size="icon"
-                variant="ghost"
-                icon={BookmarkPlus}
-                aria-label={`Save ${cast.name} as a template`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setTemplateFrom(cast);
-                  setTemplateName(`${cast.name} template`);
-                }}
-              />
-              <Button
-                size="icon"
-                variant="ghost"
-                icon={Trash2}
-                aria-label={`Delete ${cast.name}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setPendingDelete(cast);
-                }}
-              />
+              <Tooltip tip="Export as a .cast bundle">
+                <DownloadLink
+                  variant="icon"
+                  href={client.casts.exportUrl(cast.id)}
+                  download
+                  icon={Download}
+                  aria-label={`Export ${cast.name} as a .cast bundle`}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              </Tooltip>
+              <Tooltip tip="Save as a template">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  icon={BookmarkPlus}
+                  aria-label={`Save ${cast.name} as a template`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setTemplateFrom(cast);
+                    setTemplateName(`${cast.name} template`);
+                  }}
+                />
+              </Tooltip>
+              <Tooltip tip="Delete">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  icon={Trash2}
+                  aria-label={`Delete ${cast.name}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPendingDelete(cast);
+                  }}
+                />
+              </Tooltip>
             </div>
           )}
         />

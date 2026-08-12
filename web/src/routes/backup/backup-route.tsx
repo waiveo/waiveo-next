@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download, Upload } from "lucide-react";
 import {
   Button,
+  DownloadLink,
   FormField,
   PageHeader,
   StatusBadge,
@@ -75,9 +76,11 @@ import archivesDoc from "./archives.uis.json";
  *     the HOST recomputes the message catalog per selection — the same class of
  *     host projection the Variables page uses for a polymorphic scalar.
  *   • The catalog has no link widget, so "Download" is a host `slot` (UIS-185)
- *     holding a real `<a href download>`. A `button` + `navigate` would have
- *     been in-grammar and would have thrown away what an anchor is for: a URL
- *     the browser streams straight to disk, right-clickable, needing no script.
+ *     holding a real anchor — the kit's `DownloadLink`, which exists because
+ *     this page and the cast library had each hand-rolled the same one. A
+ *     `button` + `navigate` would have been in-grammar and would have thrown
+ *     away what an anchor is for: a URL the browser streams straight to disk,
+ *     right-clickable, needing no script.
  */
 
 /** How often an in-flight Job is polled. An export of a real workspace takes
@@ -505,15 +508,14 @@ export default function BackupRoute({ api }: { api?: WaiveoApi }) {
                 // anchor, because a download is a URL the browser streams to
                 // disk and a scripted click would only take that away.
                 download: inspected ? (
-                  <a
-                    className="inline-flex w-fit items-center gap-1 text-sm underline"
+                  <DownloadLink
                     href={client.backup.downloadUrl(inspected)}
                     download={inspected.name}
+                    icon={Download}
                     aria-label={`Download ${inspected.name}`}
                   >
-                    <Download aria-hidden className="size-4" />
                     Download
-                  </a>
+                  </DownloadLink>
                 ) : null,
               }}
             />

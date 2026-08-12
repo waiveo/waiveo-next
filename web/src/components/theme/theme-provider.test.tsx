@@ -57,4 +57,40 @@ describe("ThemeProvider + ThemeToggle", () => {
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
     expect(window.localStorage.getItem(STORAGE_KEY)).toBe("dark");
   });
+
+  it("says what the sun/moon glyph does — on hover AND on keyboard focus", async () => {
+    // The one icon-only control on every page of the console. It carried a
+    // native `title`, which shows for a hovering mouse and for nobody else, so
+    // a keyboard user met an unexplained glyph. It is now the kit Tooltip.
+    const user = userEvent.setup();
+    setup();
+    const toggle = screen.getByRole("button", { name: /switch to daybreak \(light\) theme/i });
+
+    await user.hover(toggle);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Switch to Daybreak (light) theme",
+    );
+    await user.keyboard("{Escape}");
+
+    toggle.focus();
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Switch to Daybreak (light) theme",
+    );
+  });
+
+  it("still toggles when it is wrapped in a tooltip trigger", async () => {
+    // A trigger wrapping a live button is where an onClick goes missing.
+    const user = userEvent.setup();
+    setup();
+    await user.click(screen.getByRole("button", { name: /switch to daybreak \(light\) theme/i }));
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+  });
+
+  it("names the toggle by its OWN label, never by the tip", () => {
+    // If the tip became the accessible name, the control would be nameless
+    // whenever it is closed — which is nearly always.
+    setup();
+    const toggle = screen.getByRole("button", { name: /switch to daybreak \(light\) theme/i });
+    expect(toggle).toHaveAttribute("aria-label", "Switch to Daybreak (light) theme");
+  });
 });
