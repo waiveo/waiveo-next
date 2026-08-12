@@ -7,7 +7,10 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { MemoryRouter } from "react-router";
+import { vi } from "vitest";
 import { ThemeProvider } from "@/components/theme/theme-provider";
+import { SessionGate } from "@/auth/session-gate";
+import type { Role, SessionSummary, WaiveoApi } from "@/api";
 import { AppShell } from "@/shell/app-shell";
 import ExtensionsRoute from "./extensions-route";
 import { TRACE_ID, ULID_A, ULID_B, PACK_ID, pack, packManifest, PACK_EN_CATALOG, problem } from "@/api/test-support";
@@ -984,4 +987,58 @@ it("offers a way back to an earlier version, using that install's own channel an
   // The EXACT version, pinned — not a channel-following resolve, which MKT-050
   // would refuse for going backward.
   expect(sent).toMatchObject({ pack_id: PACK_ID, version: "1.0.0" });
+});
+
+// The role sweep (SEC-010). Every pack LIFECYCLE route is gated server-side on
+// admin at the workspace root; the console mirrors that threshold so an
+// operator is not offered work the box will refuse.
+describe("what a non-admin is offered", () => {
+  function renderAs(role: Role) {
+    const session: SessionSummary = {
+      principal_id: "01J8Z3K4N5P6Q7R8S9T0V1W2P1",
+      kind: "user",
+      role,
+      aal: "standard",
+      session_id: "01J8Z3K4N5P6Q7R8S9T0V1W2S1",
+    };
+    const api = {
+      auth: { login: vi.fn(), logout: vi.fn(), session: vi.fn(async () => session), claim: vi.fn() },
+    } as unknown as WaiveoApi;
+    return render(
+      <ThemeProvider>
+        <MemoryRouter initialEntries={["/extensions"]}>
+          <SessionGate api={api}>
+            <ExtensionsRoute />
+          </SessionGate>
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+  }
+
+  it("tells an operator they can look but not change, and disables the verbs", async () => {
+    mockFeeder({ packs: [pack()] });
+    renderAs("operator");
+
+    // Said once, at the top — six dead controls with no explanation reads as a
+    // broken page.
+    expect(await screen.findByText(/you can look, but not change/i)).toBeInTheDocument();
+
+    const card = await packCard(PACK_ID);
+    expect(within(card).getByRole("button", { name: /Uninstall/ })).toBeDisabled();
+    expect(within(card).getByRole("button", { name: /Disable acme\/menu-board/ })).toBeDisabled();
+    // Reading is untouched: the pack, its version and its history are all still
+    // there. Only the verbs that change the deployment are withheld.
+    expect(within(card).getByText(PACK_ID)).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: /install history/i })).toBeEnabled();
+  });
+
+  it("leaves an admin every verb", async () => {
+    mockFeeder({ packs: [pack()] });
+    renderAs("admin");
+
+    const card = await packCard(PACK_ID);
+    expect(screen.queryByText(/you can look, but not change/i)).not.toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: /Uninstall/ })).toBeEnabled();
+    expect(within(card).getByRole("button", { name: /Disable acme\/menu-board/ })).toBeEnabled();
+  });
 });

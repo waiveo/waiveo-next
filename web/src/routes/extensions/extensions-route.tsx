@@ -37,6 +37,8 @@ import {
 } from "@/api";
 import { loadPackCatalog, resolveTitle } from "@/routes/packs/catalog";
 import { notifyPacksChanged } from "@/routes/packs/use-installed-packs";
+import { useOptionalSession } from "@/auth/session-gate";
+import { can } from "@/auth/can";
 import { resolvePackIcon } from "@/shell/pack-icon";
 import {
   describeInstall,
@@ -268,6 +270,23 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
     error: null,
   });
   const [catalogLoading, setCatalogLoading] = useState(false);
+  // Every pack LIFECYCLE route is gated server-side on admin at the workspace
+  // root (packLifecycleWritable). Mirrored here so an operator is not offered
+  // an install they cannot complete — the threshold is read off the server's
+  // own rule rather than guessed, because a console that gates at a DIFFERENT
+  // level than the server either hides work someone may do or keeps offering
+  // work they may not.
+  //
+  // Reading is untouched: the list, the health, the history and the catalog are
+  // all visible to anyone signed in, and only the verbs that change the
+  // deployment are withheld.
+  const session = useOptionalSession();
+  const mayChange = can(session?.session.role, "admin");
+  // `session === null` is the shell mounted OUTSIDE a SessionGate (the design
+  // route, this page's own tests). There is no role to check there, and
+  // disabling everything would make the page untestable and the design route
+  // misleading — so the gate applies only where a session actually exists.
+  const gated = session !== null && !mayChange;
 
   // Required status is not published by any route (see the file header), so it is
   // LEARNED — from the box's own refusal — and remembered for the session so the
@@ -670,6 +689,17 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
           </p>
         </section>
 
+        {gated ? (
+          <p className="rounded-input border border-border px-3 py-2 text-sm">
+            <strong>You can look, but not change.</strong>{" "}
+            <span className="text-muted-foreground">
+              Installing, updating, disabling and removing extensions need the <strong>admin</strong>{" "}
+              role; you are signed in as <strong>{session?.session.role}</strong>. Everything below
+              is readable.
+            </span>
+          </p>
+        ) : null}
+
         <div className="flex flex-wrap gap-4">
           <StatCard label="Installed" value={String(cards.length)} hint="packs on this box" />
           <StatCard
@@ -732,7 +762,7 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
               <div>
                 <Button
                   icon={PackagePlus}
-                  disabled={!file || busy}
+                  disabled={!file || busy || gated}
                   onClick={() => void installFile()}
                   aria-label="Install the chosen pack file"
                 >
@@ -822,7 +852,7 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
               <div>
                 <Button
                   icon={Store}
-                  disabled={!refReady}
+                  disabled={!refReady || gated}
                   onClick={() => void installRef()}
                   aria-label="Resolve and install this marketplace reference"
                 >
@@ -901,7 +931,7 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
                               <Button
                                 variant="secondary"
                                 icon={Store}
-                                disabled={installed === entry.version}
+                                disabled={installed === entry.version || gated}
                                 onClick={() => void installFromCatalog(entry)}
                                 aria-label={`Install ${entry.id} ${entry.version} from ${entry.source}`}
                               >
@@ -1126,6 +1156,7 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
                       <Button
                         variant="secondary"
                         icon={card.pack.enabled ? PowerOff : Power}
+                        disabled={gated}
                         onClick={() => void setEnabled(id, !card.pack.enabled)}
                         aria-label={
                           card.pack.enabled
@@ -1138,7 +1169,7 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
                       <Button
                         variant={card.availability?.waiting ? "default" : "secondary"}
                         icon={RefreshCw}
-                        disabled={!card.provenance.autoTracked}
+                        disabled={!card.provenance.autoTracked || gated}
                         onClick={() => void checkUpdate(id)}
                         aria-label={
                           card.availability?.waiting
@@ -1164,7 +1195,7 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
                       <Button
                         variant="destructive"
                         icon={Trash2}
-                        disabled={required}
+                        disabled={required || gated}
                         onClick={() => setConfirmingRemoval(id)}
                         aria-label={`Uninstall ${id}`}
                       >
