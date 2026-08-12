@@ -104,6 +104,11 @@ func (srv *server) mountPacks(rt *router) {
 	base := apiPrefix + "/packs"
 	rt.HandleFunc("POST "+base, srv.installPack)
 	rt.HandleFunc("GET "+base, srv.listPacks)
+	// One literal segment, registered before the two-segment pack routes below.
+	// Go's mux prefers the more specific pattern regardless of order, and
+	// `{publisher}/{name}` needs TWO segments, so "catalog" can never be read as
+	// a publisher — but the ordering states the intent for a reader.
+	rt.HandleFunc("GET "+base+"/catalog", srv.browsePackCatalog)
 	rt.HandleFunc("GET "+base+"/{publisher}/{name}", srv.getPack)
 	rt.HandleFunc("DELETE "+base+"/{publisher}/{name}", srv.deletePack)
 	rt.HandleFunc("GET "+base+"/{publisher}/{name}/pages/{path...}", srv.getPackPage)

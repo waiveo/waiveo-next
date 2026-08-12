@@ -1288,6 +1288,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/packs/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What the configured registry sources currently offer
+         * @description marketplace/1 MKT-096. Enumerates the entries this deployment's registry sources serve, as distinct from resolving one already-named reference — the discovery half, which had no endpoint at all.
+         *     A listing is NOT an endorsement. Until channel-index/1's signature chain (CHI-050) is enforced an index is untrusted transport, so an entry here conveys exactly "this source's index says it has this", and nothing about the artifact behind it has been checked at the point it is listed. What protects an operator who acts on one is unchanged: installing a browsed reference runs the same resolution-time rules and the same install-time envelope verification against this host's own anchors as installing a typed one, so a forged listing can misdescribe an artifact but cannot install one.
+         *     Entries a resolution would refuse or a publisher has withdrawn from discovery are not listed: `yanked` (CHI-072) and `archived` (MKT-044). Both remain installable by exact reference — not advertising something is not refusing it.
+         *     Results are grouped BY SOURCE and never merged: source order is a resolution preference and never a trust decision (MKT-061), so an operator comparing offerings must see which source served what. A source that could not be read is reported with a reason rather than omitted — an empty catalog and an unreachable registry are different facts.
+         *     One path segment, so it can never be mistaken for the two-segment `{publisher}/{name}` a pack is addressed by.
+         */
+        get: operations["browsePackCatalog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/packs/{publisher}/{name}": {
         parameters: {
             query?: never;
@@ -5947,6 +5971,28 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["UnprocessableContent"];
+        };
+    };
+    browsePackCatalog: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One entry per configured source, each with its offerings or the reason it could not be read. Shape stub, matching the rest of this surface. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
         };
     };
     getPack: {

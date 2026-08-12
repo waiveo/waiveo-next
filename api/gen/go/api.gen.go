@@ -3370,6 +3370,12 @@ type InstallPackParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// BrowsePackCatalogParams defines parameters for BrowsePackCatalog.
+type BrowsePackCatalogParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // UninstallPackParams defines parameters for UninstallPack.
 type UninstallPackParams struct {
 	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
@@ -4250,6 +4256,9 @@ type ClientInterface interface {
 	InstallPackWithBody(ctx context.Context, params *InstallPackParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	InstallPack(ctx context.Context, params *InstallPackParams, body InstallPackJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// BrowsePackCatalog request
+	BrowsePackCatalog(ctx context.Context, params *BrowsePackCatalogParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// UninstallPack request
 	UninstallPack(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UninstallPackParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5165,6 +5174,18 @@ func (c *Client) InstallPackWithBody(ctx context.Context, params *InstallPackPar
 
 func (c *Client) InstallPack(ctx context.Context, params *InstallPackParams, body InstallPackJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewInstallPackRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) BrowsePackCatalog(ctx context.Context, params *BrowsePackCatalogParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewBrowsePackCatalogRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -8785,6 +8806,48 @@ func NewInstallPackRequestWithBody(server string, params *InstallPackParams, con
 			}
 
 			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewBrowsePackCatalogRequest generates requests for BrowsePackCatalog
+func NewBrowsePackCatalogRequest(server string, params *BrowsePackCatalogParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/packs/catalog")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
 		}
 
 	}
@@ -12958,6 +13021,9 @@ type ClientWithResponsesInterface interface {
 
 	InstallPackWithResponse(ctx context.Context, params *InstallPackParams, body InstallPackJSONRequestBody, reqEditors ...RequestEditorFn) (*InstallPackResponse, error)
 
+	// BrowsePackCatalogWithResponse request
+	BrowsePackCatalogWithResponse(ctx context.Context, params *BrowsePackCatalogParams, reqEditors ...RequestEditorFn) (*BrowsePackCatalogResponse, error)
+
 	// UninstallPackWithResponse request
 	UninstallPackWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UninstallPackParams, reqEditors ...RequestEditorFn) (*UninstallPackResponse, error)
 
@@ -14584,6 +14650,36 @@ func (r InstallPackResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r InstallPackResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type BrowsePackCatalogResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+}
+
+// Status returns HTTPResponse.Status
+func (r BrowsePackCatalogResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r BrowsePackCatalogResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r BrowsePackCatalogResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -17101,6 +17197,15 @@ func (c *ClientWithResponses) InstallPackWithResponse(ctx context.Context, param
 		return nil, err
 	}
 	return ParseInstallPackResponse(rsp)
+}
+
+// BrowsePackCatalogWithResponse request returning *BrowsePackCatalogResponse
+func (c *ClientWithResponses) BrowsePackCatalogWithResponse(ctx context.Context, params *BrowsePackCatalogParams, reqEditors ...RequestEditorFn) (*BrowsePackCatalogResponse, error) {
+	rsp, err := c.BrowsePackCatalog(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseBrowsePackCatalogResponse(rsp)
 }
 
 // UninstallPackWithResponse request returning *UninstallPackResponse
@@ -19964,6 +20069,32 @@ func ParseInstallPackResponse(rsp *http.Response) (*InstallPackResponse, error) 
 			return nil, err
 		}
 		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseBrowsePackCatalogResponse parses an HTTP response from a BrowsePackCatalogWithResponse call
+func ParseBrowsePackCatalogResponse(rsp *http.Response) (*BrowsePackCatalogResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &BrowsePackCatalogResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
 
 	}
 

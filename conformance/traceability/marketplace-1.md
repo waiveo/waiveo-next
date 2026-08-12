@@ -63,3 +63,4 @@ One row per requirement ID `contracts/marketplace-1.md` defines. Format: `confor
 | MKT-094a | `contracts/marketplace-1.md#update-default-and-install-records` | `MKT-094a-install-record-pins-verified-provenance` | TBD-wave1 |
 | MKT-094b | `contracts/marketplace-1.md#update-default-and-install-records` | `MKT-094b-uninstall-preserves-rollback-high-water` | TBD-wave1 |
 | MKT-095 | `contracts/marketplace-1.md#update-default-and-install-records` | - | TBD-wave1 |
+| MKT-096 | `contracts/marketplace-1.md#update-default-and-install-records` | - | TBD-wave1 |

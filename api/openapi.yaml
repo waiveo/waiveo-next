@@ -3605,6 +3605,50 @@ paths:
           $ref: "#/components/responses/Conflict"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
+  /packs/catalog:
+    get:
+      operationId: browsePackCatalog
+      summary: What the configured registry sources currently offer
+      description: >-
+        marketplace/1 MKT-096. Enumerates the entries this deployment's
+        registry sources serve, as distinct from resolving one already-named
+        reference — the discovery half, which had no endpoint at all.
+
+        A listing is NOT an endorsement. Until channel-index/1's signature
+        chain (CHI-050) is enforced an index is untrusted transport, so an
+        entry here conveys exactly "this source's index says it has this", and
+        nothing about the artifact behind it has been checked at the point it
+        is listed. What protects an operator who acts on one is unchanged:
+        installing a browsed reference runs the same resolution-time rules and
+        the same install-time envelope verification against this host's own
+        anchors as installing a typed one, so a forged listing can misdescribe
+        an artifact but cannot install one.
+
+        Entries a resolution would refuse or a publisher has withdrawn from
+        discovery are not listed: `yanked` (CHI-072) and `archived` (MKT-044).
+        Both remain installable by exact reference — not advertising something
+        is not refusing it.
+
+        Results are grouped BY SOURCE and never merged: source order is a
+        resolution preference and never a trust decision (MKT-061), so an
+        operator comparing offerings must see which source served what. A
+        source that could not be read is reported with a reason rather than
+        omitted — an empty catalog and an unreachable registry are different
+        facts.
+
+        One path segment, so it can never be mistaken for the two-segment
+        `{publisher}/{name}` a pack is addressed by.
+      tags: [packs, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: >-
+            One entry per configured source, each with its offerings or the
+            reason it could not be read. Shape stub, matching the rest of this
+            surface.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /packs/{publisher}/{name}:
     parameters:
       - $ref: "#/components/parameters/PackPublisherParam"

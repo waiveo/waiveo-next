@@ -365,3 +365,64 @@ type packUpdateAvailabilityWire struct {
 	TrustChannel string `json:"trust_channel"`
 	Source       string `json:"source"`
 }
+
+// browsePackCatalog enumerates what the configured registry sources offer
+// (marketplace/1 MKT-096) — the discovery half of the marketplace, which until
+// now had no endpoint: an operator could install a pack only by already knowing
+// its publisher, name and trust channel.
+//
+// Read-only and not gated on packLifecycleWritable, for the same reason the
+// update REPORT is not: looking at what exists is what an operator does before
+// deciding to install, and requiring install authority to look would make the
+// safe half of the pair as privileged as the unsafe one.
+//
+// Not paginated, deliberately, and this is the one thing here worth revisiting
+// first. A deployment's source list is host-provisioned and small, and each
+// source's index is a single document this box already fetches whole to resolve
+// ANY reference — so there is no page to serve that would not require reading
+// everything anyway. A registry large enough to need paging would need it in
+// the index format first (CHI has no cursor), which is a channel-index/1
+// change, not one this surface can make on its own.
+func (srv *server) browsePackCatalog(w http.ResponseWriter, r *http.Request) {
+	sources := srv.installer.BrowseCatalog(r.Context())
+	out := make([]packCatalogSourceWire, 0, len(sources))
+	for _, src := range sources {
+		entries := make([]packCatalogEntryWire, 0, len(src.Entries))
+		for _, e := range src.Entries {
+			entries = append(entries, packCatalogEntryWire{
+				ID: e.PackID, Version: e.Version, Kind: e.Kind,
+				Source: e.Source, TrustChannel: e.Channel, Status: e.Status,
+			})
+		}
+		out = append(out, packCatalogSourceWire{
+			Source: src.ID, TrustChannel: src.Channel,
+			Entries: entries, Unavailable: src.Unavailable,
+		})
+	}
+	writeJSONValue(w, http.StatusOK, map[string]any{"sources": out})
+}
+
+// packCatalogEntryWire is one offering. It carries no digest, size or download
+// url: those are resolution inputs, and publishing them here would invite a
+// client to treat a listing as something it can act on directly, bypassing the
+// resolution and install-time checks that are the only reason browsing an
+// untrusted index is safe.
+type packCatalogEntryWire struct {
+	ID           string `json:"id"`
+	Version      string `json:"version"`
+	Kind         string `json:"kind"`
+	Source       string `json:"source"`
+	TrustChannel string `json:"trust_channel"`
+	Status       string `json:"status"`
+}
+
+// packCatalogSourceWire is one source's contribution. `unavailable` is present
+// and non-empty exactly when this source could not be read — an empty `entries`
+// with no `unavailable` means the source answered and offers nothing, which is
+// a different fact.
+type packCatalogSourceWire struct {
+	Source       string                 `json:"source"`
+	TrustChannel string                 `json:"trust_channel"`
+	Entries      []packCatalogEntryWire `json:"entries"`
+	Unavailable  string                 `json:"unavailable,omitempty"`
+}

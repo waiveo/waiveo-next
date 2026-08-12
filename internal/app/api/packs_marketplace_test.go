@@ -789,3 +789,55 @@ func TestPackUpdateAvailabilityOverHTTP(t *testing.T) {
 		t.Fatalf("install records = %d after the POST, want 2 — the check must still apply", len(page.Items))
 	}
 }
+
+// TestBrowsePackCatalogOverHTTP: the discovery half, end to end.
+//
+// The package tests already cover what is withheld and why. What only this
+// level proves is that the route is REACHABLE and that its literal `catalog`
+// segment is not swallowed by the two-segment `{publisher}/{name}` pattern
+// registered beside it — a collision no package test can see and every
+// operator would.
+func TestBrowsePackCatalogOverHTTP(t *testing.T) {
+	reg := newMktRegistry(t)
+	reg.publish("acme/menu-board", "1.0.0",
+		signPack(t, packBundle(t, packManifest()), "acme/menu-board", "1.0.0"), nil)
+	e := newEnvWithOptions(t, reg.option())
+
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/catalog", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("catalog status = %d, want 200 (%s)", resp.StatusCode, raw)
+	}
+	var out struct {
+		Sources []struct {
+			Source      string `json:"source"`
+			Unavailable string `json:"unavailable"`
+			Entries     []struct {
+				ID      string `json:"id"`
+				Version string `json:"version"`
+				Source  string `json:"source"`
+			} `json:"entries"`
+		} `json:"sources"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode catalog: %v (%s)", err, raw)
+	}
+	if len(out.Sources) != 1 {
+		t.Fatalf("sources = %d, want 1 (%s)", len(out.Sources), raw)
+	}
+	if out.Sources[0].Unavailable != "" {
+		t.Fatalf("source unavailable: %s", out.Sources[0].Unavailable)
+	}
+	if len(out.Sources[0].Entries) != 1 || out.Sources[0].Entries[0].ID != "acme/menu-board" {
+		t.Fatalf("entries = %+v, want the published pack", out.Sources[0].Entries)
+	}
+	// Grouped by source and attributed, never merged into one flat catalog.
+	if out.Sources[0].Entries[0].Source == "" {
+		t.Error("entry names no source (MKT-061: order is not a trust decision)")
+	}
+
+	// The sibling two-segment route still resolves a real pack, so `catalog`
+	// took nothing from it.
+	if resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board", nil, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("get of an uninstalled pack = %d, want 404 (%s)", resp.StatusCode, raw)
+	}
+}
