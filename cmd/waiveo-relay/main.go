@@ -1299,6 +1299,9 @@ func main() {
 		// with (REL-015's cutover sentence), and the fresh leaf rides the
 		// next redial — relayconn.Dial re-reads the store on every dial.
 		renewWindow := relayRenewalWindow + rand.N(relayRenewalWindowJitter)
+		// The operator's account of this connection's life (connReporter's
+		// own doc for why it exists at all).
+		connReport := newConnReporter(log.Printf, time.Now)
 		relayconn.StartSupervisor(relayconn.SupervisorConfig{
 			NeedsRenewal: func() bool { return renewalDue(store, clockCtl.Clock(), renewWindow) },
 			Renew: func() error {
@@ -1319,7 +1322,18 @@ func main() {
 				}
 				return dialConn()
 			},
+			// The dead connection must stop being this process's live
+			// connection the instant the supervisor says it died — before
+			// the first redial, and without waiting for a SUCCESSFUL one to
+			// overwrite it, which is precisely the event that does not
+			// happen during an outage (connHolder.clear's doc, HV-22).
+			OnDisconnected: func(err error, connectedFor time.Duration) {
+				liveConn.clear()
+				connReport.disconnected(err, connectedFor)
+			},
+			OnConnectFailed: connReport.connectFailed,
 			OnConnected: func(c *relayconn.Client) {
+				connReport.connected()
 				liveConn.set(c)
 				puller.adoptSite(c.HelloAck().SiteBinding)
 				// Adopt the app peer's authoritative site (REL-036) into the

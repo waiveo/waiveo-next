@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maaxton/waiveo-next/internal/relay/clocktrust"
 	"github.com/maaxton/waiveo-next/internal/relay/desiredstate"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/relay/relayconn"
@@ -161,10 +162,166 @@ func (h *connHolder) set(c *relayconn.Client) {
 	h.mu.Unlock()
 }
 
+// clear drops the held connection the moment the supervisor reports it dead
+// (OnDisconnected), so every reader — the pull closure, the candidate
+// reporter, the screen-status reporter, the redemption drainer — sees the
+// nil each of them already documents as "the ordinary offline case" instead
+// of a corpse.
+//
+// Its absence is HV-22's most operator-visible symptom. This holder was only
+// ever written by OnConnected, so a dead client stayed here until a
+// SUCCESSFUL redial replaced it — which is exactly the case that does not
+// happen when the app peer cannot be reached. The reporters went on writing
+// to a socket the supervisor had already abandoned, at 10s intervals, and
+// the only thing in the whole log was 1074 broken-pipe lines naming a port
+// nothing was still supervising. The supervisor cleared ITS reference
+// (clearClient) and this second holder of the same fact was never told: two
+// records of one truth, one of them updated.
+func (h *connHolder) clear() {
+	h.mu.Lock()
+	h.c = nil
+	h.mu.Unlock()
+}
+
 func (h *connHolder) get() *relayconn.Client {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.c
+}
+
+// connReporter turns the reconnect supervisor's lifecycle edges into an
+// account of the app-peer connection an operator can act on.
+//
+// It exists because HV-22's real damage was not the disconnection — the
+// supervisor handled that correctly and redialled on schedule — but that
+// NOTHING SAID SO. A relay cut off from its app peer for two and a half
+// hours, with its wall dark, logged not one line about the connection: not
+// the loss, not a single one of the ~300 redials, not the reason each was
+// refused, not that the reason was one no amount of waiting can fix. The
+// only trace anywhere was write errors from an unrelated goroutine aimed at
+// a socket the supervisor had already given up on, which is worse than
+// silence: it pointed at the wrong thing.
+//
+// Two rules govern what it prints, both learned from that log:
+//
+//   - VOLUME IS THE ENEMY OF ATTENTION. 1074 identical lines is not
+//     reporting, it is noise that buries the report. Failures are logged in
+//     full at first and then thinned (reportAttempt), so an outage of any
+//     length costs a handful of lines that each say how long it has been
+//     going on.
+//   - A CONDITION THAT RETRYING CANNOT FIX MUST SAY SO. A trust-pin
+//     mismatch means the peer answering this address is not the one this
+//     relay enrolled with; REL-137 says the remedy is re-anchoring at
+//     enrollment, never waiting. Reporting it as one more retryable
+//     hiccup — which is how the supervisor's taxonomy classifies it, and
+//     rightly, since the wrong peer may yet be replaced by the right one —
+//     would leave an operator watching a counter climb toward nothing.
+type connReporter struct {
+	logf func(format string, v ...any)
+	now  func() time.Time
+
+	mu sync.Mutex
+	// downSince is when the current outage began — the boot time for a
+	// relay that has never connected, so the first recovery line can still
+	// say how long the fleet went unmanaged. Zeroed while connected.
+	downSince time.Time
+	attempts  int
+	// pinToldOnce keeps the REL-137 remedy block to one printing per
+	// outage: it is several lines of instruction, and repeating it on every
+	// thinned attempt would recreate the volume problem it exists inside.
+	pinToldOnce bool
+}
+
+func newConnReporter(logf func(string, ...any), now func() time.Time) *connReporter {
+	return &connReporter{logf: logf, now: now, downSince: now()}
+}
+
+// disconnected reports a live connection's death, naming which half of the
+// transport noticed and how long the connection had lasted. err comes
+// straight from relayconn.Client.Err, which labels the half (read, write, or
+// heartbeat) precisely so this line can be specific.
+func (r *connReporter) disconnected(err error, connectedFor time.Duration) {
+	r.mu.Lock()
+	r.downSince = r.now()
+	r.attempts = 0
+	r.pinToldOnce = false
+	r.mu.Unlock()
+	r.logf("waiveo-relay: app-peer connection LOST after %s up (%v) — screens keep playing the last applied generation offline (REL-055/061), but nothing new reaches them until it is back; re-dialling", connectedFor.Round(time.Second), err)
+}
+
+// connectFailed reports one failed redial, thinned by reportAttempt.
+func (r *connReporter) connectFailed(err error, consecutive int, retryIn time.Duration) {
+	r.mu.Lock()
+	r.attempts = consecutive
+	down := r.now().Sub(r.downSince)
+	tellPin := isTrustPinMismatch(err) && !r.pinToldOnce
+	if tellPin {
+		r.pinToldOnce = true
+	}
+	r.mu.Unlock()
+
+	if tellPin {
+		// Ahead of the thinning check, and unconditional: this is the one
+		// cause where the attempt count is beside the point.
+		r.logf("waiveo-relay: the app peer at this address is NOT the one this relay enrolled with — its TLS leaf key does not match the enrollment-anchored pin (REL-137).\n"+
+			"    Re-dialling will not fix this: REL-137 requires re-anchoring at enrollment, so either the app peer's identity was replaced (re-enroll this relay), or WAIVEO_FEEDER_URL is reaching a DIFFERENT app peer than the intended one — a second process holding the same address answers the dial and presents its own identity.\n"+
+			"    Detail: %v", err)
+	}
+	if !reportAttempt(consecutive) {
+		return
+	}
+	r.logf("waiveo-relay: app peer unreachable — connection attempt %d failed, %s offline so far, retrying in %s: %v",
+		consecutive, down.Round(time.Second), retryIn.Round(time.Millisecond), err)
+}
+
+// connected reports recovery, and deliberately says nothing when there was
+// no outage to recover from: the boot connection is not news, and a line
+// that prints on every healthy start is a line an operator learns to skip.
+func (r *connReporter) connected() {
+	r.mu.Lock()
+	attempts := r.attempts
+	down := r.now().Sub(r.downSince)
+	r.downSince = time.Time{}
+	r.attempts = 0
+	r.pinToldOnce = false
+	r.mu.Unlock()
+
+	if attempts == 0 {
+		return
+	}
+	r.logf("waiveo-relay: app-peer connection RE-ESTABLISHED after %d failed attempt(s), %s offline — pulling desired state and re-reporting screens",
+		attempts, down.Round(time.Second))
+}
+
+// reportAttempt decides which failed attempts get a line: the first three,
+// then powers of two.
+//
+// The shape matters more than the constants. A fixed interval cannot serve
+// both ends of the range — report every attempt and a two-hour outage buys
+// 300 identical lines (the disease HV-22 exhibited at 1074), report one in
+// fifty and a brief blip goes unrecorded entirely. Doubling gives full
+// detail exactly where an operator is watching (the first seconds) and a
+// logarithmic tail that still marks the passage of hours: ~10 lines for the
+// 2h33m outage that produced this defect, each carrying the elapsed time.
+func reportAttempt(n int) bool {
+	if n <= 3 {
+		return true
+	}
+	return n&(n-1) == 0
+}
+
+// isTrustPinMismatch reports whether a failed connection attempt died on
+// REL-137's SPKI pin.
+//
+// errors.Is against the sentinel rather than a string match: the error
+// travels out of crypto/tls's VerifyPeerCertificate hook and through
+// relayconn's %w wrapping, and both preserve the chain. (The supervisor's
+// renewOnExpiredLeafHandshake next door DOES match on a string, because the
+// expired-leaf refusal it classifies is an unexported *tls.permanentError
+// minted inside the standard library with no sentinel to match — the
+// difference is worth noticing, not copying.)
+func isTrustPinMismatch(err error) bool {
+	return errors.Is(err, clocktrust.ErrAppPeerKeyMismatch)
 }
 
 // nudgeSink decouples the connection's state.changed dispatcher (REL-057,
