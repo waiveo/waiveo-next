@@ -98,16 +98,13 @@
     },
     {
       "package": "internal/manifest",
-      "reason": "The version-range half is a capability with no caller: VersionRange.Allows and the comparator behind it are exercised only by version_test.go, and structurally could not be called anyway \u2014 HostRegistries carries no map of host-implemented ctx/relay versions to evaluate a range against. That is exactly why manifest/1 publishes COMPAT_RANGE_UNSATISFIED with nothing to emit it: validateCompat parses the range and discards the result. The consent-diff cluster is a second, smaller instance \u2014 the reconsent decision is computed and no install path asks for it.",
+      "reason": "The consent-diff cluster is a capability with no caller: ConsentDiff and RequiresReconsent compute the reconsent decision MAN-022/023 describe, and no install path asks for it \u2014 consent is auto-granted in this dev POC (internal/app/packs/packs.go). The version-range half USED to sit here too, on the reasoning that it structurally could not be called because nothing carried a map of host-implemented versions to evaluate a range against. internal/ctxproto's ctx/1 handshake is that caller: Negotiate parses a pack's declared ctx_range with this parser and picks the highest host version satisfying it (CTX-021/023). Removed from the baseline rather than left as a stale entry \u2014 an inventory of what is not wired must not list something that now is.",
       "funcs": [
         "ConsentChange.RequiresReconsent",
         "ConsentDiff",
         "capabilitiesKey",
         "connectionsKey",
-        "stringSetKey",
-        "VersionRange.Allows",
-        "Comparator.allows",
-        "cmpPair"
+        "stringSetKey"
       ]
     },
     {
