@@ -308,3 +308,60 @@ func (srv *server) listPackInstalls(w http.ResponseWriter, r *http.Request) {
 	})
 	writeJSONValue(w, http.StatusOK, page)
 }
+
+// getPackUpdateAvailability reports what an update check WOULD do, without
+// doing it (marketplace/1 MKT-095).
+//
+// A GET on the same resource as the check, deliberately: the two answer one
+// question and only the verb differs, so the pair reads as inspect-then-act
+// rather than as two operations that could drift apart. The answer is produced
+// by the same code the check uses to decide (packs.updateTarget), which is what
+// MKT-095's "a report and the check it describes cannot disagree" requires.
+//
+// It is NOT gated on packLifecycleWritable and takes no Idempotency-Key: it
+// writes nothing, so there is nothing to make idempotent and no lifecycle
+// permission to spend. Reading whether an update is waiting is what an operator
+// does BEFORE deciding to take it, and requiring write authority to look would
+// make the safe half of the pair as privileged as the unsafe one.
+//
+// The `reverted` action is the case worth reading the response for: the running
+// version has been revoked and a check would replace it (MKT-093). Reported
+// here, performed only by the POST.
+func (srv *server) getPackUpdateAvailability(w http.ResponseWriter, r *http.Request) {
+	packID := packIDFromPath(r)
+	out, err := srv.installer.UpdateAvailable(r.Context(), packID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			srv.packNotFound(w, r)
+			return
+		}
+		srv.writeInstallError(w, r, err)
+		return
+	}
+	writeJSONValue(w, http.StatusOK, packUpdateAvailabilityWire{
+		Action:       string(out.Action),
+		ID:           packID,
+		FromVersion:  out.FromVersion,
+		ToVersion:    out.ToVersion,
+		TrustChannel: out.TrustChannel,
+		Source:       out.Source,
+	})
+}
+
+// packUpdateAvailabilityWire is what an update check would do. `action` carries
+// the same three values packUpdateWire's does, and deliberately the same
+// strings: a client that has learned to read one outcome vocabulary must not
+// have to learn a second for the report of it.
+//
+// It carries `trust_channel`/`source` where the POST's own wire does not,
+// because the questions differ. After a check has run, WHERE the version came
+// from is settled and recorded (MKT-094). Before one runs, "an update is
+// waiting" is not actionable without knowing which channel is offering it.
+type packUpdateAvailabilityWire struct {
+	Action       string `json:"action"`
+	ID           string `json:"id"`
+	FromVersion  string `json:"from_version"`
+	ToVersion    string `json:"to_version"`
+	TrustChannel string `json:"trust_channel"`
+	Source       string `json:"source"`
+}

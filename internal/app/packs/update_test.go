@@ -941,3 +941,115 @@ func TestRefusalAfterTheBundleDeleteLeavesThePriorBundleIntact(t *testing.T) {
 		t.Fatalf("a refused install bumped the generation %d -> %d", genBefore, after)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// MKT-095 — reporting what an update check WOULD do, without doing it.
+//
+// Every case asserts the report AND the absence of a side effect, in the same
+// test, through the same snapshot/assertUnchanged pair the refusal tests use.
+// Splitting them would let a report that quietly applies pass the half that
+// reads the answer, and MKT-095 explicitly forbids satisfying the report by
+// running the check and undoing it -- an undo is invisible to the return value,
+// and assertUnchanged covers the generation and the channel mark as well as the
+// pack, so it is the assertion that can see one.
+// ---------------------------------------------------------------------------
+
+// The headline case: a newer version is waiting, the report says so, nothing moves.
+func TestUpdateAvailableReportsAWaitingUpdateAndAppliesNothing(t *testing.T) {
+	st, in, signer, reg := updateFixture(t)
+	ctx := context.Background()
+
+	publishVersion(t, reg, signer, "1.0.0")
+	if _, err := in.InstallRef(ctx, packs.Ref{PackID: "acme/menu-board", TrustChannel: "community"}); err != nil {
+		t.Fatalf("InstallRef 1.0.0: %v", err)
+	}
+	publishVersion(t, reg, signer, "2.0.0")
+	before := snapshotInstalled(t, st, "acme/menu-board", "community")
+
+	avail, err := in.UpdateAvailable(ctx, "acme/menu-board")
+	if err != nil {
+		t.Fatalf("UpdateAvailable: %v", err)
+	}
+	if avail.Action != packs.UpdateApplied || avail.FromVersion != "1.0.0" || avail.ToVersion != "2.0.0" {
+		t.Fatalf("availability = %+v, want updated 1.0.0 -> 2.0.0", avail)
+	}
+	// The pin the answer came through, so an operator can see WHICH channel is
+	// offering the version before deciding to take it.
+	if avail.TrustChannel != "community" {
+		t.Errorf("trust channel = %q, want the pinned community", avail.TrustChannel)
+	}
+	before.assertUnchanged(t, st, "a REPORT of an available update")
+}
+
+// The case an operator most needs before anything moves: the running version has
+// been revoked. The report NAMES the revert a check would perform, and performs
+// none of it.
+func TestUpdateAvailableNamesTheRevertWithoutReverting(t *testing.T) {
+	st, in, signer, reg := updateFixture(t)
+	ctx := context.Background()
+
+	publishVersion(t, reg, signer, "1.0.0")
+	if _, err := in.InstallRef(ctx, packs.Ref{PackID: "acme/menu-board", TrustChannel: "community"}); err != nil {
+		t.Fatalf("InstallRef 1.0.0: %v", err)
+	}
+	publishVersion(t, reg, signer, "2.0.0")
+	if _, err := in.Update(ctx, "acme/menu-board"); err != nil {
+		t.Fatalf("Update to 2.0.0: %v", err)
+	}
+	reg.setStatus("acme/menu-board", "2.0.0", "yanked")
+	before := snapshotInstalled(t, st, "acme/menu-board", "community")
+
+	avail, err := in.UpdateAvailable(ctx, "acme/menu-board")
+	if err != nil {
+		t.Fatalf("UpdateAvailable after the yank: %v", err)
+	}
+	if avail.Action != packs.UpdateReverted || avail.FromVersion != "2.0.0" || avail.ToVersion != "1.0.0" {
+		t.Fatalf("availability = %+v, want reverted 2.0.0 -> 1.0.0 REPORTED", avail)
+	}
+	before.assertUnchanged(t, st, "a REPORT of a pending revert")
+}
+
+func TestUpdateAvailableIsUnchangedWhenThePointerHasNotMoved(t *testing.T) {
+	st, in, signer, reg := updateFixture(t)
+	ctx := context.Background()
+
+	publishVersion(t, reg, signer, "1.0.0")
+	if _, err := in.InstallRef(ctx, packs.Ref{PackID: "acme/menu-board", TrustChannel: "community"}); err != nil {
+		t.Fatalf("InstallRef: %v", err)
+	}
+	before := snapshotInstalled(t, st, "acme/menu-board", "community")
+
+	avail, err := in.UpdateAvailable(ctx, "acme/menu-board")
+	if err != nil {
+		t.Fatalf("UpdateAvailable: %v", err)
+	}
+	if avail.Action != packs.UpdateUnchanged || avail.ToVersion != "1.0.0" {
+		t.Fatalf("availability = %+v, want unchanged at 1.0.0", avail)
+	}
+	before.assertUnchanged(t, st, "a REPORT that nothing is waiting")
+}
+
+// A pack with no pinned trust channel is not auto-tracked (MKT-094a). The report
+// must refuse it exactly as the check does -- the two cannot disagree about
+// whether a pack is even eligible, which is what sharing updateTarget buys.
+func TestUpdateAvailableRefusesADirectInstallLikeTheCheckDoes(t *testing.T) {
+	_, in, signer, reg := updateFixture(t)
+	ctx := context.Background()
+
+	if _, err := in.Install(ctx, versionedPack(t, signer, "1.0.0")); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	publishVersion(t, reg, signer, "2.0.0")
+
+	_, availErr := in.UpdateAvailable(ctx, "acme/menu-board")
+	if code := refusalCode(t, availErr); code != "TRUST_CHANNEL_UNKNOWN" {
+		t.Fatalf("UpdateAvailable of a direct install = %s, want TRUST_CHANNEL_UNKNOWN (the code the check itself returns)", code)
+	}
+}
+
+func TestUpdateAvailableOfAnUninstalledPackIsNotFound(t *testing.T) {
+	_, in, _, _ := updateFixture(t)
+	if _, err := in.UpdateAvailable(context.Background(), "acme/nope"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("err = %v, want store.ErrNotFound", err)
+	}
+}

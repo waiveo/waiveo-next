@@ -3454,6 +3454,12 @@ type GetPackPageParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// GetPackUpdateAvailabilityParams defines parameters for GetPackUpdateAvailability.
+type GetPackUpdateAvailabilityParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // UpdatePackParams defines parameters for UpdatePack.
 type UpdatePackParams struct {
 	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
@@ -4274,6 +4280,9 @@ type ClientInterface interface {
 
 	// GetPackPage request
 	GetPackPage(ctx context.Context, publisher PackPublisherParam, name PackNameParam, path string, params *GetPackPageParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetPackUpdateAvailability request
+	GetPackUpdateAvailability(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetPackUpdateAvailabilityParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// UpdatePack request
 	UpdatePack(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UpdatePackParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5276,6 +5285,18 @@ func (c *Client) GetPackMessages(ctx context.Context, publisher PackPublisherPar
 
 func (c *Client) GetPackPage(ctx context.Context, publisher PackPublisherParam, name PackNameParam, path string, params *GetPackPageParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetPackPageRequest(c.Server, publisher, name, path, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetPackUpdateAvailability(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetPackUpdateAvailabilityParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetPackUpdateAvailabilityRequest(c.Server, publisher, name, params)
 	if err != nil {
 		return nil, err
 	}
@@ -9517,6 +9538,62 @@ func NewGetPackPageRequest(server string, publisher PackPublisherParam, name Pac
 	return req, nil
 }
 
+// NewGetPackUpdateAvailabilityRequest generates requests for GetPackUpdateAvailability
+func NewGetPackUpdateAvailabilityRequest(server string, publisher PackPublisherParam, name PackNameParam, params *GetPackUpdateAvailabilityParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "publisher", publisher, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/packs/%s/%s/update", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewUpdatePackRequest generates requests for UpdatePack
 func NewUpdatePackRequest(server string, publisher PackPublisherParam, name PackNameParam, params *UpdatePackParams) (*http.Request, error) {
 	var err error
@@ -12911,6 +12988,9 @@ type ClientWithResponsesInterface interface {
 	// GetPackPageWithResponse request
 	GetPackPageWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, path string, params *GetPackPageParams, reqEditors ...RequestEditorFn) (*GetPackPageResponse, error)
 
+	// GetPackUpdateAvailabilityWithResponse request
+	GetPackUpdateAvailabilityWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetPackUpdateAvailabilityParams, reqEditors ...RequestEditorFn) (*GetPackUpdateAvailabilityResponse, error)
+
 	// UpdatePackWithResponse request
 	UpdatePackWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UpdatePackParams, reqEditors ...RequestEditorFn) (*UpdatePackResponse, error)
 
@@ -14831,6 +14911,39 @@ func (r GetPackPageResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r GetPackPageResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetPackUpdateAvailabilityResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r GetPackUpdateAvailabilityResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetPackUpdateAvailabilityResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetPackUpdateAvailabilityResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -17078,6 +17191,15 @@ func (c *ClientWithResponses) GetPackPageWithResponse(ctx context.Context, publi
 		return nil, err
 	}
 	return ParseGetPackPageResponse(rsp)
+}
+
+// GetPackUpdateAvailabilityWithResponse request returning *GetPackUpdateAvailabilityResponse
+func (c *ClientWithResponses) GetPackUpdateAvailabilityWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetPackUpdateAvailabilityParams, reqEditors ...RequestEditorFn) (*GetPackUpdateAvailabilityResponse, error) {
+	rsp, err := c.GetPackUpdateAvailability(ctx, publisher, name, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetPackUpdateAvailabilityResponse(rsp)
 }
 
 // UpdatePackWithResponse request returning *UpdatePackResponse
@@ -20291,6 +20413,53 @@ func ParseGetPackPageResponse(rsp *http.Response) (*GetPackPageResponse, error) 
 			return nil, err
 		}
 		response.ApplicationproblemJSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetPackUpdateAvailabilityResponse parses an HTTP response from a GetPackUpdateAvailabilityWithResponse call
+func ParseGetPackUpdateAvailabilityResponse(rsp *http.Response) (*GetPackUpdateAvailabilityResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetPackUpdateAvailabilityResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
 
 	}
 

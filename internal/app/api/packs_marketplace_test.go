@@ -714,3 +714,78 @@ func TestARosterAuthoredOnDiskRefusesABelowFloorInstallOverHTTP(t *testing.T) {
 		t.Fatalf("the refused install landed the pack anyway: get status = %d (%s)", resp.StatusCode, raw)
 	}
 }
+
+// packUpdateAvailabilityResponse mirrors what GET .../update serves (MKT-095).
+type packUpdateAvailabilityResponse struct {
+	Action       string `json:"action"`
+	ID           string `json:"id"`
+	FromVersion  string `json:"from_version"`
+	ToVersion    string `json:"to_version"`
+	TrustChannel string `json:"trust_channel"`
+	Source       string `json:"source"`
+}
+
+// TestPackUpdateAvailabilityOverHTTP: the report, driven end to end.
+//
+// The unit tests in internal/app/packs already prove the report does not
+// mutate. What only this level can prove is that the GET is REACHABLE — a
+// handler registered under the wrong method or path is invisible to a package
+// test and perfectly visible to an operator — and that GET and POST on the one
+// path stay distinct: the report must not be served by the mutating handler,
+// and the check must still run when asked.
+func TestPackUpdateAvailabilityOverHTTP(t *testing.T) {
+	reg := newMktRegistry(t)
+	reg.publish("acme/menu-board", "1.0.0",
+		signPack(t, packBundle(t, packManifest()), "acme/menu-board", "1.0.0"), nil)
+	e := newEnvWithOptions(t, reg.option())
+
+	ref := mustJSON(t, map[string]any{"pack_id": "acme/menu-board", "trust_channel": "community"})
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", ref, jsonHeaders); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("install status = %d, want 201 (%s)", resp.StatusCode, raw)
+	}
+
+	// Nothing waiting yet.
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/update", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("availability status = %d, want 200 (%s)", resp.StatusCode, raw)
+	}
+	var out packUpdateAvailabilityResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode availability: %v (%s)", err, raw)
+	}
+	if out.Action != "unchanged" || out.ToVersion != "1.0.0" {
+		t.Fatalf("availability = %+v, want unchanged at 1.0.0", out)
+	}
+	// The pin the answer came through — the half a client needs to act on it.
+	if out.TrustChannel != "community" {
+		t.Errorf("trust_channel = %q, want community", out.TrustChannel)
+	}
+
+	// Move the pointer. The report must now name 2.0.0 and STILL install nothing.
+	m := packManifest()
+	m["version"] = "2.0.0"
+	reg.publish("acme/menu-board", "2.0.0", signPack(t, packBundle(t, m), "acme/menu-board", "2.0.0"), nil)
+	// Publishing a version is not the same as moving the channel pointer, and
+	// the report reads the POINTER (MKT-090) — without this the honest answer
+	// is still "unchanged", which is what this test first asserted against.
+	reg.reindex(t)
+
+	_, raw = e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/update", nil, nil)
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode availability: %v (%s)", err, raw)
+	}
+	if out.Action != "updated" || out.FromVersion != "1.0.0" || out.ToVersion != "2.0.0" {
+		t.Fatalf("availability = %+v, want updated 1.0.0 -> 2.0.0", out)
+	}
+	if page := packInstallHistory(t, e, "acme/menu-board"); len(page.Items) != 1 {
+		t.Fatalf("a REPORT appended an install record (%d) — MKT-094b makes a record evidence an install was applied", len(page.Items))
+	}
+
+	// And the POST on the same path still acts, so the two have not been merged.
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs/acme/menu-board/update", nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("update status = %d, want 200 (%s)", resp.StatusCode, raw)
+	}
+	if page := packInstallHistory(t, e, "acme/menu-board"); len(page.Items) != 2 {
+		t.Fatalf("install records = %d after the POST, want 2 — the check must still apply", len(page.Items))
+	}
+}

@@ -1399,7 +1399,14 @@ export interface paths {
             };
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Report what an update check would do, without doing it
+         * @description marketplace/1 MKT-095. The same resolution `updatePack` performs — the trust channel and registry source read off the newest install record (MKT-094), through that source's channel pointer, under the same resolution-time rules — reported rather than applied, so a report and the check it describes cannot disagree about what would happen.
+         *     It is a GET on the same resource as the check for exactly that reason: the two answer one question, and only the verb differs. Nothing is applied or reverted, no install record is appended (MKT-094b), and the MKT-050 high-water mark is not advanced — this is not the check run and undone, which MKT-094b's own "a record's existence is evidence an install was applied" forbids.
+         *     `action` is what `updatePack` WOULD do: `unchanged`, `updated`, or `reverted`. The last is the case an operator most needs before anything moves — the running version has been revoked and a check would revert to a last-known-good version (MKT-093) — and it is named here without performing it. A pack installed with no trust channel pinned is not auto-tracked and is reported as such (MKT-094a), never resolved against a defaulted channel.
+         *     Artifact bytes are not fetched: the resolved entry and its resolution-time checks answer this on their own.
+         */
+        get: operations["getPackUpdateAvailability"];
         put?: never;
         /**
          * Run one update check against a pack's pinned trust channel
@@ -6096,6 +6103,36 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    getPackUpdateAvailability: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                /** @description The publisher half of a pack's `<publisher>/<name>` identity (manifest/1 MAN-001). It is its own path segment rather than half of one percent-encoded value, so a pack id is addressable without the client having to escape the slash inside it. */
+                publisher: components["parameters"]["PackPublisherParam"];
+                /** @description The name half of a pack's `<publisher>/<name>` identity (manifest/1 MAN-001). */
+                name: components["parameters"]["PackNameParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What an update check would do. Shape stub, matching the rest of this surface — `action` is `unchanged`, `updated`, or `reverted`, with `from_version`/`to_version`. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["UnprocessableContent"];
         };
     };
     updatePack: {

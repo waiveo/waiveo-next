@@ -109,6 +109,7 @@ func (srv *server) mountPacks(rt *router) {
 	rt.HandleFunc("GET "+base+"/{publisher}/{name}/pages/{path...}", srv.getPackPage)
 	rt.HandleFunc("GET "+base+"/{publisher}/{name}/messages/{locale}", srv.getPackMessages)
 	rt.HandleFunc("GET "+base+"/{publisher}/{name}/installs", srv.listPackInstalls)
+	rt.HandleFunc("GET "+base+"/{publisher}/{name}/update", srv.getPackUpdateAvailability)
 	rt.HandleFunc("POST "+base+"/{publisher}/{name}/update", srv.updatePack)
 
 	// The pack-data surface: CRUD over a declared collection's universal-envelope
