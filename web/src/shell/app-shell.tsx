@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { Button, ErrorBoundary, KitIcon, NavDrawer } from "@/components/kit";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
+import { CurrentUser } from "@/auth/current-user";
 import { SignOutButton } from "@/auth/sign-out-button";
 import { SecurityLink } from "@/auth/security-link";
 import { useMediaQuery } from "@/lib/use-media-query";
@@ -508,6 +509,7 @@ export function AppShell({ children, api }: { children?: ReactNode; api?: Waiveo
           </NavDrawer>
           <Brand className="wv-shell__mobile-brand" />
           <div className="ml-auto flex items-center gap-2">
+            <CurrentUser />
             <ThemeToggle />
             <SecurityLink />
             <SignOutButton />

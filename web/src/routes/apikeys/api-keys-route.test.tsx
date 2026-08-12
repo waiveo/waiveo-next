@@ -4,7 +4,10 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { MemoryRouter } from "react-router";
+import { vi } from "vitest";
 import { ThemeProvider } from "@/components/theme/theme-provider";
+import { SessionGate } from "@/auth/session-gate";
+import type { Role, SessionSummary, WaiveoApi } from "@/api";
 import ApiKeysRoute from "./api-keys-route";
 import { TRACE_ID } from "@/api/test-support";
 
@@ -36,6 +39,30 @@ function renderRoute() {
     <ThemeProvider>
       <MemoryRouter>
         <ApiKeysRoute />
+      </MemoryRouter>
+    </ThemeProvider>,
+  );
+}
+
+/** The page inside a real SessionGate, so the role gate is exercised rather
+ * than assumed absent. */
+function renderAs(role: Role) {
+  const session: SessionSummary = {
+    principal_id: "01J8Z3K4N5P6Q7R8S9T0V1W2P1",
+    kind: "user",
+    role,
+    aal: "standard",
+    session_id: "01J8Z3K4N5P6Q7R8S9T0V1W2S1",
+  };
+  const api = {
+    auth: { login: vi.fn(), logout: vi.fn(), session: vi.fn(async () => session), claim: vi.fn() },
+  } as unknown as WaiveoApi;
+  return render(
+    <ThemeProvider>
+      <MemoryRouter>
+        <SessionGate api={api}>
+          <ApiKeysRoute />
+        </SessionGate>
       </MemoryRouter>
     </ThemeProvider>,
   );
@@ -115,6 +142,28 @@ describe("API keys", () => {
 
     await userEvent.click(within(dialog).getByRole("button", { name: "Revoke" }));
     await waitFor(() => expect(revoked).toBe(KEY.id));
+  });
+
+  // SEC-003b needs admin to mint. The gate is a COURTESY — the server refuses
+  // regardless — and its value is that an operator is told before composing a
+  // label, rather than after pressing a button.
+  it("tells a viewer that minting needs admin, instead of letting them try", async () => {
+    server.use(http.get("*/api/v1/auth/api-keys", () => jsonBody({ items: [], cursor: null })));
+    renderAs("viewer");
+
+    expect(await screen.findByText(/needs the/i)).toHaveTextContent(/admin/);
+    expect(screen.getByRole("button", { name: /mint an api key/i })).toBeDisabled();
+  });
+
+  it("leaves the mint control usable for an admin", async () => {
+    server.use(http.get("*/api/v1/auth/api-keys", () => jsonBody({ items: [], cursor: null })));
+    renderAs("admin");
+
+    await screen.findByRole("heading", { name: /mint a key/i });
+    expect(screen.queryByText(/needs the/i)).not.toBeInTheDocument();
+    // Disabled only because the label is empty, which is the ordinary state.
+    await userEvent.type(screen.getByLabelText(/label/i), "ci-runner");
+    expect(screen.getByRole("button", { name: /mint an api key/i })).toBeEnabled();
   });
 
   it("reports a listing that could not be read, rather than an empty, healthy-looking page", async () => {

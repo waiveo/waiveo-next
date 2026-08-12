@@ -12,6 +12,8 @@ import {
   type ColumnDef,
 } from "@/components/kit";
 import { ApiError, createApi, type ApiKey, type WaiveoApi } from "@/api";
+import { useOptionalSession } from "@/auth/session-gate";
+import { can } from "@/auth/can";
 
 /**
  * API keys — the credentials that can drive this platform (security-model
@@ -57,6 +59,12 @@ export default function ApiKeysRoute({ api }: { api?: WaiveoApi }) {
    * not be able to take away the one showing of a secret. */
   const [revealed, setRevealed] = useState<{ label: string; key: string } | null>(null);
   const [confirming, setConfirming] = useState<ApiKey | null>(null);
+  // SEC-003b: minting needs admin at the workspace root. Gating the control
+  // here does not enforce that — the server does, on every request — it stops
+  // an operator composing a label and learning their authority from a 403.
+  // The mint path still handles its own refusal; both halves stay.
+  const session = useOptionalSession();
+  const mayMint = can(session?.session.role, "admin");
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -185,6 +193,15 @@ export default function ApiKeysRoute({ api }: { api?: WaiveoApi }) {
         <h2 id="mint-heading" className="text-lg font-semibold">
           Mint a key
         </h2>
+        {session && !mayMint ? (
+          // Said, not silently omitted. A missing control reads as a broken
+          // page; naming the authority it needs is the difference between "this
+          // console is missing something" and "this account cannot do that".
+          <p className="text-sm text-muted-foreground">
+            Minting an API key needs the <strong>admin</strong> role. You are signed in as{" "}
+            <strong>{session.session.role}</strong>, so this box will refuse it.
+          </p>
+        ) : null}
         <div className="flex flex-wrap items-end gap-3">
           <FormField label="Label" help="What this key is for, so the list below stays readable.">
             {(control) => (
@@ -201,7 +218,7 @@ export default function ApiKeysRoute({ api }: { api?: WaiveoApi }) {
           </FormField>
           <Button
             icon={Plus}
-            disabled={label.trim() === "" || minting}
+            disabled={label.trim() === "" || minting || (session !== null && !mayMint)}
             onClick={() => void mint()}
             aria-label="Mint an API key"
           >
