@@ -83,6 +83,47 @@ type SupervisorConfig struct {
 	// surface. Done() is closed after it returns.
 	OnPermanentRefusal func(*Refusal)
 
+	// OnDisconnected, when non-nil, runs on the supervisor goroutine the
+	// moment a live connection dies, BEFORE any redial: err is the
+	// connection's own Err() (which half of the transport noticed, and
+	// why) and connectedFor is how long it had been up.
+	//
+	// It exists because until HV-22 this loop was mute. A relay that lost
+	// its app peer said nothing, redialled silently, was refused silently,
+	// and repeated that for two and a half hours while its fleet went
+	// dark — and the only evidence anywhere was write errors from a
+	// different goroutine, aimed at a socket this loop had already
+	// abandoned. Every state change this loop makes now has a seam an
+	// owner can report from.
+	//
+	// The owner's FIRST obligation here is to stop using the dead client.
+	// The supervisor drops its own reference (Client() goes nil), but a
+	// binary that cached the connected client elsewhere holds a corpse
+	// until the next OnConnected replaces it, which never comes while
+	// redials keep failing.
+	//
+	// It does NOT run on Stop: an orderly shutdown is not a connection
+	// loss, and reporting one would train an operator to ignore the line
+	// that matters.
+	OnDisconnected func(err error, connectedFor time.Duration)
+
+	// OnConnectFailed, when non-nil, runs on the supervisor goroutine
+	// after every failed connection attempt that will be retried:
+	// consecutive counts this attempt and every failed one before it since
+	// the last success (1 on the first), and retryIn is the jittered delay
+	// before the next try.
+	//
+	// consecutive is passed rather than left for the owner to count
+	// because the owner's real problem is VOLUME, not absence: an attempt
+	// every 30s for an outage measured in hours is thousands of identical
+	// lines, and a log that repeats itself is a log nobody reads. The
+	// count is what lets an owner report the first failure in full and
+	// then thin out, while still naming how long this has been going on.
+	//
+	// A refusal the taxonomy marks permanent does NOT come through here —
+	// that ends supervision and goes to OnPermanentRefusal.
+	OnConnectFailed func(err error, consecutive int, retryIn time.Duration)
+
 	// InitialBackoff/MaxBackoff bound the exponential redial backoff
 	// (doubled per consecutive failed attempt, jittered to [0.5x, 1.5x) so
 	// a fleet of relays does not re-dial in lockstep after an app-peer
@@ -192,6 +233,11 @@ func (s *Supervisor) Done() <-chan struct{} { return s.done }
 func (s *Supervisor) run() {
 	defer close(s.done)
 	backoff := s.cfg.InitialBackoff
+	// Consecutive failed Connect attempts since the last success — the
+	// number OnConnectFailed hands the owner so it can thin a report that
+	// would otherwise repeat every backoff interval for the length of the
+	// outage (OnConnectFailed's doc).
+	consecutive := 0
 	for {
 		select {
 		case <-s.stop:
@@ -220,13 +266,19 @@ func (s *Supervisor) run() {
 				return
 			}
 			s.renewOnExpiredLeafHandshake(err)
-			if !s.sleep(jitter(backoff)) {
+			consecutive++
+			delay := jitter(backoff)
+			if s.cfg.OnConnectFailed != nil {
+				s.cfg.OnConnectFailed(err, consecutive, delay)
+			}
+			if !s.sleep(delay) {
 				return
 			}
 			backoff = min(backoff*2, s.cfg.MaxBackoff)
 			continue
 		}
 
+		consecutive = 0
 		connectedAt := time.Now()
 		s.mu.Lock()
 		s.client = client
@@ -264,6 +316,14 @@ func (s *Supervisor) run() {
 				s.maybeRenew()
 			case <-client.Done():
 				s.clearClient()
+				// Report the death BEFORE the loop starts redialling, and
+				// before anything sleeps: the owner's first job is to drop
+				// its own reference to this client, and every millisecond
+				// it holds one is a millisecond it can still write to a
+				// dead socket (OnDisconnected's doc).
+				if s.cfg.OnDisconnected != nil {
+					s.cfg.OnDisconnected(client.Err(), time.Since(connectedAt))
+				}
 				break connected
 			}
 		}
