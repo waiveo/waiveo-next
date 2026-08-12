@@ -109,6 +109,8 @@ export function packManifest(over: Record<string, unknown> = {}) {
             { name: "price", type: "number" },
           ],
         },
+        // The singleton record the fixture's settings-form page binds (MAN-056/064).
+        { name: "settings", singleton: true, fields: [{ name: "greeting", type: "string" }] },
       ],
     },
     ...over,

@@ -27,6 +27,15 @@
           { "name": "price", "type": "number" },
           { "name": "available", "type": "boolean" }
         ]
+      },
+      {
+        "name": "settings",
+        "singleton": true,
+        "fields": [
+          { "name": "board_name", "type": "string" },
+          { "name": "currency_symbol", "type": "string" },
+          { "name": "show_sold_out", "type": "boolean" }
+        ]
       }
     ]
   },

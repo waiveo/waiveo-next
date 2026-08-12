@@ -68,8 +68,10 @@ const menuItemsDoc = {
   newAction: { verb: "create", target: "menu_items", itemDefault: { name: "New item" } },
 };
 
-// A conformant settings-form page (UIS-030/031) — no manifest-declared collection
-// backs it (only list-detail binds one this wave), and it MUST wire a submit action.
+// A conformant settings-form page (UIS-030/031) whose `source` names NO declared
+// collection. MAN-064 refuses such a pack at install, so this describes a document
+// the console should never receive — it is kept as the console's own defence: if
+// one ever arrives, Save must report honestly rather than fabricate a success.
 const settingsFormDoc = {
   pageType: "settings-form",
   source: "prefs",
@@ -611,6 +613,102 @@ describe("Pack page — safety + spec-form regressions", () => {
     // The honest signal fires; the false-positive success toast never does.
     await waitFor(() => expect(errorSpy).toHaveBeenCalled());
     expect(successSpy).not.toHaveBeenCalled();
+  });
+
+  // ── The settings-form save (MAN-056/064) ──────────────────────────────────
+  //
+  // Observed on a running box before this landed: the example pack's settings
+  // page rendered, an operator typed into it, pressed Save, and got "Saving
+  // isn't available for this page yet." A settings-form binds ONE record; the
+  // pack ships no rows, so on a first visit that record does not exist and the
+  // save has to CREATE it. These two cases are that whole lifecycle.
+
+  // A settings-form doc whose source names the fixture manifest's singleton.
+  const boundSettingsDoc = { ...settingsFormDoc, source: "settings" };
+
+  function settingsHandlers(extra: Parameters<typeof server.use>) {
+    return [
+      http.get(`${B}`, () => ok(pack(), { revision: 1 })),
+      http.get("*/api/v1/scope-nodes", () =>
+        dataPage([{ id: ULID_ROOT, kind: "org", parent_id: null, name: "Org", revision: 1 }]),
+      ),
+      http.get(`${B}/pages/settings`, () => jsonBody(boundSettingsDoc)),
+      http.get(`${B}/messages/en`, () => jsonBody(PACK_EN_CATALOG)),
+      ...extra,
+    ];
+  }
+
+  it("a settings-form's FIRST save creates its record, carrying the resolved scope_node", async () => {
+    expect(validatePage(boundSettingsDoc).ok).toBe(true);
+    const successSpy = vi.spyOn(sonnerToast, "success");
+    const posted: Array<Record<string, unknown>> = [];
+    const state: { rows: ReturnType<typeof packRow>[] } = { rows: [] };
+    server.use(
+      ...settingsHandlers([
+        http.get(`${B}/data/settings`, () => dataPage(state.rows)),
+        http.post(`${B}/data/settings`, async ({ request }) => {
+          const body = (await request.json()) as Record<string, unknown>;
+          posted.push(body);
+          state.rows = [packRow({ entity_id: ULID_A, revision: 1, greeting: body.greeting })];
+          return HttpResponse.json(state.rows[0], { status: 201, headers: { "Trace-Id": TRACE_ID } });
+        }),
+      ]),
+    );
+
+    const user = userEvent.setup();
+    renderPack("settings");
+    await user.type(await screen.findByLabelText("Item name"), "Hello");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(posted).toHaveLength(1));
+    // The typed value reached the server, under a scope the row can attach to
+    // (MAN-051) — a create missing either is the shape that 422s in the field.
+    expect(posted[0].greeting).toBe("Hello");
+    expect(posted[0].scope_node).toBe(ULID_ROOT);
+    await waitFor(() => expect(successSpy).toHaveBeenCalled());
+  });
+
+  it("a settings-form's LATER save updates the existing record under its If-Match, never creating a second", async () => {
+    const patches: Array<{ ifMatch: string | null; body: Record<string, unknown> }> = [];
+    let creates = 0;
+    server.use(
+      ...settingsHandlers([
+        // The record already exists — the state a box is in on every visit after
+        // the first.
+        http.get(`${B}/data/settings`, () =>
+          dataPage([packRow({ entity_id: ULID_A, revision: 4, greeting: "Hello" })]),
+        ),
+        http.post(`${B}/data/settings`, () => {
+          creates++;
+          return HttpResponse.json({}, { status: 201, headers: { "Trace-Id": TRACE_ID } });
+        }),
+        http.patch(`${B}/data/settings/${ULID_A}`, async ({ request }) => {
+          patches.push({
+            ifMatch: request.headers.get("If-Match"),
+            body: (await request.json()) as Record<string, unknown>,
+          });
+          return ok(packRow({ entity_id: ULID_A, revision: 5, greeting: "Bonjour" }), { revision: 5 });
+        }),
+      ]),
+    );
+
+    const user = userEvent.setup();
+    renderPack("settings");
+    const field = await screen.findByLabelText("Item name");
+    // The existing value is what the form opens on — a settings-form that always
+    // rendered blank would silently discard the saved record on the next save.
+    await waitFor(() => expect(field).toHaveValue("Hello"));
+    await user.clear(field);
+    await user.type(field, "Bonjour");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0].body.greeting).toBe("Bonjour");
+    // Under the row's revision, not unconditionally (API-022).
+    expect(patches[0].ifMatch).toBe('"4"');
+    // And it did NOT take the create path — that would 409 against the singleton
+    // bound on a real server (MAN-056), losing the operator's edit.
+    expect(creates).toBe(0);
   });
 
   // Regression: a spec-legal PAGINATED list.source (UIS-023/024) rendered zero rows

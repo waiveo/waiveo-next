@@ -4634,6 +4634,7 @@ components:
         - SCOPE_NODE_ORG_UNDELETABLE
         - MARKETPLACE_REF_INVALID
         - REQUIRED_PACK_FLOOR
+        - SINGLETON_COLLECTION_OCCUPIED
 
     LoginRequest:
       type: object

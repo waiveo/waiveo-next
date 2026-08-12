@@ -15,7 +15,7 @@ import {
   type ScopeNode,
   type WaiveoApi,
 } from "@/api";
-import { loadPackCatalog, primaryCollection, resolveTitle } from "./catalog";
+import { isSettingsForm, loadPackCatalog, primaryCollection, resolveTitle } from "./catalog";
 
 /**
  * The scope node a create attaches a new pack row under (MAN-051: a pack row
@@ -222,6 +222,9 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
   }, [load]);
 
   const collection = loaded?.collection ?? null;
+  // Derived from the loaded document rather than stored beside it: the page type
+  // IS the document's, and a second copy could disagree with it after a reload.
+  const settingsForm = isSettingsForm(loaded?.doc);
 
   const reload = useCallback(async () => {
     setFieldErrors({});
@@ -292,14 +295,42 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
       // sent; the server ignores host-owned envelope fields (MAN-051).
       submit: async (_target, resource) => {
         if (!collection) {
-          // No manifest-declared collection backs this page — every page type but
-          // list-detail this wave (a settings-form persists to a target that lands
-          // with a later wave). There is nowhere to write, so report honestly
-          // rather than fabricating a green "Saved" for a save that never happened.
+          // No manifest-declared collection backs this page — a dashboard or a
+          // wizard, neither of which has a persistence target yet. There is
+          // nowhere to write, so report honestly rather than fabricating a green
+          // "Saved" for a save that never happened.
           toast.error("Saving isn't available for this page yet.");
           return;
         }
         const meta = rowRef(resource);
+        // A settings-form edits ONE record (MAN-064), and on a pack's first visit
+        // that record does not exist yet: nothing seeds it at install, because a
+        // pack ships no rows. So the first save CREATES it and every save after
+        // updates it. Without this the page would render, accept input, and have
+        // nowhere to put it — which is the defect this whole path closes.
+        if (!meta && settingsForm) {
+          if (!defaultScopeNode) {
+            toast.error("This workspace has no scope to attach records to yet.");
+            return;
+          }
+          setFieldErrors({});
+          try {
+            await client
+              .packData(packId, collection)
+              .create({ ...(resource as PackRowWrite), scope_node: defaultScopeNode });
+            toast.success("Saved changes");
+            await reload();
+          } catch (err) {
+            const fields = fieldErrorsOf(err);
+            if (fields) {
+              setFieldErrors(fields);
+              toast.error("Couldn't save — please fix the highlighted fields.");
+            } else {
+              reportProblem("Couldn't save", err);
+            }
+          }
+          return;
+        }
         if (!meta) return;
         setFieldErrors({});
         setConflictReview(false);
@@ -355,10 +386,14 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
         return { items: page.items, cursor: page.cursor };
       },
     }),
-    [client, packId, collection, defaultScopeNode, reload],
+    [client, packId, collection, settingsForm, defaultScopeNode, reload],
   );
 
-  const data = collection ? { [collection]: rows } : {};
+  // A settings-form's root Binding resolves to the single RECORD it edits
+  // (UIS-005), not to a list — so it is handed the one row as an object, and an
+  // empty object before that row exists so the form renders blank and editable
+  // rather than not at all. Every other page type binds the rows array.
+  const data = collection ? { [collection]: settingsForm ? (rows[0] ?? {}) : rows } : {};
 
   return (
     <div className="min-h-screen bg-background text-foreground">

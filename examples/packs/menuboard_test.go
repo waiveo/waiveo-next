@@ -75,11 +75,23 @@ func TestMenuBoardManifestPassesTheRealEngine(t *testing.T) {
 		t.Fatalf("the example manifest was refused by the engine: %+v", errs)
 	}
 
-	// Two pages + one lifecycle-participating collection, as the smoke line claims.
+	// Two pages + two collections: the lifecycle-participating menu_items list,
+	// and the singleton `settings` record the settings-form page binds. The
+	// second is not decoration — MAN-064 refuses a settings-form whose source
+	// names no declared singleton, so a pack with this page cannot install
+	// without it.
 	if len(m.UI.Pages) != 2 {
 		t.Fatalf("manifest declares %d pages, want 2", len(m.UI.Pages))
 	}
-	if len(m.DataModel.Collections) != 1 || m.DataModel.Collections[0].Name != "menu_items" {
-		t.Fatalf("manifest collections = %+v, want [menu_items]", m.DataModel.Collections)
+	if len(m.DataModel.Collections) != 2 ||
+		m.DataModel.Collections[0].Name != "menu_items" ||
+		m.DataModel.Collections[1].Name != "settings" {
+		t.Fatalf("manifest collections = %+v, want [menu_items settings]", m.DataModel.Collections)
+	}
+	if m.DataModel.Collections[0].Singleton {
+		t.Fatalf("menu_items must not be a singleton — it is the list the list-detail page pages through")
+	}
+	if !m.DataModel.Collections[1].Singleton {
+		t.Fatalf("settings must declare singleton: true (MAN-056), or the settings-form page cannot save")
 	}
 }

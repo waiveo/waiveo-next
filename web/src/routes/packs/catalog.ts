@@ -100,14 +100,30 @@ function sourceRootKey(source: unknown): string | null {
   return null;
 }
 
-/** The pack collection a list-detail page's rows come from: the root key of its
- * `list.source`, but only when it names a manifest-declared collection (so a
- * source that is not a collection loads nothing rather than 404ing). Only
- * list-detail binds a collection this wave; other page types return null. */
+/** The pack collection a page's rows come from, but only when it names a
+ * manifest-declared collection (so a source that is not a collection loads
+ * nothing rather than 404ing).
+ *
+ * Two page types bind one: a `list-detail` through `list.source` (the rows it
+ * pages through) and a `settings-form` through its top-level `source` (the
+ * single record it edits, UIS-005/UIS-030). The install gate guarantees a
+ * settings-form's source names a declared SINGLETON collection (MAN-064), so
+ * the collection this returns for one always holds at most one row.
+ *
+ * `dashboard` and `wizard` still return null — neither binds a page-wide
+ * collection, and neither has a persistence path yet. */
 export function primaryCollection(doc: unknown, collectionNames: Set<string>): string | null {
   if (!doc || typeof doc !== "object") return null;
-  const d = doc as { pageType?: unknown; list?: { source?: unknown } };
-  if (d.pageType !== "list-detail") return null;
-  const key = sourceRootKey(d.list?.source);
+  const d = doc as { pageType?: unknown; list?: { source?: unknown }; source?: unknown };
+  const source = d.pageType === "list-detail" ? d.list?.source : d.pageType === "settings-form" ? d.source : null;
+  if (source == null) return null;
+  const key = sourceRootKey(source);
   return key && collectionNames.has(key) ? key : null;
+}
+
+/** Whether a page document is a settings-form — the page type that binds ONE
+ * record rather than a list, so the route feeds the renderer a single object
+ * and its save creates the record when it does not exist yet. */
+export function isSettingsForm(doc: unknown): boolean {
+  return !!doc && typeof doc === "object" && (doc as { pageType?: unknown }).pageType === "settings-form";
 }

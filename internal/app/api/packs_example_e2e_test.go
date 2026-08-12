@@ -64,8 +64,8 @@ func TestExamplePackInstallsAndServesDataEndToEnd(t *testing.T) {
 	if len(res.Pages) != 2 {
 		t.Fatalf("install summary pages = %v, want 2", res.Pages)
 	}
-	if len(res.Collections) != 1 || res.Collections[0] != "menu_items" {
-		t.Fatalf("install summary collections = %v, want [menu_items]", res.Collections)
+	if len(res.Collections) != 2 || res.Collections[0] != "menu_items" || res.Collections[1] != "settings" {
+		t.Fatalf("install summary collections = %v, want [menu_items settings]", res.Collections)
 	}
 	if len(res.Locales) != 1 || res.Locales[0] != "en" {
 		t.Fatalf("install summary locales = %v, want [en]", res.Locales)

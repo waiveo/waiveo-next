@@ -139,7 +139,9 @@ describe("packHealth", () => {
       "/p/acme/menu-board/menu-items",
       "/p/acme/menu-board/settings",
     ]);
-    expect(health.collections).toEqual(["menu_items"]);
+    // Both declared collections: the menu_items list and the singleton `settings`
+    // record the fixture's settings-form page binds (MAN-064).
+    expect(health.collections).toEqual(["menu_items", "settings"]);
     expect(health.unreachablePages).toEqual([]);
   });
 

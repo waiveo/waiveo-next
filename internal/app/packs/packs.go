@@ -196,6 +196,48 @@ func hostRegistries(bundleFiles map[string]bool, installedDataModelVersion int) 
 // render.
 var PageTypes = []string{"list-detail", "settings-form", "dashboard", "wizard"}
 
+// settingsFormPageType is the one member of PageTypes whose page document is
+// cross-checked against the manifest's data model (MAN-064).
+const settingsFormPageType = "settings-form"
+
+// checkSettingsSource enforces MAN-064: a settings-form page's `source`
+// (ui-schema/1 UIS-030) MUST name a collection this manifest declares with
+// `singleton: true` (MAN-056).
+//
+// Only `source` is read out of the document — this is not a page-document
+// validator (the renderer owns that, UIS-002) and must not become one. It
+// answers exactly one question the renderer cannot: whether the record this
+// page claims to edit is one the pack actually declared.
+//
+// A `source` that is absent or not a string is left alone rather than refused
+// here. That is a page-document grammar violation UIS-030 already owns, and
+// duplicating it would mean two components disagreeing about which code a
+// malformed page earns.
+func checkSettingsSource(m *manifest.PackManifest, doc []byte, pagePath string) error {
+	var page struct {
+		Source *string `json:"source"`
+	}
+	if err := json.Unmarshal(doc, &page); err != nil || page.Source == nil {
+		return nil
+	}
+	source := *page.Source
+	for _, c := range m.DataModel.Collections {
+		if c.Name != source {
+			continue
+		}
+		if c.Singleton {
+			return nil
+		}
+		return artifactErr("SETTINGS_SOURCE_NOT_SINGLETON",
+			"settings-form page %q binds source %q, which this manifest declares as an ordinary collection; "+
+				"a settings-form edits one record, so its collection must declare singleton: true (MAN-064)",
+			pagePath, source)
+	}
+	return artifactErr("SETTINGS_SOURCE_NOT_SINGLETON",
+		"settings-form page %q binds source %q, which this manifest declares no collection for (MAN-064)",
+		pagePath, source)
+}
+
 // Install validates a raw pack artifact and, only if it is clean, installs it —
 // atomically, gated by signature verification and then the real manifest
 // engine. It returns a Result on success, an *ArtifactError for an
@@ -422,6 +464,17 @@ func (in *Installer) collectBundleFiles(m *manifest.PackManifest, bundle *Bundle
 		if !json.Valid(doc) {
 			return nil, nil, nil, artifactErr("PACK_PAGE_DOC_INVALID",
 				"page document %q is not valid JSON", entry)
+		}
+		// MAN-064: a settings-form edits ONE record, and for a pack the host
+		// resolves that record from the manifest alone — no route author supplies
+		// it, as one does for a console page. So the page's `source` has to name a
+		// collection this manifest declares as a singleton, or the page renders
+		// and then cannot save. Refused here, at publish time, rather than
+		// discovered by an operator who filled the form in and pressed the button.
+		if p.PageType == settingsFormPageType {
+			if err := checkSettingsSource(m, doc, p.Path); err != nil {
+				return nil, nil, nil, err
+			}
 		}
 		files = append(files, store.PackFile{
 			Kind: store.PackFilePage,

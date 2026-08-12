@@ -491,6 +491,59 @@ type PackRow struct {
 // renders as a 400 EXTERNAL_ID_CONFLICT.
 type PackRowGuard func(existing []PackRow) error
 
+// SingletonOccupiedError is the store's refusal of a create into a collection
+// the owning pack declared `singleton: true` (MAN-056) which already holds its
+// one row. The api layer renders it 409 / SINGLETON_COLLECTION_OCCUPIED.
+//
+// It is a store error rather than a caller-supplied PackRowGuard — the shape
+// external_id uniqueness uses — because the bound is a property of the pack's
+// own manifest, not of the request. A guard only binds the caller that
+// remembers to pass it, and pack rows are writable through the pack-data API by
+// anything holding the capability; an invariant one writer enforces is one every
+// other writer can break.
+type SingletonOccupiedError struct {
+	PackID     string
+	Collection string
+}
+
+func (e *SingletonOccupiedError) Error() string {
+	return "collection " + e.Collection + " of pack " + e.PackID +
+		" is a singleton and already holds its one row (MAN-056)"
+}
+
+// packManifestCollections decodes only the collection names and their singleton
+// annotation out of a stored manifest — the same narrow-decode discipline
+// readPackMatchPatterns uses, and for the same reason: the manifest was
+// validated at install (internal/manifest.Validate is the gate), so a read on
+// the write path re-reads the one field it needs rather than the whole document.
+type packManifestCollections struct {
+	DataModel struct {
+		Collections []struct {
+			Name      string `json:"name"`
+			Singleton bool   `json:"singleton"`
+		} `json:"collections"`
+	} `json:"dataModel"`
+}
+
+// collectionIsSingleton reports whether pack's manifest declares collection with
+// `singleton: true` (MAN-056). A manifest that does not decode, or that declares
+// no such collection, is NOT a singleton: this bound only ever REFUSES a write,
+// so an unreadable manifest must fail open here and let the ordinary
+// declared-field validation upstream decide. Failing closed would turn a
+// malformed manifest into a collection nothing can ever write to.
+func collectionIsSingleton(rawManifest json.RawMessage, collection string) bool {
+	var m packManifestCollections
+	if err := json.Unmarshal(rawManifest, &m); err != nil {
+		return false
+	}
+	for _, c := range m.DataModel.Collections {
+		if c.Name == collection {
+			return c.Singleton
+		}
+	}
+	return false
+}
+
 // CreatePackRow inserts a new row into a pack's collection, assigning the
 // host-owned entity_id (a fresh ULID, immutable per MAN-051), revision 1, and the
 // created/updated timestamps, then bumping the store generation once — all in one
@@ -509,7 +562,8 @@ func (s *Store) CreatePackRow(ctx context.Context, packID, collection string, in
 		// (an orphan that survives the "atomic" uninstall and would resurface if
 		// the same pack id were later reinstalled fresh). This mirrors the
 		// InstallGuard TOCTOU closure MAN-053 relies on.
-		if _, found, err := getPack(ctx, tx, packID); err != nil {
+		pack, found, err := getPack(ctx, tx, packID)
+		if err != nil {
 			return err
 		} else if !found {
 			return ErrNotFound
@@ -517,6 +571,13 @@ func (s *Store) CreatePackRow(ctx context.Context, packID, collection string, in
 		existing, err := readPackRows(ctx, tx, packID, collection)
 		if err != nil {
 			return err
+		}
+		// MAN-056: a singleton collection holds at most one row. Checked here,
+		// against rows read under the SAME write lock this insert commits under,
+		// so two concurrent creates cannot both observe an empty collection and
+		// both land — the TOCTOU closure the external_id guard relies on.
+		if len(existing) > 0 && collectionIsSingleton(pack.Manifest, collection) {
+			return &SingletonOccupiedError{PackID: packID, Collection: collection}
 		}
 		for _, g := range guards {
 			if err := g(existing); err != nil {

@@ -554,6 +554,17 @@ func (srv *server) writePackRowStoreError(w http.ResponseWriter, r *http.Request
 		srv.packProblem(w, r, xerr.Status, xerr.Code, xerr.Title, xerr.Detail)
 		return
 	}
+	// MAN-056: a create into an occupied singleton collection. 409 rather than
+	// 422 — the body is well-formed and would be accepted against an empty
+	// collection, so this is a conflict with existing state, not a validation
+	// failure the caller can fix by editing fields. The Detail names the remedy
+	// because there always is one: the row the caller wants already exists.
+	var serr *store.SingletonOccupiedError
+	if errors.As(err, &serr) {
+		srv.packProblem(w, r, http.StatusConflict, "SINGLETON_COLLECTION_OCCUPIED", "Conflict",
+			"This collection holds a single record and already has one. Update the existing record instead of creating another.")
+		return
+	}
 	// A store-side data-model refusal — a pack row placed at a scope node that
 	// does not exist (DAT-006) is the one that reaches here today. It renders as
 	// the SAME 422 VALIDATION_FAILED with an API-013 `errors[]` extension a

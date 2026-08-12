@@ -30,6 +30,12 @@ func dataPackManifest() map[string]any {
 		map[string]any{"name": "articles", "fields": []any{
 			map[string]any{"name": "title", "type": "string", "role": "title", "lifecycle": "draft-publish"},
 		}},
+		// The singleton record the base manifest's settings-form page binds
+		// (MAN-064), which also gives these tests a collection to exercise the
+		// MAN-056 one-row bound against over HTTP.
+		map[string]any{"name": "settings", "singleton": true, "fields": []any{
+			map[string]any{"name": "board_name", "type": "string"},
+		}},
 	}}
 	return m
 }
@@ -405,5 +411,67 @@ func TestPackRowLifecycleNotAllowed422(t *testing.T) {
 	_ = json.Unmarshal(raw, &article)
 	if article["lifecycle_state"] != "draft" {
 		t.Fatalf("article lifecycle_state = %v, want draft", article["lifecycle_state"])
+	}
+}
+
+// ── MAN-056: a singleton collection holds exactly one row ───────────────────
+
+const settingsRowsPath = "/api/v1/packs/acme/menu-board/data/settings"
+
+// TestSingletonCollectionAcceptsOneRowThenRefusesTheNext: the first create into
+// a collection declared `singleton: true` lands; the second is refused 409 with
+// SINGLETON_COLLECTION_OCCUPIED rather than quietly becoming a second record.
+//
+// Over HTTP rather than against the store directly, because the bound has to
+// hold for EVERY writer — the whole reason it lives in the store instead of in
+// the console that happens to edit a settings-form. This is the path any pack,
+// script, or integration takes.
+func TestSingletonCollectionAcceptsOneRowThenRefusesTheNext(t *testing.T) {
+	e := newEnv(t)
+	e.installDataPack(t)
+
+	first, body := e.do(t, http.MethodPost, settingsRowsPath,
+		mustJSON(t, map[string]any{"scope_node": rowScopeNodeA, "board_name": "The Corner Cafe"}), nil)
+	if first.StatusCode != http.StatusCreated {
+		t.Fatalf("first create status = %d, want 201 (%s)", first.StatusCode, body)
+	}
+
+	second, raw := e.do(t, http.MethodPost, settingsRowsPath,
+		mustJSON(t, map[string]any{"scope_node": rowScopeNodeA, "board_name": "Second Board"}), nil)
+	if second.StatusCode != http.StatusConflict {
+		t.Fatalf("second create status = %d, want 409 (%s)", second.StatusCode, raw)
+	}
+	var problem map[string]any
+	_ = json.Unmarshal(raw, &problem)
+	if problem["code"] != "SINGLETON_COLLECTION_OCCUPIED" {
+		t.Fatalf("second create code = %v, want SINGLETON_COLLECTION_OCCUPIED (%s)", problem["code"], raw)
+	}
+
+	// And the refusal did not disturb the row that was already there: a bound
+	// that rejected the write but left a partial one behind would be worse than
+	// no bound at all.
+	list, listRaw := e.do(t, http.MethodGet, settingsRowsPath, nil, nil)
+	if list.StatusCode != http.StatusOK {
+		t.Fatalf("list status = %d, want 200", list.StatusCode)
+	}
+	page := decodePage(t, listRaw)
+	if len(page.Items) != 1 || page.Items[0]["board_name"] != "The Corner Cafe" {
+		t.Fatalf("settings rows = %+v, want exactly the first row", page.Items)
+	}
+}
+
+// TestAnOrdinaryCollectionStillTakesManyRows: the bound is the singleton
+// annotation, not a new rule for every pack collection. Without this the
+// implementation could enforce one row everywhere and the test above would
+// still pass.
+func TestAnOrdinaryCollectionStillTakesManyRows(t *testing.T) {
+	e := newEnv(t)
+	e.installDataPack(t)
+
+	for i, name := range []string{"Burger", "Fries"} {
+		resp, raw := e.createRow(t, map[string]any{"scope_node": rowScopeNodeA, "name": name}, nil)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create %d (%s) status = %d, want 201 (%s)", i, name, resp.StatusCode, raw)
+		}
 	}
 }

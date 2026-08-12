@@ -300,34 +300,35 @@ func (e EntityCommandErrorCode) Valid() bool {
 
 // Defines values for ErrorCode.
 const (
-	ErrorCodeARCHIVEINUSE             ErrorCode = "ARCHIVE_IN_USE"
-	ErrorCodeCREDENTIALLOCKED         ErrorCode = "CREDENTIAL_LOCKED"
-	ErrorCodeCURSORINVALID            ErrorCode = "CURSOR_INVALID"
-	ErrorCodeEXTERNALIDCONFLICT       ErrorCode = "EXTERNAL_ID_CONFLICT"
-	ErrorCodeFORBIDDEN                ErrorCode = "FORBIDDEN"
-	ErrorCodeGRANTALREADYREDEEMED     ErrorCode = "GRANT_ALREADY_REDEEMED"
-	ErrorCodeGRANTEXPIRED             ErrorCode = "GRANT_EXPIRED"
-	ErrorCodeGRANTPURPOSEMISMATCH     ErrorCode = "GRANT_PURPOSE_MISMATCH"
-	ErrorCodeIDEMPOTENCYKEYINPROGRESS ErrorCode = "IDEMPOTENCY_KEY_IN_PROGRESS"
-	ErrorCodeIDEMPOTENCYKEYREUSED     ErrorCode = "IDEMPOTENCY_KEY_REUSED"
-	ErrorCodeIDSERVERASSIGNED         ErrorCode = "ID_SERVER_ASSIGNED"
-	ErrorCodeIFMATCHREQUIRED          ErrorCode = "IF_MATCH_REQUIRED"
-	ErrorCodeINTERNAL                 ErrorCode = "INTERNAL"
-	ErrorCodeMARKETPLACEREFINVALID    ErrorCode = "MARKETPLACE_REF_INVALID"
-	ErrorCodeNOTFOUND                 ErrorCode = "NOT_FOUND"
-	ErrorCodeRATELIMITED              ErrorCode = "RATE_LIMITED"
-	ErrorCodeREQUIREDPACKFLOOR        ErrorCode = "REQUIRED_PACK_FLOOR"
-	ErrorCodeRESTARTBLOCKED           ErrorCode = "RESTART_BLOCKED"
-	ErrorCodeRESTARTINPROGRESS        ErrorCode = "RESTART_IN_PROGRESS"
-	ErrorCodeRESTARTUNSUPPORTED       ErrorCode = "RESTART_UNSUPPORTED"
-	ErrorCodeREVISIONCONFLICT         ErrorCode = "REVISION_CONFLICT"
-	ErrorCodeSCOPENODEINUSE           ErrorCode = "SCOPE_NODE_IN_USE"
-	ErrorCodeSCOPENODENOTEMPTY        ErrorCode = "SCOPE_NODE_NOT_EMPTY"
-	ErrorCodeSCOPENODEORGUNDELETABLE  ErrorCode = "SCOPE_NODE_ORG_UNDELETABLE"
-	ErrorCodeSELECTORINVALID          ErrorCode = "SELECTOR_INVALID"
-	ErrorCodeUNAUTHENTICATED          ErrorCode = "UNAUTHENTICATED"
-	ErrorCodeUNAVAILABLE              ErrorCode = "UNAVAILABLE"
-	ErrorCodeVALIDATIONFAILED         ErrorCode = "VALIDATION_FAILED"
+	ErrorCodeARCHIVEINUSE                ErrorCode = "ARCHIVE_IN_USE"
+	ErrorCodeCREDENTIALLOCKED            ErrorCode = "CREDENTIAL_LOCKED"
+	ErrorCodeCURSORINVALID               ErrorCode = "CURSOR_INVALID"
+	ErrorCodeEXTERNALIDCONFLICT          ErrorCode = "EXTERNAL_ID_CONFLICT"
+	ErrorCodeFORBIDDEN                   ErrorCode = "FORBIDDEN"
+	ErrorCodeGRANTALREADYREDEEMED        ErrorCode = "GRANT_ALREADY_REDEEMED"
+	ErrorCodeGRANTEXPIRED                ErrorCode = "GRANT_EXPIRED"
+	ErrorCodeGRANTPURPOSEMISMATCH        ErrorCode = "GRANT_PURPOSE_MISMATCH"
+	ErrorCodeIDEMPOTENCYKEYINPROGRESS    ErrorCode = "IDEMPOTENCY_KEY_IN_PROGRESS"
+	ErrorCodeIDEMPOTENCYKEYREUSED        ErrorCode = "IDEMPOTENCY_KEY_REUSED"
+	ErrorCodeIDSERVERASSIGNED            ErrorCode = "ID_SERVER_ASSIGNED"
+	ErrorCodeIFMATCHREQUIRED             ErrorCode = "IF_MATCH_REQUIRED"
+	ErrorCodeINTERNAL                    ErrorCode = "INTERNAL"
+	ErrorCodeMARKETPLACEREFINVALID       ErrorCode = "MARKETPLACE_REF_INVALID"
+	ErrorCodeNOTFOUND                    ErrorCode = "NOT_FOUND"
+	ErrorCodeRATELIMITED                 ErrorCode = "RATE_LIMITED"
+	ErrorCodeREQUIREDPACKFLOOR           ErrorCode = "REQUIRED_PACK_FLOOR"
+	ErrorCodeRESTARTBLOCKED              ErrorCode = "RESTART_BLOCKED"
+	ErrorCodeRESTARTINPROGRESS           ErrorCode = "RESTART_IN_PROGRESS"
+	ErrorCodeRESTARTUNSUPPORTED          ErrorCode = "RESTART_UNSUPPORTED"
+	ErrorCodeREVISIONCONFLICT            ErrorCode = "REVISION_CONFLICT"
+	ErrorCodeSCOPENODEINUSE              ErrorCode = "SCOPE_NODE_IN_USE"
+	ErrorCodeSCOPENODENOTEMPTY           ErrorCode = "SCOPE_NODE_NOT_EMPTY"
+	ErrorCodeSCOPENODEORGUNDELETABLE     ErrorCode = "SCOPE_NODE_ORG_UNDELETABLE"
+	ErrorCodeSELECTORINVALID             ErrorCode = "SELECTOR_INVALID"
+	ErrorCodeSINGLETONCOLLECTIONOCCUPIED ErrorCode = "SINGLETON_COLLECTION_OCCUPIED"
+	ErrorCodeUNAUTHENTICATED             ErrorCode = "UNAUTHENTICATED"
+	ErrorCodeUNAVAILABLE                 ErrorCode = "UNAVAILABLE"
+	ErrorCodeVALIDATIONFAILED            ErrorCode = "VALIDATION_FAILED"
 )
 
 // Valid indicates whether the value is a known member of the ErrorCode enum.
@@ -382,6 +383,8 @@ func (e ErrorCode) Valid() bool {
 	case ErrorCodeSCOPENODEORGUNDELETABLE:
 		return true
 	case ErrorCodeSELECTORINVALID:
+		return true
+	case ErrorCodeSINGLETONCOLLECTIONOCCUPIED:
 		return true
 	case ErrorCodeUNAUTHENTICATED:
 		return true

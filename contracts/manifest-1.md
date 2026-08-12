@@ -88,6 +88,8 @@ manifest/1 defines the declarative document every pack ships at its root: identi
 
 **[MAN-055]** The manifest MAY declare `connections` as an array of objects `{provider, authType, scopes}` naming external service connections the pack's logic resolves at runtime via the `connections` verb family (`ctx/1`); a `provider`/`authType` pair not registered with the host MUST fail validation at install time.
 
+**[MAN-056]** A collection declaration MAY carry the boolean annotation `singleton: true`, marking a collection that holds **at most one row** — the shape a `settings-form` page edits (MAN-064), where the pack's configuration is one record rather than a list of them. The host MUST refuse a create into a singleton collection that already holds a row with `SINGLETON_COLLECTION_OCCUPIED`; the single row is created by the first write and updated by every write after it. The bound is enforced by the host at write time rather than left to the page that happens to edit it, because a collection is also reachable through the pack-data API (`api/1`), and an invariant only the UI observed is one any other writer can break. A collection without the annotation is an ordinary unbounded collection.
+
 ### UI page declarations
 
 **[MAN-060]** The manifest MUST declare `ui.pages` as an array of page objects, each with `path` (string, unique within the pack, used to compose the pack's route), `pageType` (string, MUST be a member of `compat.renderer`), and `titleMsg` (a `msg:` reference).
@@ -97,6 +99,8 @@ manifest/1 defines the declarative document every pack ships at its root: identi
 **[MAN-062]** The manifest MAY declare `ui.slots` as an array of named slot points `{name, accepts}` (`accepts` an array of page-type strings) that this pack's own pages expose for other packs' `fragment: card` pages to bind into. A binding attempt of a page type not listed in `accepts` MUST fail at render-registration time.
 
 **[MAN-063]** The manifest MAY declare `ui.surfaces` as an array of surface-declaration objects, each `{name, entry}` — `name` a pack-unique identifier for the surface, `entry` the path of exactly one bundled frontend entry point the surface mounts from. A pack that ships a surface (`surface/1` SUR-001) MUST declare it here, and a mount resolves a declared surface to that single `entry`; a declaration whose `entry` names no file in the pack's bundle MUST fail manifest validation. A pack shipping no surface omits `ui.surfaces`.
+
+**[MAN-064]** A declared page whose `pageType` is `settings-form` MUST have a page document whose `source` (`ui-schema/1` UIS-030, the single record the page edits) names a collection this same manifest declares with `singleton: true` (MAN-056). A `source` naming no declared collection, or naming one that is not a singleton, MUST fail installation with `SETTINGS_SOURCE_NOT_SINGLETON`. A `settings-form` binds one record and the host resolves that record from the manifest alone — there is no route author to supply it, as there is for a console page — so a `source` the manifest does not account for is a page that renders and cannot save. That failure is invisible until an operator edits the form and presses the button, which is the worst moment to discover it; refusing the artifact moves it to publish time.
 
 ### Device contributions
 
@@ -294,6 +298,7 @@ manifest/1 has no live handshake of its own — negotiation happens at install t
 | `ACTION_NAME_DUPLICATE` | Two entries in `actions` share a `name`. | no |
 | `ACTION_IDEMPOTENCY_CLASS_INVALID` | An `actions[]` entry omits `idempotencyClass`, or its value is not `safe-to-retry`/`not-idempotent`. | no |
 | `DATAMODEL_VERSION_REGRESSION` | An update declares a `dataModel.version` lower than the currently installed version. | no |
+| `SINGLETON_COLLECTION_OCCUPIED` | A create targeted a collection declared `singleton: true` (MAN-056) that already holds its one row. The write is well-formed; the collection simply has no second slot. | no |
 
 ## Field-level error register
 
@@ -322,6 +327,7 @@ Problem's top-level `code` — that stays `VALIDATION_FAILED`.
 | `INVALID_LIFECYCLE_STATE` | A row's `lifecycle_state` is outside the closed set `draft`, `published`, `archived`. | no — use a declared state |
 | `LIFECYCLE_NOT_ALLOWED` | A row wrote a `lifecycle_state` other than `published` into a collection that does not declare `lifecycle: draft-publish` (MAN-052). The value is well-formed; the collection simply has no lifecycle for it to name. | no — declare the lifecycle, or write `published` |
 | `PARAMS_WITHOUT_TEMPLATE` | A row carries `params` with no `template_ref` (MAN-051) — parameters with nothing to parameterize. | no — supply a template_ref, or drop params |
+| `SETTINGS_SOURCE_NOT_SINGLETON` | A `settings-form` page's `source` names no declared collection, or names one that is not declared `singleton: true` (MAN-064) — a page that would render and then fail to save. | no — declare the collection as a singleton, or point the page at one |
 
 ## Conformance notes
 

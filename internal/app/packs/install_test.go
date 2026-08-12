@@ -76,7 +76,7 @@ func TestInstallValidPack(t *testing.T) {
 	if res.ID != "acme/menu-board" || res.Version != "1.0.0" || !res.Created {
 		t.Fatalf("result = %+v; want acme/menu-board 1.0.0 created", res)
 	}
-	if got, want := res.Collections, []string{"menu_items"}; !equalStrings(got, want) {
+	if got, want := res.Collections, []string{"menu_items", "settings"}; !equalStrings(got, want) {
 		t.Fatalf("collections = %v, want %v", got, want)
 	}
 	if got, want := res.Pages, []string{"menu-items", "settings"}; !equalStrings(got, want) {
@@ -257,6 +257,7 @@ func TestReinstallUpdatesInPlace(t *testing.T) {
 		map[string]any{"name": "menu_items", "fields": []any{
 			map[string]any{"name": "name", "type": "string", "role": "title"},
 		}},
+		settingsCollection(),
 	}}
 	res, err := in.Install(ctx, signedPackZip(t, signer, m))
 	if err != nil {
@@ -288,6 +289,7 @@ func TestReinstallLowerDataModelVersionRefused(t *testing.T) {
 		map[string]any{"name": "menu_items", "fields": []any{
 			map[string]any{"name": "name", "type": "string", "role": "title"},
 		}},
+		settingsCollection(),
 	}}
 	if _, err := in.Install(ctx, signedPackZip(t, signer, m)); err != nil {
 		t.Fatalf("install v3: %v", err)
@@ -327,6 +329,7 @@ func TestConcurrentInstallVersionRegressionRace(t *testing.T) {
 			map[string]any{"name": "menu_items", "fields": []any{
 				map[string]any{"name": "name", "type": "string", "role": "title"},
 			}},
+			settingsCollection(),
 		}}
 		hiZip := signedPackZip(t, signer, hi)
 		loZip := signedPackZip(t, signer, baseManifest()) // dataModel.version 1
@@ -643,5 +646,61 @@ func TestInstallRecordNamesTheKeyThatVerifiedNotJustItsLabel(t *testing.T) {
 	// what a publisher and an index speak in.
 	if rec.KeyID != signer.keyID {
 		t.Errorf("install record's key_id = %q, want %q", rec.KeyID, signer.keyID)
+	}
+}
+
+// ── MAN-064: a settings-form's source must be a declared singleton ──────────
+//
+// The defect this closes was observed on a running box: the example pack's
+// settings page rendered, an operator filled it in, pressed Save, and got
+// "Saving isn't available for this page yet." The page bound a `source` the
+// manifest declared no collection for, and nothing on the install path looked.
+// These tests hold the refusal at publish time, where it is cheap.
+
+// settingsSourcePack builds a signed artifact whose settings-form page binds
+// `source`, over a manifest whose collections are exactly `collections`.
+func settingsSourcePack(t *testing.T, s *testSigner, source string, collections []any) []byte {
+	t.Helper()
+	m := baseManifest()
+	m["dataModel"] = map[string]any{"version": 1, "collections": collections}
+	files := basePackFiles(t, m)
+	files["ui/settings.json"] = `{"pageType":"settings-form","source":"` + source + `",` +
+		`"sections":[{"fields":[{"type":"text","value":"x"}]}],` +
+		`"actions":[{"type":"button","on":{"press":{"verb":"submit"}}}]}`
+	return signedFilesZip(t, s, files, "acme/menu-board", "1.0.0")
+}
+
+// menuItemsOnly is the collection set every arm below shares: a plain,
+// non-singleton list.
+func menuItemsOnly() []any {
+	return []any{map[string]any{"name": "menu_items", "fields": []any{
+		map[string]any{"name": "name", "type": "string", "role": "title"},
+	}}}
+}
+
+func TestSettingsFormSourceNamingNoCollectionIsRefused(t *testing.T) {
+	st := openStore(t)
+	in, signer := newInstaller(t, st)
+	_, err := in.Install(context.Background(), settingsSourcePack(t, signer, "nowhere", menuItemsOnly()))
+	artifactCode(t, err, "SETTINGS_SOURCE_NOT_SINGLETON")
+}
+
+func TestSettingsFormSourceNamingAnOrdinaryCollectionIsRefused(t *testing.T) {
+	st := openStore(t)
+	in, signer := newInstaller(t, st)
+	// The source RESOLVES — it is simply not a singleton. This arm separates "you
+	// named nothing" from "you named a list", and it is the one a publisher is
+	// likeliest to hit: pointing a settings-form at the same collection its
+	// list-detail page pages through.
+	_, err := in.Install(context.Background(), settingsSourcePack(t, signer, "menu_items", menuItemsOnly()))
+	artifactCode(t, err, "SETTINGS_SOURCE_NOT_SINGLETON")
+}
+
+func TestSettingsFormSourceNamingASingletonInstalls(t *testing.T) {
+	st := openStore(t)
+	in, signer := newInstaller(t, st)
+	cols := append(menuItemsOnly(), settingsCollection())
+	if _, err := in.Install(context.Background(), settingsSourcePack(t, signer, "settings", cols)); err != nil {
+		t.Fatalf("a settings-form bound to a declared singleton must install: %v", err)
 	}
 }

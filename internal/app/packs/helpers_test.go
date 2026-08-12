@@ -84,8 +84,24 @@ const (
 )
 
 // baseManifest returns a fresh, fully-valid manifest map a test may mutate before
-// packing. It declares two pages (list-detail + settings-form) and one
-// menu_items collection — the same shape the example pack carries.
+// packing. It declares two pages (list-detail + settings-form) over two
+// collections — the menu_items list and the singleton `settings` record the
+// settings-form binds — the same shape the example pack carries.
+// settingsCollection is the singleton record settingsDoc binds. A settings-form's
+// source MUST name a declared singleton collection (MAN-064), so every fixture
+// that keeps the settings page has to declare this — including the tests that
+// replace dataModel wholesale to exercise a version rule. Shared rather than
+// re-spelled at each site so a fixture cannot drift into describing a pack that
+// could not install, where the refusal would read as a bug in whatever the test
+// was actually about.
+func settingsCollection() map[string]any {
+	return map[string]any{
+		"name":      "settings",
+		"singleton": true,
+		"fields":    []any{map[string]any{"name": "board_name", "type": "string"}},
+	}
+}
+
 func baseManifest() map[string]any {
 	return map[string]any{
 		"id":          "acme/menu-board",
@@ -110,6 +126,7 @@ func baseManifest() map[string]any {
 						map[string]any{"name": "price", "type": "number"},
 					},
 				},
+				settingsCollection(),
 			},
 		},
 		"retention": map[string]any{},

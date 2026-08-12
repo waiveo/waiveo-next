@@ -29,10 +29,12 @@ One row per requirement ID `contracts/manifest-1.md` defines. Format: `conforman
 | MAN-053 | `contracts/manifest-1.md#data-model-declaration` | - | TBD-wave1 |
 | MAN-054 | `contracts/manifest-1.md#data-model-declaration` | `MAN-051-valid-data-model`, `MAN-054-invalid-retention-both-bounds` | covered |
 | MAN-055 | `contracts/manifest-1.md#data-model-declaration` | - | TBD-wave1 |
+| MAN-056 | `contracts/manifest-1.md#data-model-declaration` | - | TBD-wave1 |
 | MAN-060 | `contracts/manifest-1.md#ui-page-declarations` | - | TBD-wave1 |
 | MAN-061 | `contracts/manifest-1.md#ui-page-declarations` | - | TBD-wave1 |
 | MAN-062 | `contracts/manifest-1.md#ui-page-declarations` | - | TBD-wave1 |
 | MAN-063 | `contracts/manifest-1.md#ui-page-declarations` | - | TBD-wave1 |
+| MAN-064 | `contracts/manifest-1.md#ui-page-declarations` | - | TBD-wave1 |
 | MAN-070 | `contracts/manifest-1.md#device-contributions` | `MAN-020-valid-full-featured` | covered |
 | MAN-071 | `contracts/manifest-1.md#device-contributions` | - | TBD-wave1 |
 | MAN-072 | `contracts/manifest-1.md#device-contributions` | `MAN-020-valid-full-featured`, `MAN-072-invalid-devices-without-compat-relay` | covered |

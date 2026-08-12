@@ -90,6 +90,12 @@ func packManifest() map[string]any {
 			map[string]any{"name": "menu_items", "fields": []any{
 				map[string]any{"name": "name", "type": "string", "role": "title", "searchable": true},
 			}},
+			// apiSettingsDoc binds source "settings", and MAN-064 refuses a
+			// settings-form whose source names no declared singleton — so this
+			// collection is what makes the base fixture installable at all.
+			map[string]any{"name": "settings", "singleton": true, "fields": []any{
+				map[string]any{"name": "board_name", "type": "string"},
+			}},
 		}},
 		"retention": map[string]any{},
 		"ui": map[string]any{"pages": []any{
@@ -171,8 +177,8 @@ func TestPackInstall201(t *testing.T) {
 		t.Fatalf("install body pages = %v; want 2", out["pages"])
 	}
 	cols, _ := out["collections"].([]any)
-	if len(cols) != 1 || cols[0] != "menu_items" {
-		t.Fatalf("install body collections = %v; want [menu_items]", out["collections"])
+	if len(cols) != 2 || cols[0] != "menu_items" || cols[1] != "settings" {
+		t.Fatalf("install body collections = %v; want [menu_items settings]", out["collections"])
 	}
 }
 
@@ -214,6 +220,11 @@ func TestPackReinstallVersionRegression422(t *testing.T) {
 	m := packManifest()
 	m["dataModel"] = map[string]any{"version": 5, "collections": []any{
 		map[string]any{"name": "menu_items", "fields": []any{map[string]any{"name": "name", "type": "string", "role": "title"}}},
+		// Kept alongside the version bump this test is about: the fixture still
+		// declares the settings-form page, which MAN-064 refuses without it.
+		map[string]any{"name": "settings", "singleton": true, "fields": []any{
+			map[string]any{"name": "board_name", "type": "string"},
+		}},
 	}}
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, m), nil)
 	if resp.StatusCode != http.StatusCreated {

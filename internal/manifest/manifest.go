@@ -89,6 +89,11 @@ type DataModel struct {
 type Collection struct {
 	Name   string  `json:"name"`
 	Fields []Field `json:"fields"`
+	// Singleton marks a collection that holds at most one row (MAN-056) — the
+	// shape a settings-form page edits. Written without omitempty nowhere on
+	// the wire: this rides the manifest the publisher authored, and a pack that
+	// omits it declares an ordinary unbounded collection.
+	Singleton bool `json:"singleton,omitempty"`
 }
 
 // Field is one declared collection field (MAN-051/052): its name and type, an
