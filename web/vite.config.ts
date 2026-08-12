@@ -9,7 +9,19 @@ import path from "node:path";
 // web-dev` the Vite dev server proxies those prefixes to it so the SPA talks to
 // the real backend; `secure: false` accepts the feeder's self-signed leaf (an
 // ECDSA P-256 cert real browsers can handshake — see the feeder's tls package).
-const FEEDER = "https://127.0.0.1:7420";
+// Overridable because the default is frequently the WRONG feeder and editing
+// this file to say so is a change one `git checkout` away from being lost — or,
+// worse, one `git add -A` away from shipping. A track working on the console did
+// exactly that: it needed its own feeder on :7431 because the one holding :7420
+// was claimed by an owner it had no credential for, so it edited this constant,
+// left a .bak beside it, and the edit sat uncommitted in a worktree until
+// somebody read the diff before merging.
+//
+// The situation is ordinary, not exotic — a stale stack squatting the port, a
+// second feeder for a fixture, an already-claimed box — so it gets a knob rather
+// than a workaround: `WAIVEO_DEV_FEEDER=https://127.0.0.1:7431 make web-dev`.
+// The default is unchanged, so nothing about the usual loop moves.
+const FEEDER = process.env.WAIVEO_DEV_FEEDER ?? "https://127.0.0.1:7420";
 
 // `changeOrigin` is deliberately FALSE, and the reason is a security requirement
 // rather than a preference. The session cookie is issued host-only —
