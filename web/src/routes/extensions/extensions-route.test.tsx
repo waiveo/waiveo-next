@@ -947,3 +947,41 @@ it("reports the refusal when a required pack cannot be disabled", async () => {
   await userEvent.click(within(card).getByRole("button", { name: /Disable acme\/menu-board/ }));
   expect(await within(card).findByText(/required pack on this deployment/i)).toBeInTheDocument();
 });
+
+// Rolling back to a version this box actually ran (MKT-060a(c)).
+//
+// MKT-050 refuses a channel pointer that moves backward, and its only exception
+// fires when the running version has been YANKED — which never happens to a
+// version that is merely broken for this deployment. An explicit version pin is
+// deliberately exempt, so this is the operator's way back, and until now it
+// existed only for someone willing to hand-type a marketplace reference.
+it("offers a way back to an earlier version, using that install's own channel and source", async () => {
+  let sent: Record<string, unknown> | null = null;
+  mockFeeder({
+    packs: [pack({ version: "2.0.0" })],
+    records: [
+      installRecord({ id: ULID_A, resolved_version: "1.0.0" }),
+      installRecord({ id: ULID_B, resolved_version: "2.0.0" }),
+    ],
+  });
+  server.use(
+    http.post("*/api/v1/packs", async ({ request }) => {
+      sent = (await request.json()) as Record<string, unknown>;
+      return jsonBody({ id: PACK_ID, version: "1.0.0", pages: [], collections: [], locales: [] });
+    }),
+  );
+  renderRoute();
+
+  const card = await packCard(PACK_ID);
+  await userEvent.click(within(card).getByRole("button", { name: /install history/i }));
+
+  // Offered on the EARLIER version, never on the one already running.
+  expect(within(card).getByRole("button", { name: /Go back to version 1\.0\.0/ })).toBeInTheDocument();
+  expect(within(card).queryByRole("button", { name: /Go back to version 2\.0\.0/ })).not.toBeInTheDocument();
+
+  await userEvent.click(within(card).getByRole("button", { name: /Go back to version 1\.0\.0/ }));
+  await waitFor(() => expect(sent).not.toBeNull());
+  // The EXACT version, pinned — not a channel-following resolve, which MKT-050
+  // would refuse for going backward.
+  expect(sent).toMatchObject({ pack_id: PACK_ID, version: "1.0.0" });
+});

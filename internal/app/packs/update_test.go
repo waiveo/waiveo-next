@@ -1053,3 +1053,58 @@ func TestUpdateAvailableOfAnUninstalledPackIsNotFound(t *testing.T) {
 		t.Fatalf("err = %v, want store.ErrNotFound", err)
 	}
 }
+
+// An explicit version pin is NOT subject to MKT-050's anti-rollback, and that
+// asymmetry is the only way off a bad version.
+//
+// MKT-050 refuses a CHANNEL POINTER that moves backward, and its sole exception
+// is a revert-to-known-good after the running version becomes non-resolvable.
+// A version that is merely BAD — slow, wrong, broken for this deployment — is
+// never yanked by its publisher, so that exception never fires for it, and an
+// operator following the channel has no way back.
+//
+// MKT-060a(c) is what saves them: it enumerates the checks a pinned reference
+// remains subject to (the yanked check, hold_hours, the per-publisher signature
+// check, MKT-009b's install-time bar) and deliberately OMITS MKT-050. MKT-093b
+// states the omission outright and names what it preserves — MKT-044's
+// archived-version reinstall.
+//
+// Nothing pinned that behaviour before this test. Someone "completing" MKT-050
+// by extending it to pinned installs would close the only rollback path this
+// platform has, and every other test would still pass.
+func TestAnExplicitVersionPinEscapesABadButUnyankedVersion(t *testing.T) {
+	st, in, signer, reg := updateFixture(t)
+	ctx := context.Background()
+
+	publishVersion(t, reg, signer, "1.0.0")
+	if _, err := in.InstallRef(ctx, packs.Ref{PackID: "acme/menu-board", TrustChannel: "community"}); err != nil {
+		t.Fatalf("install 1.0.0: %v", err)
+	}
+	publishVersion(t, reg, signer, "2.0.0")
+	if _, err := in.Update(ctx, "acme/menu-board"); err != nil {
+		t.Fatalf("update to 2.0.0: %v", err)
+	}
+
+	// 2.0.0 is bad but NOT yanked, so no revert-to-known-good is available.
+	// The operator pins the version they know worked.
+	if _, err := in.InstallRef(ctx, packs.Ref{
+		PackID: "acme/menu-board", TrustChannel: "community", Version: "1.0.0",
+	}); err != nil {
+		t.Fatalf("explicit downgrade to 1.0.0 was refused: %v\n"+
+			"This is the ONLY escape from a bad-but-unyanked version. If MKT-050 now covers pinned installs, that path is gone.", err)
+	}
+	p, found, err := st.GetPack(ctx, "acme/menu-board")
+	if err != nil || !found {
+		t.Fatalf("GetPack: found=%v err=%v", found, err)
+	}
+	if p.Version != "1.0.0" {
+		t.Fatalf("installed version = %s, want the pinned 1.0.0", p.Version)
+	}
+
+	// The high-water mark does NOT walk back with it: a later channel-pointer
+	// resolution must not be able to use this downgrade to re-offer 1.0.0 as an
+	// advance. The pin moved the install; it did not move the floor.
+	if mark, _, _ := st.PackChannelMark(ctx, "acme/menu-board", "community"); mark != "2.0.0" {
+		t.Errorf("channel mark = %q after an explicit downgrade, want it held at 2.0.0", mark)
+	}
+}

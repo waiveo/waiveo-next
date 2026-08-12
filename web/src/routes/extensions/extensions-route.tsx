@@ -185,7 +185,17 @@ function OutcomeBanner({ outcome }: { outcome: Outcome | undefined }) {
 /** The install history — the only answer this box has to "which key vouched for
  * the bytes that are running" (the signature envelope is dropped at install and
  * never persisted, MKT-009a/094a). */
-function HistoryPanel({ records, error }: { records: PackInstallRecord[]; error: string | null }) {
+function HistoryPanel({
+  records,
+  error,
+  onGoBack,
+}: {
+  records: PackInstallRecord[];
+  error: string | null;
+  /** Reinstall an earlier version this box actually ran. Absent for a record
+   * with no trust channel — a direct upload has no reference to resolve. */
+  onGoBack: (record: PackInstallRecord) => void;
+}) {
   if (error) {
     return (
       <p className="text-sm text-[color:var(--wv-err)]" role="alert">
@@ -211,6 +221,27 @@ function HistoryPanel({ records, error }: { records: PackInstallRecord[]; error:
               <StatusBadge status="off">Direct</StatusBadge>
             )}
             {rec.stale_source ? <StatusBadge status="warn">Stale source</StatusBadge> : null}
+            {/* The escape from a bad version, made reachable.
+                MKT-050 refuses a channel pointer that moves backward, and its
+                only exception fires when the running version has been YANKED —
+                which never happens to a version that is merely broken for this
+                deployment. An explicit version pin is deliberately exempt
+                (MKT-060a(c)), so this is the operator's way back, and until now
+                it existed only for someone willing to hand-type a reference.
+                Offered on versions this box ITSELF ran, which is the set worth
+                trusting: each one is a version that installed and verified
+                here. A direct upload has no reference to resolve, so it gets no
+                button rather than a broken one. */}
+            {i > 0 && rec.trust_channel ? (
+              <Button
+                variant="ghost"
+                icon={History}
+                onClick={() => onGoBack(rec)}
+                aria-label={`Go back to version ${rec.resolved_version}`}
+              >
+                Go back to this version
+              </Button>
+            ) : null}
           </div>
           <p className="text-xs text-muted-foreground">
             {new Date(rec.installed_at).toLocaleString()} · source{" "}
@@ -480,6 +511,41 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
         });
         await refresh();
         // The rail lists only enabled packs, so it has to re-resolve.
+        notifyPacksChanged();
+      } catch (err: unknown) {
+        if (alive.current) setOutcome(id, { kind: "refused", refusal: describeRefusal(err) });
+      }
+    },
+    [client, refresh, setOutcome],
+  );
+
+  /** Reinstall an earlier version this box itself ran (MKT-060a(c)).
+   *
+   * The channel and source come off the RECORD, not from the current pin: the
+   * question is "put back the thing that worked", and the thing that worked was
+   * resolved through the channel and source recorded at the time. */
+  const goBackToVersion = useCallback(
+    async (id: string, rec: PackInstallRecord) => {
+      setOutcome(id, { kind: "busy", message: `Resolving ${rec.resolved_version}…` });
+      try {
+        const installed = await collectPages<Pack>((cursor) => client.packs.list({ cursor }));
+        const channel = TRUST_CHANNELS.find((c) => c === rec.trust_channel);
+        if (!channel) {
+          setOutcome(id, {
+            kind: "ok",
+            message: `That install was recorded on trust channel "${rec.trust_channel}", which this console does not implement.`,
+          });
+          return;
+        }
+        const result = await client.packs.installRef({
+          pack_id: id,
+          trust_channel: channel,
+          source: rec.source,
+          version: rec.resolved_version,
+        });
+        if (!alive.current) return;
+        setOutcome(id, { kind: "ok", message: describeInstall(result.id, result.version, installed) });
+        await refresh();
         notifyPacksChanged();
       } catch (err: unknown) {
         if (alive.current) setOutcome(id, { kind: "refused", refusal: describeRefusal(err) });
@@ -1128,7 +1194,11 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
                           bytes. The signature envelope itself is discarded at install, so this is
                           the only record of it.
                         </p>
-                        <HistoryPanel records={card.records} error={card.recordsError} />
+                        <HistoryPanel
+                          records={card.records}
+                          error={card.recordsError}
+                          onGoBack={(rec) => void goBackToVersion(id, rec)}
+                        />
                       </div>
                     ) : null}
                   </li>
