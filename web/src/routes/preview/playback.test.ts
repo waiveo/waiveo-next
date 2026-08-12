@@ -411,6 +411,11 @@ describe("the interactive floor is the SERVE GATE's, not a preview check", () =>
       default_duration_ms: null,
     });
     expect(program.slides).toEqual([]);
-    expect(program.skipped[0].reason).toMatch(/at least 48/);
+    // The nav arm phrases the floor differently from the pressable-layer arm
+    // above, and deliberately so: it can name WHICH item is too small, report
+    // the size it measured, and say what to do about it. Assert that content
+    // rather than a phrase borrowed from the other arm's sentence.
+    expect(program.skipped[0].reason).toMatch(/Menu item 1 is 37\u00d7200/);
+    expect(program.skipped[0].reason).toMatch(/48/);
   });
 });
