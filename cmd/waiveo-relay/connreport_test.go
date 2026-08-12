@@ -211,6 +211,12 @@ func TestPinMismatchIsReportedOnceAndUnconditionally(t *testing.T) {
 	if n := strings.Count(joined, "Re-dialling will not fix this"); n != 1 {
 		t.Fatalf("the REL-137 remedy block appeared %d time(s) across three attempts, want exactly 1", n)
 	}
+	// "REFUSED" is load-bearing, not decoration: it is the only
+	// platformlog errorMarker anywhere in this block, so without it the one
+	// line an operator must act on classifies as info.
+	if !strings.Contains(joined, "REFUSED") {
+		t.Error("the REL-137 line does not say the connection was REFUSED — no error-level marker appears anywhere in the block")
+	}
 	for _, want := range []string{"re-enroll this relay", "WAIVEO_FEEDER_URL", "DIFFERENT app peer"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("the REL-137 remedy does not mention %q — both real causes have to be named, and a second process holding the same address is the one that actually happened", want)

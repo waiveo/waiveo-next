@@ -268,7 +268,15 @@ func (r *connReporter) connectFailed(err error, consecutive int, retryIn time.Du
 	if tellPin {
 		// Ahead of the thinning check, and unconditional: this is the one
 		// cause where the attempt count is beside the point.
-		r.logf("waiveo-relay: the app peer at this address is NOT the one this relay enrolled with — its TLS leaf key does not match the enrollment-anchored pin (REL-137).\n"+
+		// Opens with "REFUSED" deliberately. Beyond being the accurate word
+		// for a handshake this relay declined, it is one of
+		// internal/app/platformlog's errorMarkers — so the day a relay's log
+		// reaches the console's log page (it does not today; the buffer tees
+		// only the FEEDER's own stderr), the one line here that needs an
+		// operator does not arrive filed as info. The rest of this block
+		// contains no marker at all: "does not match the pin" reads as
+		// perfectly calm text to a substring heuristic.
+		r.logf("waiveo-relay: app-peer connection REFUSED at TLS — the app peer at this address is NOT the one this relay enrolled with; its TLS leaf key does not match the enrollment-anchored pin (REL-137).\n"+
 			"    Re-dialling will not fix this: REL-137 requires re-anchoring at enrollment, so either the app peer's identity was replaced (re-enroll this relay), or WAIVEO_FEEDER_URL is reaching a DIFFERENT app peer than the intended one — a second process holding the same address answers the dial and presents its own identity.\n"+
 			"    Detail: %v", err)
 	}
