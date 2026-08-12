@@ -70,3 +70,4 @@ One row per requirement ID `contracts/archive-1.md` defines. Format: `conformanc
 | ARC-121 | `contracts/archive-1.md#size-envelope` | - | TBD-wave1 |
 | ARC-122 | `contracts/archive-1.md#size-envelope` | - | TBD-wave1 |
 | ARC-123 | `contracts/archive-1.md#size-envelope` | - | TBD-wave1 |
+| ARC-124 | `contracts/archive-1.md#size-envelope` | - | TBD-wave1 |

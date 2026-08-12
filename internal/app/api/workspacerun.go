@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,6 +56,10 @@ type WorkspaceArchive struct {
 	// substitute lighter ones so a suite does not spend a second per export
 	// stretching a passphrase it does not care about.
 	KDF archive.KDFParams
+	// Retention bounds how many containers this deployment keeps (ARC-124).
+	// The zero value retains everything, which is what every deployment did
+	// before this existed.
+	Retention RetentionPolicy
 
 	// exporting serializes the export executions this deployment runs at once.
 	//
@@ -235,6 +240,22 @@ func (srv *server) writeWorkspaceArchive(ctx context.Context, jobID, workspaceID
 		// failed target leaves no artifact behind that could be mistaken for one.
 		_ = os.Remove(outPath)
 		return "INTERNAL", "The workspace archive could not be written."
+	}
+	// ARC-124: the moment a new container lands is the moment older ones may
+	// have become surplus, so the sweep runs HERE rather than on a timer this
+	// deployment does not have. A box that stops exporting therefore stops
+	// sweeping — retention bounds the archive set's GROWTH, and the contract
+	// says so rather than leaving it to be discovered.
+	//
+	// Reported by name, never silent: a backup that vanishes without a word is
+	// indistinguishable from one that was never taken, which is the exact doubt
+	// an archive exists to remove. The export itself does NOT fail if a sweep
+	// cannot remove something — the operator asked for a backup, they got one,
+	// and reporting failure because the tidying-up did not finish would be a lie
+	// about the thing they asked for.
+	if removed := sweepArchives(cfg.Dir, cfg.Retention, srv.nowMs()); len(removed) > 0 {
+		log.Printf("waiveo: archive retention removed %d container(s) after an export: %s",
+			len(removed), strings.Join(removed, ", "))
 	}
 	return "", ""
 }
