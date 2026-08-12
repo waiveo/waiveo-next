@@ -1528,6 +1528,120 @@ paths:
           $ref: "#/components/responses/UnprocessableContent"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+  /auth/api-keys:
+    get:
+      operationId: listApiKeys
+      summary: The api-keys that can act as the signed-in principal
+      description: >-
+        security-model SEC-003e. Returns each live key's `label`,
+        `created_at` and `last_used_at`, and NEVER the secret or any prefix of
+        it — a prefix is a shortcut for an attacker holding a partial capture
+        and buys a legitimate operator nothing a label does not.
+
+        Scoped to the caller's own principal. Revoked keys are omitted: the
+        question this answers is "what can act as me right now", and a revoked
+        key cannot; its history belongs to the audit log.
+      tags: [auth, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The caller's live api-keys. Shape stub, matching the rest of this surface.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: mintApiKey
+      summary: Mint an api-key, returning its plaintext exactly once
+      description: >-
+        security-model SEC-003a–e. Mints an api-key for the SIGNED-IN
+        principal, which must be of kind `user` (SEC-003a): a screen, relay or
+        pack-service has its own credential ceremony, and an api-key for one
+        would be a second, weaker path to an identity those ceremonies
+        deliberately make expensive.
+
+        Minting for ONESELF requires `admin` at the workspace root (SEC-003b).
+        This operation does not mint for another principal at all — that
+        requires `owner` and is deliberately not offered here, because handing
+        over a credential that acts as someone else belongs with the other
+        authority-transferring operations rather than beside a self-service
+        one.
+
+        The key carries exactly the role bindings its principal already holds
+        and accepts NO scope or role narrowing (SEC-003c): a key is a way to
+        ACT AS a principal, not a second, weaker principal. Where narrower
+        authority is wanted, the primitive is a principal with narrower
+        bindings.
+
+        `expires_at` is OPTIONAL (SEC-003d) because unattended callers — a
+        scheduled job, a CI runner — are part of what api-keys exist for, and a
+        mandatory deadline makes those fail on a schedule nobody is watching.
+
+        THE PLAINTEXT IS RETURNED EXACTLY ONCE (SEC-003e) and is not
+        recoverable afterwards by any operation.
+      tags: [auth, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label]
+              additionalProperties: false
+              properties:
+                label:
+                  type: string
+                  minLength: 1
+                  description: What this key is for, so an inventory is readable.
+                expires_at:
+                  type: integer
+                  format: int64
+                  description: Optional absolute expiry, epoch ms (SEC-003d).
+      responses:
+        "201":
+          description: >-
+            The minted key, INCLUDING its plaintext — the only time it is ever
+            returned. Shape stub, matching the rest of this surface.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+  /auth/api-keys/{key_id}:
+    parameters:
+      - name: key_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: The key's session id, as `listApiKeys` returns it.
+    delete:
+      operationId: revokeApiKey
+      summary: Revoke an api-key
+      description: >-
+        security-model SEC-020: an api-key is revocable through the same
+        mechanism a session is, because an api-key IS a session row carrying
+        its own credential id — so this is deliberately the same revocation
+        rather than a parallel path that could drift from it.
+
+        Scoped to the caller's own keys. Revoking a key that is already revoked
+        is a 404: it is not among the keys that can act as the caller, which is
+        the set this addresses.
+      tags: [auth, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "204":
+          description: Revoked. The key is refused from the next request onward.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /auth/credential-reset:
     post:
       operationId: issueCredentialReset

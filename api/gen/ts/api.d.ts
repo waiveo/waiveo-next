@@ -533,6 +533,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/api-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The api-keys that can act as the signed-in principal
+         * @description security-model SEC-003e. Returns each live key's `label`, `created_at` and `last_used_at`, and NEVER the secret or any prefix of it — a prefix is a shortcut for an attacker holding a partial capture and buys a legitimate operator nothing a label does not.
+         *     Scoped to the caller's own principal. Revoked keys are omitted: the question this answers is "what can act as me right now", and a revoked key cannot; its history belongs to the audit log.
+         */
+        get: operations["listApiKeys"];
+        put?: never;
+        /**
+         * Mint an api-key, returning its plaintext exactly once
+         * @description security-model SEC-003a–e. Mints an api-key for the SIGNED-IN principal, which must be of kind `user` (SEC-003a): a screen, relay or pack-service has its own credential ceremony, and an api-key for one would be a second, weaker path to an identity those ceremonies deliberately make expensive.
+         *     Minting for ONESELF requires `admin` at the workspace root (SEC-003b). This operation does not mint for another principal at all — that requires `owner` and is deliberately not offered here, because handing over a credential that acts as someone else belongs with the other authority-transferring operations rather than beside a self-service one.
+         *     The key carries exactly the role bindings its principal already holds and accepts NO scope or role narrowing (SEC-003c): a key is a way to ACT AS a principal, not a second, weaker principal. Where narrower authority is wanted, the primitive is a principal with narrower bindings.
+         *     `expires_at` is OPTIONAL (SEC-003d) because unattended callers — a scheduled job, a CI runner — are part of what api-keys exist for, and a mandatory deadline makes those fail on a schedule nobody is watching.
+         *     THE PLAINTEXT IS RETURNED EXACTLY ONCE (SEC-003e) and is not recoverable afterwards by any operation.
+         */
+        post: operations["mintApiKey"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/api-keys/{key_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The key's session id, as `listApiKeys` returns it. */
+                key_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke an api-key
+         * @description security-model SEC-020: an api-key is revocable through the same mechanism a session is, because an api-key IS a session row carrying its own credential id — so this is deliberately the same revocation rather than a parallel path that could drift from it.
+         *     Scoped to the caller's own keys. Revoking a key that is already revoked is a 404: it is not among the keys that can act as the caller, which is the set this addresses.
+         */
+        delete: operations["revokeApiKey"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/credential-reset": {
         parameters: {
             query?: never;
@@ -4172,6 +4225,93 @@ export interface operations {
             };
             422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["TooManyRequests"];
+        };
+    };
+    listApiKeys: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's live api-keys. Shape stub, matching the rest of this surface. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    mintApiKey: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description What this key is for, so an inventory is readable. */
+                    label: string;
+                    /**
+                     * Format: int64
+                     * @description Optional absolute expiry, epoch ms (SEC-003d).
+                     */
+                    expires_at?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description The minted key, INCLUDING its plaintext — the only time it is ever returned. Shape stub, matching the rest of this surface. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["UnprocessableContent"];
+        };
+    };
+    revokeApiKey: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                /** @description The key's session id, as `listApiKeys` returns it. */
+                key_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked. The key is refused from the next request onward. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
         };
     };
     issueCredentialReset: {

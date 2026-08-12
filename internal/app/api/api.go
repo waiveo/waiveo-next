@@ -455,6 +455,24 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// that mutates: the admin issuing a reset for somebody else is signed in as
 	// themselves, so there is nothing circular about requiring a session here.
 	// SEC-012's `admin` floor is enforced inside the store's issuance function.
+	rt.HandleFunc("GET "+apiPrefix+"/auth/api-keys", authHandlers.ListAPIKeys)
+	// Idempotent by wrapper, not by convention: a retry-on-timeout that
+	// re-minted would leave a SECOND live credential the operator never saw
+	// returned — the plaintext comes back exactly once (SEC-003e), so the one
+	// they did not see is one they cannot revoke by label with any confidence.
+	rt.HandleFunc("POST "+apiPrefix+"/auth/api-keys", func(w http.ResponseWriter, r *http.Request) {
+		raw, ok := readBody(w, r)
+		if !ok {
+			return
+		}
+		// The handler decodes the body itself, so hand it back a reader over
+		// the bytes already consumed for the idempotency hash.
+		srv.idempotent(w, r, raw, func(w http.ResponseWriter) {
+			r.Body = io.NopCloser(bytes.NewReader(raw))
+			authHandlers.MintAPIKey(w, r)
+		})
+	})
+	rt.HandleFunc("DELETE "+apiPrefix+"/auth/api-keys/{key_id}", authHandlers.RevokeAPIKey)
 	rt.HandleFunc("POST "+apiPrefix+"/auth/credential-reset", srv.withDeclaredMembers("CredentialResetRequest", authHandlers.IssueCredentialReset))
 
 	// The credential-exchange half (API-090/091) mounts on the ROOT mux, ahead

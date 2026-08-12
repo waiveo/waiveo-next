@@ -3043,6 +3043,36 @@ type UpdateAdoptedDeviceParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// ListApiKeysParams defines parameters for ListApiKeys.
+type ListApiKeysParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// MintApiKeyJSONBody defines parameters for MintApiKey.
+type MintApiKeyJSONBody struct {
+	// ExpiresAt Optional absolute expiry, epoch ms (SEC-003d).
+	ExpiresAt *int64 `json:"expires_at,omitempty"`
+
+	// Label What this key is for, so an inventory is readable.
+	Label string `json:"label"`
+}
+
+// MintApiKeyParams defines parameters for MintApiKey.
+type MintApiKeyParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// RevokeApiKeyParams defines parameters for RevokeApiKey.
+type RevokeApiKeyParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // IssueCredentialResetParams defines parameters for IssueCredentialReset.
 type IssueCredentialResetParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
@@ -3933,6 +3963,9 @@ type CreateAdoptedDeviceJSONRequestBody = AdoptedDeviceCreate
 // UpdateAdoptedDeviceJSONRequestBody defines body for UpdateAdoptedDevice for application/json ContentType.
 type UpdateAdoptedDeviceJSONRequestBody = AdoptedDeviceUpdate
 
+// MintApiKeyJSONRequestBody defines body for MintApiKey for application/json ContentType.
+type MintApiKeyJSONRequestBody MintApiKeyJSONBody
+
 // IssueCredentialResetJSONRequestBody defines body for IssueCredentialReset for application/json ContentType.
 type IssueCredentialResetJSONRequestBody = CredentialResetRequest
 
@@ -4129,6 +4162,17 @@ type ClientInterface interface {
 	UpdateAdoptedDeviceWithBody(ctx context.Context, adoptedDeviceId Ulid, params *UpdateAdoptedDeviceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	UpdateAdoptedDevice(ctx context.Context, adoptedDeviceId Ulid, params *UpdateAdoptedDeviceParams, body UpdateAdoptedDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListApiKeys request
+	ListApiKeys(ctx context.Context, params *ListApiKeysParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// MintApiKeyWithBody request with any body
+	MintApiKeyWithBody(ctx context.Context, params *MintApiKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	MintApiKey(ctx context.Context, params *MintApiKeyParams, body MintApiKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RevokeApiKey request
+	RevokeApiKey(ctx context.Context, keyId string, params *RevokeApiKeyParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// IssueCredentialResetWithBody request with any body
 	IssueCredentialResetWithBody(ctx context.Context, params *IssueCredentialResetParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4569,6 +4613,54 @@ func (c *Client) UpdateAdoptedDeviceWithBody(ctx context.Context, adoptedDeviceI
 
 func (c *Client) UpdateAdoptedDevice(ctx context.Context, adoptedDeviceId Ulid, params *UpdateAdoptedDeviceParams, body UpdateAdoptedDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewUpdateAdoptedDeviceRequest(c.Server, adoptedDeviceId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListApiKeys(ctx context.Context, params *ListApiKeysParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListApiKeysRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) MintApiKeyWithBody(ctx context.Context, params *MintApiKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewMintApiKeyRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) MintApiKey(ctx context.Context, params *MintApiKeyParams, body MintApiKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewMintApiKeyRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RevokeApiKey(ctx context.Context, keyId string, params *RevokeApiKeyParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRevokeApiKeyRequest(c.Server, keyId, params)
 	if err != nil {
 		return nil, err
 	}
@@ -6505,6 +6597,163 @@ func NewUpdateAdoptedDeviceRequestWithBody(server string, adoptedDeviceId Ulid, 
 			}
 
 			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewListApiKeysRequest generates requests for ListApiKeys
+func NewListApiKeysRequest(server string, params *ListApiKeysParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/auth/api-keys")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewMintApiKeyRequest calls the generic MintApiKey builder with application/json body
+func NewMintApiKeyRequest(server string, params *MintApiKeyParams, body MintApiKeyJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewMintApiKeyRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewMintApiKeyRequestWithBody generates requests for MintApiKey with any type of body
+func NewMintApiKeyRequestWithBody(server string, params *MintApiKeyParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/auth/api-keys")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewRevokeApiKeyRequest generates requests for RevokeApiKey
+func NewRevokeApiKeyRequest(server string, keyId string, params *RevokeApiKeyParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "key_id", keyId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/auth/api-keys/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
 		}
 
 	}
@@ -12992,6 +13241,17 @@ type ClientWithResponsesInterface interface {
 
 	UpdateAdoptedDeviceWithResponse(ctx context.Context, adoptedDeviceId Ulid, params *UpdateAdoptedDeviceParams, body UpdateAdoptedDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateAdoptedDeviceResponse, error)
 
+	// ListApiKeysWithResponse request
+	ListApiKeysWithResponse(ctx context.Context, params *ListApiKeysParams, reqEditors ...RequestEditorFn) (*ListApiKeysResponse, error)
+
+	// MintApiKeyWithBodyWithResponse request with any body
+	MintApiKeyWithBodyWithResponse(ctx context.Context, params *MintApiKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*MintApiKeyResponse, error)
+
+	MintApiKeyWithResponse(ctx context.Context, params *MintApiKeyParams, body MintApiKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*MintApiKeyResponse, error)
+
+	// RevokeApiKeyWithResponse request
+	RevokeApiKeyWithResponse(ctx context.Context, keyId string, params *RevokeApiKeyParams, reqEditors ...RequestEditorFn) (*RevokeApiKeyResponse, error)
+
 	// IssueCredentialResetWithBodyWithResponse request with any body
 	IssueCredentialResetWithBodyWithResponse(ctx context.Context, params *IssueCredentialResetParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*IssueCredentialResetResponse, error)
 
@@ -13522,6 +13782,100 @@ func (r UpdateAdoptedDeviceResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r UpdateAdoptedDeviceResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ListApiKeysResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+}
+
+// Status returns HTTPResponse.Status
+func (r ListApiKeysResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListApiKeysResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListApiKeysResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type MintApiKeyResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r MintApiKeyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r MintApiKeyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r MintApiKeyResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type RevokeApiKeyResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r RevokeApiKeyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RevokeApiKeyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r RevokeApiKeyResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -16896,6 +17250,41 @@ func (c *ClientWithResponses) UpdateAdoptedDeviceWithResponse(ctx context.Contex
 	return ParseUpdateAdoptedDeviceResponse(rsp)
 }
 
+// ListApiKeysWithResponse request returning *ListApiKeysResponse
+func (c *ClientWithResponses) ListApiKeysWithResponse(ctx context.Context, params *ListApiKeysParams, reqEditors ...RequestEditorFn) (*ListApiKeysResponse, error) {
+	rsp, err := c.ListApiKeys(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListApiKeysResponse(rsp)
+}
+
+// MintApiKeyWithBodyWithResponse request with arbitrary body returning *MintApiKeyResponse
+func (c *ClientWithResponses) MintApiKeyWithBodyWithResponse(ctx context.Context, params *MintApiKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*MintApiKeyResponse, error) {
+	rsp, err := c.MintApiKeyWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseMintApiKeyResponse(rsp)
+}
+
+func (c *ClientWithResponses) MintApiKeyWithResponse(ctx context.Context, params *MintApiKeyParams, body MintApiKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*MintApiKeyResponse, error) {
+	rsp, err := c.MintApiKey(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseMintApiKeyResponse(rsp)
+}
+
+// RevokeApiKeyWithResponse request returning *RevokeApiKeyResponse
+func (c *ClientWithResponses) RevokeApiKeyWithResponse(ctx context.Context, keyId string, params *RevokeApiKeyParams, reqEditors ...RequestEditorFn) (*RevokeApiKeyResponse, error) {
+	rsp, err := c.RevokeApiKey(ctx, keyId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRevokeApiKeyResponse(rsp)
+}
+
 // IssueCredentialResetWithBodyWithResponse request with arbitrary body returning *IssueCredentialResetResponse
 func (c *ClientWithResponses) IssueCredentialResetWithBodyWithResponse(ctx context.Context, params *IssueCredentialResetParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*IssueCredentialResetResponse, error) {
 	rsp, err := c.IssueCredentialResetWithBody(ctx, params, contentType, body, reqEditors...)
@@ -18329,6 +18718,112 @@ func ParseUpdateAdoptedDeviceResponse(rsp *http.Response) (*UpdateAdoptedDeviceR
 			return nil, err
 		}
 		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListApiKeysResponse parses an HTTP response from a ListApiKeysWithResponse call
+func ParseListApiKeysResponse(rsp *http.Response) (*ListApiKeysResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListApiKeysResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseMintApiKeyResponse parses an HTTP response from a MintApiKeyWithResponse call
+func ParseMintApiKeyResponse(rsp *http.Response) (*MintApiKeyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &MintApiKeyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRevokeApiKeyResponse parses an HTTP response from a RevokeApiKeyWithResponse call
+func ParseRevokeApiKeyResponse(rsp *http.Response) (*RevokeApiKeyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RevokeApiKeyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
 
 	}
 

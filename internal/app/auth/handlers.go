@@ -815,3 +815,144 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
+
+// ---- api-keys (SEC-003a–e, SEC-020) ---------------------------------------
+
+// apiKeyWire is one key in a listing. There is NO secret member, and its
+// absence is structural rather than remembered: SEC-003e forbids returning the
+// secret or any PREFIX of it, so the shape a listing serializes cannot carry
+// one to forget to strip.
+type apiKeyWire struct {
+	ID         string `json:"id"`
+	Label      string `json:"label"`
+	CreatedAt  int64  `json:"created_at"`
+	LastUsedAt int64  `json:"last_used_at,omitempty"`
+	ExpiresAt  int64  `json:"expires_at,omitempty"`
+}
+
+// ListAPIKeys serves the caller's own live api-keys (SEC-003e).
+func (h *Handlers) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
+	traceID := apihttp.TraceID(r)
+	p, err := RequirePrincipal(r.Context())
+	if err != nil {
+		writeInternal(w, r, traceID)
+		return
+	}
+	keys, err := h.auth.store.ListAPIKeys(r.Context(), p.ID)
+	if err != nil {
+		writeInternal(w, r, traceID)
+		return
+	}
+	items := make([]apiKeyWire, 0, len(keys))
+	for _, k := range keys {
+		items = append(items, apiKeyWire{
+			ID: k.SessionID, Label: k.Label, CreatedAt: k.CreatedAt,
+			LastUsedAt: k.LastUsedAt, ExpiresAt: k.ExpiresAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "cursor": nil})
+}
+
+type mintAPIKeyRequest struct {
+	Label     string `json:"label"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
+// MintAPIKey mints an api-key for the SIGNED-IN principal and returns its
+// plaintext exactly once (SEC-003a–e).
+//
+// It mints only for the caller. SEC-003b lets `admin` mint for itself and
+// requires `owner` to mint for anyone else, and this operation deliberately
+// does not offer the second: handing over a credential that acts as another
+// principal belongs with the other authority-transferring operations, not
+// beside a self-service one. Adding a target parameter here would put the
+// owner-only case one field away from the admin-only one.
+//
+// No scope or role parameter (SEC-003c): a key is a way to ACT AS a principal,
+// not a second, weaker one, and a narrowing parameter would be a capability
+// model this contract does not define. Where narrower authority is wanted, the
+// primitive is a principal with narrower bindings.
+func (h *Handlers) MintAPIKey(w http.ResponseWriter, r *http.Request) {
+	traceID := apihttp.TraceID(r)
+	p, err := RequirePrincipal(r.Context())
+	if err != nil {
+		writeInternal(w, r, traceID)
+		return
+	}
+	var req mintAPIKeyRequest
+	if !decodeBody(w, r, traceID, &req) {
+		return
+	}
+	if req.Label == "" {
+		writeValidationProblem(w, r, traceID, []fieldError{
+			{"label", "required", "a label is required, so an inventory of keys is readable"}})
+		return
+	}
+
+	// SEC-003b: minting for oneself needs admin at the workspace root.
+	bindings, err := h.auth.store.RoleBindings(r.Context(), p.ID)
+	if err != nil {
+		writeInternal(w, r, traceID)
+		return
+	}
+	if role, ok := Effective(bindings); !ok || !role.AtLeast(RoleAdmin) {
+		apihttp.WriteProblemExt(w, r, traceID, http.StatusForbidden,
+			"FORBIDDEN", "Forbidden", "Minting an api-key requires at least the `admin` role (security-model SEC-003b).", nil)
+		return
+	}
+
+	minted, err := h.auth.store.MintAPIKey(r.Context(), p.ID, req.Label, req.ExpiresAt)
+	if err != nil {
+		// SEC-003a's refusal (a non-`user` principal) reaches here as an error
+		// from the store, which owns that rule so both callers obey it.
+		writeInternal(w, r, traceID)
+		return
+	}
+	// The ONLY time the plaintext is returned (SEC-003e).
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":         minted.Session.SessionID,
+		"label":      req.Label,
+		"key":        minted.Token,
+		"created_at": minted.Session.CreatedAt,
+		"expires_at": req.ExpiresAt,
+	})
+}
+
+// RevokeAPIKey revokes one of the caller's own api-keys (SEC-020).
+//
+// Scoped to the caller: a key id names a session row, and revoking one the
+// caller does not own would be a cross-principal write behind a path parameter.
+// A key that is not among the caller's live keys is a 404 rather than a 403 —
+// the same answer whether it belongs to someone else or never existed, so this
+// cannot be used to probe which key ids are real.
+func (h *Handlers) RevokeAPIKey(w http.ResponseWriter, r *http.Request) {
+	traceID := apihttp.TraceID(r)
+	p, err := RequirePrincipal(r.Context())
+	if err != nil {
+		writeInternal(w, r, traceID)
+		return
+	}
+	keyID := r.PathValue("key_id")
+	keys, err := h.auth.store.ListAPIKeys(r.Context(), p.ID)
+	if err != nil {
+		writeInternal(w, r, traceID)
+		return
+	}
+	owned := false
+	for _, k := range keys {
+		if k.SessionID == keyID {
+			owned = true
+			break
+		}
+	}
+	if !owned {
+		apihttp.WriteProblemExt(w, r, traceID, http.StatusNotFound,
+			"NOT_FOUND", "Not Found", "No such api-key.", nil)
+		return
+	}
+	if err := h.auth.store.RevokeSession(r.Context(), keyID); err != nil {
+		writeInternal(w, r, traceID)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

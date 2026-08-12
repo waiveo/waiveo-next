@@ -1115,3 +1115,72 @@ func nullableMs(ms int64) any {
 	}
 	return ms
 }
+
+// APIKeyRow is one api-key credential as a listing may describe it (SEC-003e):
+// its label, when it was made, when it was last used, and when it expires.
+//
+// There is NO secret field, and that is a property of the type rather than a
+// discipline the callers keep. SEC-003e forbids returning the secret or any
+// PREFIX of it — a prefix is a shortcut for an attacker holding a partial
+// capture and buys a legitimate operator nothing a label does not — so the
+// shape a handler serializes simply cannot carry one.
+type APIKeyRow struct {
+	// SessionID is the handle a revoke names: an api-key IS a session row
+	// (SEC-020's "revocable through the same mechanism"), so this is the id the
+	// revoke path already takes rather than a second identifier that could
+	// disagree with it.
+	SessionID  string
+	Label      string
+	CreatedAt  int64
+	LastUsedAt int64 // 0 when never used
+	ExpiresAt  int64 // 0 when it does not expire (SEC-003d)
+}
+
+// ListAPIKeys returns principalID's live api-keys, newest first.
+//
+// Revoked keys are omitted: the question a listing answers is "what can act as
+// me right now", and a revoked key cannot. Its audit trail is the audit log's
+// job, not this inventory's.
+//
+// The join is credentials-to-sessions because the two halves each hold part of
+// the answer — the credential row carries created_at/last_used_at/expires_at,
+// the session row carries the id a revoke names — and MintAPIKey writes both in
+// one act.
+func (s *Store) ListAPIKeys(ctx context.Context, principalID string) ([]APIKeyRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT ss.session_id, c.identifier, c.created_at, c.last_used_at, c.expires_at
+		   FROM credentials c
+		   JOIN sessions ss ON ss.credential_id = c.credential_id
+		  WHERE c.principal_id = ? AND c.kind = ? AND c.revoked_at IS NULL AND ss.revoked_at IS NULL
+		  ORDER BY c.created_at DESC, ss.session_id DESC`,
+		principalID, CredentialAPIKey)
+	if err != nil {
+		return nil, fmt.Errorf("auth: list api-keys: %w", err)
+	}
+	defer rows.Close()
+
+	out := []APIKeyRow{}
+	for rows.Next() {
+		var r APIKeyRow
+		var identifier string
+		var lastUsed, expires sql.NullInt64
+		if err := rows.Scan(&r.SessionID, &identifier, &r.CreatedAt, &lastUsed, &expires); err != nil {
+			return nil, fmt.Errorf("auth: scan api-key: %w", err)
+		}
+		// MintAPIKey stores the identifier as `principalID:label`, because a
+		// credential identifier is unique across the deployment and a bare
+		// label is not. The operator only ever chose the second half.
+		r.Label = strings.TrimPrefix(identifier, principalID+":")
+		if lastUsed.Valid {
+			r.LastUsedAt = lastUsed.Int64
+		}
+		if expires.Valid {
+			r.ExpiresAt = expires.Int64
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("auth: iterate api-keys: %w", err)
+	}
+	return out, nil
+}
