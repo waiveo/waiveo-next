@@ -38,6 +38,11 @@ func newWalkHarness(t *testing.T, roster string, install installFunc) *walkHarne
 		Getenv:  func(string) string { return "" },
 		Client:  &http.Client{},
 		Out:     h.out,
+		// Stubbed so the walk tests neither wait on nor reach out to the
+		// addresses in their rosters, while still exercising the reporting.
+		Identifier: func(_ context.Context, host string) (string, error) {
+			return "screen at " + host, nil
+		},
 		Installer: func(ctx context.Context, client *http.Client, dev device, creds credentials, zip []byte) (installOutcome, error) {
 			h.visited = append(h.visited, dev.Name)
 			return install(ctx, client, dev, creds, zip)

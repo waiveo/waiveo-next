@@ -96,6 +96,7 @@ func main() {
 		Installer: func(ctx context.Context, client *http.Client, dev device, creds credentials, zip []byte) (installOutcome, error) {
 			return installChannel(ctx, client, dev, creds, zip)
 		},
+		Identifier: identify,
 	}
 
 	failures, err := run(context.Background(), opts)
@@ -129,6 +130,12 @@ type runOptions struct {
 	Client    *http.Client
 	Out       io.Writer
 	Installer installFunc
+	// Identifier asks a screen its own name. Injected for the same reason
+	// Installer is: the walk tests drive rosters of addresses nobody is
+	// listening on, and a real lookup there is a multi-second wait per device
+	// bought for nothing — and an outbound call to an arbitrary address from a
+	// unit test besides.
+	Identifier identifyFunc
 }
 
 // run resolves the roster, the credential, and the channel bytes, then walks
@@ -173,7 +180,12 @@ func run(ctx context.Context, opts runOptions) (int, error) {
 
 	if opts.DryRun {
 		for _, dev := range devices {
-			fmt.Fprintf(opts.Out, "  %-16s %-24s DRY-RUN  would POST /plugin_install\n", dev.Name, dev.Addr())
+			// The point of a dry run is to answer "am I aimed at the right
+			// screen", and the roster label cannot answer it — it is the claim
+			// under test. Ask the screen.
+			name, idErr := opts.identifyOne(ctx, dev.Host)
+			fmt.Fprintf(opts.Out, "  %-16s %-24s DRY-RUN  would POST /plugin_install → %s\n",
+				dev.Name, dev.Addr(), describe(name, idErr))
 		}
 		fmt.Fprintf(opts.Out, "fleetsideload: dry run — nothing was installed\n")
 		return 0, nil
@@ -181,6 +193,15 @@ func run(ctx context.Context, opts runOptions) (int, error) {
 
 	failures := 0
 	for _, dev := range devices {
+		// Printed BEFORE the write, and on its own line, so the log says which
+		// screen was overwritten even when the install then succeeds. A
+		// successful sideload onto the wrong screen is the failure this guards,
+		// and it leaves no other trace.
+		if name, idErr := opts.identifyOne(ctx, dev.Host); idErr == nil {
+			fmt.Fprintf(opts.Out, "  %-16s %-24s → screen says %q\n", dev.Name, dev.Addr(), name)
+		} else {
+			fmt.Fprintf(opts.Out, "  %-16s %-24s → %s\n", dev.Name, dev.Addr(), describe("", idErr))
+		}
 		started := time.Now()
 		outcome, err := installOne(ctx, opts, dev, creds, zipBytes)
 		elapsed := time.Since(started).Round(100 * time.Millisecond)
