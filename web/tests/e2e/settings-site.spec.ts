@@ -47,8 +47,21 @@ test("changes a site's time zone through the real control and it survives a relo
   await expect(page.getByRole("heading", { name: "Settings", level: 1 })).toBeVisible();
 
   // Reached from the rail, in the Platform group — not typed as a URL.
+  //
+  // Scoped to the Primary nav, and it has to be: an installed pack contributes
+  // its own pages to the rail's Extensions section, and the in-repo menu-board
+  // example declares one titled "Settings" (`page.settings.title`). An unscoped
+  // link-by-name therefore matches two elements and fails on strict mode — but
+  // only once some other spec has installed that pack, so it passed until the
+  // suite happened to run in an order where the install landed first.
+  //
+  // The core page is the one this test is about, so name where it lives. Same
+  // scoping screens-pairing.spec.ts already uses for the same reason.
   await page.goto("/");
-  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await page
+    .getByRole("navigation", { name: "Primary" })
+    .getByRole("link", { name: "Settings", exact: true })
+    .click();
   await expect(page).toHaveURL(/\/settings$/);
 
   // Select the site, change the zone, save.
