@@ -37,8 +37,17 @@ func TestChangingAPasswordRequiresTheCurrentOne(t *testing.T) {
 
 	resp, raw := e.do(t, http.MethodPut, "/api/v1/auth/password",
 		mustJSON(t, map[string]any{"current_password": "not-the-password", "new_password": "a-new-one"}), jsonHeaders)
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401 for a wrong current password (%s)", resp.StatusCode, raw)
+	// A FIELD error, deliberately not a 401. The session that made this request
+	// is valid and stays valid, so the failure belongs to the body — and a 401
+	// would tell the console its session had ended, throwing the operator out of
+	// the form over a typo.
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 for a wrong current password (%s)", resp.StatusCode, raw)
+	}
+	// The FIELD error names which member failed, so a form can mark it rather
+	// than showing a page-level banner over one wrong box.
+	if codes := problemCodes(t, raw); len(codes) == 0 || codes[0] != "incorrect" {
+		t.Errorf("field codes = %v, want [incorrect] on current_password", codes)
 	}
 
 	// And the password did NOT change: the session that made the failed attempt
@@ -81,7 +90,7 @@ func TestChangingAPasswordKeepsTheSessionThatMadeTheChange(t *testing.T) {
 
 	// And the change really landed: the old password no longer authenticates.
 	if resp, _ := e.do(t, http.MethodPut, "/api/v1/auth/password",
-		mustJSON(t, map[string]any{"current_password": envPassword, "new_password": "another"}), jsonHeaders); resp.StatusCode != http.StatusUnauthorized {
+		mustJSON(t, map[string]any{"current_password": envPassword, "new_password": "another"}), jsonHeaders); resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("the OLD password still works after a change: %d", resp.StatusCode)
 	}
 }

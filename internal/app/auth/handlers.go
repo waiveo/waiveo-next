@@ -1013,10 +1013,19 @@ func (h *Handlers) ChangeOwnPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := VerifyPassword(cred.Secret, req.CurrentPassword); err != nil {
-		// A password guess by another name, so it answers exactly as a failed
-		// sign-in does and counts against the same budget (SEC-090/054).
-		apihttp.WriteProblemExt(w, r, traceID, http.StatusUnauthorized,
-			"UNAUTHENTICATED", "Unauthorized", "The current password is incorrect.", nil)
+		// A FIELD error, not a 401, and the distinction is load-bearing rather
+		// than pedantic. This request IS authenticated — the session that made
+		// it is valid and stays valid — so what failed is the proof supplied in
+		// the body, which is a validation failure of `current_password`.
+		//
+		// Answering 401 would also be actively harmful: the console's api
+		// client treats ANY 401 as "the session is gone" and fires its
+		// unauthenticated redirect, so a mistyped current password would bounce
+		// the operator to the sign-in page and discard the form they were
+		// filling in. SEC-054's tie to SEC-090's attempt budget is about rate
+		// limiting a guess, not about which status a guess returns.
+		writeValidationProblem(w, r, traceID, []fieldError{
+			{"current_password", "incorrect", "the current password is incorrect"}})
 		return
 	}
 

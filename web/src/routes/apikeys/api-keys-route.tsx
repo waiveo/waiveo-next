@@ -47,6 +47,94 @@ import { can } from "@/auth/can";
  * still be listed, still be revocable, and never be usable, which is a
  * credential they must revoke and re-mint rather than recover.
  */
+/** Change your own password (SEC-054).
+ *
+ * It sits with the API keys because they are one subject — the credentials that
+ * can act as you — and splitting them across two pages would make an operator
+ * hunt for the second after finding the first.
+ *
+ * What the copy has to carry is the CONSEQUENCE, because it is surprising in
+ * both directions: other sessions are signed out (so a change made because you
+ * fear exposure actually helps), and API keys are NOT (so a change made
+ * routinely does not silently kill production automation). Neither is guessable
+ * from a password field, and an operator who guesses wrong either leaves a
+ * threat live or takes down an integration.
+ */
+function ChangePasswordSection({ client }: { client: WaiveoApi }) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [fieldError, setFieldError] = useState<string | null>(null);
+
+  const submit = useCallback(async () => {
+    setBusy(true);
+    setFieldError(null);
+    try {
+      await client.auth.changePassword({ current_password: current, new_password: next });
+      setCurrent("");
+      setNext("");
+      toast.success("Password changed. Your other sessions are signed out; your API keys still work.");
+    } catch (err: unknown) {
+      // A wrong current password comes back as a FIELD error, not a 401 — the
+      // session is fine — so it is reported against the field rather than as a
+      // page-level failure the operator has to interpret.
+      setFieldError(
+        err instanceof ApiError ? (err.detail ?? err.title ?? err.code) : String(err),
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [client, current, next]);
+
+  return (
+    <section aria-labelledby="password-heading" className="flex flex-col gap-3">
+      <h2 id="password-heading" className="text-lg font-semibold">
+        Change your password
+      </h2>
+      <p className="text-sm text-muted-foreground">
+        Your other sessions are signed out when you change it — this one stays. Your API keys
+        keep working; revoke them above if you want them gone too.
+      </p>
+      <div className="flex flex-wrap items-end gap-3">
+        {/* Spread rather than a ternary yielding undefined: under
+            exactOptionalPropertyTypes an optional prop holding undefined is not
+            the same as an absent one. */}
+        <FormField label="Current password" {...(fieldError ? { error: fieldError } : {})}>
+          {(control) => (
+            <input
+              {...control}
+              type="password"
+              autoComplete="current-password"
+              className="h-9 rounded-md border border-border bg-[color:var(--wv-surface-2)] px-2 text-sm"
+              value={current}
+              onChange={(e) => setCurrent(e.target.value)}
+            />
+          )}
+        </FormField>
+        <FormField label="New password">
+          {(control) => (
+            <input
+              {...control}
+              type="password"
+              autoComplete="new-password"
+              className="h-9 rounded-md border border-border bg-[color:var(--wv-surface-2)] px-2 text-sm"
+              value={next}
+              onChange={(e) => setNext(e.target.value)}
+            />
+          )}
+        </FormField>
+        <Button
+          disabled={current === "" || next === "" || busy}
+          onClick={() => void submit()}
+          aria-label="Change your password"
+        >
+          Change password
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 export default function ApiKeysRoute({ api }: { api?: WaiveoApi }) {
   const client = useMemo(() => api ?? createApi(), [api]);
   const [keys, setKeys] = useState<ApiKey[]>([]);
@@ -188,6 +276,8 @@ export default function ApiKeysRoute({ api }: { api?: WaiveoApi }) {
           </div>
         </section>
       ) : null}
+
+      <ChangePasswordSection client={client} />
 
       <section aria-labelledby="mint-heading" className="flex flex-col gap-3">
         <h2 id="mint-heading" className="text-lg font-semibold">

@@ -134,6 +134,11 @@ export interface AuthModule {
   mintApiKey(body: { label: string; expires_at?: number }): Promise<MintedApiKey>;
   /** Revoke one of the caller's own keys (SEC-020). */
   revokeApiKey(id: string): Promise<void>;
+  /** Change the CALLER's own password, presenting the current one (SEC-054).
+   *
+   * On success the caller's OTHER sessions are revoked and this one is kept,
+   * so no re-login follows. API-key credentials are deliberately untouched. */
+  changePassword(body: { current_password: string; new_password: string }): Promise<void>;
   /** Claim an unclaimed workspace by redeeming the one-time setup code, minting
    * the first `owner` principal and its session.
    *
@@ -188,6 +193,14 @@ export function createAuthModule(client: ApiClient): AuthModule {
       // that re-minted would leave a SECOND live credential whose plaintext
       // was never shown, and SEC-003e means it can never be shown again.
       return client.action<MintedApiKey>("/auth/api-keys", body);
+    },
+    async changePassword(body) {
+      // `replace` is the PUT verb. Safe on the shared error path because the
+      // server answers a wrong current password with a 422 FIELD error rather
+      // than a 401 — this client treats any 401 as "the session is gone" and
+      // fires its unauthenticated redirect, which over a mistyped password
+      // would throw the operator out of the form.
+      await client.replace<void>("/auth/password", body);
     },
     async revokeApiKey(id) {
       await client.discard(`/auth/api-keys/${encodeURIComponent(id)}`);
