@@ -26,7 +26,21 @@ func browserOrSkip(t *testing.T) *Browser {
 	if err != nil {
 		t.Skipf("no Chromium on this machine, skipping the real-render tests: %v", err)
 	}
-	b, err := NewBrowser(BrowserOptions{ExecPath: path})
+	// A launch bound generous enough for a loaded shared runner. The production
+	// default is 30s, which is right for an appliance rendering on its own box
+	// and wrong here: these tests first ran in CI on 2026-08-12 (the sandbox fix
+	// that made them runnable at all), and the FIRST slow runner they met took
+	// 34s just to announce a DevTools endpoint — the package had taken 16.6s in
+	// total two runs earlier.
+	//
+	// Raising it costs the suite nothing and weakens no assertion. What these
+	// tests check is whether Chromium DRAWS what was asked — the QR reads back,
+	// the bytes are stable, the shadow stays inside the clip — and none of that
+	// is a statement about launch latency. The bound is here so a wedged browser
+	// fails instead of hanging; 120s still does that, well inside the job's own
+	// 15-minute limit, while a 30s bound turns "the runner was busy" into a red
+	// main.
+	b, err := NewBrowser(BrowserOptions{ExecPath: path, LaunchTimeout: 120 * time.Second})
 	if err != nil {
 		t.Skipf("Chromium at %s is not usable: %v", path, err)
 	}
