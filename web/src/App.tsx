@@ -16,6 +16,7 @@ import UploadRoute from "@/routes/upload/upload-route";
 import MediaRoute from "@/routes/media/media-route";
 import CastsRoute from "@/routes/casts/casts-route";
 import StudioRoute from "@/routes/studio/studio-route";
+import PreviewRoute from "@/routes/preview/preview-route";
 import WidgetsRoute from "@/routes/widgets/widgets-route";
 import AutomationsRoute from "@/routes/automations/automations-route";
 import VariablesRoute from "@/routes/variables/variables-route";
@@ -82,6 +83,27 @@ export default function App() {
             element={
               <SessionGate>
                 <StudioRoute />
+              </SessionGate>
+            }
+          />
+          {/* Cast preview: watch a cast play, see which of its slides a screen
+              would actually be sent, and work an authored menu or button with a
+              remote. Inside the gate and outside the shell for exactly the
+              reasons the Studio is — a 1920×1080 stage, a transport and a panel
+              want the viewport, and every rail destination abandons the thing
+              you are watching. It carries its own door back.
+
+              The Studio hosts the SAME player in an overlay over its live
+              document, because previewing unsaved edits is the loop this
+              surface exists for and a navigation would discard them. This route
+              is the other half: opening a preview on a SAVED cast from the
+              library, without opening an editor on it first, and a link one
+              person can send another. See preview-route.tsx. */}
+          <Route
+            path="/preview"
+            element={
+              <SessionGate>
+                <PreviewRoute />
               </SessionGate>
             }
           />

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { BookmarkPlus, Copy, Download, LayoutTemplate, Pencil, Plus, Trash2, Upload } from "lucide-react";
+import { BookmarkPlus, Copy, Download, LayoutTemplate, Pencil, PlayCircle, Plus, Trash2, Upload } from "lucide-react";
 import {
   Button,
   ConfirmModal,
@@ -213,6 +213,7 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
   }, [load]);
 
   const openStudio = useCallback((cast: Cast) => navigate(`/studio?id=${encodeURIComponent(cast.id)}`), [navigate]);
+  const openPreview = useCallback((cast: Cast) => navigate(`/preview?id=${encodeURIComponent(cast.id)}`), [navigate]);
 
   const create = useCallback(async () => {
     const scope = newScope || scopes[0]?.id;
@@ -567,6 +568,22 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
                   onClick={(e) => {
                     e.stopPropagation();
                     openStudio(cast);
+                  }}
+                />
+              </Tooltip>
+              {/* Preview is beside Open, not inside it. "Is this cast any
+                  good" and "I need to change this cast" are different errands,
+                  and answering the first should not require opening an editor
+                  on work you did not come to edit. */}
+              <Tooltip tip="Watch it play">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  icon={PlayCircle}
+                  aria-label={`Preview ${cast.name}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openPreview(cast);
                   }}
                 />
               </Tooltip>
