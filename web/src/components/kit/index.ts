@@ -36,6 +36,21 @@ export type { NavDrawerProps } from "./nav-drawer";
 export { Checkbox } from "./checkbox";
 export type { CheckboxProps } from "./checkbox";
 
+export { Badge } from "./badge";
+export type { BadgeProps, BadgeTone } from "./badge";
+
+export { Tabs, TabList, Tab, TabPanel } from "./tabs";
+export type { TabsProps, TabListProps, TabProps, TabPanelProps } from "./tabs";
+
+export { Tooltip } from "./tooltip";
+export type { TooltipProps } from "./tooltip";
+
+export { Combobox } from "./combobox";
+export type { ComboboxProps, ComboboxOption } from "./combobox";
+
+export { DownloadLink } from "./link";
+export type { DownloadLinkProps } from "./link";
+
 export { DataTable } from "./data-table";
 export type {
   DataTableProps,

@@ -10,7 +10,7 @@ import {
 } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { ArrowLeft, Grid3x3, Redo2, Save, Undo2 } from "lucide-react";
-import { Button, ConfirmModal, KitIcon, Modal, Toaster, toast } from "@/components/kit";
+import { Badge, Button, ConfirmModal, KitIcon, Modal, Toaster, Tooltip, toast } from "@/components/kit";
 import {
   ApiError,
   RevisionConflictError,
@@ -829,28 +829,30 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
 
                   The accessible name carries the step ("Undo delete slide") in
                   every layout; the visible label follows the width it has. */}
-              <Button
-                variant="ghost"
-                size="sm"
-                icon={Undo2}
-                aria-label={undoName}
-                title={undoName}
-                disabled={!canUndo}
-                onClick={() => dispatch({ type: "undo" })}
-              >
-                <span className="hidden lg:inline">Undo</span>
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                icon={Redo2}
-                aria-label={redoName}
-                title={redoName}
-                disabled={!canRedo}
-                onClick={() => dispatch({ type: "redo" })}
-              >
-                <span className="hidden lg:inline">Redo</span>
-              </Button>
+              <Tooltip tip={undoName}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={Undo2}
+                  aria-label={undoName}
+                  disabled={!canUndo}
+                  onClick={() => dispatch({ type: "undo" })}
+                >
+                  <span className="hidden lg:inline">Undo</span>
+                </Button>
+              </Tooltip>
+              <Tooltip tip={redoName}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={Redo2}
+                  aria-label={redoName}
+                  disabled={!canRedo}
+                  onClick={() => dispatch({ type: "redo" })}
+                >
+                  <span className="hidden lg:inline">Redo</span>
+                </Button>
+              </Tooltip>
               {/* No ETag means no read happened, and there is no
                   unconditional-overwrite path to fall back on (API-022) — so
                   the button is inert rather than sending an empty If-Match the
@@ -873,11 +875,7 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
                 placeholder="Untitled cast"
                 onChange={(e) => dispatch({ type: "rename", name: e.target.value })}
               />
-              {state.dirty ? (
-                <span className="shrink-0 rounded px-2 py-0.5 text-[11px] font-medium bg-[color:var(--wv-warn-bg)] text-[color:var(--wv-warn)]">
-                  Unsaved changes
-                </span>
-              ) : null}
+              {state.dirty ? <Badge tone="warn">Unsaved changes</Badge> : null}
             </>
           }
           right={
@@ -892,11 +890,18 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
                   The visible caption is a prefix of the accessible name so the
                   two agree (WCAG 2.5.3): a voice-control user can say what they
                   can read. */}
-              <label
-                className="hidden items-center gap-1.5 text-[11px] text-muted-foreground md:flex"
-                title="Applies to every slide that sets no duration of its own. Leave blank and those slides fall back to the playlist's setting, then to the screen's own default. Slides keep looping while this cast is scheduled — a screen always cycles its content."
-              >
+              <label className="hidden items-center gap-1.5 text-[11px] text-muted-foreground md:flex">
                 Default slide duration
+                {/* The help hangs off the FIELD, not off the label: a tooltip
+                    needs a focusable trigger to be reachable without a mouse,
+                    and the input is the focusable half of this pair. As a
+                    native `title` on the label it appeared for hovering mice
+                    only — never on keyboard focus, never on the touch panels
+                    this editor is driven from. */}
+                <Tooltip
+                  side="bottom"
+                  tip="Applies to every slide that sets no duration of its own. Leave blank and those slides fall back to the playlist's setting, then to the screen's own default. Slides keep looping while this cast is scheduled — a screen always cycles its content."
+                >
                 <input
                   type="number"
                   min={1}
@@ -920,6 +925,7 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
                     });
                   }}
                 />
+                </Tooltip>
                 <span aria-hidden="true">s</span>
               </label>
               <span className="hidden items-center gap-1.5 rounded bg-[color:var(--wv-surface-2)] px-2 py-1 text-[11px] text-muted-foreground sm:flex">

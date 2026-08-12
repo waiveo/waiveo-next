@@ -1,3 +1,4 @@
+import type { Page } from "@playwright/test";
 import { test, expect, signIn } from "./support/console-session";
 
 /**
@@ -10,6 +11,21 @@ import { test, expect, signIn } from "./support/console-session";
  * BOX over api/1 — because the form re-displaying what you typed proves only
  * that React kept state.
  */
+
+/** Pick a zone through the real control.
+ *
+ * The control is NOT a `<select>`: this browser enumerates ~446 IANA zones,
+ * which is past the renderer's SELECT_SEARCH_THRESHOLD, so the `select` widget
+ * paints the kit's searchable Combobox. An operator opens it, types enough of
+ * the name to find it, and clicks the row — which is the whole reason it was
+ * changed, since a native select's type-ahead cannot find `Asia/Tokyo` from
+ * "tokyo". */
+async function pickZone(page: Page, zone: string): Promise<void> {
+  await page.getByLabel("Time zone").click();
+  await page.getByPlaceholder(/search time zone/i).fill(zone);
+  await page.getByRole("option", { name: zone, exact: true }).click();
+  await expect(page.getByLabel("Time zone")).toHaveText(zone);
+}
 
 test("changes a site's time zone through the real control and it survives a reload", async ({ page }) => {
   const api = await signIn(page);
@@ -39,8 +55,8 @@ test("changes a site's time zone through the real control and it survives a relo
   await page.getByRole("table", { name: "Sites" }).getByText(siteName).click();
   const tz = page.getByLabel("Time zone");
   await expect(tz).toBeVisible();
-  await expect(tz).toHaveValue(originalTz);
-  await tz.selectOption(newTz);
+  await expect(tz).toHaveText(originalTz);
+  await pickZone(page, newTz);
   await page.getByRole("button", { name: "Save this site" }).click();
 
   // The page says it landed, naming the zone it landed on.
@@ -56,12 +72,12 @@ test("changes a site's time zone through the real control and it survives a relo
   await page.reload();
   await expect(page.getByRole("table", { name: "Sites" }).getByText(newTz)).toBeVisible();
   await page.getByRole("table", { name: "Sites" }).getByText(siteName).click();
-  await expect(page.getByLabel("Time zone")).toHaveValue(newTz);
+  await expect(page.getByLabel("Time zone")).toHaveText(newTz);
 
   await page.screenshot({ path: "../.dev/settings-site.png", fullPage: true });
 
   // Put the seed back, so a second run of this file starts where the first did.
-  await tz.selectOption(originalTz);
+  await pickZone(page, originalTz);
   await page.getByRole("button", { name: "Save this site" }).click();
   await expect(page.getByText(`Saved. This site now keeps local time in ${originalTz}.`)).toBeVisible();
 });

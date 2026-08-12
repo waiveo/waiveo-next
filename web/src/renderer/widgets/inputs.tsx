@@ -14,7 +14,7 @@
 // id `rules/1` inlines — a scalar write that never touches its parent
 // (UIS-073a).
 
-import { FormField, type FormFieldControl } from "@/components/kit";
+import { Combobox, FormField, type FormFieldControl } from "@/components/kit";
 import { resolvePath, resolveWriteLocation, resolveOptions } from "../bindings";
 import { ENTITY_PICKER_SCALAR_SHAPE } from "../schema";
 import { asLiveBinding, useLive } from "../live";
@@ -202,13 +202,57 @@ export function ToggleWidget({ node, scope }: WidgetProps) {
   );
 }
 
+/** Above this many candidates a `select` is rendered as a searchable Combobox.
+ *
+ * A threshold rather than a prop, for exactly the reason `TableWidget`'s
+ * `RENDERER_PAGE_SIZE` is one: ui-schema/1's `select` props are `labelMsg`,
+ * `options` and `placeholderMsg` (UIS-070), and a host may not invent a fourth —
+ * Negotiation forbids silent host extensions, and the contract puts "the
+ * rendering engine's own implementation" out of scope precisely so this kind of
+ * decision can be made from the data. Which control paints a closed candidate
+ * set IS a presentation decision: the bound value, the write, the validation and
+ * the document are identical either way.
+ *
+ * The number that made this necessary is 446 — the IANA zones the Settings page
+ * offers for a site's `tz`, which arrived as one flat scroll. 25 is the same
+ * figure the table uses for "long enough to need finding rather than reading",
+ * and holding them equal is deliberate: two different answers to "how many rows
+ * is too many to scan" on one page would be arbitrary. Below it the native
+ * `<select>` is kept — it costs no JavaScript, opens the platform's own picker
+ * on a phone, and for six options a search box is chrome with nothing to do. */
+export const SELECT_SEARCH_THRESHOLD = 25;
+
 export function SelectWidget({ node, scope }: WidgetProps) {
   const ctx = useRenderer();
   const { value, write, msg, error } = useBoundField(node, scope);
   const label = msg(String(node.props?.labelMsg ?? ""));
   const placeholder = node.props?.placeholderMsg ? msg(String(node.props.placeholderMsg)) : undefined;
   const options = resolveOptions(node.props?.options, scope, ctx.env);
+  // A candidate's value is a JSON scalar (UIS-070) — string, number or boolean —
+  // and both controls address it by its string key, so the write path is shared:
+  // the key goes back through this map to the ORIGINAL scalar, and a numeric
+  // option never gets written back as the string "3".
   const byKey = new Map(options.map((o) => [String(o.value), o.value]));
+  const writeKey = (key: string): void => write(byKey.has(key) ? byKey.get(key) : key);
+
+  if (options.length > SELECT_SEARCH_THRESHOLD) {
+    return (
+      <FormField label={label} {...(error ? { error } : {})}>
+        {(field: FormFieldControl) => (
+          <Combobox
+            {...field}
+            aria-label={label}
+            options={options.map((o) => ({ value: String(o.value), label: o.label }))}
+            value={value == null ? "" : String(value)}
+            onChange={writeKey}
+            {...(placeholder ? { placeholder } : {})}
+            searchPlaceholder={`Search ${label.toLocaleLowerCase()}`}
+          />
+        )}
+      </FormField>
+    );
+  }
+
   return (
     <FormField label={label} {...(error ? { error } : {})}>
       {(field: FormFieldControl) => (
@@ -216,7 +260,7 @@ export function SelectWidget({ node, scope }: WidgetProps) {
           {...field}
           className={FIELD_CLASS}
           value={value == null ? "" : String(value)}
-          onChange={(e) => write(byKey.has(e.target.value) ? byKey.get(e.target.value) : e.target.value)}
+          onChange={(e) => writeKey(e.target.value)}
         >
           <option value="" disabled>
             {placeholder ?? "Select…"}

@@ -15,24 +15,39 @@ const badgeVariants = cva(
         default: "border-transparent bg-secondary text-secondary-foreground",
         accent: "border-transparent bg-[color:var(--wv-accent)] text-[color:var(--wv-accent-fg)]",
         outline: "border-border text-foreground",
+        warning: "border-transparent bg-[color:var(--wv-warn-bg)] text-[color:var(--wv-warn)]",
         destructive:
           "border-transparent bg-[color:var(--wv-err-bg)] text-[color:var(--wv-err)]",
       },
+      // A chip whose content is an IDENTIFIER — an event schema, a pack id, a
+      // duration — renders in the mono face at normal weight and tracking, the
+      // same treatment identifiers get everywhere else in this console. The
+      // display face's semibold + wide tracking is a callout gesture and reads
+      // as shouting on a value that is meant to be read literally.
+      face: {
+        sans: "",
+        mono: "font-mono font-normal tracking-normal",
+      },
     },
-    defaultVariants: { variant: "default" },
+    defaultVariants: { variant: "default", face: "sans" },
   },
 );
 
 function Badge({
   className,
   variant,
+  face,
   asChild = false,
   ...props
 }: React.ComponentProps<"span"> &
   VariantProps<typeof badgeVariants> & { asChild?: boolean }) {
   const Comp = asChild ? Slot : "span";
   return (
-    <Comp data-slot="badge" className={cn(badgeVariants({ variant }), className)} {...props} />
+    <Comp
+      data-slot="badge"
+      className={cn(badgeVariants({ variant, face }), className)}
+      {...props}
+    />
   );
 }
 

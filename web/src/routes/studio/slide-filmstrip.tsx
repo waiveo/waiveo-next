@@ -1,5 +1,5 @@
 import { AlertTriangle, ChevronDown, ChevronUp, Copy, Plus, Trash2 } from "lucide-react";
-import { Button, KitIcon } from "@/components/kit";
+import { Badge, Button, KitIcon } from "@/components/kit";
 import { SLIDE_CANVAS_WIDTH, type CastSlide, type SlideProblem } from "@/api";
 import { cn } from "@/lib/utils";
 import { SlideStage, type AssetUrls, type StaleRasters } from "./slide-canvas";
@@ -122,18 +122,26 @@ export function SlideFilmstrip({
               {/* Legacy's top bar: what the slide will hold for on the left, the
                   destructive action on the right, revealed on hover. */}
               <div className="flex items-center justify-between gap-1">
-                <span
+                {/* How long this slide holds. A duration is a value, not a
+                    health state, so it is a neutral/warn chip rather than a
+                    StatusBadge — and `mono` because it is read literally.
+                    The `title` STAYS a native one: a kit Tooltip needs a
+                    focusable trigger, and this chip is not interactive, so
+                    wrapping it would add a tab stop per slide to a strip a
+                    keyboard user already crosses four controls at a time. */}
+                <Badge
                   data-slot="slide-dwell"
-                  title={dwell.inherited ? "Inherited — this slide sets no duration of its own" : "This slide's own duration"}
-                  className={cn(
-                    "rounded-full px-1.5 py-px text-[10px] font-medium tabular-nums",
+                  mono
+                  tone={dwell.inherited ? "neutral" : "warn"}
+                  title={
                     dwell.inherited
-                      ? "bg-[color:var(--wv-off-bg)] text-muted-foreground"
-                      : "bg-[color:var(--wv-warn-bg)] text-[color:var(--wv-warn)]",
-                  )}
+                      ? "Inherited — this slide sets no duration of its own"
+                      : "This slide's own duration"
+                  }
+                  className="px-1.5 py-px text-[10px] tabular-nums"
                 >
                   {dwell.text}
-                </span>
+                </Badge>
                 <Button
                   size="icon"
                   variant="ghost"

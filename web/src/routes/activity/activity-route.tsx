@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Activity, Pause, Play, Trash2, TriangleAlert, WifiOff } from "lucide-react";
-import { Button, EmptyState, KitIcon, PageHeader, StatusBadge, type Status } from "@/components/kit";
+import { Badge, Button, EmptyState, KitIcon, PageHeader, StatusBadge, type Status } from "@/components/kit";
 import { cn } from "@/lib/utils";
 import {
   browserEventSourceFactory,
@@ -58,9 +58,10 @@ function EventRowView({ row }: { row: EventRow }) {
       data-schema={row.schema}
       className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border px-3 py-2.5 last:border-b-0"
     >
-      <span className="rounded-pill bg-[color:var(--wv-surface-2)] px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
-        {row.schema}
-      </span>
+      {/* The event's schema id — data, not health, so it is a neutral chip and
+          not a StatusBadge; the row's OWN StatusBadge beside it is what carries
+          state. `mono` because a schema id is read literally. */}
+      <Badge mono>{row.schema}</Badge>
       {row.badge ? <StatusBadge status={row.badge.status}>{row.badge.label}</StatusBadge> : null}
       <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">{row.summary}</span>
       <time dateTime={time.iso} title={time.iso} className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">

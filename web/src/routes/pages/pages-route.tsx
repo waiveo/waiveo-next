@@ -6,9 +6,18 @@ import {
   Wand2,
   type LucideIcon,
 } from "lucide-react";
-import { KitIcon, PageHeader, StatCard, Toaster, toast } from "@/components/kit";
+import {
+  KitIcon,
+  PageHeader,
+  StatCard,
+  Tab,
+  TabList,
+  TabPanel,
+  Tabs,
+  Toaster,
+  toast,
+} from "@/components/kit";
 import { PageRenderer, type ActionHandler } from "@/renderer";
-import { cn } from "@/lib/utils";
 
 /**
  * The /pages route — the ui-schema/1 renderer, live. It paints the four valid
@@ -139,39 +148,8 @@ const handler: ActionHandler = {
   },
 };
 
-function DemoNav({ active, onSelect }: { active: string; onSelect: (id: string) => void }) {
-  return (
-    <nav
-      aria-label="Page-type demos"
-      className="flex flex-wrap gap-2 rounded-card border border-border bg-card p-2 wv-elevation"
-    >
-      {PAGE_DEMOS.map((demo) => {
-        const isActive = demo.id === active;
-        return (
-          <button
-            key={demo.id}
-            type="button"
-            aria-current={isActive ? "page" : undefined}
-            onClick={() => onSelect(demo.id)}
-            className={cn(
-              "wv-touch flex items-center gap-2 rounded-input px-3 text-[13px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
-              isActive
-                ? "bg-[color:var(--wv-nav-active-bg)] text-[color:var(--wv-nav-active-fg)]"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground",
-            )}
-          >
-            <KitIcon icon={demo.icon} decorative className="size-4 shrink-0" />
-            {demo.label}
-          </button>
-        );
-      })}
-    </nav>
-  );
-}
-
 export default function PagesRoute() {
   const [active, setActive] = useState<string>(PAGE_DEMOS[0].id);
-  const demo = PAGE_DEMOS.find((d) => d.id === active) ?? PAGE_DEMOS[0];
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -182,28 +160,49 @@ export default function PagesRoute() {
           description="The four ui-schema/1 page types, painted from the frozen conformance corpus through the real renderer over the Horizon kit — the same path every core and extension page takes."
         />
 
-        <DemoNav active={active} onSelect={setActive} />
+        {/* Four panels of one subject, sharing one URL — a tab set, and now
+            actually built as one. The row of buttons this replaces claimed
+            `aria-current="page"` on the selected demo, which told a screen
+            reader the URL had changed when it had not, and made all four
+            separate tab stops. The kit's Tabs announce "tab 2 of 4, selected",
+            tie each tab to the panel it reveals, and put the whole strip on one
+            tab stop with the arrow keys moving inside it. */}
+        <Tabs value={active} onValueChange={setActive} className="gap-6">
+          <TabList aria-label="Page-type demos" className="h-auto flex-wrap">
+            {PAGE_DEMOS.map((demo) => (
+              <Tab key={demo.id} value={demo.id} className="wv-touch">
+                <KitIcon icon={demo.icon} decorative className="size-4 shrink-0" />
+                {demo.label}
+              </Tab>
+            ))}
+          </TabList>
 
-        <div className="flex flex-col gap-1">
-          <h2 className="font-display text-[19px] font-semibold tracking-[-0.01em]">
-            {demo.label}
-          </h2>
-          <p className="max-w-2xl text-sm text-muted-foreground">{demo.blurb}</p>
-        </div>
+          {PAGE_DEMOS.map((demo) => (
+            <TabPanel key={demo.id} value={demo.id} className="flex flex-col gap-6">
+              <div className="flex flex-col gap-1">
+                <h2 className="font-display text-[19px] font-semibold tracking-[-0.01em]">
+                  {demo.label}
+                </h2>
+                <p className="max-w-2xl text-sm text-muted-foreground">{demo.blurb}</p>
+              </div>
 
-        <main className="min-w-0">
-          {/* Keying on the demo id remounts the renderer per switch, so each page's
-              ephemeral $ui state (UIS-104) starts fresh — the same reset navigating
-              away from a page gives it. */}
-          <PageRenderer
-            key={demo.id}
-            doc={docFor(demo.caseId)}
-            data={DEMO_DATA[demo.id]}
-            messages={messages}
-            handler={handler}
-            {...(demo.id === "dashboard" ? { slots: DEMO_SLOTS } : {})}
-          />
-        </main>
+              <main className="min-w-0">
+                {/* A TabPanel unmounts its content when it is not selected, so the
+                    renderer is freshly mounted per switch and each page's
+                    ephemeral $ui state (UIS-104) starts empty — the same reset
+                    navigating away from a page gives it, and the reason the
+                    previous strip had to force it with a `key`. */}
+                <PageRenderer
+                  doc={docFor(demo.caseId)}
+                  data={DEMO_DATA[demo.id]}
+                  messages={messages}
+                  handler={handler}
+                  {...(demo.id === "dashboard" ? { slots: DEMO_SLOTS } : {})}
+                />
+              </main>
+            </TabPanel>
+          ))}
+        </Tabs>
       </div>
 
       <Toaster />
