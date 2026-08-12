@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Link } from "react-router";
 import { CalendarClock, Images, MonitorPlay, Wand2, type LucideIcon } from "lucide-react";
 import { PageHeader, StatCard } from "@/components/kit";
 import { ApiError, createApi, type WaiveoApi } from "@/api";
@@ -85,6 +86,44 @@ const METRICS: MetricSpec[] = [
   },
 ];
 
+/** The first-run steps, in the order they unblock each other. Extensions leads
+ * because a freshly claimed box can do almost nothing until one is installed —
+ * the register's own words for this gap were "a freshly claimed box arrives
+ * with no way to install anything", and the way now exists but nothing points
+ * at it from where an operator lands. */
+const FIRST_RUN_STEPS: { to: string; label: string; detail: string }[] = [
+  {
+    to: "/extensions",
+    label: "Install an extension",
+    detail: "Browse what the configured registry sources offer, or upload a signed pack.",
+  },
+  {
+    to: "/screens",
+    label: "Add a screen",
+    detail: "Pair a display so there is somewhere for content to land.",
+  },
+  {
+    to: "/casts",
+    label: "Build a cast",
+    detail: "Lay out what a screen shows, then schedule when it shows it.",
+  },
+];
+
+/** Whether this looks like a box nobody has set up yet.
+ *
+ * Every metric must have LOADED and be zero. A metric still loading, or one
+ * that failed, does not count as empty — a box whose store is unreachable would
+ * otherwise be greeted with "welcome, start here" while its real content sits
+ * behind the error, which is the same absence-of-evidence mistake the update
+ * badge and the catalog both had to avoid. Four zeros are only four zeros when
+ * four answers arrived. */
+function looksUnconfigured(metrics: Record<MetricKey, MetricState>): boolean {
+  return METRICS.every((spec) => {
+    const state = metrics[spec.key];
+    return state.status === "ok" && state.value === 0;
+  });
+}
+
 function errorState(err: unknown): { status: "error"; detail: string; traceId: string | null } {
   if (err instanceof ApiError) {
     return { status: "error", detail: err.detail ?? err.title ?? err.code, traceId: err.traceId };
@@ -152,6 +191,31 @@ export default function OverviewRoute({ api }: { api?: WaiveoApi }) {
           title="Overview"
           description="Your fleet at a glance — screens, schedules, automations, and the assets in play, live from the store."
         />
+        {looksUnconfigured(metrics) ? (
+          <section
+            aria-labelledby="first-run-heading"
+            className="flex flex-col gap-3 rounded-input border border-border p-4"
+          >
+            <h2 id="first-run-heading" className="text-lg font-semibold">
+              Start here
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              This box is claimed and empty. Three steps make it a working sign.
+            </p>
+            <ol className="flex flex-col gap-2">
+              {FIRST_RUN_STEPS.map((step, i) => (
+                <li key={step.to} className="flex flex-wrap items-baseline gap-2">
+                  <span className="font-mono text-xs text-muted-foreground">{i + 1}</span>
+                  <Link to={step.to} className="text-sm font-medium underline underline-offset-4">
+                    {step.label}
+                  </Link>
+                  <span className="text-sm text-muted-foreground">{step.detail}</span>
+                </li>
+              ))}
+            </ol>
+          </section>
+        ) : null}
+
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {METRICS.map((spec) => {
             const state = metrics[spec.key];

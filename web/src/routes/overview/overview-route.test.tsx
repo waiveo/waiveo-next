@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { render, screen, within, waitFor } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
+import { MemoryRouter } from "react-router";
 import OverviewRoute from "./overview-route";
 import { TRACE_ID, ULID_A, ULID_B, scopeNode, problem } from "@/api/test-support";
 
@@ -57,7 +58,11 @@ describe("OverviewRoute — live counts", () => {
       ),
     );
 
-    render(<OverviewRoute />);
+    render(
+      <MemoryRouter>
+        <OverviewRoute />
+      </MemoryRouter>,
+    );
 
     await waitFor(() => expect(within(card("Screens")).getByText("2")).toBeInTheDocument());
     expect(within(card("Schedules")).getByText("3")).toBeInTheDocument();
@@ -74,7 +79,11 @@ describe("OverviewRoute — live counts", () => {
       http.get("*/api/v1/playlists", () => page([])),
     );
 
-    render(<OverviewRoute />);
+    render(
+      <MemoryRouter>
+        <OverviewRoute />
+      </MemoryRouter>,
+    );
 
     await waitFor(() => expect(within(card("Screens")).getByText("0")).toBeInTheDocument());
     expect(within(card("Screens")).getByText(/no screens yet/i)).toBeInTheDocument();
@@ -92,7 +101,11 @@ describe("OverviewRoute — live counts", () => {
       http.get("*/api/v1/playlists", () => page([])),
     );
 
-    render(<OverviewRoute />);
+    render(
+      <MemoryRouter>
+        <OverviewRoute />
+      </MemoryRouter>,
+    );
 
     // The healthy families still resolve...
     await waitFor(() => expect(within(card("Screens")).getByText("2")).toBeInTheDocument());
@@ -102,5 +115,73 @@ describe("OverviewRoute — live counts", () => {
       expect(within(card("Schedules")).getByText(/couldn't load/i)).toBeInTheDocument(),
     );
     expect(within(card("Schedules")).getByText(/the schedule store is unavailable/i)).toBeInTheDocument();
+  });
+});
+
+// The first-run panel. A freshly claimed box lands here (setup navigates to
+// "/"), and until now it showed four zeros and no next step — the register's
+// "a freshly claimed box arrives with no way to install anything", which is now
+// a way that exists and nothing points at.
+describe("OverviewRoute — first run", () => {
+  function allEmpty() {
+    server.use(
+      http.get("*/api/v1/scope-nodes", () => page([])),
+      http.get("*/api/v1/schedules", () => page([])),
+      http.get("*/api/v1/automations", () => page([])),
+      http.get("*/api/v1/playlists", () => page([])),
+    );
+  }
+
+  it("points an empty box at the first thing to do", async () => {
+    allEmpty();
+    render(
+      <MemoryRouter>
+        <OverviewRoute />
+      </MemoryRouter>,
+    );
+
+    const panel = await screen.findByRole("region", { name: /start here/i });
+    // Extensions leads: a box can do almost nothing until one is installed.
+    const first = within(panel).getByRole("link", { name: /install an extension/i });
+    expect(first).toHaveAttribute("href", "/extensions");
+    expect(within(panel).getByRole("link", { name: /add a screen/i })).toBeInTheDocument();
+  });
+
+  it("does not appear once the box has anything at all", async () => {
+    server.use(
+      http.get("*/api/v1/scope-nodes", () => page([scopeNode({ id: ULID_A })])),
+      http.get("*/api/v1/schedules", () => page([])),
+      http.get("*/api/v1/automations", () => page([])),
+      http.get("*/api/v1/playlists", () => page([])),
+    );
+    render(
+      <MemoryRouter>
+        <OverviewRoute />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(within(card("Screens")).getByText("1")).toBeInTheDocument());
+    expect(screen.queryByRole("region", { name: /start here/i })).not.toBeInTheDocument();
+  });
+
+  // The rule that matters most. A box whose store is UNREACHABLE is not an
+  // empty box, and greeting it with "this box is claimed and empty" would state
+  // as fact something no answer supports — the same absence-of-evidence mistake
+  // the update badge and the catalog each had to avoid.
+  it("does not greet a box whose counts could not be read as empty", async () => {
+    server.use(
+      http.get("*/api/v1/scope-nodes", () => problem(500, "INTERNAL", "The store is unavailable.")),
+      http.get("*/api/v1/schedules", () => page([])),
+      http.get("*/api/v1/automations", () => page([])),
+      http.get("*/api/v1/playlists", () => page([])),
+    );
+    render(
+      <MemoryRouter>
+        <OverviewRoute />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(within(card("Schedules")).getByText("0")).toBeInTheDocument());
+    expect(screen.queryByRole("region", { name: /start here/i })).not.toBeInTheDocument();
   });
 });
