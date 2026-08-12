@@ -41,6 +41,30 @@ func archiveOnDisk(t *testing.T, e *workspaceEnv, name string) bool {
 	return err == nil
 }
 
+// seedArchiveFileOnly puts a container on disk WITHOUT running an export job, so
+// the env's Job runner stays unstarted and a subsequently accepted Job is queued
+// rather than executed.
+//
+// The bytes are not a real container, and for the delete guard that is exactly
+// right: the listing filters on the suffix rather than on completeness (see
+// TestAnArchiveAnACCEPTEDExportIsWritingCannotBeDeleted), the delete stats the
+// path, and the in-use claim is taken at ACCEPTANCE — before anything opens the
+// file. Nothing on this path reads the content, so seeding a real encrypted
+// container would only buy the test a dependency on the runner it is trying not
+// to start.
+func seedArchiveFileOnly(t *testing.T, e *workspaceEnv) string {
+	t.Helper()
+	name := "workspace-01J8Z2Q1C0000000000000000C" + archiveSuffixForTest
+	if err := os.WriteFile(filepath.Join(e.archiveDir, name), []byte("sealed container bytes"), 0o600); err != nil {
+		t.Fatalf("seed archive file: %v", err)
+	}
+	return name
+}
+
+// archiveSuffixForTest mirrors the unexported archiveSuffix the api package
+// filters the listing on; this test package cannot reach the constant itself.
+const archiveSuffixForTest = ".waiveo-archive"
+
 // archiveETag reads one container's published entity-tag out of the listing —
 // the same value a console holds when it offers the Delete button, so every case
 // below conditions on what a real client would actually send.
@@ -267,8 +291,21 @@ func TestDeletingAnArchiveIsClosedToANonOwner(t *testing.T) {
 
 // TestAnArchiveAnACCEPTEDRestoreIsReadingCannotBeDeleted.
 //
-// The env's Job runner is stopped until runJobs, so this drives the exact window
-// the claim exists for: the restore is ACCEPTED and has not opened the file yet.
+// This drives the exact window the claim exists for: the restore is ACCEPTED and
+// has not opened the file yet.
+//
+// Getting that window is not free, and assuming it was is what made this test
+// flaky on CI. It used to seed through seedExportedArchive, which runs the export
+// on the runner and therefore STARTS it — so the restore submitted afterwards
+// executed immediately on a goroutine, and its deferred release could drop the
+// claim before the delete below ever read it. Locally the delete won that race;
+// on a loaded CI runner it lost, and the failure read as the product not holding
+// a claim it had in fact held.
+//
+// Seeding the container directly leaves the runner UNSTARTED, so the restore is
+// queued rather than run and accepted-and-not-executing becomes a state instead
+// of a hoped-for scheduling order. The whole arc below — 409, then 428, then 204
+// once the job is finally run — is then deterministic.
 // Unlinking here would fail that job with "no archive of that name" — a sentence
 // about a container the operator did have, in a job they may not connect to the
 // button they pressed. Whether the unlink lands before or after the job's own
@@ -277,7 +314,7 @@ func TestDeletingAnArchiveIsClosedToANonOwner(t *testing.T) {
 func TestAnArchiveAnACCEPTEDRestoreIsReadingCannotBeDeleted(t *testing.T) {
 	e := newWorkspaceEnv(t)
 	e.seedWorkspace(t)
-	name := seedExportedArchive(t, e)
+	name := seedArchiveFileOnly(t, e)
 	etag := archiveETag(t, e, name)
 
 	resp, raw := e.postWorkspace(t, e.auth.Credential(), "restore",
