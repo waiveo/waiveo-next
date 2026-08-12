@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/events"
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
 // POST /player/v1/interaction — the return path (interactive slide layers,
@@ -238,5 +239,63 @@ func TestInteractionRejectsAnUnauthenticatedPress(t *testing.T) {
 func TestScreenInteractionSchemaNamesAgree(t *testing.T) {
 	if eventSchemaScreenInteraction != events.SchemaScreenInteraction {
 		t.Errorf("playerserver emits %q, events/1 registers %q", eventSchemaScreenInteraction, events.SchemaScreenInteraction)
+	}
+}
+
+// A viewer's press must not clear the CONTENT-transfer failure count.
+//
+// This is not a question of how long a screen reads `fetching`, which is how the
+// conflation was first booked. unackedPulls is the only discriminator in
+// screens.reachabilityOf that survives a screen which keeps talking: `rejected`
+// is tested first and is driven by this counter, and the clause below it grades
+// `live` on the freshest of pull-or-ack age — which a screen looping on a failed
+// fetch keeps fresh by pulling. Zeroing the counter on a press therefore did not
+// delay `rejected` on an interactive wall, it made it unreachable, and a wall
+// refusing every program it was handed read `live` for as long as people kept
+// touching it.
+//
+// So the assertion is the one that matters operationally: drive the count PAST
+// the bound the read model grades on, press, and require the count to survive.
+func TestAPressDoesNotClearTheContentTransferFailureCount(t *testing.T) {
+	srv, _, token, _ := interactionTestServer(t)
+
+	// Pull content-bearing programs until the count is past the bound — the
+	// state of a screen that is abandoning Lease after Lease. Bounded so a
+	// regression in the counter fails the test instead of hanging it.
+	leaseID := ""
+	for i := 0; int64(statusOf(t, srv, testScreenIDA).UnackedPulls) <= wire.ScreenFetchingMaxUnackedPulls; i++ {
+		if i > 20 {
+			t.Fatalf("unacked_pulls never passed %d over %d content-bearing pulls; this test can no longer reach the state it exists to check",
+				wire.ScreenFetchingMaxUnackedPulls, i)
+		}
+		_, raw := doProgram(t, srv, token, []string{"image", "video", "slide"})
+		var lease LeaseResponse
+		remarshal(t, raw, &lease)
+		leaseID = lease.LeaseID
+	}
+	before := statusOf(t, srv, testScreenIDA).UnackedPulls
+
+	// The press names the lease most recently issued, because the relay only
+	// accepts one it recently handed out (PLY-114) — an earlier id would be
+	// refused and the test would pass for the wrong reason.
+	resp := postInteraction(t, srv, token, map[string]any{
+		"lease_id":    leaseID,
+		"interaction": "call_service",
+		"slide_id":    "intro",
+	})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("interaction status = %d, want 200 — the press must be ACCEPTED for this test to be about what an accepted press does", resp.StatusCode)
+	}
+
+	after := statusOf(t, srv, testScreenIDA)
+	if after.UnackedPulls != before {
+		t.Errorf("unacked_pulls = %d after a viewer press, want %d unchanged.\n"+
+			"A press is liveness evidence, not content-transfer evidence. Clearing this count is what let an interactive wall that was refusing every program read `live` indefinitely: screens.reachabilityOf tests `rejected` FIRST and derives it from this counter.",
+			after.UnackedPulls, before)
+	}
+	if int64(after.UnackedPulls) <= wire.ScreenFetchingMaxUnackedPulls {
+		t.Errorf("unacked_pulls = %d is back inside the %d the read model tolerates, so the screen would grade reachable again on a press alone",
+			after.UnackedPulls, wire.ScreenFetchingMaxUnackedPulls)
 	}
 }

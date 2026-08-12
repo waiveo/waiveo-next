@@ -489,19 +489,33 @@ func (s *Server) noteLeaseAck(screenID, leaseID string, accepted bool, reason st
 // and a press by someone standing in front of a screen that is refusing its new
 // program must not read as that screen having taken it.
 //
-// What it still shares with an accepted ack is the unackedPulls reset, which is
-// a known and separately-booked conflation: a press is liveness evidence but not
-// content-transfer evidence, and clearing a CONTENT-transfer failure count on
-// one is a different fact standing in for the fact the counter measures. It is
-// left exactly as it was here rather than changed under an unrelated fix; the
-// rejected* set above is not cleared by it, so a refusal a screen actually made
-// survives any number of presses.
+// It does NOT clear unackedPulls either, and that is the whole point of the
+// distinction rather than a detail of it. A press is liveness evidence and not
+// content-transfer evidence; unackedPulls measures the second. Clearing it here
+// let a different fact stand in for the fact the counter exists to report.
+//
+// What that cost is larger than "a screen reads fetching for longer", which is
+// how it was first booked. unackedPulls is the ONLY discriminator in
+// screens.reachabilityOf that survives a screen which keeps talking: `rejected`
+// is tested FIRST and is driven by this counter (isRejecting), and the clause
+// below it grades `live` on the freshest of pull-or-ack age — which a screen in
+// a fetch-failure retry loop keeps fresh by pulling. So on an interactive wall,
+// where presses arrive faster than the three pulls the bound allows, zeroing it
+// here did not delay `rejected`; it made it unreachable, and every screen
+// refusing every program it was handed read `live` for as long as people kept
+// touching it. That is the 2026-08 failure the bound was added to catch
+// (wire.ScreenFetchingMaxUnackedPulls), switched back off for exactly the
+// screens most likely to be pressed.
+//
+// The liveness stamp stays: a press really is proof the screen is talking to
+// this relay, and lastAckMs is where that belongs. Only the content-transfer
+// counter is left alone, so a wall that cannot fetch is still visibly a wall
+// that cannot fetch, however much it is used.
 func (s *Server) noteScreenContact(screenID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	l := s.liveness[screenID]
 	l.lastAckMs = s.nowMs()
-	l.unackedPulls = 0
 	s.liveness[screenID] = l
 }
 
