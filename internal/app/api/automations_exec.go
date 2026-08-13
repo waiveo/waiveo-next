@@ -75,6 +75,7 @@ type runReport struct {
 	Commands        []runCommand
 	Signage         []eval.SignageOutcome
 	Variables       []eval.VariableOutcome
+	PackActions     []eval.PackActionOutcome
 	Logs            []runLog
 	DelaysCollapsed int
 }
@@ -125,11 +126,12 @@ const maxCollapsedDelays = 64
 // from the CALLER's bindings rather than from the rule's placement at all.
 func (srv *server) runAutomationNow(ctx context.Context, traceID string, rule model.Rule, view scopeView, scopeNode string, dryRun bool) runReport {
 	rep := runReport{
-		DryRun:    dryRun,
-		Commands:  []runCommand{},
-		Signage:   []eval.SignageOutcome{},
-		Logs:      []runLog{},
-		Variables: []eval.VariableOutcome{},
+		DryRun:      dryRun,
+		Commands:    []runCommand{},
+		Signage:     []eval.SignageOutcome{},
+		Logs:        []runLog{},
+		Variables:   []eval.VariableOutcome{},
+		PackActions: []eval.PackActionOutcome{},
 	}
 
 	reg := registry.FromDeviceClass(deviceclass.Builtin(), registry.Overlay{})
@@ -176,6 +178,7 @@ func (srv *server) runAutomationNow(ctx context.Context, traceID string, rule mo
 	cmds := &relayCommandSink{srv: srv, ctx: ctx, traceID: traceID, view: view, dry: dryRun}
 	sign := &screenOverrideSink{srv: srv, ctx: ctx, view: view, dry: dryRun}
 	varsink := &variableWriteSink{srv: srv, ctx: ctx, traceID: traceID, view: view, node: scopeNode, dry: dryRun}
+	packsink := &packActionSink{srv: srv, ctx: ctx, traceID: traceID, dry: dryRun}
 
 	var logs []eval.LogEntry
 	var rejected []eval.CommandResult
@@ -199,7 +202,12 @@ func (srv *server) runAutomationNow(ctx context.Context, traceID string, rule mo
 		// and do nothing at all.
 		Variables:        varsink,
 		VariableOutcomes: &rep.Variables,
-		Logs:             &logs,
+		// The RUL-231 seam. Nil on the edge engine (a rule containing one is
+		// app-classified, so the relay is never handed it); here it routes by the
+		// named pack's manifest.
+		PackActions:        packsink,
+		PackActionOutcomes: &rep.PackActions,
+		Logs:               &logs,
 		// Pre-dispatch refusals — an entity this app peer has never been told
 		// about, or a command outside its device class's vocabulary — are
 		// REPORTED rather than absorbed. Without this the single most likely

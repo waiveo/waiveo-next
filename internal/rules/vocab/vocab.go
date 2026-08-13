@@ -58,6 +58,14 @@ var conditions = map[string]Class{
 var actions = map[string]Class{
 	"device_command": Edge, "preset_batch": Edge, "choose": Edge, "delay": Edge, "log": Edge,
 	"notify": App, ActionVariableWrite: App, "workflow_start": App,
+	// RUL-231 reads a pack action's class off the MANIFEST entry it names —
+	// relay-command is edge, app-service is app — and this map is static, so it
+	// cannot express that. App is the safe classification of the two: the edge
+	// engine never runs one, and the app peer, which can read the manifest,
+	// routes by its execution field. Classifying it Edge would be the unsafe
+	// direction, since the relay holds no manifests and could not tell the two
+	// apart at all.
+	ActionPackAction: App,
 	// The signage actions (RUL-234/235). App-class unconditionally, and for a
 	// structural reason rather than a policy one: each writes a screen row's
 	// authored program override (data-model/1 DAT-004c), which is app-peer state
@@ -104,6 +112,12 @@ const (
 // dispatch arm and the `actions` class table above cannot drift apart on the
 // spelling of a member one of them dispatches.
 const ActionVariableWrite = "variable_write"
+
+// ActionPackAction is the RUL-231 action type: an invocation of an action a
+// pack declared in its manifest. Named here for the same anti-drift reason as
+// ActionVariableWrite — the class table above and the evaluator's dispatch arm
+// must not disagree on its spelling.
+const ActionPackAction = "pack_action"
 
 // IsSignageAction reports whether typ is one of the three RUL-233 ScreenRef-
 // carrying action types. It is the ONE definition of that set: the compiler

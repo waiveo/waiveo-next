@@ -1324,6 +1324,21 @@ type AutomationRunCommand struct {
 	Ok    bool    `json:"ok"`
 }
 
+// AutomationRunPackAction One `pack_action`'s outcome (`rules/1` RUL-231): the publisher-qualified name the action declared, and whether the host routed it. `ok` means QUEUED, not completed — a pack action is asynchronous by construction (the pack leases the invocation and reports its result separately), so this reports the handoff, which is the only true statement available at the instant the run ends.
+type AutomationRunPackAction struct {
+	// Action Always `pack_action`. A plain string rather than an `enum` for the reason `AutomationRunSignage.action` gives at length.
+	Action string `json:"action"`
+
+	// Error Why it was not, when `ok` is false — an unknown pack, an action the pack never declared or never exposed to automation, or an `execution: relay-command` action, which RUL-232 forbids sending to the pack's handler and this host does not yet dispatch as a device command.
+	Error *string `json:"error,omitempty"`
+
+	// Name The publisher-qualified pack action name the action declared (`<publisher>/<pack>.<action>`). NOT constrained to that grammar here, for `AutomationRunVariable.variable`'s reason: a malformed name is exactly the case this report exists to surface, and an empty string is what a `pack_action` that declared no `action` at all reports.
+	Name string `json:"name"`
+
+	// Ok Whether the invocation was accepted and queued.
+	Ok bool `json:"ok"`
+}
+
 // AutomationRunRequest Optional trigger-context override for this manual run.
 type AutomationRunRequest struct {
 	Context *map[string]interface{} `json:"context,omitempty"`
@@ -1352,6 +1367,9 @@ type AutomationRunResult struct {
 		Level   string `json:"level"`
 		Message string `json:"message"`
 	} `json:"logs"`
+
+	// PackActions Every `pack_action` this run routed (`rules/1` RUL-231), in action order. Present for the variables array's reason, and one more that is specific to it: a pack action's real work happens in the pack, after this response is written, so without this array the ONLY thing the run could report about it is silence — identical whether the invocation was queued or the named pack was never installed.
+	PackActions *[]AutomationRunPackAction `json:"pack_actions,omitempty"`
 
 	// RunId A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	RunId Ulid `json:"run_id"`

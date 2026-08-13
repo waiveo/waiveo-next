@@ -2953,6 +2953,17 @@ export interface components {
             /** @description Present only when `ok` is false. */
             error?: string;
         };
+        /** @description One `pack_action`'s outcome (`rules/1` RUL-231): the publisher-qualified name the action declared, and whether the host routed it. `ok` means QUEUED, not completed — a pack action is asynchronous by construction (the pack leases the invocation and reports its result separately), so this reports the handoff, which is the only true statement available at the instant the run ends. */
+        AutomationRunPackAction: {
+            /** @description Always `pack_action`. A plain string rather than an `enum` for the reason `AutomationRunSignage.action` gives at length. */
+            action: string;
+            /** @description The publisher-qualified pack action name the action declared (`<publisher>/<pack>.<action>`). NOT constrained to that grammar here, for `AutomationRunVariable.variable`'s reason: a malformed name is exactly the case this report exists to surface, and an empty string is what a `pack_action` that declared no `action` at all reports. */
+            name: string;
+            /** @description Whether the invocation was accepted and queued. */
+            ok: boolean;
+            /** @description Why it was not, when `ok` is false — an unknown pack, an action the pack never declared or never exposed to automation, or an `execution: relay-command` action, which RUL-232 forbids sending to the pack's handler and this host does not yet dispatch as a device command. */
+            error?: string;
+        };
         /** @description One `variable_write` action's outcome (`rules/1` RUL-220): the name it targeted, the value actually written, and whether the write landed. */
         AutomationRunVariable: {
             /** @description Always `variable_write`. A plain string rather than an `enum` for the reason `AutomationRunSignage.action` gives at length. */
@@ -2990,6 +3001,8 @@ export interface components {
             signage: components["schemas"]["AutomationRunSignage"][];
             /** @description Every `variable_write` action this run performed (`rules/1` RUL-220), in action order. Present for the same reason the arrays above are: without it a rule whose write was refused — an invalid name, a value the store will not hold, a scope node this run may not write — answered `disposition: "ran"` with an unchanged variable, indistinguishable from a write that worked. */
             variables: components["schemas"]["AutomationRunVariable"][];
+            /** @description Every `pack_action` this run routed (`rules/1` RUL-231), in action order. Present for the variables array's reason, and one more that is specific to it: a pack action's real work happens in the pack, after this response is written, so without this array the ONLY thing the run could report about it is silence — identical whether the invocation was queued or the named pack was never installed. */
+            pack_actions?: components["schemas"]["AutomationRunPackAction"][];
             /** @description Every `log` action's evaluated message (`rules/1` RUL-200), in order. */
             logs: {
                 /** @description One of `info`, `warning`, `error` (`rules/1` RUL-200). A plain string for the reason `AutomationRunSignage.action` gives. */

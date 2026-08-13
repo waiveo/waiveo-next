@@ -764,6 +764,12 @@ var probes = map[string]probe{
 				map[string]any{"type": "device_command", "entity_id": autoScreenEntity, "command": "launch"},
 				map[string]any{"type": "play_cast", "screen_id": screenID, "cast_id": castID},
 				map[string]any{"type": "variable_write", "variable": "run_probe_flag", "value": true},
+				// A pack_action naming an uninstalled pack, so the probe exercises
+				// the REFUSAL shape: it fills every member of the item schema
+				// including the optional `error`, which the success shape omits.
+				// The probe's job is to make the declared shape observable, and the
+				// four-member item is the more complete of the two.
+				map[string]any{"type": "pack_action", "action": "acme/absent.run-backup"},
 				map[string]any{"type": "log", "message": "run probe"},
 			},
 		}), nil)

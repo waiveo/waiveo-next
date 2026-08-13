@@ -197,6 +197,7 @@ func (srv *server) runAutomationExec(w http.ResponseWriter, r *http.Request, raw
 		Commands:        rep.Commands,
 		Signage:         rep.Signage,
 		Variables:       rep.Variables,
+		PackActions:     rep.PackActions,
 		Logs:            rep.Logs,
 		DelaysCollapsed: rep.DelaysCollapsed,
 	})
@@ -206,14 +207,15 @@ func (srv *server) runAutomationExec(w http.ResponseWriter, r *http.Request, raw
 // mode disposition, plus the effect report that is the difference between this
 // operation acting and merely claiming to.
 type automationRunResponse struct {
-	RunID           string                 `json:"run_id"`
-	Disposition     string                 `json:"disposition"`
-	DryRun          bool                   `json:"dry_run"`
-	Commands        []runCommand           `json:"commands"`
-	Signage         []eval.SignageOutcome  `json:"signage"`
-	Variables       []eval.VariableOutcome `json:"variables"`
-	Logs            []runLog               `json:"logs"`
-	DelaysCollapsed int                    `json:"delays_collapsed,omitempty"`
+	RunID           string                   `json:"run_id"`
+	Disposition     string                   `json:"disposition"`
+	DryRun          bool                     `json:"dry_run"`
+	Commands        []runCommand             `json:"commands"`
+	Signage         []eval.SignageOutcome    `json:"signage"`
+	Variables       []eval.VariableOutcome   `json:"variables"`
+	PackActions     []eval.PackActionOutcome `json:"pack_actions"`
+	Logs            []runLog                 `json:"logs"`
+	DelaysCollapsed int                      `json:"delays_collapsed,omitempty"`
 }
 
 // bulkEnableRequest is the AutomationBulkEnableRequest body: a label-selector

@@ -208,6 +208,40 @@ type VariableSink interface {
 	WriteVariable(name string, value any) VariableOutcome
 }
 
+// PackActionOutcome is one `pack_action`'s result, reported into the run report
+// the way a variable write's is.
+type PackActionOutcome struct {
+	Action string `json:"action"`
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Error  string `json:"error,omitempty"`
+}
+
+func failedPackActionOutcome(name, reason string) PackActionOutcome {
+	return PackActionOutcome{Action: "pack_action", Name: name, OK: false, Error: reason}
+}
+
+// PackActionSink performs the RUL-231 `pack_action` action against the app peer.
+//
+// It is an injected seam for the reason VariableSink and SignageSink are: this
+// package never knows how the work is carried out, only what was asked and what
+// came back. Like those two and unlike CommandSink, no EDGE deployment wires one
+// — a rule containing a pack_action is app-classified, so the relay's engine is
+// never handed one, and a nil sink is the normal edge posture rather than a
+// misconfiguration.
+//
+// # Why the ROUTING is the sink's problem and not this package's
+//
+// RUL-231 reads a pack action's execution class off the manifest entry it names
+// — `relay-command` is edge-class, `app-service` is app-class — and RUL-232
+// forbids sending a relay-command action through the pack's own handler. Neither
+// fact is knowable here: this package holds no manifests. So the sink is handed
+// the NAME and decides, which keeps the one component that can read a manifest
+// as the one component that routes.
+type PackActionSink interface {
+	InvokePackAction(name string, params map[string]any) PackActionOutcome
+}
+
 // LogEntry is one `log` action's recorded output (RUL-200): a level plus the
 // message an Expression evaluated to (runLog / ctx.EvalExpr).
 type LogEntry struct {
@@ -286,8 +320,10 @@ type ActionContext struct {
 	// the app side and the frozen one on the edge side, from the same rule text.
 	// RUL-392 is how a write becomes visible — it compiles a NEW generation — and
 	// a mid-run mutation of Vars would be a second, contradictory answer.
-	Variables        VariableSink
-	VariableOutcomes *[]VariableOutcome
+	Variables          VariableSink
+	PackActions        PackActionSink
+	VariableOutcomes   *[]VariableOutcome
+	PackActionOutcomes *[]PackActionOutcome
 
 	// EvalExpr live-evaluates a `log` message (RUL-200) and each `params` value
 	// (RUL-393) at dispatch. The engine supplies the closed-grammar evaluator with
@@ -342,10 +378,17 @@ func RunActions(ctx ActionContext, actions []model.Member) error {
 			runSignage(ctx, m)
 		case vocab.ActionVariableWrite:
 			runVariableWrite(ctx, m)
+		case vocab.ActionPackAction:
+			runPackAction(ctx, m)
 		default:
-			// An app-coupled or later-part action type (notify, workflow_start,
-			// pack_action) is out of this evaluation core's scope; no-op rather
-			// than error.
+			// An app-coupled or later-part action type (notify, workflow_start)
+			// is out of this evaluation core's scope; no-op rather than error.
+			//
+			// `pack_action` was in this list and is no longer: it is app-class
+			// (RUL-231) and the edge engine still never performs it, but that is
+			// now expressed as an unwired PackActionSink rather than as an unnamed
+			// default arm — so the APP peer, which can read a manifest and route
+			// by its execution field, performs it instead of it being dropped.
 			//
 			// `variable_write` was in this list and is no longer: it is still
 			// app-class (RUL-220) and the edge engine still never performs it,
@@ -844,4 +887,50 @@ func outcomeFor(results []CommandResult) string {
 	default:
 		return "partial"
 	}
+}
+
+// runPackAction performs RUL-231's `pack_action`.
+func runPackAction(ctx ActionContext, m model.Member) {
+	if ctx.PackActions == nil {
+		return // the normal edge posture — no app peer wired (see PackActionSink).
+	}
+	// Decoded member-by-member rather than into a struct of Go values, for the
+	// reason runVariableWrite gives: a struct decode fails WHOLE, so an `action`
+	// written as a number would run the whole thing as a silent no-op instead of
+	// being refused naming itself.
+	var spec struct {
+		Action json.RawMessage `json:"action"`
+		Params json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(m.Raw, &spec); err != nil {
+		recordPackAction(ctx, failedPackActionOutcome("",
+			"a pack_action must be a JSON object (rules/1 RUL-231): "+err.Error()))
+		return
+	}
+	var name string
+	if len(spec.Action) == 0 {
+		recordPackAction(ctx, failedPackActionOutcome("", "a pack_action must declare `action` (RUL-231)"))
+		return
+	}
+	if err := json.Unmarshal(spec.Action, &name); err != nil || name == "" {
+		recordPackAction(ctx, failedPackActionOutcome("", "a pack_action's `action` must be a non-empty string (RUL-231)"))
+		return
+	}
+
+	params := map[string]any{}
+	if len(spec.Params) > 0 {
+		if err := json.Unmarshal(spec.Params, &params); err != nil {
+			recordPackAction(ctx, failedPackActionOutcome(name,
+				"a pack_action's `params` must be an object (RUL-231): "+err.Error()))
+			return
+		}
+	}
+	recordPackAction(ctx, ctx.PackActions.InvokePackAction(name, params))
+}
+
+func recordPackAction(ctx ActionContext, out PackActionOutcome) {
+	if ctx.PackActionOutcomes == nil {
+		return
+	}
+	*ctx.PackActionOutcomes = append(*ctx.PackActionOutcomes, out)
 }
