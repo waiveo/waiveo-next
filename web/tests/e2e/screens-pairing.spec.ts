@@ -1,4 +1,4 @@
-import { test, expect, signIn, DEV_DIR } from "./support/console-session";
+import { test, expect, signIn, devDir } from "./support/console-session";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -75,8 +75,11 @@ test("pair a new screen end to end: create, code on screen, re-issue", async ({ 
   await codeDialog.getByRole("button", { name: "Done" }).click();
 
   // ---- Hand both codes (and the row id) to the player-side probe. ----------
-  mkdirSync(DEV_DIR, { recursive: true });
-  writeFileSync(resolve(DEV_DIR, "pairing-clickthrough.json"), JSON.stringify({
+  // devDir() rather than DEV_DIR: this mkdir is what turned a wrong-cwd run from
+  // a loud failure into a silent one, by CREATING the bogus directory that every
+  // later existence check then found.
+  mkdirSync(devDir(), { recursive: true });
+  writeFileSync(resolve(devDir(), "pairing-clickthrough.json"), JSON.stringify({
     screen_row_id: row!.id,
     screen_name: SCREEN_NAME,
     code1,

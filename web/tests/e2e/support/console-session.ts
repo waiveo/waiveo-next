@@ -54,8 +54,42 @@ import { resolve } from "node:path";
 export const BASE_URL = process.env.PW_BASE_URL ?? "https://127.0.0.1:7420";
 
 /** The repo-local run dir the Makefile's `RUNDIR` writes: the feeder's auth state
- * (including its printed setup code) and the artifacts specs hand to Go probes. */
+ * (including its printed setup code) and the artifacts specs hand to Go probes.
+ *
+ * Resolved relative to the CURRENT WORKING DIRECTORY, which is `web/` under
+ * `npm --prefix web run e2e` — the only supported way in, and what `make web-e2e`
+ * does. Run Playwright from the repo root instead and this silently becomes
+ * `<repo>/../.dev`: a directory belonging to nothing, which exists on some
+ * machines and not others.
+ *
+ * `devDir()` is what specs should call. It fails NAMING the problem, because the
+ * failure it replaces is genuinely misleading: a spec reading an absent directory
+ * gets an empty listing, and then reports "an export produced no container" —
+ * a sentence that accuses the product of a bug in the export path. That cost a
+ * real diagnosis session, chasing a defect in code that was working. */
 export const DEV_DIR = resolve(process.cwd(), "..", ".dev");
+
+/** DEV_DIR, asserted to be the REAL run dir. Use this anywhere a spec reads it.
+ *
+ * The check is for `feeder-auth/` — which `make dev-up` always creates — and not
+ * for mere existence, because mere existence is exactly what fails to catch this.
+ * A wrong-cwd run does not just READ the wrong path: `screens-pairing` calls
+ * `mkdirSync(DEV_DIR, {recursive: true})` to drop its handoff file, so the first
+ * wrong-cwd run CREATES the bogus directory and every run after it finds one
+ * there. An existence check passes from then on, and the misleading empty reads
+ * resume. */
+export function devDir(): string {
+  if (!existsSync(resolve(DEV_DIR, "feeder-auth"))) {
+    throw new Error(
+      `${DEV_DIR} is not the dev run dir (no feeder-auth/ inside it). Playwright must run ` +
+        `with cwd=web/ — \`npm --prefix web run e2e\`, which is what \`make web-e2e\` does — ` +
+        `and the stack must be up (\`make dev-up\`). Run from the repo root and this path ` +
+        `resolves OUTSIDE the repo, where reads come back empty and specs blame the product ` +
+        `for a bug it does not have. If a stray directory is already there, delete it.`,
+    );
+  }
+  return DEV_DIR;
+}
 const SETUP_CODE_PATH = resolve(DEV_DIR, "feeder-auth", "setup-code.txt");
 
 /** Dev-lab-only credential the suite claims the freshly-installed workspace with

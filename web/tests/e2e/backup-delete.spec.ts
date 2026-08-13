@@ -1,4 +1,4 @@
-import { test, expect, signIn, DEV_DIR } from "./support/console-session";
+import { test, expect, signIn, devDir } from "./support/console-session";
 import { existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -34,14 +34,18 @@ import { resolve } from "node:path";
 /** The feeder's archive destination under `make dev-up` (RUNDIR/feeder-archive,
  * cmd/waiveo-feeder's defaultArchiveDir relative to the run dir). Read directly
  * so "gone" means gone from the disk, not merely gone from a listing. */
-const ARCHIVE_DIR = resolve(DEV_DIR, "feeder-archive");
+const ARCHIVE_DIR = () => resolve(devDir(), "feeder-archive");
 
 const PASSPHRASE = "e2e-archive-passphrase-1";
 
 /** The container files actually on the box, straight off the filesystem. */
 function containersOnDisk(): string[] {
-  if (!existsSync(ARCHIVE_DIR)) return [];
-  return readdirSync(ARCHIVE_DIR).filter((f) => f.endsWith(".waiveo-archive"));
+  const dir = ARCHIVE_DIR();
+  // An absent archive dir under a PRESENT run dir is the real "nothing exported
+  // yet" — distinct from the run dir itself being missing, which devDir() has
+  // already refused above with the reason.
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter((f) => f.endsWith(".waiveo-archive"));
 }
 
 test.describe("Backup — deleting a container", () => {
@@ -68,7 +72,7 @@ test.describe("Backup — deleting a container", () => {
     // of the delete below is what it does to the disk.
     const after = containersOnDisk();
     const created = after.filter((f) => !before.includes(f));
-    expect(created, `an export produced no container in ${ARCHIVE_DIR}`).toHaveLength(1);
+    expect(created, `an export produced no container in ${ARCHIVE_DIR()}`).toHaveLength(1);
     const name = created[0]!;
 
     const table = page.getByRole("table", { name: /backups on this box/i });
@@ -101,7 +105,7 @@ test.describe("Backup — deleting a container", () => {
     await expect
       .poll(() => containersOnDisk(), {
         timeout: 15_000,
-        message: `${name} is still in ${ARCHIVE_DIR} after a confirmed delete`,
+        message: `${name} is still in ${ARCHIVE_DIR()} after a confirmed delete`,
       })
       .not.toContain(name);
 
