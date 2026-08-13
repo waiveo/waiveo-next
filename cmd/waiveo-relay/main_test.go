@@ -157,6 +157,39 @@ func TestLoadConfigDefaultsAreLoopback(t *testing.T) {
 	if cfg.pairPort != 7421 {
 		t.Errorf("default pairPort = %d, want 7421", cfg.pairPort)
 	}
+	// The identity store defaults to the make-dev path, so `make dev-up` — which
+	// clears exactly that path to force a re-enroll — keeps working untouched.
+	if cfg.identityPath != identity.DefaultPath {
+		t.Errorf("default identityPath = %q, want %q", cfg.identityPath, identity.DefaultPath)
+	}
+}
+
+// The identity store used to be a hardcoded constant, which made it a hidden
+// GLOBAL: every relay on one machine opened the same file however differently it
+// was otherwise configured.
+//
+// That is a correctness problem, not a tidiness one. The store holds the
+// enrollment-anchored pin REL-137 checks, so a relay pointed at a SECOND app peer
+// picked up the identity enrolled with the FIRST and refused the connection it
+// had just been told to make — reporting, accurately, that "the app peer at this
+// address is NOT the one this relay enrolled with". One of the two causes the
+// relay names for that is "a second process holding the same address", and the
+// isolated stack that would rule it in or out could not be started at all while
+// this path was fixed.
+func TestLoadConfigIdentityPathIsOverridable(t *testing.T) {
+	env := map[string]string{"WAIVEO_RELAY_IDENTITY_PATH": "/tmp/second-stack/relay.db"}
+	cfg, err := loadConfig(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatalf("loadConfig(override): %v", err)
+	}
+	if cfg.identityPath != "/tmp/second-stack/relay.db" {
+		t.Errorf("identityPath = %q, want the override", cfg.identityPath)
+	}
+	// …and it is genuinely a different file from the default, which is the whole
+	// point: two relays that resolve to one store are one relay with two names.
+	if cfg.identityPath == identity.DefaultPath {
+		t.Error("the override resolved back to the default path")
+	}
 }
 
 func TestLoadConfigOnBoxOverride(t *testing.T) {

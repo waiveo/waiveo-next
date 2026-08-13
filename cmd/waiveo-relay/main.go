@@ -113,7 +113,11 @@ type config struct {
 	listen    string // TCP bind address for the player/1 HTTPS listener
 	feederURL string // co-located feeder base URL for enroll + desired-state pull
 	pairHost  string // dial host a formed pairing code encodes
-	pairPort  int    // dial port a formed pairing code encodes
+	// identityPath is the relay's own operational store (its enrollment-anchored
+	// pin among other things). Overridable so two relays can coexist on one
+	// machine — see the envOr call for why that matters beyond tidiness.
+	identityPath string
+	pairPort     int // dial port a formed pairing code encodes
 
 	// Hardware device plane (all optional). ecpTargets is the deployment
 	// OVERRIDE map, entity_id → the LAN Roku its device_commands dispatch to
@@ -292,9 +296,23 @@ func loadConfig(env func(string) string) (config, error) {
 	}
 	listen := envOr(env, "WAIVEO_RELAY_LISTEN", "127.0.0.1:7421")
 	return config{
-		listen:       listen,
-		feederURL:    envOr(env, "WAIVEO_FEEDER_URL", "https://127.0.0.1:7420"),
-		pairHost:     envOr(env, "WAIVEO_RELAY_PAIR_HOST", "127.0.0.1"),
+		listen:    listen,
+		feederURL: envOr(env, "WAIVEO_FEEDER_URL", "https://127.0.0.1:7420"),
+		pairHost:  envOr(env, "WAIVEO_RELAY_PAIR_HOST", "127.0.0.1"),
+		// The relay's own operational store. Every other path either binary reads
+		// is env-overridable; this one was a hardcoded constant, which made the
+		// identity store a hidden GLOBAL — two relays on one machine shared it
+		// however differently they were otherwise configured.
+		//
+		// That is not a tidiness point. The store holds the enrollment-anchored
+		// pin REL-137 checks, so a relay started against a second app peer picks
+		// up the identity enrolled with the FIRST and refuses the connection it
+		// was just told to make: "the app peer at this address is NOT the one
+		// this relay enrolled with". The relay says exactly that and names the
+		// two causes, and one of them — "a second process holding the same
+		// address" — is the one this constant made unavoidable, because the
+		// isolated stack that would have ruled it out could not be started.
+		identityPath: envOr(env, "WAIVEO_RELAY_IDENTITY_PATH", identity.DefaultPath),
 		pairPort:     port,
 		ecpTargets:   targets,
 		pollInterval: time.Duration(pollMS) * time.Millisecond,
@@ -594,7 +612,7 @@ func main() {
 		log.Fatalf("waiveo-relay: config: %v", err)
 	}
 
-	store, err := identity.Open(identity.DefaultPath)
+	store, err := identity.Open(cfg.identityPath)
 	if err != nil {
 		log.Fatalf("waiveo-relay: open identity store: %v", err)
 	}
@@ -1456,7 +1474,7 @@ func main() {
 	go telemetryFlushLoop(rootCtx, telemetryFlushTicker.C, telemetryChannel)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthzWithVitals(relayID.RelayID))
+	mux.HandleFunc("/healthz", healthzWithVitals(relayID.RelayID, cfg.identityPath))
 	pairingSrv.Register(mux)
 
 	// Mount the relay/1 clock.hint receiver (REL-133) on this relay's own
@@ -2507,16 +2525,17 @@ func feederTLSClient(currentLeaf func() (*tls.Certificate, error)) *http.Client 
 // that is still an open question in the contract's own draft-note, which is why
 // this reads on demand and emits nothing.
 //
-// The disk read is the relay's OWN operational storage (identity.DefaultPath),
+// The disk read is the relay's OWN operational storage (the configured identity
+// path),
 // which is what EVT-070's disk_headroom is about — not whatever filesystem the
 // process happened to start in.
 //
 // `status` stays "ok" while the process is answering: this route reports health,
 // and deciding which readings constitute unhealthy is a Repairs-detector question
 // with its own thresholds, not something to invent inside a liveness probe.
-func healthzWithVitals(relayID string) http.HandlerFunc {
+func healthzWithVitals(relayID, identityPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		reading := vitals.Read(filepath.Dir(identity.DefaultPath))
+		reading := vitals.Read(filepath.Dir(identityPath))
 		body := map[string]any{
 			"component": "waiveo-relay",
 			"status":    "ok",
