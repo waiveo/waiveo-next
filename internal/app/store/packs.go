@@ -113,7 +113,17 @@ type Pack struct {
 type PackFile struct {
 	Kind string
 	Name string
-	Body json.RawMessage
+	// Body is the file's bytes.
+	//
+	// `[]byte`, not `json.RawMessage`, since the owner's 2026-08-13 decision that
+	// extensions are written in Go (#189). A page document and a locale catalog
+	// are JSON text, but a code entry (MAN-065) is now a COMPILED, PER-
+	// ARCHITECTURE BINARY — arbitrary bytes, with no encoding and no JSON about
+	// it. Typing the field as a JSON message said the opposite, and the installer
+	// cast raw artifact bytes through it, which is a claim that happened to hold
+	// while extensions were JS source and stops holding the moment one is a
+	// binary.
+	Body []byte
 }
 
 // PackInstall is the fully-parsed, already-manifest-validated install the packs
@@ -418,13 +428,30 @@ func (s *Store) UninstallPack(ctx context.Context, id string, rev int64) error {
 }
 
 // GetPackFile returns one bundled file of a pack — a page document
-// (kind=PackFilePage, name = the page path) or a locale catalog
-// (kind=PackFileLocale, name = the locale) — and whether it exists.
-func (s *Store) GetPackFile(ctx context.Context, packID, kind, name string) (json.RawMessage, bool, error) {
+// (kind=PackFilePage, name = the page path), a locale catalog
+// (kind=PackFileLocale, name = the locale), or a code entry
+// (kind=PackFileCode, name = the manifest's runtime.entry) — and whether it
+// exists.
+//
+// Returns `[]byte` rather than `json.RawMessage` because a code entry is a
+// compiled binary after #189 and is not a JSON message. That is a TYPE
+// correction, and — measured, not assumed — not a behaviour one: scanning the
+// same value through a `string` and converting round-trips the bytes intact,
+// because a Go string is an arbitrary byte sequence and this driver binds and
+// returns what it was given. A mutation swapping the scan back to a string
+// passes the byte-fidelity test.
+//
+// It is still worth doing: `json.RawMessage` on a field holding an ELF binary
+// asserts something false to every reader and to every `json.Marshal` that ever
+// touches it, and the honest type is what stops the next person JSON-encoding
+// a pack executable. The test that pins the round trip is there to catch a
+// future path that IS lossy — a UTF-8 validation, a JSON re-encode — not to
+// catch today's.
+func (s *Store) GetPackFile(ctx context.Context, packID, kind, name string) ([]byte, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var body string
+	var body []byte
 	err := s.db.QueryRowContext(ctx,
 		`SELECT body FROM pack_files WHERE pack_id = ? AND file_kind = ? AND name = ?`,
 		packID, kind, name).Scan(&body)
@@ -434,7 +461,7 @@ func (s *Store) GetPackFile(ctx context.Context, packID, kind, name string) (jso
 	if err != nil {
 		return nil, false, fmt.Errorf("store: get pack file: %w", err)
 	}
-	return json.RawMessage(body), true, nil
+	return body, true, nil
 }
 
 // PackFileNames returns the names of a pack's files of the given kind, sorted —

@@ -502,7 +502,7 @@ func (in *Installer) collectBundleFiles(m *manifest.PackManifest, bundle *Bundle
 		files = append(files, store.PackFile{
 			Kind: store.PackFileCode,
 			Name: m.Runtime.Entry,
-			Body: append(json.RawMessage(nil), code...),
+			Body: append([]byte(nil), code...),
 		})
 	}
 

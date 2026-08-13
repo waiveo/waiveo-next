@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -478,5 +479,59 @@ func TestPackRowLabelsSurviveTheScan(t *testing.T) {
 	}
 	if got2.Labels == nil || len(got2.Labels) != 0 {
 		t.Fatalf("labels of an unlabeled row = %#v, want the empty list", got2.Labels)
+	}
+}
+
+// A CODE entry survives the round trip byte for byte, including the bytes that
+// make it a binary rather than text.
+//
+// This is the storage consequence of the owner's 2026-08-13 decision that
+// extensions are written in Go (#189). While extensions were JS source, a code
+// entry was UTF-8 text and `pack_files.body TEXT` + a `json.RawMessage` field
+// were an honest fit. A compiled per-architecture binary is not text: it carries
+// NUL bytes and byte sequences that are not valid UTF-8, and every one of them
+// has to come back unchanged or the pack the supervisor execs is not the pack
+// that was signed and installed.
+//
+// Note what this test does and does not catch, because the difference was
+// measured rather than assumed: today's text path is NOT lossy. Scanning the
+// same row through a Go `string` returns the bytes intact — a Go string is an
+// arbitrary byte sequence, and a mutation swapping the scan back to one passes
+// this test. What the test guards is a FUTURE lossy path: a UTF-8 validation, a
+// JSON re-encode, a driver swap. The bytes below are the ones such a path
+// mangles first — a NUL, and 0xFF, which is invalid UTF-8 in any position and
+// is what a lossy conversion replaces with U+FFFD.
+func TestACodeEntrySurvivesAsBytesNotText(t *testing.T) {
+	st := openMem(t)
+	ctx := context.Background()
+
+	// An ELF header's opening bytes, then a NUL, then invalid UTF-8 — a
+	// plausible prefix of the real artifact rather than an abstract blob.
+	binary := []byte{0x7f, 'E', 'L', 'F', 0x02, 0x01, 0x01, 0x00, 0x00, 0xff, 0xfe, 'g', 'o'}
+
+	spec := packSpec("acme/menu-board", "1.0.0", 1,
+		store.PackFile{Kind: store.PackFileCode, Name: "bin/pack", Body: binary},
+		// A JSON sibling in the same table, to prove the change did not cost the
+		// text kinds anything.
+		store.PackFile{Kind: store.PackFilePage, Name: "menu-items", Body: []byte(`{"pageType":"list-detail"}`)},
+	)
+	if _, _, err := st.InstallPack(ctx, spec); err != nil {
+		t.Fatalf("InstallPack: %v", err)
+	}
+
+	got, found, err := st.GetPackFile(ctx, "acme/menu-board", store.PackFileCode, "bin/pack")
+	if err != nil || !found {
+		t.Fatalf("GetPackFile(code) = found %v, err %v", found, err)
+	}
+	if !bytes.Equal(got, binary) {
+		t.Fatalf("the code entry did not survive storage:\n got %#v\nwant %#v", got, binary)
+	}
+
+	page, found, err := st.GetPackFile(ctx, "acme/menu-board", store.PackFilePage, "menu-items")
+	if err != nil || !found {
+		t.Fatalf("GetPackFile(page) = found %v, err %v", found, err)
+	}
+	if string(page) != `{"pageType":"list-detail"}` {
+		t.Errorf("the page document changed: %q", page)
 	}
 }
