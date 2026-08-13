@@ -484,6 +484,28 @@ func (in *Installer) collectBundleFiles(m *manifest.PackManifest, bundle *Bundle
 		pages = append(pages, p.Path)
 	}
 
+	// MAN-065: a code-carrying pack's entry file is STORED, so the host can hand
+	// a child process a path to it later. Stored verbatim and never parsed — the
+	// host has no opinion about what the bytes are, exactly as it has none about
+	// a page document beyond it being JSON.
+	//
+	// The manifest engine has already refused an entry that names no bundled
+	// file, so a miss here would mean the bundle changed between validation and
+	// this read; it is still checked, because "the manifest said so" is not a
+	// reason to write a row with no bytes behind it.
+	if m.Runtime != nil {
+		code, ok := bundle.File(m.Runtime.Entry)
+		if !ok {
+			return nil, nil, nil, artifactErr("PACK_CODE_ENTRY_MISSING",
+				"runtime.entry %q names no file in the artifact (MAN-065)", m.Runtime.Entry)
+		}
+		files = append(files, store.PackFile{
+			Kind: store.PackFileCode,
+			Name: m.Runtime.Entry,
+			Body: append(json.RawMessage(nil), code...),
+		})
+	}
+
 	for _, name := range bundle.Names() {
 		locale, ok := localeName(name)
 		if !ok {

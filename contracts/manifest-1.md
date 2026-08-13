@@ -102,6 +102,14 @@ manifest/1 defines the declarative document every pack ships at its root: identi
 
 **[MAN-064]** A declared page whose `pageType` is `settings-form` MUST have a page document whose `source` (`ui-schema/1` UIS-030, the single record the page edits) names a collection this same manifest declares with `singleton: true` (MAN-056). A `source` naming no declared collection, or naming one that is not a singleton, MUST fail installation with `SETTINGS_SOURCE_NOT_SINGLETON`. A `settings-form` binds one record and the host resolves that record from the manifest alone — there is no route author to supply it, as there is for a console page — so a `source` the manifest does not account for is a page that renders and cannot save. That failure is invisible until an operator edits the form and presses the button, which is the worst moment to discover it; refusing the artifact moves it to publish time.
 
+**[MAN-065]** A pack that carries EXECUTABLE CODE MUST declare `runtime` as an object `{entry, exec}` — `entry` the path of exactly one bundled file the host runs, and `exec` a non-empty array of argv tokens in which the placeholder `$entry` appears exactly once and is substituted with the host's local path to that stored file. A declaration whose `entry` names no file in the pack's bundle MUST fail manifest validation, the same rule `ui.surfaces[].entry` follows (MAN-063). A pack that carries no code omits `runtime` and remains a purely declarative pack — that tier is not deprecated by this one.
+
+`exec` exists so the artifact says HOW to run its entry rather than the host inferring it from a file extension. Inference would make the set of runnable packs a property of the host's guessing rules, which is exactly the kind of thing that differs between a developer's laptop and an appliance and produces a pack that runs in one and not the other. It also keeps this contract neutral about the language a pack is written in: `["node", "$entry"]` and `["$entry"]` are both well-formed, and which of them a given deployment can actually execute is a property of that deployment, not of manifest/1.
+
+A host that cannot execute a pack's declared `exec` MUST refuse the INSTALL with a typed error naming the missing runtime, never install it and fail later at start. An extension that installs and then never runs is indistinguishable, to an operator, from one that is broken — and the moment to say "this box cannot run this" is while the operator is still looking at the thing they just chose.
+
+*draft-note: `exec` deliberately carries no environment, working directory or resource controls. Those are host-side supervision concerns (out of scope, as `ctx/1` said of the same subject), and a pack that could set its own environment could set the variables the host uses to hand it its identity (`security-model.md` SEC-037).*
+
 ### Device contributions
 
 **[MAN-070]** The manifest MAY declare `devices` as an array of device-class contribution objects, each `{deviceClass, match, capabilities}` where `deviceClass` names an entry in the host's device-class registry, `match` is an array of discovery-match patterns, and `capabilities` lists the command/entity capabilities requested for that class.
@@ -323,6 +331,7 @@ Problem's top-level `code` — that stays `VALIDATION_FAILED`.
 | `PACK_PAGE_DOC_MISSING` | `ui.pages` declares a path and the artifact carries no page document there (`ui-schema/1` UIS-001) — a declaration that resolves to nothing. | no — add the page document, or drop the declaration |
 | `PACK_PAGE_DOC_INVALID` | A page document is present and is not valid JSON. | no — republish valid JSON |
 | `PACK_LOCALE_INVALID` | A locale catalog is present and is not valid JSON. | no — republish valid JSON |
+| `PACK_CODE_ENTRY_MISSING` | A pack declares `runtime.entry` (MAN-065) and the artifact carries no file there — a pack that would install and have nothing to run. | no — bundle the entry, or drop the runtime block |
 | `INVALID_ULID` | A pack-data field that must be a ULID reference is present, a string, and not a valid one. | no — supply a canonical ULID |
 | `INVALID_LIFECYCLE_STATE` | A row's `lifecycle_state` is outside the closed set `draft`, `published`, `archived`. | no — use a declared state |
 | `LIFECYCLE_NOT_ALLOWED` | A row wrote a `lifecycle_state` other than `published` into a collection that does not declare `lifecycle: draft-publish` (MAN-052). The value is well-formed; the collection simply has no lifecycle for it to name. | no — declare the lifecycle, or write `published` |

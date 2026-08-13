@@ -25,9 +25,11 @@ import (
 //     (MAN-053 regression is checked against the latter), and the full manifest
 //     body.
 //   - pack_files — the pack's rendered content bundle as data: its ui-schema/1
-//     page documents (file_kind='page', name = the ui.pages[].path) and its
-//     locale catalogs (file_kind='locale', name = the locale, e.g. 'en'). Never
-//     code — a pack is data end to end (declarative-only pre-ctx/1).
+//     page documents (file_kind='page', name = the ui.pages[].path), its locale
+//     catalogs (file_kind='locale', name = the locale, e.g. 'en'), and — for a
+//     code-carrying pack (MAN-065) — its entry file (file_kind='code', name =
+//     the manifest's runtime.entry path). The host never interprets any of the
+//     three; it stores them and hands each to whatever makes sense of it.
 //   - pack_rows  — the universal-envelope rows of the pack's declared
 //     collections (MAN-051): pack_id + collection + the seven envelope columns +
 //     the declared-fields body. Created here; its row-level CRUD (the api/1
@@ -75,6 +77,17 @@ CREATE TABLE IF NOT EXISTS pack_rows (
 const (
 	PackFilePage   = "page"
 	PackFileLocale = "locale"
+	// PackFileCode is a code-carrying pack's entry file (MAN-065). Added
+	// deliberately, not incidentally: the schema comment above used to say a
+	// pack is "never code — data end to end (declarative-only pre-ctx/1)", and
+	// that WAS true. It stopped being true when the owner made an updatable
+	// extension system the product, and this constant is where that changed.
+	//
+	// The bytes are still never interpreted by the host. It stores them and, for
+	// a pack that declares `runtime`, hands their path to a child process — the
+	// same relationship it has with a page document, which it also stores and
+	// hands to something else to make sense of.
+	PackFileCode = "code"
 )
 
 // Pack is one installed pack's persisted identity + baseline: the id, the

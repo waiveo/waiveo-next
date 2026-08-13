@@ -39,9 +39,12 @@ type PackManifest struct {
 	Devices      []Device                   `json:"devices,omitempty"`
 	Contributes  Contributes                `json:"contributes,omitempty"`
 	Actions      []Action                   `json:"actions"`
-	Drivers      json.RawMessage            `json:"drivers,omitempty"`
-	Sources      json.RawMessage            `json:"sources,omitempty"`
-	Diagnostics  json.RawMessage            `json:"diagnostics,omitempty"`
+	// Runtime is the code-carrying tier (MAN-065). Absent on a purely
+	// declarative pack, which remains a supported shape.
+	Runtime     *Runtime        `json:"runtime,omitempty"`
+	Drivers     json.RawMessage `json:"drivers,omitempty"`
+	Sources     json.RawMessage `json:"sources,omitempty"`
+	Diagnostics json.RawMessage `json:"diagnostics,omitempty"`
 }
 
 // Compat is the compatibility block (MAN-010-013): the ctx version range the
@@ -219,6 +222,16 @@ type Action struct {
 	AuditClass         string          `json:"auditClass"`
 	IdempotencyClass   string          `json:"idempotencyClass"`
 	AutomationCallable bool            `json:"automationCallable,omitempty"`
+}
+
+// Runtime is a code-carrying pack's entry point and how to run it (MAN-065).
+//
+// Exec is argv rather than a shell string: a shell string would make quoting
+// and word-splitting part of the install contract, and the first pack whose path
+// contains a space would discover that at start rather than at publish.
+type Runtime struct {
+	Entry string   `json:"entry"`
+	Exec  []string `json:"exec"`
 }
 
 // HostRegistries carries the install-time inputs a manifest is validated

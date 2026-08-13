@@ -92,5 +92,54 @@ func validateUI(m PackManifest, host HostRegistries) []Error {
 		}
 	}
 
+	errs = append(errs, validateRuntime(m, host)...)
 	return errs
 }
+
+// validateRuntime enforces MAN-065's code-carrying declaration.
+//
+// A pack without `runtime` is declarative and valid — that tier is not
+// deprecated by this one, so absence is never an error.
+func validateRuntime(m PackManifest, host HostRegistries) []Error {
+	if m.Runtime == nil {
+		return nil
+	}
+	var errs []Error
+	if m.Runtime.Entry == "" {
+		errs = append(errs, Error{"MANIFEST_SCHEMA_INVALID", "runtime.entry",
+			"runtime.entry is required for a code-carrying pack (MAN-065)"})
+	} else if !host.BundleFiles[m.Runtime.Entry] {
+		// The same rule ui.surfaces[].entry follows: a declaration that names no
+		// bundled file is a pack that installs and cannot start.
+		errs = append(errs, Error{"MANIFEST_SCHEMA_INVALID", "runtime.entry",
+			`runtime.entry "` + m.Runtime.Entry + `" does not name a file in the pack's bundle (MAN-065)`})
+	}
+
+	if len(m.Runtime.Exec) == 0 {
+		errs = append(errs, Error{"MANIFEST_SCHEMA_INVALID", "runtime.exec",
+			"runtime.exec is required and must name how to run the entry (MAN-065)"})
+		return errs
+	}
+	// $entry EXACTLY once. Zero means the argv never mentions the file the pack
+	// shipped, so the host would run something else entirely; more than once
+	// means the substitution is ambiguous and the pack author has not said what
+	// they meant.
+	placeholders := 0
+	for _, tok := range m.Runtime.Exec {
+		if tok == runtimeEntryPlaceholder {
+			placeholders++
+		}
+	}
+	if placeholders != 1 {
+		errs = append(errs, Error{"MANIFEST_SCHEMA_INVALID", "runtime.exec",
+			"runtime.exec must contain the placeholder " + runtimeEntryPlaceholder +
+				" exactly once (MAN-065); it appears " + strconv.Itoa(placeholders) + " times"})
+	}
+	return errs
+}
+
+// RuntimeEntryPlaceholder is the argv token MAN-065 substitutes with the host's
+// local path to the pack's stored entry file.
+const RuntimeEntryPlaceholder = runtimeEntryPlaceholder
+
+const runtimeEntryPlaceholder = "$entry"

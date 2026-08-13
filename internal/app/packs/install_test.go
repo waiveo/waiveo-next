@@ -704,3 +704,99 @@ func TestSettingsFormSourceNamingASingletonInstalls(t *testing.T) {
 		t.Fatalf("a settings-form bound to a declared singleton must install: %v", err)
 	}
 }
+
+// ── MAN-065: the code-carrying tier ─────────────────────────────────────────
+//
+// A pack may now ship a file the host runs. The rules that matter are that the
+// entry has to BE there, that the argv says how to run it rather than the host
+// guessing from a file extension, and that a purely declarative pack is still
+// perfectly valid — this tier is added beside that one, not over it.
+
+// runtimePack builds an artifact declaring a runtime block.
+func runtimePack(t *testing.T, s *testSigner, runtime map[string]any, withEntryFile bool) []byte {
+	t.Helper()
+	m := baseManifest()
+	if runtime != nil {
+		m["runtime"] = runtime
+	}
+	files := basePackFiles(t, m)
+	if withEntryFile {
+		files["run.js"] = "// the pack's code\n"
+	}
+	return signedFilesZip(t, s, files, "acme/menu-board", "1.0.0")
+}
+
+func TestACodeCarryingPackStoresItsEntryFile(t *testing.T) {
+	st := openStore(t)
+	in, signer := newInstaller(t, st)
+	art := runtimePack(t, signer, map[string]any{"entry": "run.js", "exec": []any{"node", "$entry"}}, true)
+
+	if _, err := in.Install(context.Background(), art); err != nil {
+		t.Fatalf("a code-carrying pack must install: %v", err)
+	}
+	body, ok, err := st.GetPackFile(context.Background(), "acme/menu-board", store.PackFileCode, "run.js")
+	if err != nil || !ok {
+		t.Fatalf("the entry file was not stored: ok=%v err=%v", ok, err)
+	}
+	if string(body) != "// the pack's code\n" {
+		t.Fatalf("stored entry = %q, want the bundled bytes verbatim", body)
+	}
+}
+
+// A declarative pack is still valid. The new tier sits beside the old one; if
+// omitting `runtime` ever became an error, every pack shipped so far would stop
+// installing.
+func TestAPackWithoutARuntimeStillInstalls(t *testing.T) {
+	st := openStore(t)
+	in, signer := newInstaller(t, st)
+	if _, err := in.Install(context.Background(), runtimePack(t, signer, nil, false)); err != nil {
+		t.Fatalf("a declarative pack must still install: %v", err)
+	}
+	if _, ok, _ := st.GetPackFile(context.Background(), "acme/menu-board", store.PackFileCode, "run.js"); ok {
+		t.Fatal("a declarative pack stored a code file")
+	}
+}
+
+// An entry naming no bundled file is refused — a pack that would install and
+// have nothing to run.
+func TestARuntimeEntryThatNamesNoBundledFileIsRefused(t *testing.T) {
+	st := openStore(t)
+	in, signer := newInstaller(t, st)
+	art := runtimePack(t, signer, map[string]any{"entry": "run.js", "exec": []any{"node", "$entry"}}, false)
+	_, err := in.Install(context.Background(), art)
+	manifestFieldCode(t, err, "runtime.entry", "MANIFEST_SCHEMA_INVALID")
+}
+
+// The argv must say how to run the entry, and must say it unambiguously.
+// Without the placeholder the host would run something other than the file the
+// pack shipped; with two, the substitution has no defined meaning.
+func TestTheExecArgvMustNameTheEntryExactlyOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		exec []any
+	}{
+		{"no placeholder at all", []any{"node", "server.js"}},
+		{"placeholder twice", []any{"node", "$entry", "$entry"}},
+		{"empty argv", []any{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := openStore(t)
+			in, signer := newInstaller(t, st)
+			art := runtimePack(t, signer, map[string]any{"entry": "run.js", "exec": tc.exec}, true)
+			_, err := in.Install(context.Background(), art)
+			manifestFieldCode(t, err, "runtime.exec", "MANIFEST_SCHEMA_INVALID")
+		})
+	}
+}
+
+// The contract is language-neutral: an argv that runs the entry directly is as
+// valid as one that hands it to an interpreter. Which of the two a deployment
+// can actually execute is that deployment's property, not manifest/1's.
+func TestTheExecArgvIsLanguageNeutral(t *testing.T) {
+	st := openStore(t)
+	in, signer := newInstaller(t, st)
+	art := runtimePack(t, signer, map[string]any{"entry": "run.js", "exec": []any{"$entry"}}, true)
+	if _, err := in.Install(context.Background(), art); err != nil {
+		t.Fatalf("a directly-executed entry must be valid (MAN-065): %v", err)
+	}
+}

@@ -35,6 +35,7 @@ One row per requirement ID `contracts/manifest-1.md` defines. Format: `conforman
 | MAN-062 | `contracts/manifest-1.md#ui-page-declarations` | - | TBD-wave1 |
 | MAN-063 | `contracts/manifest-1.md#ui-page-declarations` | - | TBD-wave1 |
 | MAN-064 | `contracts/manifest-1.md#ui-page-declarations` | - | TBD-wave1 |
+| MAN-065 | `contracts/manifest-1.md#ui-page-declarations` | - | TBD-wave1 |
 | MAN-070 | `contracts/manifest-1.md#device-contributions` | `MAN-020-valid-full-featured` | covered |
 | MAN-071 | `contracts/manifest-1.md#device-contributions` | - | TBD-wave1 |
 | MAN-072 | `contracts/manifest-1.md#device-contributions` | `MAN-020-valid-full-featured`, `MAN-072-invalid-devices-without-compat-relay` | covered |
