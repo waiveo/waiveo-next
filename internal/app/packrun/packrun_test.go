@@ -55,7 +55,7 @@ func pack(id, version string, enabled bool, runtime any) store.Pack {
 
 func host(t *testing.T, st *fakeStore, sp *fakeStarter) *Host {
 	t.Helper()
-	return New(st, sp, t.TempDir(), "01J8Z0B0000000000000000000", "https://127.0.0.1:7420")
+	return New(st, sp, t.TempDir(), "01J8Z0B0000000000000000000", "https://127.0.0.1:7420", []byte("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"))
 }
 
 // --- the headline ------------------------------------------------------------
@@ -317,5 +317,73 @@ func TestOnePacksFailureDoesNotStopTheOthers(t *testing.T) {
 	}
 	if len(sp.specs) != 1 || sp.specs[0].ID != "acme/works" {
 		t.Errorf("started = %+v, want only acme/works", sp.specs)
+	}
+}
+
+// The API's trust anchor reaches the pack as a readable file, and the pack is
+// told where it is.
+//
+// This is what keeps `InsecureSkipVerify` out of the reference extension. The
+// feeder serves HTTPS with a SELF-SIGNED certificate, so a pack using the system
+// pool fails the handshake — and the shortcut an author reaches for then is the
+// one that gets copied into every pack after it. Handing over the anchor keeps
+// verification on.
+func TestThePackIsGivenTheAPIsTrustAnchor(t *testing.T) {
+	pem := []byte("-----BEGIN CERTIFICATE-----\nnot-a-real-cert\n-----END CERTIFICATE-----\n")
+	st := &fakeStore{
+		packs: []store.Pack{pack("acme/menu", "1.0.0", true, map[string]any{"entry": "bin/pack"})},
+		files: map[string][]byte{"acme/menu\x00bin/pack": []byte("payload")},
+	}
+	sp := &fakeStarter{}
+	dir := t.TempDir()
+	h := New(st, sp, dir, "01J8Z0B0000000000000000000", "https://127.0.0.1:7420", pem)
+
+	if _, err := h.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	caFile := sp.specs[0].APICAFile
+	if caFile == "" {
+		t.Fatal("the pack was told no CA file — it cannot verify the host it was just pointed at")
+	}
+	got, err := os.ReadFile(caFile)
+	if err != nil {
+		t.Fatalf("the pack's CA file is not readable: %v", err)
+	}
+	if string(got) != string(pem) {
+		t.Fatalf("CA file holds %q, want the host's own certificate", got)
+	}
+	// Not pack-writable. A certificate is public, so this is not about secrecy —
+	// it is the thing that decides whether a pack reaches THIS host or something
+	// impersonating it, and a writable anchor is a pack choosing its own trust.
+	info, err := os.Stat(caFile)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o400 {
+		t.Errorf("CA file mode = %#o, want 0400", perm)
+	}
+}
+
+// A deployment whose certificate is publicly trusted supplies no anchor, and
+// then the pack must be told nothing rather than pointed at an empty file — a
+// pack that loads an empty pool trusts NOTHING and fails every call, which is a
+// worse failure than falling back to the system pool.
+func TestNoAnchorMeansNoCAFileRatherThanAnEmptyOne(t *testing.T) {
+	st := &fakeStore{
+		packs: []store.Pack{pack("acme/menu", "1.0.0", true, map[string]any{"entry": "bin/pack"})},
+		files: map[string][]byte{"acme/menu\x00bin/pack": []byte("payload")},
+	}
+	sp := &fakeStarter{}
+	dir := t.TempDir()
+	h := New(st, sp, dir, "01J8Z0B0000000000000000000", "https://api.example.com", nil)
+
+	if _, err := h.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	if sp.specs[0].APICAFile != "" {
+		t.Errorf("APICAFile = %q, want empty so the pack uses the system pool", sp.specs[0].APICAFile)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "api-ca.pem")); !os.IsNotExist(err) {
+		t.Errorf("an anchor file was written with nothing to put in it")
 	}
 }

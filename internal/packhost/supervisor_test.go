@@ -100,7 +100,7 @@ func main() {
 	if out := os.Getenv("PACK_ECHO_API_FILE"); out != "" {
 		// The address AND an inherited variable, so a test can tell "the host
 		// added the address" from "the host replaced the whole environment".
-		_ = os.WriteFile(out, []byte(os.Getenv("WAIVEO_API_BASE_URL")+"\n"+os.Getenv("HOME")), 0o600)
+		_ = os.WriteFile(out, []byte(os.Getenv("WAIVEO_API_BASE_URL")+"\n"+os.Getenv("HOME")+"\n"+os.Getenv("WAIVEO_API_CA_FILE")), 0o600)
 	}
 	if os.Getenv("PACK_IGNORE_SHUTDOWN") != "" {
 		time.Sleep(10 * time.Minute)
@@ -211,6 +211,7 @@ func TestThePackIsToldWhereTheAPIIs(t *testing.T) {
 	echo := filepath.Join(t.TempDir(), "got-api")
 	spec := specFor("waiveo/backups", "1.0.0", "PACK_ECHO_API_FILE="+echo)
 	spec.APIBaseURL = "https://127.0.0.1:7420"
+	spec.APICAFile = "/run/waiveo/api-ca.pem"
 	if _, err := s.Start(context.Background(), spec); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -223,9 +224,16 @@ func TestThePackIsToldWhereTheAPIIs(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	addr, home, _ := strings.Cut(got, "\n")
+	addr, rest, _ := strings.Cut(got, "\n")
+	home, caFile, _ := strings.Cut(rest, "\n")
 	if addr != "https://127.0.0.1:7420" {
 		t.Fatalf("the pack saw WAIVEO_API_BASE_URL=%q, want the host's address", addr)
+	}
+	// The trust anchor travels with the address. Without it a pack pointed at a
+	// self-signed host either fails every call or disables verification, and the
+	// second is the one that gets copied.
+	if caFile != "/run/waiveo/api-ca.pem" {
+		t.Errorf("the pack saw WAIVEO_API_CA_FILE=%q, want the anchor it must verify against", caFile)
 	}
 	// The address is APPENDED to the host's environment, not substituted for it.
 	// A pack is an ordinary process: it needs a PATH, a HOME and a TMPDIR, and a

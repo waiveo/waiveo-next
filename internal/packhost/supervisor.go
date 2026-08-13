@@ -99,6 +99,23 @@ type Spec struct {
 	// on stdin beside the code would also make the handoff a two-field format
 	// with an ordering rule, when it is currently one line.
 	APIBaseURL string
+	// APICAFile is a file holding the PEM the pack must trust to reach
+	// APIBaseURL, handed over as WAIVEO_API_CA_FILE. Empty when the deployment
+	// serves a publicly-trusted certificate and the system pool suffices.
+	//
+	// This exists so the reference extension does not have to disable
+	// verification. The feeder serves HTTPS with a SELF-SIGNED certificate, so a
+	// pack using the system pool fails the handshake — and the shortcut every
+	// author would then copy is InsecureSkipVerify, which turns the loopback
+	// assumption into a habit that ships. Handing over the anchor keeps
+	// verification ON and costs a pack four lines: read the file, AppendCertsFromPEM,
+	// use the pool.
+	//
+	// A PATH rather than the PEM inline, because that is the shape TLS tooling
+	// already has (SSL_CERT_FILE, and Go's own CertPool loading), and because an
+	// env var holding a certificate is awkward to read in a process listing that
+	// is already showing the argv.
+	APICAFile string
 }
 
 // Running describes a live pack for an operator reading the console.
@@ -332,8 +349,15 @@ func (s *Supervisor) launch(ctx context.Context, spec Spec) (*process, error) {
 	// pack needs a PATH, a HOME and a TMPDIR like any other process — and the
 	// address is appended rather than replacing the set, so a deployment that
 	// exports something for its packs keeps it.
+	env := os.Environ()
 	if spec.APIBaseURL != "" {
-		cmd.Env = append(os.Environ(), "WAIVEO_API_BASE_URL="+spec.APIBaseURL)
+		env = append(env, "WAIVEO_API_BASE_URL="+spec.APIBaseURL)
+	}
+	if spec.APICAFile != "" {
+		env = append(env, "WAIVEO_API_CA_FILE="+spec.APICAFile)
+	}
+	if len(env) != len(os.Environ()) {
+		cmd.Env = env
 	}
 	// Inherited, so a pack that dies on boot says why in the host's log. Its own
 	// diagnostics are usually the only explanation, and swallowing them would

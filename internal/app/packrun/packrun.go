@@ -80,10 +80,41 @@ type Host struct {
 	// packhost.Spec.APIBaseURL for why that is right for an address and wrong
 	// for the code.
 	apiBaseURL string
+	// apiCACertPEM is the certificate a pack must trust to reach apiBaseURL,
+	// written out once per boot and named to each pack by path. Empty when the
+	// deployment's certificate is publicly trusted.
+	apiCACertPEM []byte
 }
 
-func New(st Store, sup Starter, dir, scopeNode, apiBaseURL string) *Host {
-	return &Host{store: st, sup: sup, dir: dir, scopeNode: scopeNode, apiBaseURL: apiBaseURL}
+func New(st Store, sup Starter, dir, scopeNode, apiBaseURL string, apiCACertPEM []byte) *Host {
+	return &Host{
+		store: st, sup: sup, dir: dir, scopeNode: scopeNode,
+		apiBaseURL: apiBaseURL, apiCACertPEM: apiCACertPEM,
+	}
+}
+
+// writeCA materialises the API's trust anchor once per boot and returns its
+// path, or "" when the deployment supplied none.
+//
+// 0400 and inside the host-owned bin directory: it is not a secret — a
+// certificate is public by construction — but it IS the thing that decides
+// whether a pack talks to this host or to something impersonating it, so a
+// pack-writable anchor would be a pack choosing its own trust.
+func (h *Host) writeCA() (string, error) {
+	if len(h.apiCACertPEM) == 0 {
+		return "", nil
+	}
+	if err := os.MkdirAll(h.dir, 0o700); err != nil {
+		return "", fmt.Errorf("packrun: create %s: %w", h.dir, err)
+	}
+	path := filepath.Join(h.dir, "api-ca.pem")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("packrun: replace %s: %w", path, err)
+	}
+	if err := os.WriteFile(path, h.apiCACertPEM, 0o400); err != nil {
+		return "", fmt.Errorf("packrun: write %s: %w", path, err)
+	}
+	return path, nil
 }
 
 // entryPathIsSafe reports whether a manifest-declared entry path may be joined
@@ -216,6 +247,14 @@ func (h *Host) StartAll(ctx context.Context) ([]Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("packrun: list packs: %w", err)
 	}
+	// Written once, before any pack starts: every pack is handed the same
+	// anchor, and writing it per pack would be the same bytes N times with N
+	// chances to disagree.
+	caFile, err := h.writeCA()
+	if err != nil {
+		return nil, err
+	}
+
 	var out []Result
 	for _, p := range packs {
 		if !p.Enabled {
@@ -243,7 +282,7 @@ func (h *Host) StartAll(ctx context.Context) ([]Result, error) {
 		running, err := h.sup.Start(ctx, packhost.Spec{
 			ID: p.ID, Version: p.Version, Argv: argv,
 			ScopeNode: h.scopeNode, Role: auth.RoleOperator,
-			APIBaseURL: h.apiBaseURL,
+			APIBaseURL: h.apiBaseURL, APICAFile: caFile,
 		})
 		res.Started, res.Err = running, err
 		out = append(out, res)

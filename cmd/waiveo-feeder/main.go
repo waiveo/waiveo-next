@@ -1436,7 +1436,11 @@ func main() {
 	// from this process's OWN listen address rather than a constant: a feeder on
 	// a non-default port would otherwise hand every pack an address nothing is
 	// listening on.
-	packSupervisor := startPacks(context.Background(), st, authStore, cfg.packBinDir, "https://"+cfg.listen)
+	// This process's own TLS certificate is the anchor a pack verifies against:
+	// it is SELF-SIGNED, so the leaf IS the trust root, and without handing it
+	// over every pack author's first move is InsecureSkipVerify.
+	packSupervisor := startPacks(context.Background(), st, authStore, cfg.packBinDir,
+		"https://"+cfg.listen, id.TLSCertPEM())
 	defer packSupervisor.StopAll()
 
 	// The embedded console SPA, served at "/" for every non-API path. The API,
@@ -2035,7 +2039,7 @@ func placeholderImage() []byte {
 // the packs that do work are the ones an operator is relying on. Failures are
 // per-pack and named; a pack's own condition after it starts shows up on the
 // pack-health surface instead.
-func startPacks(ctx context.Context, st *store.Store, authStore *auth.Store, binDir, apiBaseURL string) *packhost.Supervisor {
+func startPacks(ctx context.Context, st *store.Store, authStore *auth.Store, binDir, apiBaseURL string, apiCACertPEM []byte) *packhost.Supervisor {
 	sup := packhost.New(authStore, packhost.Options{})
 	// The scope a pack principal's role binding is issued at (SEC-037). The
 	// deployment root, because a pack is installed workspace-wide and carries no
@@ -2044,7 +2048,7 @@ func startPacks(ctx context.Context, st *store.Store, authStore *auth.Store, bin
 	// firstPhotonSite.ScopeNode is this deployment's site — the same node the
 	// device registry is rooted at. Named from there rather than re-declared, so
 	// a pack principal and the device plane cannot end up scoped differently.
-	host := packrun.New(st, sup, binDir, firstPhotonSite.ScopeNode, apiBaseURL)
+	host := packrun.New(st, sup, binDir, firstPhotonSite.ScopeNode, apiBaseURL, apiCACertPEM)
 	results, err := host.StartAll(ctx)
 	if err != nil {
 		log.Printf("waiveo-feeder: could not read the installed packs, so none were started: %v", err)
