@@ -493,6 +493,14 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// SEC-036's atomic consume, and rate-limited under SEC-033 before the lookup.
 	rootRT.HandleFunc("POST "+apiPrefix+"/auth/credential-reset/redeem", srv.withDeclaredMembers("CredentialResetRedeemRequest", authHandlers.RedeemCredentialReset))
 	rootRT.HandleFunc("POST "+apiPrefix+"/auth/tier-grant/redeem", srv.withDeclaredMembers("TierGrantRedeemRequest", authHandlers.RedeemTierGrant))
+
+	// The actions plane (#184). The producer is addressed BY PACK; the two
+	// consumer routes are not addressed at all — which queue they serve comes
+	// from the caller's own principal, so a pack has no way to ask for another
+	// pack's work.
+	rt.HandleFunc("POST "+apiPrefix+"/packs/{publisher}/{name}/actions/{action}", srv.withDeclaredMembers("PackActionInvokeRequest", srv.invokePackAction))
+	rt.HandleFunc("GET "+apiPrefix+"/pack-invocations/pending", srv.leasePackInvocation)
+	rt.HandleFunc("POST "+apiPrefix+"/pack-invocations/{invocation_id}/result", srv.withDeclaredMembers("PackInvocationResultRequest", srv.reportPackInvocationResult))
 }
 
 // resourceConfig parameterizes the generic resource handler for one resource

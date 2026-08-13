@@ -682,6 +682,69 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/packs/{publisher}/{name}/actions/{action}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Invoke an action an installed pack declares
+         * @description The management-API route `manifest/1` MAN-101 auto-surfaces for every declared action. The call is QUEUED rather than performed inline: a pack is a separate OS process with no inbound address the host can dial, and it may be starting, swapping or stopped. The response is the invocation, and its outcome is read back from it.
+         *     The action's idempotency class (MAN-103) is copied onto the invocation at enqueue, which is what decides its fate if the pack takes the work and dies before answering — a `safe-to-retry` action is offered again, a `not-idempotent` one is failed with its fate recorded as unknown, and is never automatically replayed.
+         */
+        post: operations["invokePackAction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/pack-invocations/pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lease the next invocation queued for the calling pack
+         * @description The pack side of the actions plane. An extension long-polls this route and receives at most one invocation, leased to it for a bounded time.
+         *     Which pack's queue is served is resolved from the CALLER'S PRINCIPAL, not from any parameter: a pack that could name a queue could lease another pack's work and answer on its behalf. Only a `pack-service` principal (`security-model.md` SEC-037) reaches this route at all.
+         *     An empty queue answers `204`, not an error — a pack polling an idle host is the common case, and an error there would make "nothing to do" indistinguishable from a broken queue.
+         */
+        get: operations["leasePackInvocation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/pack-invocations/{invocation_id}/result": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Report the outcome of a leased invocation
+         * @description The pack answers the work it leased. Accepted only while the caller still holds the lease: a result arriving after expiry is refused, because accepting it would let an invocation already failed at expiry flip to succeeded and erase the uncertainty that failure recorded (MAN-103).
+         */
+        post: operations["reportPackInvocationResult"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/tier-grant/redeem": {
         parameters: {
             query?: never;
@@ -1833,6 +1896,24 @@ export interface components {
             expires_at_ms: number;
             /** @description Whether redemption will apply SEC-053's revoke-everything default, so the admin sees which of the two behaviours their issuance chose. */
             sessions_revoked_on_redemption: boolean;
+        };
+        /** @description The action's parameters, validated against its `paramsSchema` (MAN-100). */
+        PackActionInvokeRequest: {
+            /** @description Parameters for the action; an action taking none may omit it. */
+            params?: {
+                [key: string]: unknown;
+            };
+        };
+        /** @description The outcome of one leased invocation. A result and a failure are mutually exclusive: an invocation that reports an `error_code` is FAILED, and a caller branching on state must not also have to inspect a code. */
+        PackInvocationResultRequest: {
+            /** @description The action's return value, for a successful invocation. */
+            result?: {
+                [key: string]: unknown;
+            };
+            /** @description A machine-readable failure code; its presence makes the invocation failed. */
+            error_code?: string;
+            /** @description A human-readable explanation accompanying `error_code`. */
+            error_message?: string;
         };
         /** @description The one-time code the host handed the pack process at start (SEC-037). Deliberately the ONLY member: the pack id rides on the grant, so there is nothing here a caller could use to name itself. */
         TierGrantRedeemRequest: {
@@ -4536,6 +4617,109 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            422: components["responses"]["UnprocessableContent"];
+        };
+    };
+    invokePackAction: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                /** @description The publisher half of a pack's `<publisher>/<name>` identity (manifest/1 MAN-001). It is its own path segment rather than half of one percent-encoded value, so a pack id is addressable without the client having to escape the slash inside it. */
+                publisher: components["parameters"]["PackPublisherParam"];
+                /** @description The name half of a pack's `<publisher>/<name>` identity (manifest/1 MAN-001). */
+                name: components["parameters"]["PackNameParam"];
+                /** @description The declared action's `name` (MAN-100). */
+                action: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PackActionInvokeRequest"];
+            };
+        };
+        responses: {
+            /** @description The queued invocation. Shape stub, matching the rest of this surface. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["UnprocessableContent"];
+        };
+    };
+    leasePackInvocation: {
+        parameters: {
+            query?: {
+                /** @description Seconds to hold the request open while the queue is empty. Zero returns immediately. */
+                wait?: number;
+            };
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The leased invocation. Shape stub, matching the rest of this surface. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Nothing is queued for this pack. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    reportPackInvocationResult: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                invocation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PackInvocationResultRequest"];
+            };
+        };
+        responses: {
+            /** @description The completed invocation. Shape stub, matching the rest of this surface. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["UnprocessableContent"];
         };
     };

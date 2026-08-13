@@ -1890,6 +1890,24 @@ type MarketplaceRef struct {
 // MarketplaceRefTrustChannel The provenance tier this install is accepted under (MKT-020). It is REQUIRED and is never defaulted server-side: MKT-022's production-install bar and MKT-090's auto-tracking pin are both stated per channel, so a host filling this in would be choosing how much review the installed code has had, in whatever direction the registry currently points.
 type MarketplaceRefTrustChannel string
 
+// PackActionInvokeRequest The action's parameters, validated against its `paramsSchema` (MAN-100).
+type PackActionInvokeRequest struct {
+	// Params Parameters for the action; an action taking none may omit it.
+	Params *map[string]interface{} `json:"params,omitempty"`
+}
+
+// PackInvocationResultRequest The outcome of one leased invocation. A result and a failure are mutually exclusive: an invocation that reports an `error_code` is FAILED, and a caller branching on state must not also have to inspect a code.
+type PackInvocationResultRequest struct {
+	// ErrorCode A machine-readable failure code; its presence makes the invocation failed.
+	ErrorCode *string `json:"error_code,omitempty"`
+
+	// ErrorMessage A human-readable explanation accompanying `error_code`.
+	ErrorMessage *string `json:"error_message,omitempty"`
+
+	// Result The action's return value, for a successful invocation.
+	Result *map[string]interface{} `json:"result,omitempty"`
+}
+
 // PairingCodeResult A freshly minted pairing grant, bound to this screen row (`relay/1` REL-121a) and to the one relay that may redeem it (REL-121b), plus the human-enterable pairing code (`player/1` PLY-024) an operator reads onto the screen. Exactly one of `pairing_code` and `code_unavailable_reason` is present: the grant is minted, bound, and delivered either way, and the reason describes only why the code itself could not be formed for the relay it is bound to. A request with no relay to bind to at all is refused before anything is minted (`503`).
 type PairingCodeResult struct {
 	// CodeUnavailableReason Why no code could be formed (for instance, no relay is connected). Present exactly when `pairing_code` is not.
@@ -3421,6 +3439,21 @@ type GetJobParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// LeasePackInvocationParams defines parameters for LeasePackInvocation.
+type LeasePackInvocationParams struct {
+	// Wait Seconds to hold the request open while the queue is empty. Zero returns immediately.
+	Wait *int `form:"wait,omitempty" json:"wait,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// ReportPackInvocationResultParams defines parameters for ReportPackInvocationResult.
+type ReportPackInvocationResultParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // ListPacksParams defines parameters for ListPacks.
 type ListPacksParams struct {
 	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
@@ -3459,6 +3492,15 @@ type UninstallPackParams struct {
 
 // GetPackParams defines parameters for GetPack.
 type GetPackParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// InvokePackActionParams defines parameters for InvokePackAction.
+type InvokePackActionParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
@@ -4056,8 +4098,14 @@ type UpdateDaypartJSONRequestBody = DaypartUpdate
 // SendEntityCommandJSONRequestBody defines body for SendEntityCommand for application/json ContentType.
 type SendEntityCommandJSONRequestBody = EntityCommandRequest
 
+// ReportPackInvocationResultJSONRequestBody defines body for ReportPackInvocationResult for application/json ContentType.
+type ReportPackInvocationResultJSONRequestBody = PackInvocationResultRequest
+
 // InstallPackJSONRequestBody defines body for InstallPack for application/json ContentType.
 type InstallPackJSONRequestBody = MarketplaceRef
+
+// InvokePackActionJSONRequestBody defines body for InvokePackAction for application/json ContentType.
+type InvokePackActionJSONRequestBody = PackActionInvokeRequest
 
 // SetPackEnabledJSONRequestBody defines body for SetPackEnabled for application/json ContentType.
 type SetPackEnabledJSONRequestBody SetPackEnabledJSONBody
@@ -4371,6 +4419,14 @@ type ClientInterface interface {
 	// GetJob request
 	GetJob(ctx context.Context, jobId Ulid, params *GetJobParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// LeasePackInvocation request
+	LeasePackInvocation(ctx context.Context, params *LeasePackInvocationParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ReportPackInvocationResultWithBody request with any body
+	ReportPackInvocationResultWithBody(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ReportPackInvocationResult(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, body ReportPackInvocationResultJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListPacks request
 	ListPacks(ctx context.Context, params *ListPacksParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -4387,6 +4443,11 @@ type ClientInterface interface {
 
 	// GetPack request
 	GetPack(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetPackParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// InvokePackActionWithBody request with any body
+	InvokePackActionWithBody(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	InvokePackAction(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, body InvokePackActionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListPackRows request
 	ListPackRows(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *ListPackRowsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5395,6 +5456,42 @@ func (c *Client) GetJob(ctx context.Context, jobId Ulid, params *GetJobParams, r
 	return c.Client.Do(req)
 }
 
+func (c *Client) LeasePackInvocation(ctx context.Context, params *LeasePackInvocationParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewLeasePackInvocationRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ReportPackInvocationResultWithBody(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReportPackInvocationResultRequestWithBody(c.Server, invocationId, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ReportPackInvocationResult(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, body ReportPackInvocationResultJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReportPackInvocationResultRequest(c.Server, invocationId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) ListPacks(ctx context.Context, params *ListPacksParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListPacksRequest(c.Server, params)
 	if err != nil {
@@ -5457,6 +5554,30 @@ func (c *Client) UninstallPack(ctx context.Context, publisher PackPublisherParam
 
 func (c *Client) GetPack(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetPackParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetPackRequest(c.Server, publisher, name, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) InvokePackActionWithBody(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewInvokePackActionRequestWithBody(c.Server, publisher, name, action, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) InvokePackAction(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, body InvokePackActionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewInvokePackActionRequest(c.Server, publisher, name, action, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -9320,6 +9441,137 @@ func NewGetJobRequest(server string, jobId Ulid, params *GetJobParams) (*http.Re
 	return req, nil
 }
 
+// NewLeasePackInvocationRequest generates requests for LeasePackInvocation
+func NewLeasePackInvocationRequest(server string, params *LeasePackInvocationParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/pack-invocations/pending")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Wait != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "wait", *params.Wait, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewReportPackInvocationResultRequest calls the generic ReportPackInvocationResult builder with application/json body
+func NewReportPackInvocationResultRequest(server string, invocationId string, params *ReportPackInvocationResultParams, body ReportPackInvocationResultJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewReportPackInvocationResultRequestWithBody(server, invocationId, params, "application/json", bodyReader)
+}
+
+// NewReportPackInvocationResultRequestWithBody generates requests for ReportPackInvocationResult with any type of body
+func NewReportPackInvocationResultRequestWithBody(server string, invocationId string, params *ReportPackInvocationResultParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "invocation_id", invocationId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/pack-invocations/%s/result", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewListPacksRequest generates requests for ListPacks
 func NewListPacksRequest(server string, params *ListPacksParams) (*http.Request, error) {
 	var err error
@@ -9623,6 +9875,93 @@ func NewGetPackRequest(server string, publisher PackPublisherParam, name PackNam
 			}
 
 			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewInvokePackActionRequest calls the generic InvokePackAction builder with application/json body
+func NewInvokePackActionRequest(server string, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, body InvokePackActionJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewInvokePackActionRequestWithBody(server, publisher, name, action, params, "application/json", bodyReader)
+}
+
+// NewInvokePackActionRequestWithBody generates requests for InvokePackAction with any type of body
+func NewInvokePackActionRequestWithBody(server string, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "publisher", publisher, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam2 string
+
+	pathParam2, err = runtime.StyleParamWithOptions("simple", false, "action", action, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/packs/%s/%s/actions/%s", pathParam0, pathParam1, pathParam2)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
 		}
 
 	}
@@ -13763,6 +14102,14 @@ type ClientWithResponsesInterface interface {
 	// GetJobWithResponse request
 	GetJobWithResponse(ctx context.Context, jobId Ulid, params *GetJobParams, reqEditors ...RequestEditorFn) (*GetJobResponse, error)
 
+	// LeasePackInvocationWithResponse request
+	LeasePackInvocationWithResponse(ctx context.Context, params *LeasePackInvocationParams, reqEditors ...RequestEditorFn) (*LeasePackInvocationResponse, error)
+
+	// ReportPackInvocationResultWithBodyWithResponse request with any body
+	ReportPackInvocationResultWithBodyWithResponse(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ReportPackInvocationResultResponse, error)
+
+	ReportPackInvocationResultWithResponse(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, body ReportPackInvocationResultJSONRequestBody, reqEditors ...RequestEditorFn) (*ReportPackInvocationResultResponse, error)
+
 	// ListPacksWithResponse request
 	ListPacksWithResponse(ctx context.Context, params *ListPacksParams, reqEditors ...RequestEditorFn) (*ListPacksResponse, error)
 
@@ -13779,6 +14126,11 @@ type ClientWithResponsesInterface interface {
 
 	// GetPackWithResponse request
 	GetPackWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetPackParams, reqEditors ...RequestEditorFn) (*GetPackResponse, error)
+
+	// InvokePackActionWithBodyWithResponse request with any body
+	InvokePackActionWithBodyWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*InvokePackActionResponse, error)
+
+	InvokePackActionWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, body InvokePackActionJSONRequestBody, reqEditors ...RequestEditorFn) (*InvokePackActionResponse, error)
 
 	// ListPackRowsWithResponse request
 	ListPackRowsWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *ListPackRowsParams, reqEditors ...RequestEditorFn) (*ListPackRowsResponse, error)
@@ -15569,6 +15921,71 @@ func (r GetJobResponse) ContentType() string {
 	return ""
 }
 
+type LeasePackInvocationResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r LeasePackInvocationResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r LeasePackInvocationResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r LeasePackInvocationResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ReportPackInvocationResultResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r ReportPackInvocationResultResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ReportPackInvocationResultResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ReportPackInvocationResultResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type ListPacksResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
@@ -15724,6 +16141,39 @@ func (r GetPackResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r GetPackResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type InvokePackActionResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r InvokePackActionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r InvokePackActionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r InvokePackActionResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -18271,6 +18721,32 @@ func (c *ClientWithResponses) GetJobWithResponse(ctx context.Context, jobId Ulid
 	return ParseGetJobResponse(rsp)
 }
 
+// LeasePackInvocationWithResponse request returning *LeasePackInvocationResponse
+func (c *ClientWithResponses) LeasePackInvocationWithResponse(ctx context.Context, params *LeasePackInvocationParams, reqEditors ...RequestEditorFn) (*LeasePackInvocationResponse, error) {
+	rsp, err := c.LeasePackInvocation(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseLeasePackInvocationResponse(rsp)
+}
+
+// ReportPackInvocationResultWithBodyWithResponse request with arbitrary body returning *ReportPackInvocationResultResponse
+func (c *ClientWithResponses) ReportPackInvocationResultWithBodyWithResponse(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ReportPackInvocationResultResponse, error) {
+	rsp, err := c.ReportPackInvocationResultWithBody(ctx, invocationId, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseReportPackInvocationResultResponse(rsp)
+}
+
+func (c *ClientWithResponses) ReportPackInvocationResultWithResponse(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, body ReportPackInvocationResultJSONRequestBody, reqEditors ...RequestEditorFn) (*ReportPackInvocationResultResponse, error) {
+	rsp, err := c.ReportPackInvocationResult(ctx, invocationId, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseReportPackInvocationResultResponse(rsp)
+}
+
 // ListPacksWithResponse request returning *ListPacksResponse
 func (c *ClientWithResponses) ListPacksWithResponse(ctx context.Context, params *ListPacksParams, reqEditors ...RequestEditorFn) (*ListPacksResponse, error) {
 	rsp, err := c.ListPacks(ctx, params, reqEditors...)
@@ -18322,6 +18798,23 @@ func (c *ClientWithResponses) GetPackWithResponse(ctx context.Context, publisher
 		return nil, err
 	}
 	return ParseGetPackResponse(rsp)
+}
+
+// InvokePackActionWithBodyWithResponse request with arbitrary body returning *InvokePackActionResponse
+func (c *ClientWithResponses) InvokePackActionWithBodyWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*InvokePackActionResponse, error) {
+	rsp, err := c.InvokePackActionWithBody(ctx, publisher, name, action, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseInvokePackActionResponse(rsp)
+}
+
+func (c *ClientWithResponses) InvokePackActionWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, body InvokePackActionJSONRequestBody, reqEditors ...RequestEditorFn) (*InvokePackActionResponse, error) {
+	rsp, err := c.InvokePackAction(ctx, publisher, name, action, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseInvokePackActionResponse(rsp)
 }
 
 // ListPackRowsWithResponse request returning *ListPackRowsResponse
@@ -21376,6 +21869,93 @@ func ParseGetJobResponse(rsp *http.Response) (*GetJobResponse, error) {
 	return response, nil
 }
 
+// ParseLeasePackInvocationResponse parses an HTTP response from a LeasePackInvocationWithResponse call
+func ParseLeasePackInvocationResponse(rsp *http.Response) (*LeasePackInvocationResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &LeasePackInvocationResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseReportPackInvocationResultResponse parses an HTTP response from a ReportPackInvocationResultWithResponse call
+func ParseReportPackInvocationResultResponse(rsp *http.Response) (*ReportPackInvocationResultResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ReportPackInvocationResultResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseListPacksResponse parses an HTTP response from a ListPacksWithResponse call
 func ParseListPacksResponse(rsp *http.Response) (*ListPacksResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -21577,6 +22157,53 @@ func ParseGetPackResponse(rsp *http.Response) (*GetPackResponse, error) {
 			return nil, err
 		}
 		response.ApplicationproblemJSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseInvokePackActionResponse parses an HTTP response from a InvokePackActionWithResponse call
+func ParseInvokePackActionResponse(rsp *http.Response) (*InvokePackActionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &InvokePackActionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
 
 	}
 

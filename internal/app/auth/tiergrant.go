@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 )
@@ -310,4 +311,43 @@ func (s *Store) GrantRedeemed(ctx context.Context, grantID string) (bool, error)
 		return false, fmt.Errorf("auth: read grant %s: %w", grantID, err)
 	}
 	return count > 0, nil
+}
+
+// ErrNotAPackPrincipal is a caller that is not an installed pack's process
+// asking for something only a pack can be given.
+var ErrNotAPackPrincipal = errors.New("auth: principal is not a pack-service")
+
+// PackIDForPrincipal resolves which pack a `pack-service` principal belongs to.
+//
+// This is what lets a route serve a pack ITS OWN work and nothing else. The
+// answer comes from the principal row the tier-grant ceremony created, never
+// from anything the caller sends — a pack that could name its own id could lease
+// another pack's invocations and answer on its behalf.
+//
+// A principal of any other kind is refused rather than returning an empty id: an
+// empty pack id flowing into a queue lookup would silently match nothing, and
+// "your queue is empty" is the wrong thing to tell an operator whose console
+// session hit a pack-only route.
+func (s *Store) PackIDForPrincipal(ctx context.Context, principalID string) (string, error) {
+	var kind, name string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT kind, display_name FROM principals WHERE principal_id = ?`, principalID,
+	).Scan(&kind, &name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotAPackPrincipal
+	}
+	if err != nil {
+		return "", fmt.Errorf("auth: resolve principal %s: %w", principalID, err)
+	}
+	if kind != KindPackService {
+		return "", ErrNotAPackPrincipal
+	}
+	packID, ok := strings.CutPrefix(name, "pack:")
+	if !ok || packID == "" {
+		// A pack-service principal whose name does not carry the namespace was
+		// not created by this ceremony. Refused rather than guessed at: the name
+		// IS the binding between a principal and a pack.
+		return "", ErrNotAPackPrincipal
+	}
+	return packID, nil
 }

@@ -1824,6 +1824,124 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
+  /packs/{publisher}/{name}/actions/{action}:
+    post:
+      operationId: invokePackAction
+      summary: Invoke an action an installed pack declares
+      description: >-
+        The management-API route `manifest/1` MAN-101 auto-surfaces for every
+        declared action. The call is QUEUED rather than performed inline: a pack
+        is a separate OS process with no inbound address the host can dial, and
+        it may be starting, swapping or stopped. The response is the invocation,
+        and its outcome is read back from it.
+
+        The action's idempotency class (MAN-103) is copied onto the invocation at
+        enqueue, which is what decides its fate if the pack takes the work and
+        dies before answering — a `safe-to-retry` action is offered again, a
+        `not-idempotent` one is failed with its fate recorded as unknown, and is
+        never automatically replayed.
+      tags: [packs, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/PackPublisherParam"
+        - $ref: "#/components/parameters/PackNameParam"
+        - name: action
+          in: path
+          required: true
+          schema: { type: string }
+          description: The declared action's `name` (MAN-100).
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PackActionInvokeRequest"
+      responses:
+        "202":
+          description: >-
+            The queued invocation. Shape stub, matching the rest of this surface.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+
+  /pack-invocations/pending:
+    get:
+      operationId: leasePackInvocation
+      summary: Lease the next invocation queued for the calling pack
+      description: >-
+        The pack side of the actions plane. An extension long-polls this route
+        and receives at most one invocation, leased to it for a bounded time.
+
+        Which pack's queue is served is resolved from the CALLER'S PRINCIPAL, not
+        from any parameter: a pack that could name a queue could lease another
+        pack's work and answer on its behalf. Only a `pack-service` principal
+        (`security-model.md` SEC-037) reaches this route at all.
+
+        An empty queue answers `204`, not an error — a pack polling an idle host
+        is the common case, and an error there would make "nothing to do"
+        indistinguishable from a broken queue.
+      tags: [packs]
+      parameters:
+        - name: wait
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0, maximum: 60 }
+          description: >-
+            Seconds to hold the request open while the queue is empty. Zero
+            returns immediately.
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The leased invocation. Shape stub, matching the rest of this surface.
+        "204":
+          description: Nothing is queued for this pack.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /pack-invocations/{invocation_id}/result:
+    post:
+      operationId: reportPackInvocationResult
+      summary: Report the outcome of a leased invocation
+      description: >-
+        The pack answers the work it leased. Accepted only while the caller still
+        holds the lease: a result arriving after expiry is refused, because
+        accepting it would let an invocation already failed at expiry flip to
+        succeeded and erase the uncertainty that failure recorded (MAN-103).
+      tags: [packs]
+      parameters:
+        - name: invocation_id
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PackInvocationResultRequest"
+      responses:
+        "200":
+          description: The completed invocation. Shape stub, matching the rest of this surface.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+
   /auth/tier-grant/redeem:
     post:
       operationId: redeemTierGrant
@@ -4861,6 +4979,36 @@ components:
           description: >-
             Whether redemption will apply SEC-053's revoke-everything default,
             so the admin sees which of the two behaviours their issuance chose.
+    PackActionInvokeRequest:
+      type: object
+      description: The action's parameters, validated against its `paramsSchema` (MAN-100).
+      additionalProperties: false
+      properties:
+        params:
+          type: object
+          additionalProperties: true
+          description: Parameters for the action; an action taking none may omit it.
+
+    PackInvocationResultRequest:
+      type: object
+      description: >-
+        The outcome of one leased invocation. A result and a failure are mutually
+        exclusive: an invocation that reports an `error_code` is FAILED, and a
+        caller branching on state must not also have to inspect a code.
+      additionalProperties: false
+      properties:
+        result:
+          type: object
+          additionalProperties: true
+          description: The action's return value, for a successful invocation.
+        error_code:
+          type: string
+          minLength: 1
+          description: A machine-readable failure code; its presence makes the invocation failed.
+        error_message:
+          type: string
+          description: A human-readable explanation accompanying `error_code`.
+
     TierGrantRedeemRequest:
       type: object
       description: >-
