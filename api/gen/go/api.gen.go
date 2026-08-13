@@ -2662,6 +2662,12 @@ type SystemHealth struct {
 // SystemHealthStatus The WORST grade any component carries. Derived, never asserted — a summary that could read `ok` while a component reads `down` would be the one line an operator trusts and the one line that is wrong.
 type SystemHealthStatus string
 
+// TierGrantRedeemRequest The one-time code the host handed the pack process at start (SEC-037). Deliberately the ONLY member: the pack id rides on the grant, so there is nothing here a caller could use to name itself.
+type TierGrantRedeemRequest struct {
+	// Code The one-time `tier-grant`-purpose grant code.
+	Code string `json:"code"`
+}
+
 // Timestamp A resource-baseline timestamp: epoch MILLISECONDS, UTC — not an RFC 3339 string. The store stamps `created_at`/`updated_at` on every row it writes as an integer millisecond count and returns that value unchanged, so this is what a client reads and what an export/apply round trip carries back. Deliberately not `format: date-time`: the two are not interchangeable, and a client that parsed one as the other would silently read 1970 for every resource on this surface.
 // The `Job` resource is the one exception on this API and says so at its own `created_at`: a Job's timestamp is minted in Go as a `time.Time` and serialized RFC 3339, because a Job is not a stored row of this baseline.
 type Timestamp = int64
@@ -3120,6 +3126,12 @@ type GetSessionParams struct {
 
 // ClaimWorkspaceParams defines parameters for ClaimWorkspace.
 type ClaimWorkspaceParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// RedeemTierGrantParams defines parameters for RedeemTierGrant.
+type RedeemTierGrantParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
@@ -4011,6 +4023,9 @@ type ChangeOwnPasswordJSONRequestBody = ChangeOwnPasswordRequest
 // ClaimWorkspaceJSONRequestBody defines body for ClaimWorkspace for application/json ContentType.
 type ClaimWorkspaceJSONRequestBody = ClaimRequest
 
+// RedeemTierGrantJSONRequestBody defines body for RedeemTierGrant for application/json ContentType.
+type RedeemTierGrantJSONRequestBody = TierGrantRedeemRequest
+
 // ConfirmTotpJSONRequestBody defines body for ConfirmTotp for application/json ContentType.
 type ConfirmTotpJSONRequestBody = TotpConfirmRequest
 
@@ -4237,6 +4252,11 @@ type ClientInterface interface {
 	ClaimWorkspaceWithBody(ctx context.Context, params *ClaimWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	ClaimWorkspace(ctx context.Context, params *ClaimWorkspaceParams, body ClaimWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RedeemTierGrantWithBody request with any body
+	RedeemTierGrantWithBody(ctx context.Context, params *RedeemTierGrantParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	RedeemTierGrant(ctx context.Context, params *RedeemTierGrantParams, body RedeemTierGrantJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ConfirmTotpWithBody request with any body
 	ConfirmTotpWithBody(ctx context.Context, params *ConfirmTotpParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4849,6 +4869,30 @@ func (c *Client) ClaimWorkspaceWithBody(ctx context.Context, params *ClaimWorksp
 
 func (c *Client) ClaimWorkspace(ctx context.Context, params *ClaimWorkspaceParams, body ClaimWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewClaimWorkspaceRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RedeemTierGrantWithBody(ctx context.Context, params *RedeemTierGrantParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRedeemTierGrantRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RedeemTierGrant(ctx context.Context, params *RedeemTierGrantParams, body RedeemTierGrantJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRedeemTierGrantRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -7178,6 +7222,61 @@ func NewClaimWorkspaceRequestWithBody(server string, params *ClaimWorkspaceParam
 	}
 
 	operationPath := fmt.Sprintf("/auth/setup")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewRedeemTierGrantRequest calls the generic RedeemTierGrant builder with application/json body
+func NewRedeemTierGrantRequest(server string, params *RedeemTierGrantParams, body RedeemTierGrantJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRedeemTierGrantRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewRedeemTierGrantRequestWithBody generates requests for RedeemTierGrant with any type of body
+func NewRedeemTierGrantRequestWithBody(server string, params *RedeemTierGrantParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/auth/tier-grant/redeem")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -13546,6 +13645,11 @@ type ClientWithResponsesInterface interface {
 
 	ClaimWorkspaceWithResponse(ctx context.Context, params *ClaimWorkspaceParams, body ClaimWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*ClaimWorkspaceResponse, error)
 
+	// RedeemTierGrantWithBodyWithResponse request with any body
+	RedeemTierGrantWithBodyWithResponse(ctx context.Context, params *RedeemTierGrantParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RedeemTierGrantResponse, error)
+
+	RedeemTierGrantWithResponse(ctx context.Context, params *RedeemTierGrantParams, body RedeemTierGrantJSONRequestBody, reqEditors ...RequestEditorFn) (*RedeemTierGrantResponse, error)
+
 	// ConfirmTotpWithBodyWithResponse request with any body
 	ConfirmTotpWithBodyWithResponse(ctx context.Context, params *ConfirmTotpParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ConfirmTotpResponse, error)
 
@@ -14380,6 +14484,39 @@ func (r ClaimWorkspaceResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r ClaimWorkspaceResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type RedeemTierGrantResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON429 *TooManyRequests
+}
+
+// Status returns HTTPResponse.Status
+func (r RedeemTierGrantResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RedeemTierGrantResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r RedeemTierGrantResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -17758,6 +17895,23 @@ func (c *ClientWithResponses) ClaimWorkspaceWithResponse(ctx context.Context, pa
 	return ParseClaimWorkspaceResponse(rsp)
 }
 
+// RedeemTierGrantWithBodyWithResponse request with arbitrary body returning *RedeemTierGrantResponse
+func (c *ClientWithResponses) RedeemTierGrantWithBodyWithResponse(ctx context.Context, params *RedeemTierGrantParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RedeemTierGrantResponse, error) {
+	rsp, err := c.RedeemTierGrantWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRedeemTierGrantResponse(rsp)
+}
+
+func (c *ClientWithResponses) RedeemTierGrantWithResponse(ctx context.Context, params *RedeemTierGrantParams, body RedeemTierGrantJSONRequestBody, reqEditors ...RequestEditorFn) (*RedeemTierGrantResponse, error) {
+	rsp, err := c.RedeemTierGrant(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRedeemTierGrantResponse(rsp)
+}
+
 // ConfirmTotpWithBodyWithResponse request with arbitrary body returning *ConfirmTotpResponse
 func (c *ClientWithResponses) ConfirmTotpWithBodyWithResponse(ctx context.Context, params *ConfirmTotpParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ConfirmTotpResponse, error) {
 	rsp, err := c.ConfirmTotpWithBody(ctx, params, contentType, body, reqEditors...)
@@ -19537,6 +19691,53 @@ func ParseClaimWorkspaceResponse(rsp *http.Response) (*ClaimWorkspaceResponse, e
 			return nil, err
 		}
 		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRedeemTierGrantResponse parses an HTTP response from a RedeemTierGrantWithResponse call
+func ParseRedeemTierGrantResponse(rsp *http.Response) (*RedeemTierGrantResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RedeemTierGrantResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
 		var dest UnprocessableContent

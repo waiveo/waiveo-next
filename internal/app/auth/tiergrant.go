@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/http"
+
+	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
 )
 
 // The tier-grant ceremony (SEC-037): how an installed pack's process gets an
@@ -207,4 +210,80 @@ func (s *Store) findOrCreatePackPrincipalTx(ctx context.Context, tx *sql.Tx, pac
 		return PrincipalRow{}, fmt.Errorf("auth: resolve pack principal %s: %w", packID, err)
 	}
 	return s.CreatePrincipalTx(ctx, tx, KindPackService, name)
+}
+
+// tierGrantRedeemRequest is POST /auth/tier-grant/redeem's body. The code is
+// deliberately its ONLY member: the pack id rides on the grant, so there is
+// nothing here a caller could use to name itself.
+type tierGrantRedeemRequest struct {
+	Code string `json:"code"`
+}
+
+// RedeemTierGrant is the HTTP half of SEC-037 — the route a pack process calls
+// once, at start, to turn the code the host handed it into a session.
+//
+// Unauthenticated by necessity (API-090/091, `security: []`): the caller has no
+// identity yet and acquiring one is the whole point, so requiring a session
+// would make the operation unreachable by the only party permitted to perform
+// it. What bounds it instead is SEC-033's attempt budget and SEC-036's atomic
+// check-and-consume, exactly as for every other code-redemption route here.
+func (h *Handlers) RedeemTierGrant(w http.ResponseWriter, r *http.Request) {
+	traceID := apihttp.TraceID(r)
+	if r.Method != http.MethodPost {
+		apihttp.WriteProblem(w, r, traceID, http.StatusMethodNotAllowed, "VALIDATION_FAILED", "Method Not Allowed")
+		return
+	}
+	var req tierGrantRedeemRequest
+	if !decodeBody(w, r, traceID, &req) {
+		return
+	}
+	if req.Code == "" {
+		writeValidationProblem(w, r, traceID, []fieldError{{"code", "required", "the one-time tier-grant code is required"}})
+		return
+	}
+
+	store := h.auth.store
+	// SEC-033, enforced BEFORE the lookup: the attack this bounds is guessing a
+	// code that already exists, so the budget must refuse without checking the
+	// guess. Keyed on this purpose so a sweep against pack codes cannot be
+	// masked by reset or setup traffic, and vice versa.
+	if !h.budget.Allow(PurposeTierGrant, RequestSource(r), store.Now()) {
+		// The refused attempt is the only evidence a sweep leaves. It names the
+		// SOURCE and never the code — the code is the secret being guessed at,
+		// and an audit trail is a place secrets go to be read later.
+		h.auth.auditor.Failure(traceID, "", ActionGrantRedeemed, "source:"+RequestSource(r))
+		apihttp.WriteProblemExt(w, r, traceID, http.StatusTooManyRequests,
+			"RATE_LIMITED", "Too Many Requests",
+			"Too many tier-grant redemption attempts from this source; retry after a backoff.", nil)
+		return
+	}
+
+	sess, err := store.RedeemTierGrant(r.Context(), req.Code, map[string]string{
+		"user_agent": r.UserAgent(),
+		"ip_class":   RequestIPClass(r),
+	})
+	if err != nil {
+		h.auth.auditor.Failure(traceID, "", ActionGrantRedeemed, "source:"+RequestSource(r))
+		h.writeGrantProblem(w, r, traceID, err, "The tier-grant code is not valid.")
+		return
+	}
+
+	// Attributed to the PACK's principal, not to an anonymous source: from here
+	// on every audit record this pack produces hangs off this id, and the record
+	// that says how it got the identity has to be findable from the same place.
+	h.auth.auditor.Success(traceID, sess.PrincipalID, ActionGrantRedeemed, "pack:"+sess.PackID)
+	h.auth.auditor.Success(traceID, sess.PrincipalID, ActionSessionIssued, "session:"+sess.SessionID)
+
+	// No cookie is set. A pack is not a browser: it presents the token as a
+	// bearer credential, and a Set-Cookie here would be an ambient credential on
+	// a client that has no cookie jar and no same-site protections to make one
+	// safe.
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"principal_id": sess.PrincipalID,
+		"pack_id":      sess.PackID,
+		"role":         string(sess.Role),
+		"scope_node":   sess.ScopeNode,
+		"session_id":   sess.SessionID,
+		"token":        sess.Token,
+	})
 }

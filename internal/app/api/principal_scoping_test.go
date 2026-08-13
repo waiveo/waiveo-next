@@ -318,7 +318,13 @@ func TestAPIV1RoutesRefuseAnUnauthenticatedCaller(t *testing.T) {
 	// list ABOVE, so this pair pins that the exemption covers the redeem route
 	// and stops there — an exemption that widened to the issuing route would let
 	// anyone mint a reset code for anyone.
-	for _, path := range []string{"/api/v1/auth/login", "/api/v1/auth/setup", "/api/v1/auth/credential-reset/redeem"} {
+	// tier-grant/redeem is the fourth: its caller is a pack process the host has
+	// just started, which by construction holds no credential — acquiring one is
+	// the operation (SEC-037). It has no authenticated sibling to widen into,
+	// because nothing mints a tier grant over HTTP at all: the host mints it
+	// in-process at pack start.
+	for _, path := range []string{"/api/v1/auth/login", "/api/v1/auth/setup",
+		"/api/v1/auth/credential-reset/redeem", "/api/v1/auth/tier-grant/redeem"} {
 		req, err := http.NewRequest(http.MethodPost, e.ts.URL+path, bytes.NewReader([]byte("{}")))
 		if err != nil {
 			t.Fatalf("new request: %v", err)

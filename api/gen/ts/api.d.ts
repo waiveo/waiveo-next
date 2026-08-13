@@ -682,6 +682,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/tier-grant/redeem": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exchange a pack's start-time code for its session
+         * @description The redeeming half of the tier-grant ceremony (`security-model.md` SEC-037). An installed pack's process is started by the host with a one-time, short-lived code and exchanges it here for the session it makes every subsequent call with.
+         *     Credential-exchange operation (API-090/091), `security: []`: the caller has no identity yet — acquiring one is the entire point — so requiring a session would make the operation unreachable by the only party permitted to perform it. Bounded by SEC-033's attempt budget, applied before the code is looked up, and by SEC-036's atomic check-and-consume.
+         *     The pack's identity comes off the GRANT, never off this request: there is no parameter through which a caller could name a pack. A process that could name itself would be able to claim any pack's identity, data and audit trail with a code it merely obtained.
+         *     A pack holds no long-lived credential at all — SEC-003a refuses an api-key for a `pack-service` principal. The session returned here dies with the process that earned it, and the code is spent by this exchange.
+         */
+        post: operations["redeemTierGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/credential-reset/redeem": {
         parameters: {
             query?: never;
@@ -1810,6 +1833,11 @@ export interface components {
             expires_at_ms: number;
             /** @description Whether redemption will apply SEC-053's revoke-everything default, so the admin sees which of the two behaviours their issuance chose. */
             sessions_revoked_on_redemption: boolean;
+        };
+        /** @description The one-time code the host handed the pack process at start (SEC-037). Deliberately the ONLY member: the pack id rides on the grant, so there is nothing here a caller could use to name itself. */
+        TierGrantRedeemRequest: {
+            /** @description The one-time `tier-grant`-purpose grant code. */
+            code: string;
         };
         /** @description The one-time code the target was handed, and the credential value THEY choose (SEC-050). */
         CredentialResetRedeemRequest: {
@@ -4509,6 +4537,35 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["UnprocessableContent"];
+        };
+    };
+    redeemTierGrant: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TierGrantRedeemRequest"];
+            };
+        };
+        responses: {
+            /** @description The pack's session, INCLUDING its bearer token — the only time it is ever returned. Shape stub, matching the rest of this surface. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["TooManyRequests"];
         };
     };
     redeemCredentialReset: {

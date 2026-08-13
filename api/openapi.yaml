@@ -1824,6 +1824,53 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
+  /auth/tier-grant/redeem:
+    post:
+      operationId: redeemTierGrant
+      summary: Exchange a pack's start-time code for its session
+      description: >-
+        The redeeming half of the tier-grant ceremony (`security-model.md`
+        SEC-037). An installed pack's process is started by the host with a
+        one-time, short-lived code and exchanges it here for the session it
+        makes every subsequent call with.
+
+        Credential-exchange operation (API-090/091), `security: []`: the caller
+        has no identity yet — acquiring one is the entire point — so requiring a
+        session would make the operation unreachable by the only party permitted
+        to perform it. Bounded by SEC-033's attempt budget, applied before the
+        code is looked up, and by SEC-036's atomic check-and-consume.
+
+        The pack's identity comes off the GRANT, never off this request: there
+        is no parameter through which a caller could name a pack. A process that
+        could name itself would be able to claim any pack's identity, data and
+        audit trail with a code it merely obtained.
+
+        A pack holds no long-lived credential at all — SEC-003a refuses an
+        api-key for a `pack-service` principal. The session returned here dies
+        with the process that earned it, and the code is spent by this exchange.
+      tags: [auth]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TierGrantRedeemRequest"
+      responses:
+        "201":
+          description: >-
+            The pack's session, INCLUDING its bearer token — the only time it is
+            ever returned. Shape stub, matching the rest of this surface.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
   /auth/credential-reset/redeem:
     post:
       operationId: redeemCredentialReset
@@ -4814,6 +4861,20 @@ components:
           description: >-
             Whether redemption will apply SEC-053's revoke-everything default,
             so the admin sees which of the two behaviours their issuance chose.
+    TierGrantRedeemRequest:
+      type: object
+      description: >-
+        The one-time code the host handed the pack process at start (SEC-037).
+        Deliberately the ONLY member: the pack id rides on the grant, so there is
+        nothing here a caller could use to name itself.
+      required: [code]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          description: The one-time `tier-grant`-purpose grant code.
+          minLength: 1
+
     CredentialResetRedeemRequest:
       type: object
       description: >-

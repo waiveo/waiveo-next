@@ -217,6 +217,7 @@ var authExemptPaths = map[string]bool{
 	apiPrefix + "/auth/login":                   true,
 	apiPrefix + "/auth/setup":                   true,
 	apiPrefix + "/auth/credential-reset/redeem": true,
+	apiPrefix + "/auth/tier-grant/redeem":       true,
 }
 
 // authExempt reports whether r names one of the `security: []` operations.
@@ -491,6 +492,7 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// session is the one-time code — 256 bits, hashed at rest, single-use under
 	// SEC-036's atomic consume, and rate-limited under SEC-033 before the lookup.
 	rootRT.HandleFunc("POST "+apiPrefix+"/auth/credential-reset/redeem", srv.withDeclaredMembers("CredentialResetRedeemRequest", authHandlers.RedeemCredentialReset))
+	rootRT.HandleFunc("POST "+apiPrefix+"/auth/tier-grant/redeem", srv.withDeclaredMembers("TierGrantRedeemRequest", authHandlers.RedeemTierGrant))
 }
 
 // resourceConfig parameterizes the generic resource handler for one resource
