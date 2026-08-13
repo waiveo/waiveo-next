@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS pack_rows (
 	body            TEXT NOT NULL,
 	PRIMARY KEY (pack_id, collection, entity_id)
 );
-` + packInstallsSchema
+` + packInstallsSchema + packInvocationsSchema
 
 // pack_files.file_kind values: a ui-schema/1 page document, or a locale catalog.
 const (
