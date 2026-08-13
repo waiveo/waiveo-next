@@ -375,6 +375,7 @@ wins.
 | SEC-034 | `contracts/security-model.md#grants` | `SEC-034-valid-grant-audit-carries-purpose-and-issued-via` | covered |
 | SEC-035 | `contracts/security-model.md#grants` | `SEC-035-invalid-grant-expired-rejected`, `SEC-035a-invalid-grant-refusals-on-the-redemption-endpoint` | covered |
 | SEC-036 | `contracts/security-model.md#grants` | - | TBD-wave1 |
+| SEC-037 | `contracts/security-model.md#grants` | - | TBD-wave1 |
 | SEC-040 | `contracts/security-model.md#key-hierarchy` | - | TBD-wave1 |
 | SEC-041 | `contracts/security-model.md#key-hierarchy` | - | TBD-wave1 |
 | SEC-042 | `contracts/security-model.md#key-hierarchy` | - | TBD-wave1 |

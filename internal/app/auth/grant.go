@@ -22,11 +22,13 @@ const (
 	PurposeCredentialReset = "credential-reset"
 	PurposeRecovery        = "recovery"
 	PurposeSupport         = "support"
+	// PurposeTierGrant is declared in tiergrant.go beside the ceremony it names.
 )
 
 var validPurposes = map[string]struct{}{
 	PurposeSetup: {}, PurposeInvite: {}, PurposePairing: {}, PurposeRelayClaim: {},
 	PurposeCredentialReset: {}, PurposeRecovery: {}, PurposeSupport: {},
+	PurposeTierGrant: {},
 }
 
 // ValidPurpose reports whether p is one of SEC-030's seven grant purposes.
