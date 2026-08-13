@@ -36,6 +36,7 @@ import {
   defaultLayer,
   deriveLayer,
   duplicateLayerOf,
+  pastedLayerOf,
   selectedLayer,
   staleRasterKeys,
   studioStateToUpdate,
@@ -456,6 +457,21 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
     [dispatch],
   );
 
+  // The layer clipboard.
+  //
+  // Session state, not document state, and so deliberately outside the reducer:
+  // copying changes nothing about the cast, so a copy that landed in the undo
+  // history would give ⌘Z a step that undoes nothing visible — the single most
+  // confusing thing an undo stack can contain. Pasting IS an edit and goes
+  // through `insertLayer` like every other insert, which is what makes a paste
+  // undoable and labelled without any new history machinery.
+  //
+  // `slideIndex` rides along so a paste can tell same-slide from cross-slide
+  // (see pastedLayerOf). It is the index at COPY time and may since name a
+  // different slide — that is fine and is why the comparison is only used to
+  // decide a 32px offset, never to locate anything.
+  const [clipboard, setClipboard] = useState<{ layer: SlideLayer; slideIndex: number } | null>(null);
+
   const onAlign = useCallback(
     (target: AlignTarget) => {
       if (state.layerIndex === null || !layer) return;
@@ -522,6 +538,26 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
         case "duplicateLayer":
           if (layer) dispatch({ type: "insertLayer", layer: duplicateLayerOf(layer) });
           return;
+        case "copyLayer":
+          if (layer) setClipboard({ layer, slideIndex: state.slideIndex });
+          return;
+        case "cutLayer":
+          // Copy THEN delete, in that order: a cut whose delete ran first would
+          // leave the clipboard holding a layer the operator can no longer see,
+          // and a failure between the two would lose it outright.
+          if (layer && state.layerIndex !== null) {
+            setClipboard({ layer, slideIndex: state.slideIndex });
+            onDeleteLayer(state.layerIndex);
+          }
+          return;
+        case "pasteLayer":
+          if (clipboard) {
+            dispatch({
+              type: "insertLayer",
+              layer: pastedLayerOf(clipboard.layer, clipboard.slideIndex === state.slideIndex),
+            });
+          }
+          return;
         case "deleteLayer":
           if (state.layerIndex !== null) onDeleteLayer(state.layerIndex);
           return;
@@ -533,7 +569,20 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
           return;
       }
     },
-    [etag, savable, save, scale, onOrder, layer, dispatch, state.layerIndex, onDeleteLayer, onSelectLayer],
+    [
+      etag,
+      savable,
+      save,
+      scale,
+      onOrder,
+      layer,
+      dispatch,
+      state.layerIndex,
+      state.slideIndex,
+      clipboard,
+      onDeleteLayer,
+      onSelectLayer,
+    ],
   );
 
   // Whether a dialog is in front of the editor. Read from a ref inside the key
@@ -632,6 +681,33 @@ export default function StudioRoute({ api }: { api?: WaiveoApi }) {
         { id: "undo", label: undoName, shortcut: keys.undo, disabled: !canUndo, run: () => dispatch({ type: "undo" }) },
         { id: "redo", label: redoName, shortcut: keys.redo, disabled: !canRedo, run: () => dispatch({ type: "redo" }) },
         { id: "sep-1", separator: true },
+        {
+          id: "cut",
+          label: "Cut layer",
+          shortcut: keys.cutLayer,
+          disabled: !layer,
+          run: () => runCommand("cutLayer"),
+        },
+        {
+          id: "copy",
+          label: "Copy layer",
+          shortcut: keys.copyLayer,
+          disabled: !layer,
+          run: () => runCommand("copyLayer"),
+        },
+        {
+          // Disabled on an EMPTY clipboard, not on an empty selection: a paste
+          // needs something copied, and needs nothing selected. Gating it on the
+          // selection — the obvious copy-paste from the rows around it — would
+          // make "copy a layer, click empty canvas, paste" impossible, which is
+          // the ordinary way to paste onto another slide.
+          id: "paste",
+          label: "Paste layer",
+          shortcut: keys.pasteLayer,
+          disabled: clipboard === null,
+          run: () => runCommand("pasteLayer"),
+        },
+        { id: "sep-2", separator: true },
         {
           id: "duplicate",
           label: "Duplicate layer",
@@ -1348,6 +1424,9 @@ function ShortcutsModal({ open, onOpenChange }: { open: boolean; onOpenChange: (
         [keys.nudgeFine, "Move by 1px"],
         [keys.resize, "Resize from the bottom-right"],
         [keys.duplicateLayer, "Duplicate"],
+        [keys.cutLayer, "Cut"],
+        [keys.copyLayer, "Copy"],
+        [keys.pasteLayer, "Paste — onto this slide, or another one"],
         [keys.deleteLayer, "Delete"],
         [keys.deselect, "Deselect"],
       ],

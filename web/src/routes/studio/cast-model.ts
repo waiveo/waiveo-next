@@ -143,6 +143,22 @@ export function duplicateLayerOf(layer: SlideLayer): SlideLayer {
   return clampLayer({ ...layer, x: layer.x + DUPLICATE_OFFSET, y: layer.y + DUPLICATE_OFFSET });
 }
 
+/** The layer a paste inserts, given where it came from.
+ *
+ * Pasting onto a DIFFERENT slide keeps the original coordinates: the operator
+ * copied a masthead from slide 1 to put it in the same place on slide 2, and
+ * nudging it would make every cross-slide paste a two-step operation. Pasting
+ * onto the SAME slide offsets by exactly what a duplicate does, because a layer
+ * dropped precisely on top of its original is indistinguishable from nothing
+ * having happened — which is the whole reason DUPLICATE_OFFSET exists.
+ *
+ * `sameSlide` is passed in rather than derived because a clipboard outlives the
+ * slide it was cut from: the entry remembers WHICH slide, and only the caller
+ * holding both can compare. */
+export function pastedLayerOf(layer: SlideLayer, sameSlide: boolean): SlideLayer {
+  return sameSlide ? duplicateLayerOf(layer) : clampLayer({ ...layer });
+}
+
 /** The default countdown target: the start of the NEXT local day.
  *
  * A countdown's `target_ms` must be a positive absolute instant or the layer is

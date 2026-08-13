@@ -34,6 +34,9 @@ export type StudioCommand =
   | "sendBackward"
   | "sendToBack"
   | "duplicateLayer"
+  | "copyLayer"
+  | "cutLayer"
+  | "pasteLayer"
   | "deleteLayer"
   | "deselect"
   | "shortcuts";
@@ -164,6 +167,23 @@ export function matchStudioShortcut(chord: ShortcutChord): StudioCommand | null 
       return "save";
     case "d":
       return "duplicateLayer";
+    // The three every editor binds. Taken over the browser's own copy/cut/paste
+    // deliberately: the Studio's clipboard holds a LAYER, and there is no
+    // representation of one the system clipboard could carry and hand back.
+    //
+    // Text entry keeps its own copy/cut/paste — the document handler returns
+    // before any table is consulted when the keystroke landed in a text field
+    // (isTextEntryTarget), which is the same guard that protects ⌘Z there. Away
+    // from a text field the Studio owns the chord unconditionally, matching what
+    // the history shortcuts already do and for the reason stated there: a key
+    // that sometimes reaches the browser and sometimes does not is worse than
+    // either answer.
+    case "c":
+      return "copyLayer";
+    case "x":
+      return "cutLayer";
+    case "v":
+      return "pasteLayer";
     case "0":
       return "zoomFit";
     case "1":
@@ -207,6 +227,9 @@ export function shortcutHints(): Record<StudioCommand | "undo" | "redo" | "nudge
     sendBackward: `${mod}[`,
     sendToBack: `${mod}⇧[`,
     duplicateLayer: `${mod}D`,
+    copyLayer: `${mod}C`,
+    cutLayer: `${mod}X`,
+    pasteLayer: `${mod}V`,
     deleteLayer: "Del",
     deselect: "Esc",
     shortcuts: "?",

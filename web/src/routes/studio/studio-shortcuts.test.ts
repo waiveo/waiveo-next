@@ -31,6 +31,15 @@ describe("the command chords", () => {
     expect(matchStudioShortcut(chord({ key: "0", metaKey: true }))).toBe("zoomFit");
     expect(matchStudioShortcut(chord({ key: "1", metaKey: true }))).toBe("actualSize");
     expect(matchStudioShortcut(chord({ key: "d", metaKey: true }))).toBe("duplicateLayer");
+    expect(matchStudioShortcut(chord({ key: "c", metaKey: true }))).toBe("copyLayer");
+    expect(matchStudioShortcut(chord({ key: "x", metaKey: true }))).toBe("cutLayer");
+    expect(matchStudioShortcut(chord({ key: "v", metaKey: true }))).toBe("pasteLayer");
+    // Unmodified c/x/v are typing, not commands — the letters an operator uses
+    // most. A matcher that claimed them would make the canvas swallow text.
+    expect(matchStudioShortcut(chord({ key: "c" }))).toBeNull();
+    expect(matchStudioShortcut(chord({ key: "v" }))).toBeNull();
+    // …and Alt disqualifies them, as it does every other chord in this table.
+    expect(matchStudioShortcut(chord({ key: "c", metaKey: true, altKey: true }))).toBeNull();
   });
 
   it("reads the shifted punctuation a US layout actually sends", () => {
@@ -114,6 +123,9 @@ describe("what the menus print", () => {
       "sendBackward",
       "sendToBack",
       "duplicateLayer",
+      "copyLayer",
+      "cutLayer",
+      "pasteLayer",
       "deleteLayer",
       "deselect",
       "shortcuts",

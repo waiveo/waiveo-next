@@ -6,6 +6,7 @@ import { setupServer } from "msw/node";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import StudioRoute from "./studio-route";
+import { DUPLICATE_OFFSET } from "./cast-model";
 import { TRACE_ID, ULID_A, ULID_B, ULID_C, cast, contentAsset, problem } from "@/api/test-support";
 
 /**
@@ -2248,6 +2249,160 @@ describe("Studio — the keyboard acts on the SELECTION, wherever focus is", () 
     expect(screen.getByLabelText("X")).toBeInTheDocument();
     await user.keyboard("{Escape}");
     expect(screen.queryByLabelText("X")).not.toBeInTheDocument();
+  });
+});
+
+describe("Studio — the layer clipboard", () => {
+  const copyChord = "{Meta>}c{/Meta}";
+  const cutChord = "{Meta>}x{/Meta}";
+  const pasteChord = "{Meta>}v{/Meta}";
+
+  // The gap: an operator who wanted the same masthead on slide 2 rebuilt it by
+  // hand. Duplicate has always existed and only ever copies WITHIN a slide.
+  it("carries a layer to another slide, at the same coordinates", async () => {
+    const saved: { body?: SavedBody } = {};
+    server.use(...serveCast(cast(), saved));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(screen.getByRole("button", { name: "Text — Welcome" }));
+    const x = (screen.getByLabelText("X") as HTMLInputElement).value;
+    await user.keyboard(copyChord);
+
+    await user.click(screen.getByRole("button", { name: /add slide/i }));
+    await user.click(screen.getByRole("button", { name: "Slide 2" }));
+    await user.keyboard(pasteChord);
+
+    // It is on the new slide, and at the SAME place — a cross-slide paste that
+    // nudged would make every one of them a two-step operation. Queried by the
+    // EXACT layer-row name: the canvas hit target is "Layer 1: Text — Welcome",
+    // so a regex would match both and prove nothing about which one exists.
+    expect(await screen.findByRole("button", { name: "Text — Welcome" })).toBeInTheDocument();
+    expect(screen.getByLabelText("X")).toHaveValue(Number(x));
+
+    // And it SAVES: the second slide's layer reaches the wire, which is the only
+    // proof that a paste edited the document rather than the view. A new slide
+    // arrives with one layer of its own (a slide with an empty stack is one the
+    // projector drops and the server refuses), so the pasted one is the SECOND —
+    // appended, because array order is z-order and a paste lands on top.
+    await user.click(saveButton());
+    const body = await waitForSave(saved);
+    expect(body.slides?.[1]?.layers).toHaveLength(2);
+    expect(body.slides?.[1]?.layers?.[1]).toMatchObject({ kind: "text" });
+  });
+
+  // On the SAME slide a paste offsets, for duplicate's reason: a layer dropped
+  // exactly on its original is indistinguishable from nothing happening.
+  it("offsets a paste onto the slide it was copied from", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(screen.getByRole("button", { name: "Text — Welcome" }));
+    const before = Number((screen.getByLabelText("X") as HTMLInputElement).value);
+    await user.keyboard(copyChord);
+    await user.keyboard(pasteChord);
+
+    expect(screen.getByLabelText("X")).toHaveValue(before + DUPLICATE_OFFSET);
+  });
+
+  // Cut copies BEFORE it deletes. The order matters: a cut that deleted first
+  // and then failed would lose the layer entirely.
+  it("cut removes the layer and still pastes it back", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(screen.getByRole("button", { name: "Text — Welcome" }));
+    await user.keyboard(cutChord);
+    expect(screen.queryByRole("button", { name: "Text — Welcome" })).toBeNull();
+
+    await user.keyboard(pasteChord);
+    expect(await screen.findByRole("button", { name: "Text — Welcome" })).toBeInTheDocument();
+  });
+
+  // A paste is an ordinary edit, so it rides the history that already exists —
+  // no new machinery, and ⌘Z takes it back like anything else.
+  it("a paste is undoable", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(screen.getByRole("button", { name: "Text — Welcome" }));
+    expect(screen.getAllByRole("button", { name: "Text — Welcome" })).toHaveLength(1);
+    await user.keyboard(copyChord);
+    await user.keyboard(pasteChord);
+    expect(screen.getAllByRole("button", { name: "Text — Welcome" })).toHaveLength(2);
+
+    await user.keyboard("{Meta>}z{/Meta}");
+    expect(screen.getAllByRole("button", { name: "Text — Welcome" })).toHaveLength(1);
+  });
+
+  // Copying changes NOTHING about the cast, so it must not enter the history —
+  // an undo step that undoes nothing visible is the most confusing thing an undo
+  // stack can hold. (Nor may it dirty the document: a copy is not an edit.)
+  it("copying adds no undo step and does not dirty the cast", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    // A clean document's save control reads "Saved"; a dirty one reads "Save
+    // changes". Asserting on the LABEL is what makes this a statement about the
+    // dirty flag rather than about a disabled attribute.
+    await user.click(screen.getByRole("button", { name: "Text — Welcome" }));
+    expect(screen.getByRole("button", { name: /^saved$/i })).toBeInTheDocument();
+    await user.keyboard(copyChord);
+    expect(screen.getByRole("button", { name: /^saved$/i })).toBeInTheDocument();
+    // …and a PASTE does dirty it, so the assertion above is not vacuous.
+    await user.keyboard(pasteChord);
+    expect(saveButton()).toBeInTheDocument();
+  });
+
+  // Paste is gated on the CLIPBOARD, not the selection: "copy a layer, click
+  // empty canvas, paste" is the ordinary way to paste onto another slide, and
+  // gating on the selection would make it impossible.
+  it("the Edit menu offers Paste only once something is on the clipboard", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(screen.getByRole("menuitem", { name: "Edit" }));
+    expect(screen.getByRole("menuitem", { name: /Paste layer/ })).toBeDisabled();
+    await user.keyboard("{Escape}");
+
+    await user.click(screen.getByRole("button", { name: "Text — Welcome" }));
+    await user.click(screen.getByRole("menuitem", { name: "Edit" }));
+    await user.click(screen.getByRole("menuitem", { name: /Copy layer/ }));
+
+    // Deselect, so the only thing that can enable Paste is the clipboard.
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("menuitem", { name: "Edit" }));
+    expect(screen.getByRole("menuitem", { name: /Paste layer/ })).toBeEnabled();
+  });
+
+  // The document handler returns before any table when the keystroke landed in
+  // a text field, so ⌘C over a cast name still copies text. Asserted through
+  // the effect: no layer is added and the document stays clean.
+  it("leaves copy and paste alone inside a text field", async () => {
+    server.use(...serveCast(cast(), {}));
+    const user = userEvent.setup();
+    renderStudio();
+    await screen.findByRole("button", { name: /Layer 1: Rectangle/ });
+
+    await user.click(screen.getByRole("button", { name: "Text — Welcome" }));
+    await user.keyboard(copyChord);
+
+    const before = screen.getAllByRole("button", { name: "Text — Welcome" }).length;
+    await user.click(screen.getByLabelText("Cast name"));
+    await user.keyboard(pasteChord);
+
+    expect(screen.getAllByRole("button", { name: "Text — Welcome" })).toHaveLength(before);
   });
 });
 
