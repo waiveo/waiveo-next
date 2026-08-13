@@ -62,7 +62,15 @@ func asPack(t *testing.T, e *testEnv, token, method, path string, body []byte) (
 // invokeAction queues work through the management route, as an operator would.
 func invokeAction(t *testing.T, e *testEnv, packID, action string, params map[string]any) (*http.Response, map[string]any) {
 	t.Helper()
-	body := mustJSON(t, map[string]any{"params": params})
+	// `params` is OMITTED when there are none, not sent as null. The declared
+	// schema types it as an object, so an explicit null is refused — which is the
+	// schema doing its job: a client meaning "no parameters" says so by leaving
+	// the member out, and null would otherwise be silently read as {}.
+	payload := map[string]any{}
+	if params != nil {
+		payload["params"] = params
+	}
+	body := mustJSON(t, payload)
 	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs/"+packID+"/actions/"+action, body, nil)
 	var out map[string]any
 	_ = json.Unmarshal(raw, &out)
@@ -438,5 +446,21 @@ func TestAHealthReportWithoutADetailIsRefused(t *testing.T) {
 		mustJSON(t, map[string]any{"status": "ok"}))
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("detail-less report = %d, want 422", resp.StatusCode)
+	}
+}
+
+// An explicit null `params` is refused rather than silently read as "none". The
+// declared schema types it as an object; a caller with no parameters omits the
+// member. Pinned because the hand-written check this replaced accepted null, so
+// the tightening is deliberate rather than incidental.
+func TestAnExplicitNullParamsIsRefused(t *testing.T) {
+	e := newEnv(t)
+	e.seedPlacementNodes(t, rowScopeNodeA, rowScopeNodeB)
+	e.installActionPack(t)
+
+	resp, _ := e.do(t, http.MethodPost, "/api/v1/packs/acme/menu-board/actions/run-backup",
+		mustJSON(t, map[string]any{"params": nil}), nil)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("params:null = %d, want 422", resp.StatusCode)
 	}
 }

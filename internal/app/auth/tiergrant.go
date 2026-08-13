@@ -238,6 +238,11 @@ func (h *Handlers) RedeemTierGrant(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, traceID, &req) {
 		return
 	}
+	// `code` is required and min-length-1 in the declared schema, and the route's
+	// withDeclaredMembers wrapper does not read VALUES — only member names. So
+	// this check is the one that stops an empty code reaching the attempt budget,
+	// where it would spend a redemption attempt on a request that could never
+	// succeed.
 	if req.Code == "" {
 		writeValidationProblem(w, r, traceID, []fieldError{{"code", "required", "the one-time tier-grant code is required"}})
 		return

@@ -108,6 +108,13 @@ func (srv *server) reportPackHealth(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The declared schema owns `status`'s enum and `detail`'s presence. They were
+	// restated in Go below and are not any more: two statements of one rule drift,
+	// and this package has already been bitten by exactly that (a ttl_seconds
+	// minimum the document declared and the handler did not enforce).
+	if srv.schemaRejected(w, r, "PackHealthReportRequest", raw) {
+		return
+	}
 	var body struct {
 		Status string `json:"status"`
 		Detail string `json:"detail"`
@@ -117,17 +124,14 @@ func (srv *server) reportPackHealth(w http.ResponseWriter, r *http.Request) {
 			"The request body could not be parsed.")
 		return
 	}
+	// Belt to the schema's braces, and NOT a restatement of the enum: this asserts
+	// the document and the rank table agree, which no schema can. An unranked
+	// status counts as the best one (healthRank returns the zero value), so a
+	// status the document admitted and the page cannot rank would let an
+	// extension report failure in a way that improves the summary.
 	if !validPackHealthStatus(body.Status) {
 		srv.packProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed",
-			"`status` must be one of ok, degraded, down.")
-		return
-	}
-	if body.Detail == "" {
-		// Required even for `ok`, matching what every other service line on this
-		// page promises: a detail is the difference between a check that ran and
-		// a check that was skipped.
-		srv.packProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed",
-			"`detail` is required; it is what an operator reads when deciding whether to act.")
+			"`status` is not one this deployment can grade.")
 		return
 	}
 

@@ -71,8 +71,12 @@ func (srv *server) invokePackAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// An action taking no parameters may send no body at all, so an empty one is
-	// not a malformed one.
+	// not a malformed one. A body that IS present is checked against the declared
+	// schema rather than by hand.
 	if len(raw) > 0 {
+		if srv.schemaRejected(w, r, "PackActionInvokeRequest", raw) {
+			return
+		}
 		if err := json.Unmarshal(raw, &body); err != nil {
 			srv.packProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed",
 				"The request body could not be parsed.")
@@ -165,6 +169,9 @@ func (srv *server) reportPackInvocationResult(w http.ResponseWriter, r *http.Req
 	}
 	raw, ok := readBody(w, r)
 	if !ok {
+		return
+	}
+	if srv.schemaRejected(w, r, "PackInvocationResultRequest", raw) {
 		return
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
@@ -302,6 +309,14 @@ func (srv *server) appendPackLog(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Checked against the DECLARED schema — required members, the level enum, and
+	// additionalProperties at every depth — rather than restated here. A
+	// hand-written restatement is one that can be incomplete, and this file
+	// already carried one: `message` was checked and `level`'s enum was not, so a
+	// pack could report a level the document forbids.
+	if srv.schemaRejected(w, r, "PackLogAppendRequest", raw) {
+		return
+	}
 	var body struct {
 		Message string `json:"message"`
 		Level   string `json:"level"`
@@ -309,11 +324,6 @@ func (srv *server) appendPackLog(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(raw, &body); err != nil {
 		srv.packProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed",
 			"The request body could not be parsed.")
-		return
-	}
-	if body.Message == "" {
-		srv.packProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed",
-			"`message` is required.")
 		return
 	}
 
