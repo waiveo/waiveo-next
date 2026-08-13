@@ -26,6 +26,7 @@ import {
 import { RokuRemote } from "./roku-remote";
 import { describeDiscovery, type BlindReason } from "./discovery";
 import { DiscoveryPanel } from "./discovery-panel";
+import { AdoptedDevices } from "./adopted-devices";
 
 /**
  * The Devices route — the device plane as an operator sees it: what the relays
@@ -411,6 +412,12 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
             }
           />
         </section>
+
+        {/* Between discovery and entities deliberately: an operator adopts above,
+            refines here, and addresses commands below. The adopt dialog promises
+            these are "refined afterwards on the adopted device" — this is that
+            afterwards. */}
+        <AdoptedDevices api={client} />
 
         <section aria-label="Entities" className="flex flex-col gap-3">
           <div className="flex flex-wrap items-end justify-between gap-3">

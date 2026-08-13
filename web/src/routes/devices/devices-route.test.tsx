@@ -106,29 +106,38 @@ function health(over: Partial<SystemHealth> = {}): SystemHealth {
   };
 }
 
-/** The THREE reads the route makes on mount. Any of them can be overridden by a
+/** The FOUR reads the route makes on mount. Any of them can be overridden by a
  * later `server.use` in a test.
  *
- * Three, not five: the page does not list `/adopted-devices` (it has no key to
- * join those rows onto a device) or `/scope-nodes` (the server places an adopted
- * device itself). It DOES read `/system-health`, because relay connectivity is
- * the only way to tell "discovery is running and found nothing" from "nothing is
- * discovering" — see ./discovery. `onUnhandledRequest: "error"` is what keeps
- * that honest: a route that gained or lost a fetch fails every test here loudly
- * rather than silently reading a stale stub. */
+ * Four, not five: the page does not read `/scope-nodes` (the server places an
+ * adopted device itself). It DOES read `/system-health`, because relay
+ * connectivity is the only way to tell "discovery is running and found nothing"
+ * from "nothing is discovering" — see ./discovery. And it reads
+ * `/adopted-devices` for the policy panel, which lists the RECORDS rather than
+ * joining them onto discovered rows (the two share no member).
+ *
+ * `onUnhandledRequest: "error"` was described here as what keeps this honest —
+ * "a route that gained or lost a fetch fails every test here loudly". It did NOT
+ * when the adopted panel was added, because the panel catches its own read
+ * failure and renders an error state, so every test kept passing against a panel
+ * that was permanently broken. The stub below is the fix; the caveat is recorded
+ * so the next fetch-gaining change is not trusted to fail loudly by itself. */
 function seed({
   devices = [device()],
   entities = [entity()],
   systemHealth = health(),
+  adopted = [],
 }: {
   devices?: Device[];
   entities?: Entity[];
   systemHealth?: SystemHealth;
+  adopted?: unknown[];
 } = {}) {
   server.use(
     http.get(`${TEST_BASE}/devices`, () => page(devices)),
     http.get(`${TEST_BASE}/entities`, () => page(entities)),
     http.get(`${TEST_BASE}/system-health`, () => ok(systemHealth)),
+    http.get(`${TEST_BASE}/adopted-devices`, () => page(adopted as never[])),
   );
 }
 
