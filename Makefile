@@ -26,11 +26,20 @@ dev-up: dev-down
 	@# any local reader. The directory gate is what closes it — the shell's `>`
 	@# creates the log at the umask default and nothing here can change that.
 	@mkdir -p $(RUNDIR) && chmod 700 $(RUNDIR)
-	@# Fresh enrollment each run: the connection handshake (REL-030) verifies the
-	@# relay's channel binding against the enrollment key the (fresh-per-process,
-	@# in-memory-CA) feeder recorded at enroll, so a relay identity persisted
-	@# against a prior feeder process could no longer bind. Clearing it keeps the
+	@# Fresh RELAY identity each run: the connection handshake (REL-030) verifies
+	@# the relay's channel binding against the enrollment key the feeder recorded
+	@# at enroll, so clearing the relay's side makes it re-enroll and keeps the
 	@# self-contained dev check deterministic across repeated runs.
+	@#
+	@# The FEEDER's side is NOT cleared, and that is worth knowing before debugging
+	@# here. This comment used to describe the feeder as having a "fresh-per-
+	@# process, in-memory CA"; it does not. internal/feeder/enroll/persist.go
+	@# loads ca_cert_pem/ca_key_pem from $(RUNDIR)/feeder-enroll/enrollment.json,
+	@# so the CA and the whole enrollment registry SURVIVE every dev-up and
+	@# accumulate one entry per run (53 of them by one session's end). Nothing has
+	@# been shown to break because of that, and it is deliberately not "fixed"
+	@# here — but a reader who believes the old comment will not think to look at
+	@# that file, which is the failure this correction exists to prevent.
 	@rm -rf $(RUNDIR)/relay-identity
 	@# Fresh app store each run too: the authoring-loop demo (scripts/authoring-demo.sh)
 	@# edits the seeded schedule, so starting from the pristine seed keeps the live
