@@ -26,6 +26,13 @@
 import { ApiClient, API_BASE } from "./client";
 import { crud } from "./crud";
 import type { ResourceModule } from "./resources";
+import type { components } from "../../../api/gen/ts/api";
+
+/** One outstanding rasterization — a complete work order for `waiveo-derive`:
+ * what to draw and where the PNG goes. Taken from the generated schema rather
+ * than restated, because every member here is read by a console that must not
+ * disagree with the tool about the shape. */
+export type DerivePendingLayer = components["schemas"]["DerivePendingLayer"];
 
 /** The fixed pixel canvas every slide's geometry is expressed in — the same
  * constants the wire declares (`wire.SlideCanvasWidth/Height`). Players force
@@ -422,6 +429,16 @@ export interface CastsModule extends ResourceModule<Cast, CastCreate, CastUpdate
    * rules an authored one is. A malformed or altered bundle is a 422 whose
    * `detail` says which kind of wrong it is. */
   importBundle(bundle: BodyInit, scopeNode: string, name?: string): Promise<Cast>;
+  /** Every `derive` layer waiting to be rasterized, across the whole library.
+   *
+   * Lives on this module rather than its own because the subject is authored
+   * cast/playlist content, and because it is computed from those rows rather
+   * than from a queue table — a layer leaves this list the moment its PNG is
+   * written back, and rejoins it the moment its spec is edited.
+   *
+   * Returns the array directly: the response wraps it in `derive_jobs`, which is
+   * a wire detail no caller needs to repeat. */
+  pendingDerives(): Promise<DerivePendingLayer[]>;
 }
 
 /** Build the cast module over an ApiClient. The ONE place `/casts` is named. */
@@ -430,6 +447,13 @@ export function createCastsModule(client: ApiClient): CastsModule {
     ...crud<Cast, CastCreate, CastUpdate>(client, "/casts"),
     exportUrl(castId) {
       return `${API_BASE}/casts/${encodeURIComponent(castId)}/export`;
+    },
+    async pendingDerives() {
+      const res = await client.read<{ derive_jobs?: DerivePendingLayer[] }>("/derive/pending");
+      // A response with no `derive_jobs` is treated as none rather than as a
+      // crash: the member is required by the schema, and an empty library is the
+      // ordinary reading of its absence.
+      return res.data.derive_jobs ?? [];
     },
     async importBundle(bundle, scopeNode, name) {
       const q = new URLSearchParams({ scope_node: scopeNode });

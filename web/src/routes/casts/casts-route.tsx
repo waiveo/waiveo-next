@@ -31,6 +31,7 @@ import { newSlide } from "@/routes/studio/cast-model";
 import { SlideStage } from "@/routes/studio/slide-canvas";
 import { useContentLibrary } from "@/routes/media/media-library";
 import { BUILT_IN_TEMPLATES } from "./cast-templates";
+import { PendingRenders } from "./pending-renders";
 
 /**
  * The cast library — every authored slide document on this box, and the door
@@ -643,6 +644,11 @@ export default function CastsRoute({ api }: { api?: WaiveoApi }) {
             </div>
           )}
         />
+        {/* The library-wide render queue. Below the casts because it is a
+            consequence of them, and above the templates because it is about
+            content that is LIVE — a stale layer is on a screen right now. */}
+        <PendingRenders api={client} />
+
         {/* Templates. A second table rather than a filter toggle on the first:
             these are not casts you are choosing between, they are the shapes you
             START from, and the actions on them are different ones (create-from,

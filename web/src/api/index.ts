@@ -139,6 +139,7 @@ export {
   MIN_INTERACTIVE_SIDE,
   type CastsModule,
   type Cast,
+  type DerivePendingLayer,
   type CastCreate,
   type CastUpdate,
   type CastSlide,

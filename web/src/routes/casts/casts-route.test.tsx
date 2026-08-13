@@ -28,10 +28,23 @@ const page = (items: unknown[]) => HttpResponse.json({ items, cursor: null });
 
 /** The two lists the page loads: the casts, and the scope nodes a new cast can
  * be attached under. */
-function listing(casts: unknown[], scopes: unknown[] = [scopeNode({ id: ULID_ROOT, kind: "site", name: "The Hanger" })]) {
+/** The reads the page makes on mount.
+ *
+ * `/derive/pending` is one of them: the render-queue panel below the library
+ * reads it. Stubbed empty here so these cases exercise the panel's ordinary
+ * state — WITHOUT it, `onUnhandledRequest: "error"` rejects the fetch, the panel
+ * catches its own failure and renders an error state, and every case in this
+ * file keeps passing against a permanently broken panel. That is not
+ * hypothetical: it is exactly what happened when the adopted-devices panel was
+ * added to the devices page. A panel that handles its own read failure is a
+ * panel this harness cannot police, so its stub has to be added by hand. */
+function listing(casts: unknown[], scopes: unknown[] = [scopeNode({ id: ULID_ROOT, kind: "site", name: "The Hanger" })], derives: unknown[] = []) {
   return [
     http.get("*/api/v1/casts", () => page(casts)),
     http.get("*/api/v1/scope-nodes", () => page(scopes)),
+    http.get("*/api/v1/derive/pending", () =>
+      HttpResponse.json({ derive_jobs: derives }, { headers: { "Trace-Id": TRACE_ID } }),
+    ),
   ];
 }
 
