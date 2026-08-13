@@ -1,0 +1,46 @@
+{
+  "id": "waiveo/backups",
+  "version": "1.0.0",
+  "displayName": "msg:pack.displayName",
+  "icon": "archive",
+  "description": "Scheduling and retention policy for this deployment's workspace backups. The pack owns the POLICY — when to run, how many to keep — and calls the platform's own archive engine to do the work, so the encryption and the data key never leave core.",
+  "compat": {
+    "ctx": ">=1.0 <2.0",
+    "renderer": ["settings-form"]
+  },
+  "capabilities": [
+    { "capability": "storage.write", "scope": "*", "reason": "msg:cap.storage.reason" }
+  ],
+  "egress": [],
+  "resources": { "memory": 64, "cpuWeight": 100, "storageQuota": 8, "maxScheduledTimers": 0 },
+  "dataModel": {
+    "version": 1,
+    "collections": [
+      {
+        "name": "settings",
+        "singleton": true,
+        "fields": [
+          { "name": "schedule", "type": "string" },
+          { "name": "keep_last", "type": "number" },
+          { "name": "keep_days", "type": "number" },
+          { "name": "notify_on_failure", "type": "boolean" }
+        ]
+      }
+    ]
+  },
+  "retention": {},
+  "ui": {
+    "pages": [
+      { "path": "settings", "pageType": "settings-form", "titleMsg": "msg:page.settings.title" }
+    ]
+  },
+  "actions": [
+    {
+      "name": "run-backup",
+      "paramsSchema": {},
+      "capabilityScope": "storage.write",
+      "auditClass": "write",
+      "idempotencyClass": "safe-to-retry"
+    }
+  ]
+}

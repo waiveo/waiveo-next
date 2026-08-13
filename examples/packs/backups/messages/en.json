@@ -1,0 +1,14 @@
+{
+  "pack.displayName": "Backups",
+  "cap.storage.reason": "To record your backup schedule and retention policy.",
+  "page.settings.title": "Backup Policy",
+  "settings.schedule.title": "When to run",
+  "settings.schedule": "Schedule",
+  "settings.schedule.placeholder": "daily at 03:00",
+  "settings.retention.title": "How many to keep",
+  "settings.keepLast": "Keep the last N backups",
+  "settings.keepDays": "Keep anything newer than N days",
+  "settings.notify": "Tell me if a backup fails",
+  "settings.save": "Save policy",
+  "settings.run": "Run backup now"
+}

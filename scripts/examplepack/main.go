@@ -26,6 +26,7 @@ import (
 
 func main() {
 	out := flag.String("out", "", "path to write the signed example-pack zip to (required)")
+	pack := flag.String("pack", "menu-board", "which in-repo example pack to build (examples/packs/<name>)")
 	keyDir := flag.String("key-dir", ".dev/pack-publisher",
 		"directory the make-dev publisher signing keypair persists in (created on first run)")
 	anchors := flag.String("anchors", ".dev/pack-trust/anchors.json",
@@ -37,7 +38,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	art, err := examplepacks.MenuBoardZip()
+	art, err := examplepacks.PackZip(*pack)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "examplepack: build zip: %v\n", err)
 		os.Exit(1)

@@ -31,7 +31,17 @@ import (
 const menuBoardDir = "menu-board"
 
 //go:embed menu-board
+//go:embed backups
 var menuBoardFS embed.FS
+
+// PackZip assembles ANY in-repo example pack by directory name, on the same
+// terms MenuBoardZip assembles menu-board: entries named relative to the pack
+// root, written in sorted order so the artifact is reproducible.
+//
+// Generalised rather than copied when a second pack arrived — two hardcoded
+// builders would be two places for the entry-naming and the sort order to drift
+// apart, and the layout IS the install contract.
+func PackZip(dir string) ([]byte, error) { return zipPack(dir) }
 
 // MenuBoardZip assembles the menu-board example pack into an in-memory zip
 // artifact — its entries named relative to the pack root (manifest.json,
@@ -39,8 +49,11 @@ var menuBoardFS embed.FS
 // install pipeline expects. Entries are written in sorted order so the artifact
 // is deterministic (a reproducible build, and a stable Idempotency-Key content
 // hash across runs). Nothing is executed: the files are copied as bytes.
-func MenuBoardZip() ([]byte, error) {
-	names, err := menuBoardEntryNames()
+func MenuBoardZip() ([]byte, error) { return zipPack(menuBoardDir) }
+
+// zipPack is the shared assembler.
+func zipPack(dir string) ([]byte, error) {
+	names, err := entryNames(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +61,7 @@ func MenuBoardZip() ([]byte, error) {
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	for _, name := range names {
-		data, err := menuBoardFS.ReadFile(path.Join(menuBoardDir, name))
+		data, err := menuBoardFS.ReadFile(path.Join(dir, name))
 		if err != nil {
 			return nil, err
 		}
@@ -70,24 +83,31 @@ func MenuBoardZip() ([]byte, error) {
 // the pack root (e.g. "manifest.json", "ui/menu-items.json"). It lets a test
 // assert the API serves a page document or catalog byte-for-byte as it ships on
 // disk.
+// PackFile returns one file from any in-repo example pack, named relative to
+// the pack root.
+func PackFile(dir, name string) ([]byte, error) {
+	return menuBoardFS.ReadFile(path.Join(dir, name))
+}
+
 func MenuBoardFile(name string) ([]byte, error) {
 	return menuBoardFS.ReadFile(path.Join(menuBoardDir, name))
 }
 
 // MenuBoardEntryNames returns the pack's bundle entry names (relative to the pack
 // root), sorted — the exact set MenuBoardZip writes.
-func MenuBoardEntryNames() ([]string, error) { return menuBoardEntryNames() }
+func MenuBoardEntryNames() ([]string, error) { return entryNames(menuBoardDir) }
 
-func menuBoardEntryNames() ([]string, error) {
+// entryNames walks one pack's embedded tree.
+func entryNames(dir string) ([]string, error) {
 	var names []string
-	err := fs.WalkDir(menuBoardFS, menuBoardDir, func(p string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(menuBoardFS, dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
 			return nil
 		}
-		names = append(names, strings.TrimPrefix(p, menuBoardDir+"/"))
+		names = append(names, strings.TrimPrefix(p, dir+"/"))
 		return nil
 	})
 	if err != nil {

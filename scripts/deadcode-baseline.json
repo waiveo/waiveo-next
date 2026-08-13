@@ -27,10 +27,11 @@
   "groups": [
     {
       "package": "examples/packs",
-      "reason": "Readers beside the in-repo example pack. scripts/examplepack builds and writes the zip, which is all `make example-pack` and the end-to-end pack install need; these two read a built pack back apart, which only the pack e2e test and this package's own test do.",
+      "reason": "Readers beside the in-repo example packs. scripts/examplepack builds and writes the zip, which is all `make example-pack` and the end-to-end pack install need; these read a built pack back apart, which only the pack e2e test and this package's own tests do. PackFile is the by-directory form the same tests use for the backups pilot \u2014 same class of caller, same reason.",
       "funcs": [
+        "MenuBoardEntryNames",
         "MenuBoardFile",
-        "MenuBoardEntryNames"
+        "PackFile"
       ]
     },
     {
