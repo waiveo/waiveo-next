@@ -14,6 +14,14 @@ internal/app/webui/dist/*
 *.log
 .superpowers/
 .dev/
+# Any sibling run dir too. The isolated-stack recipe (WAIVEO_*_LISTEN + the
+# per-path env vars, see cmd/waiveo-relay's WAIVEO_RELAY_IDENTITY_PATH) needs a
+# SECOND run dir to bring a stack up beside the default one, and `.dev2` is the
+# obvious name for it. It is not covered by `.dev/`, so a `git add -A` swept a
+# 23MB feeder binary and a 17MB relay binary into a commit — which then broke
+# CI, because check-public-hygiene reads every tracked file through a 16MB
+# buffer. Ignoring the whole family closes that.
+.dev*/
 # Playwright (dev-only click-through gate, web/): the runner's report + artifact
 # output and its browser cache. Browsers download to the OS cache
 # (~/Library/Caches/ms-playwright), never the repo; these dirs are pure run output.
