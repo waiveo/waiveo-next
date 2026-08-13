@@ -95,6 +95,13 @@ func main() {
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		_ = os.WriteFile(out, []byte(line), 0o600)
 	}
+	// The address half of the handoff: a pack cannot redeem the code it just
+	// read without knowing where the api/1 surface is.
+	if out := os.Getenv("PACK_ECHO_API_FILE"); out != "" {
+		// The address AND an inherited variable, so a test can tell "the host
+		// added the address" from "the host replaced the whole environment".
+		_ = os.WriteFile(out, []byte(os.Getenv("WAIVEO_API_BASE_URL")+"\n"+os.Getenv("HOME")), 0o600)
+	}
 	if os.Getenv("PACK_IGNORE_SHUTDOWN") != "" {
 		time.Sleep(10 * time.Minute)
 		return
@@ -187,6 +194,49 @@ func TestAPackStartsAndIsGivenAnIdentity(t *testing.T) {
 // SEC-037: the code reaches the pack over STDIN, never an environment variable.
 // An env var is readable from the process table for the life of the process,
 // which turns a one-time sixty-second code into a long-lived credential.
+// The other half of the handoff, and the one a pack cannot start without: the
+// address of the api/1 surface it redeems its grant at.
+//
+// Nothing conveyed it before — the child merely inherited the host's
+// environment, which names the host's own listen address nowhere — so a pack
+// could read its one-time code and have no idea where to send it. The code goes
+// over stdin because SEC-037 keeps a CREDENTIAL out of the process table; the
+// address goes in the environment because it is public, identical for every
+// pack, and not a credential at all.
+func TestThePackIsToldWhereTheAPIIs(t *testing.T) {
+	f := newFakeIdentity()
+	s := newSup(f)
+	t.Cleanup(s.StopAll)
+
+	echo := filepath.Join(t.TempDir(), "got-api")
+	spec := specFor("waiveo/backups", "1.0.0", "PACK_ECHO_API_FILE="+echo)
+	spec.APIBaseURL = "https://127.0.0.1:7420"
+	if _, err := s.Start(context.Background(), spec); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	var got string
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
+		if b, err := os.ReadFile(echo); err == nil && len(b) > 0 {
+			got = strings.TrimSpace(string(b))
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	addr, home, _ := strings.Cut(got, "\n")
+	if addr != "https://127.0.0.1:7420" {
+		t.Fatalf("the pack saw WAIVEO_API_BASE_URL=%q, want the host's address", addr)
+	}
+	// The address is APPENDED to the host's environment, not substituted for it.
+	// A pack is an ordinary process: it needs a PATH, a HOME and a TMPDIR, and a
+	// host that handed it only its own address would break the first pack that
+	// wrote a temp file. HOME is the probe because the test runner always has
+	// one and the reference pack can read it without any extra plumbing.
+	if home == "" {
+		t.Error("the pack inherited no HOME — the host replaced its environment instead of extending it")
+	}
+}
+
 func TestTheIdentityCodeArrivesOverStdinAndNotTheEnvironment(t *testing.T) {
 	f := newFakeIdentity()
 	s := newSup(f)

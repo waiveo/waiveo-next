@@ -75,10 +75,15 @@ type Host struct {
 	// (SEC-037). Deployment-wide for now: a pack is installed workspace-wide,
 	// so there is no per-pack placement to read one from.
 	scopeNode string
+	// apiBaseURL is where a started pack reaches api/1 to redeem its grant and
+	// then lease its work. Handed over as an environment variable — see
+	// packhost.Spec.APIBaseURL for why that is right for an address and wrong
+	// for the code.
+	apiBaseURL string
 }
 
-func New(st Store, sup Starter, dir, scopeNode string) *Host {
-	return &Host{store: st, sup: sup, dir: dir, scopeNode: scopeNode}
+func New(st Store, sup Starter, dir, scopeNode, apiBaseURL string) *Host {
+	return &Host{store: st, sup: sup, dir: dir, scopeNode: scopeNode, apiBaseURL: apiBaseURL}
 }
 
 // entryPathIsSafe reports whether a manifest-declared entry path may be joined
@@ -238,6 +243,7 @@ func (h *Host) StartAll(ctx context.Context) ([]Result, error) {
 		running, err := h.sup.Start(ctx, packhost.Spec{
 			ID: p.ID, Version: p.Version, Argv: argv,
 			ScopeNode: h.scopeNode, Role: auth.RoleOperator,
+			APIBaseURL: h.apiBaseURL,
 		})
 		res.Started, res.Err = running, err
 		out = append(out, res)

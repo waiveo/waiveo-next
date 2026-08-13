@@ -55,7 +55,7 @@ func pack(id, version string, enabled bool, runtime any) store.Pack {
 
 func host(t *testing.T, st *fakeStore, sp *fakeStarter) *Host {
 	t.Helper()
-	return New(st, sp, t.TempDir(), "01J8Z0B0000000000000000000")
+	return New(st, sp, t.TempDir(), "01J8Z0B0000000000000000000", "https://127.0.0.1:7420")
 }
 
 // --- the headline ------------------------------------------------------------

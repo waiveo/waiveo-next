@@ -1432,7 +1432,11 @@ func main() {
 	// The extensions themselves. Until this call existed a pack could be
 	// installed, served, invoked, updated and hot-swap-tested — and never RUN:
 	// `internal/packhost` was imported by no binary. This is the join.
-	packSupervisor := startPacks(context.Background(), st, authStore, cfg.packBinDir)
+	// The address a pack redeems its grant at and then leases work from. Derived
+	// from this process's OWN listen address rather than a constant: a feeder on
+	// a non-default port would otherwise hand every pack an address nothing is
+	// listening on.
+	packSupervisor := startPacks(context.Background(), st, authStore, cfg.packBinDir, "https://"+cfg.listen)
 	defer packSupervisor.StopAll()
 
 	// The embedded console SPA, served at "/" for every non-API path. The API,
@@ -2031,7 +2035,7 @@ func placeholderImage() []byte {
 // the packs that do work are the ones an operator is relying on. Failures are
 // per-pack and named; a pack's own condition after it starts shows up on the
 // pack-health surface instead.
-func startPacks(ctx context.Context, st *store.Store, authStore *auth.Store, binDir string) *packhost.Supervisor {
+func startPacks(ctx context.Context, st *store.Store, authStore *auth.Store, binDir, apiBaseURL string) *packhost.Supervisor {
 	sup := packhost.New(authStore, packhost.Options{})
 	// The scope a pack principal's role binding is issued at (SEC-037). The
 	// deployment root, because a pack is installed workspace-wide and carries no
@@ -2040,7 +2044,7 @@ func startPacks(ctx context.Context, st *store.Store, authStore *auth.Store, bin
 	// firstPhotonSite.ScopeNode is this deployment's site — the same node the
 	// device registry is rooted at. Named from there rather than re-declared, so
 	// a pack principal and the device plane cannot end up scoped differently.
-	host := packrun.New(st, sup, binDir, firstPhotonSite.ScopeNode)
+	host := packrun.New(st, sup, binDir, firstPhotonSite.ScopeNode, apiBaseURL)
 	results, err := host.StartAll(ctx)
 	if err != nil {
 		log.Printf("waiveo-feeder: could not read the installed packs, so none were started: %v", err)

@@ -81,6 +81,24 @@ type Spec struct {
 	Argv      []string
 	ScopeNode string
 	Role      auth.Role
+	// APIBaseURL is where the pack reaches this host's api/1 surface, handed
+	// over as WAIVEO_API_BASE_URL.
+	//
+	// A pack cannot be written without it: the grant it reads on stdin is
+	// redeemed at `POST /auth/tier-grant/redeem`, and until that address is
+	// known there is nowhere to send it. Nothing conveyed it before this field —
+	// the child merely inherited the host's environment, which names the host's
+	// own listen address nowhere.
+	//
+	// IN THE ENVIRONMENT, and that is not a contradiction of SEC-037. What
+	// SEC-037 keeps out of the environment is the one-time CODE, because an env
+	// var is readable from the process table for the life of the process and
+	// that would turn a sixty-second credential into a long-lived one. A base
+	// URL is not a credential: it is public, it is the same for every pack, and
+	// it is exactly the kind of thing an environment variable is for. Putting it
+	// on stdin beside the code would also make the handoff a two-field format
+	// with an ordering rule, when it is currently one line.
+	APIBaseURL string
 }
 
 // Running describes a live pack for an operator reading the console.
@@ -310,6 +328,13 @@ func (s *Supervisor) launch(ctx context.Context, spec Spec) (*process, error) {
 	}
 
 	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
+	// The host's own environment plus the address. Inheriting is deliberate — a
+	// pack needs a PATH, a HOME and a TMPDIR like any other process — and the
+	// address is appended rather than replacing the set, so a deployment that
+	// exports something for its packs keeps it.
+	if spec.APIBaseURL != "" {
+		cmd.Env = append(os.Environ(), "WAIVEO_API_BASE_URL="+spec.APIBaseURL)
+	}
 	// Inherited, so a pack that dies on boot says why in the host's log. Its own
 	// diagnostics are usually the only explanation, and swallowing them would
 	// leave "it never became ready" as the whole story.
