@@ -40,6 +40,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/devices"
 	"github.com/maaxton/waiveo-next/internal/app/eventingest"
 	"github.com/maaxton/waiveo-next/internal/app/eventsse"
+	"github.com/maaxton/waiveo-next/internal/app/packrun"
 	"github.com/maaxton/waiveo-next/internal/app/packs"
 	"github.com/maaxton/waiveo-next/internal/app/platformlog"
 	"github.com/maaxton/waiveo-next/internal/app/screens"
@@ -54,6 +55,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/feeder/relayconn"
 	"github.com/maaxton/waiveo-next/internal/feeder/signing"
 	"github.com/maaxton/waiveo-next/internal/feeder/snapshot"
+	"github.com/maaxton/waiveo-next/internal/packhost"
 	"github.com/maaxton/waiveo-next/internal/packsig"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
@@ -121,6 +123,7 @@ type config struct {
 	authDir        string // directory the security-model/1 auth state (database + setup code) lives in
 	contentPath    string // directory the content origin persists uploaded asset bytes to
 	archiveDir     string // directory the data-subject export writes archive/1 containers into
+	packBinDir     string // directory a code-carrying pack's entry is materialised into to be exec'd (MAN-065)
 	keyDir         string // directory the workspace signing key + data key persist in — NEVER the archive dir
 	// identityDir holds THE identity every relay pins at enrollment: this
 	// deployment's signing key and its TLS leaf. enrollDir holds the enrollment
@@ -229,6 +232,19 @@ const authStoreFile = "auth.db"
 // copy, and hand to someone. See defaultWorkspaceKeyDir for what that makes
 // impossible to keep here.
 const defaultArchiveDir = ".dev/feeder-archive"
+
+// defaultPackBinDir is the make-dev-local directory a code-carrying pack's entry
+// (MAN-065) is materialised into so it can be exec'd.
+//
+// A pack's code lives in SQLite as bytes and a process cannot be exec'd out of a
+// database row, so it is written here, one directory per (pack, VERSION). Per
+// version because a hot swap starts the replacement BEFORE retiring the
+// incumbent: they are briefly both live, and a single directory per pack would
+// have the new bytes overwrite the file the running process was started from.
+//
+// Everything under it is rewritten from the database on every boot — the rows
+// are the truth, and a file left by an earlier build is not.
+const defaultPackBinDir = ".dev/feeder-pack-bin"
 
 // defaultWorkspaceKeyDir is the make-dev-local directory the workspace signing
 // key (security-model.md SEC-046) and the per-workspace data key (SEC-040)
@@ -341,6 +357,7 @@ func loadConfig(env func(string) string) config {
 		authDir:        envOr(env, "WAIVEO_FEEDER_AUTH_DIR", defaultAuthDir),
 		contentPath:    envOr(env, "WAIVEO_FEEDER_CONTENT_DIR", defaultContentPath),
 		archiveDir:     envOr(env, "WAIVEO_FEEDER_ARCHIVE_DIR", defaultArchiveDir),
+		packBinDir:     envOr(env, "WAIVEO_FEEDER_PACK_BIN_DIR", defaultPackBinDir),
 		keyDir:         envOr(env, "WAIVEO_FEEDER_KEY_DIR", defaultWorkspaceKeyDir),
 		identityDir:    absHostFilePath(envOr(env, "WAIVEO_FEEDER_IDENTITY_DIR", signing.DefaultDir)),
 		enrollDir:      absHostFilePath(envOr(env, "WAIVEO_FEEDER_ENROLL_DIR", defaultEnrollDir)),
@@ -1412,6 +1429,12 @@ func main() {
 		log.Fatalf("waiveo-feeder: start the webhook delivery loop: %v", err)
 	}
 
+	// The extensions themselves. Until this call existed a pack could be
+	// installed, served, invoked, updated and hot-swap-tested — and never RUN:
+	// `internal/packhost` was imported by no binary. This is the join.
+	packSupervisor := startPacks(context.Background(), st, authStore, cfg.packBinDir)
+	defer packSupervisor.StopAll()
+
 	// The embedded console SPA, served at "/" for every non-API path. The API,
 	// event-stream, content-origin, telemetry and enrollment/handshake routes are
 	// registered as more specific patterns, so http.ServeMux keeps them ahead of
@@ -1993,4 +2016,42 @@ func placeholderImage() []byte {
 		log.Fatalf("waiveo-feeder: encode placeholder image: %v", err)
 	}
 	return buf.Bytes()
+}
+
+// startPacks materialises and starts every installed, enabled, code-carrying
+// pack, and returns the supervisor that owns them so the shutdown path can stop
+// them.
+//
+// A function rather than inline for the reason startWebhookDelivery and
+// startConsoleBinding are: so a test can drive the IDENTICAL wiring rather than
+// a re-creation of it that can drift.
+//
+// It NEVER fails the boot. A pack that will not materialise or start is logged
+// and skipped — one publisher's broken binary must not stop a box coming up, and
+// the packs that do work are the ones an operator is relying on. Failures are
+// per-pack and named; a pack's own condition after it starts shows up on the
+// pack-health surface instead.
+func startPacks(ctx context.Context, st *store.Store, authStore *auth.Store, binDir string) *packhost.Supervisor {
+	sup := packhost.New(authStore, packhost.Options{})
+	// The scope a pack principal's role binding is issued at (SEC-037). The
+	// deployment root, because a pack is installed workspace-wide and carries no
+	// placement of its own — the same node the pack-data surface already treats
+	// as a pack's home.
+	// firstPhotonSite.ScopeNode is this deployment's site — the same node the
+	// device registry is rooted at. Named from there rather than re-declared, so
+	// a pack principal and the device plane cannot end up scoped differently.
+	host := packrun.New(st, sup, binDir, firstPhotonSite.ScopeNode)
+	results, err := host.StartAll(ctx)
+	if err != nil {
+		log.Printf("waiveo-feeder: could not read the installed packs, so none were started: %v", err)
+		return sup
+	}
+	for _, r := range results {
+		if r.Err != nil {
+			log.Printf("waiveo-feeder: extension %s did NOT start: %v", r.PackID, r.Err)
+			continue
+		}
+		log.Printf("waiveo-feeder: extension %s %s running (pid %d)", r.PackID, r.Started.Version, r.Started.PID)
+	}
+	return sup
 }
