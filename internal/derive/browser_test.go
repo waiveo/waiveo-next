@@ -97,19 +97,52 @@ func TestChromiumRendersAScannableQR(t *testing.T) {
 	originX := (w - side) / 2
 	originY := (h - side) / 2
 
-	mismatches := 0
+	// Mismatches are counted BY DIRECTION, because the count alone cannot tell
+	// the two failure modes apart and this test has already failed once on CI in
+	// a way nobody could attribute afterwards.
+	//
+	// A PARTIALLY COMPOSITED capture — the frame grabbed before every rect
+	// painted — reads dark modules as light, so the misses pile up almost
+	// entirely in darkReadLight and the image's overall dark fraction comes in
+	// under what the symbol requires. A GEOMETRIC OFFSET — wrong scale, wrong
+	// origin, fractional module size — flips modules in both directions at
+	// roughly the rate their neighbours differ, so the two counts are
+	// comparable and the dark fraction is about right.
+	//
+	// Reporting the geometry alongside them means the next failure names its own
+	// cause instead of restarting the investigation.
+	var darkReadLight, lightReadDark int
 	for my := 0; my < want.Size; my++ {
 		for mx := 0; mx < want.Size; mx++ {
 			px := originX + (mx+4)*unit + unit/2
 			py := originY + (my+4)*unit + unit/2
-			if isDark(img, px, py) != want.At(mx, my) {
-				mismatches++
+			got, expect := isDark(img, px, py), want.At(mx, my)
+			if got == expect {
+				continue
+			}
+			if expect {
+				darkReadLight++
+			} else {
+				lightReadDark++
 			}
 		}
 	}
-	if mismatches != 0 {
-		t.Errorf("%d of %d modules read back wrong from the rendered PNG — the symbol did not survive the pipeline",
-			mismatches, want.Size*want.Size)
+	if n := darkReadLight + lightReadDark; n != 0 {
+		wantDark := 0
+		for my := 0; my < want.Size; my++ {
+			for mx := 0; mx < want.Size; mx++ {
+				if want.At(mx, my) {
+					wantDark++
+				}
+			}
+		}
+		t.Errorf("%d of %d modules read back wrong from the rendered PNG — the symbol did not survive the pipeline\n"+
+			"  expected-dark read light: %d   expected-light read dark: %d   (symbol has %d dark of %d)\n"+
+			"  geometry: span=%d unit=%dpx side=%dpx origin=(%d,%d) in a %dx%d image\n"+
+			"  a lopsided darkReadLight with a too-light image is a capture taken before the frame committed;\n"+
+			"  comparable counts point at scale/origin geometry instead",
+			n, want.Size*want.Size, darkReadLight, lightReadDark, wantDark, want.Size*want.Size,
+			span, unit, side, originX, originY, w, h)
 	}
 }
 
