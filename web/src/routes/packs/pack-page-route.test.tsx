@@ -86,6 +86,66 @@ const settingsFormDoc = {
   ],
 };
 
+// The extra catalog entries these pages need, on top of the fixture pack's.
+const ACTION_CATALOG = {
+  ...PACK_EN_CATALOG,
+  "act.run": "Run backup",
+  "wiz.next": "Continue",
+  "wiz.finish": "Finish",
+};
+
+// A `settings-form` carrying a `call-action` button BESIDE its Save. Beside, not
+// instead: UIS-031 requires a settings-form to wire at least one submit, which is
+// the contract being right — a form with no way to save is not a settings form.
+const callActionDoc = {
+  pageType: "settings-form",
+  source: "settings",
+  sections: [
+    {
+      titleMsg: "msg:detail.title",
+      fields: [{ type: "text-input", bind: "greeting", props: { labelMsg: "msg:detail.name" } }],
+    },
+  ],
+  actions: [
+    {
+      type: "button",
+      props: { labelMsg: "msg:detail.save", style: "primary" },
+      on: { press: { verb: "submit" } },
+    },
+    {
+      type: "button",
+      props: { labelMsg: "msg:act.run" },
+      on: { press: { verb: "call-action", action: "run-backup", params: { full: true, note: "greeting" } } },
+    },
+  ],
+};
+
+// A `wizard` with NO draftSource: every step's Scope is the ephemeral `$ui.draft`
+// (UIS-051), and `onFinish` is responsible for persisting it — here through a
+// `call-action` whose params read the draft out. This is the exact shape UIS-051
+// names, and it needed the callAction seam to exist at all.
+const wizardDoc = {
+  pageType: "wizard",
+  steps: [
+    {
+      id: "name",
+      titleMsg: "msg:detail.title",
+      root: {
+        type: "section",
+        props: { titleMsg: "msg:detail.title" },
+        children: [
+          { type: "text-input", bind: "greeting", props: { labelMsg: "msg:detail.name" } },
+          { type: "button", props: { labelMsg: "msg:wiz.next" }, on: { press: { verb: "wizard-next" } } },
+        ],
+      },
+    },
+    // No authored finish button: the wizard chrome renders its own Finish on the
+    // last step, which is the control an operator actually presses.
+    { id: "confirm", titleMsg: "msg:detail.title", root: { type: "text", props: { value: "greeting" } } },
+  ],
+  onFinish: { verb: "call-action", action: "run-backup", params: { greeting: "greeting" } },
+};
+
 // A conformant `dashboard` page (UIS-040) reading TWO declared collections from
 // separate tiles, plus a third tile bound to nothing fetchable. A dashboard has no
 // page-wide bound resource by design — each tile resolves its own root Binding —
@@ -739,6 +799,102 @@ describe("Pack page — safety + spec-form regressions", () => {
     // And it did NOT take the create path — that would 409 against the singleton
     // bound on a real server (MAN-056), losing the operator's edit.
     expect(creates).toBe(0);
+  });
+
+  // Regression: the `call-action` seam was entirely unwired on a pack page, and
+  // an unwired seam with no `outcomeTo` is a COMPLETE silent no-op — a pack
+  // shipping a page with an action button had a button that did nothing at all.
+  // Every other half of the actions plane existed; the pack's own UI was the one
+  // caller that could not reach it.
+  it("a pack page's call-action button invokes the pack's declared action (MAN-100/101)", async () => {
+    expect(validatePage(callActionDoc).ok).toBe(true);
+    const successSpy = vi.spyOn(sonnerToast, "success");
+    let invoked: { url: string; body: unknown } | null = null;
+    server.use(
+      ...baseHandlers({ doc: callActionDoc, en: ACTION_CATALOG }),
+      http.get(`${B}/data/settings`, () => dataPage([packRow({ entity_id: ULID_C, greeting: "Good morning" })])),
+      http.post(`${B}/actions/run-backup`, async ({ request }) => {
+        invoked = { url: request.url, body: await request.json() };
+        return HttpResponse.json(
+          { invocation_id: ULID_A, pack_id: "acme/menu-board", action: "run-backup", state: "pending" },
+          { status: 202, headers: { "Trace-Id": TRACE_ID } },
+        );
+      }),
+    );
+    renderPack();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Run backup" }));
+
+    // It reached the MAN-101 route for THIS action…
+    await waitFor(() => expect(invoked).not.toBeNull());
+    const call = invoked as unknown as { url: string; body: { params: Record<string, unknown> } };
+    expect(call.url).toContain("/packs/acme/menu-board/actions/run-backup");
+    // …carrying the declared params, with the Binding one RESOLVED against the
+    // bound record rather than sent as the literal string "greeting".
+    expect(call.body.params).toEqual({ full: true, note: "Good morning" });
+    // Reported as STARTED, never "done": the call is queued and api/1 exposes no
+    // way to read the invocation back, so acceptance is all the console knows.
+    expect(successSpy).toHaveBeenCalledWith("Started run-backup");
+  });
+
+  it("reports a refused action honestly rather than a green toast", async () => {
+    const successSpy = vi.spyOn(sonnerToast, "success");
+    const errorSpy = vi.spyOn(sonnerToast, "error");
+    server.use(
+      ...baseHandlers({ doc: callActionDoc, en: ACTION_CATALOG }),
+      http.get(`${B}/data/settings`, () => dataPage([packRow({ entity_id: ULID_C, greeting: "Good morning" })])),
+      http.post(`${B}/actions/run-backup`, () =>
+        problem(404, "NOT_FOUND", "This pack declares no action of that name."),
+      ),
+    );
+    renderPack();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Run backup" }));
+
+    await waitFor(() =>
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("This pack declares no action of that name."),
+      ),
+    );
+    expect(successSpy).not.toHaveBeenCalled();
+  });
+
+  // The whole UIS-051 ephemeral-draft path, driven by clicking through the wizard
+  // rather than by asserting on a render. A wizard with no `draftSource` edits
+  // `$ui.draft`, which UIS-104 forbids from riding any implicit payload — so the
+  // ONLY way its content reaches the host is an onFinish whose params read it
+  // out. Without the callAction seam that path terminated in silence: the operator
+  // filled in the wizard, pressed Finish, and nothing happened.
+  it("a wizard with no draftSource persists through onFinish's call-action (UIS-051)", async () => {
+    expect(validatePage(wizardDoc).ok).toBe(true);
+    let body: { params?: Record<string, unknown> } | null = null;
+    server.use(
+      ...baseHandlers({ doc: wizardDoc, en: ACTION_CATALOG }),
+      http.post(`${B}/actions/run-backup`, async ({ request }) => {
+        body = (await request.json()) as { params?: Record<string, unknown> };
+        return HttpResponse.json(
+          { invocation_id: ULID_A, pack_id: "acme/menu-board", action: "run-backup", state: "pending" },
+          { status: 202, headers: { "Trace-Id": TRACE_ID } },
+        );
+      }),
+    );
+    renderPack();
+
+    // Step one: type into the draft, then advance.
+    const input = await screen.findByLabelText("Item name");
+    await userEvent.type(input, "Hello wizard");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    // Step two: the draft carried across the step boundary (UIS-052, one shared
+    // Scope) — then finish through the wizard's own control.
+    expect(await screen.findByText("Hello wizard")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Finish" }));
+
+    await waitFor(() => expect(body).not.toBeNull());
+    // What the operator typed into the EPHEMERAL draft reached the host.
+    expect((body as unknown as { params: Record<string, unknown> }).params).toEqual({
+      greeting: "Hello wizard",
+    });
   });
 
   // Regression: a pack `dashboard` rendered COMPLETELY EMPTY. `primaryCollection`

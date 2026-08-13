@@ -305,9 +305,26 @@ export interface PacksModule {
   remove(id: string, etag: string): Promise<void>;
   /** Fetch one page document (ui-schema/1) verbatim, keyed by ui.pages[].path. */
   pageDoc(id: string, path: string): Promise<unknown>;
+  /** Invoke one action the pack declares (MAN-100), through the management route
+   * MAN-101 auto-surfaces for it — the same route and the same queue an operator
+   * or an automation rule reaches it by.
+   *
+   * QUEUED, not performed: a pack is a separate process the host cannot dial
+   * inline, so this resolves when the invocation is ACCEPTED. The returned
+   * invocation carries its id and state; nothing in api/1 reads one back yet, so
+   * acceptance is the last thing a caller can observe. */
+  invokeAction(id: string, action: string, params?: Record<string, unknown>): Promise<PackInvocation>;
   /** Fetch one locale catalog verbatim (a flat `{ key: text }` map, keys WITHOUT
    * the `msg:` prefix — MAN-110/111). A missing locale is a 404 (ApiError). */
   messages(id: string, locale: string): Promise<Record<string, string>>;
+}
+
+/** One queued action invocation, as the MAN-101 route returns it (202). */
+export interface PackInvocation {
+  invocation_id: string;
+  pack_id: string;
+  action: string;
+  state: string;
 }
 
 /** Build the pack-registry module over one ApiClient. */
@@ -381,6 +398,18 @@ export function createPacksModule(client: ApiClient): PacksModule {
     },
     remove(id, etag) {
       return client.remove(`${base}/${id}`, etag);
+    },
+    invokeAction(id, action, params) {
+      // The action name is a manifest `actions[].name` (UIS Actions, MAN-100) and
+      // is UNTRUSTED manifest data like a page path, so it is encoded rather than
+      // concatenated raw. Unlike a page path it is a SINGLE segment — a `/` in it
+      // is not a separator, so encodeURIComponent is the whole guard.
+      //
+      // `params` is OMITTED when there are none rather than sent as null: the
+      // declared schema types it as an object, and null would be refused.
+      const body: Record<string, unknown> = {};
+      if (params !== undefined) body.params = params;
+      return client.action<PackInvocation>(`${base}/${id}/actions/${encodeURIComponent(action)}`, body);
     },
     pageDoc(id, path) {
       // The page path is UNTRUSTED manifest data (the engine does not constrain its

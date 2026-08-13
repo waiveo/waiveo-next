@@ -340,6 +340,35 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
           }
         }
       },
+      // "Run": invoke an action the pack DECLARED, through the same management
+      // route (MAN-101) an operator or an automation rule reaches it by.
+      //
+      // This seam was entirely unwired, and an unwired seam with no `outcomeTo`
+      // is a complete silent no-op (runSeam): a pack shipping a page with a
+      // `call-action` button had a button that did nothing — no request, no
+      // error, no toast. Every other half of the actions plane existed; a pack's
+      // own UI was the one caller that could not reach it.
+      //
+      // The name is a pack-LOCAL `actions[].name` (ui-schema/1 Actions,
+      // MAN-100), not a publisher-qualified one: the page belongs to the pack, so
+      // the pack is implied. (An automation rule, which belongs to no pack, must
+      // qualify it — rules/1 RUL-231.)
+      callAction: async (name, params) => {
+        try {
+          const inv = await client.packs.invokeAction(packId, name, params);
+          // "Started", never "Done". The call is QUEUED — the pack leases the
+          // invocation and works on it after this response — and api/1 exposes no
+          // way to read an invocation back, so acceptance is genuinely the last
+          // thing observable here. A "Done" toast would be a claim the console
+          // cannot support and, for a long action, one the operator would read
+          // before anything had happened.
+          toast.success(`Started ${name}`);
+          return inv;
+        } catch (err) {
+          reportProblem(`Couldn't start ${name}`, err);
+          return undefined;
+        }
+      },
       // "Save": persist the edited row under its If-Match via the standard
       // optimistic-concurrency flow — a 412 re-reads the current state for review,
       // a 422's per-field errors land on the offending FormField. The whole row is
