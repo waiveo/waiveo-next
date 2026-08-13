@@ -1,0 +1,133 @@
+{
+  "pageType": "dashboard",
+  "tiles": [
+    {
+      "size": "large",
+      "widget": {
+        "type": "section",
+        "props": {
+          "titleMsg": "msg:renders.title"
+        },
+        "children": [
+          {
+            "type": "text",
+            "props": {
+              "value": {
+                "compute": "msg",
+                "args": [
+                  "msg:renders.lead"
+                ]
+              }
+            }
+          },
+          {
+            "type": "switch",
+            "props": {
+              "discriminant": {
+                "compute": "isEmpty",
+                "args": [
+                  "jobs"
+                ]
+              },
+              "cases": [
+                {
+                  "when": true,
+                  "render": {
+                    "type": "text",
+                    "props": {
+                      "value": {
+                        "compute": "msg",
+                        "args": [
+                          "msg:renders.empty"
+                        ]
+                      }
+                    }
+                  }
+                }
+              ],
+              "default": {
+                "type": "section",
+                "children": [
+                  {
+                    "type": "text",
+                    "props": {
+                      "value": {
+                        "compute": "msg",
+                        "args": [
+                          "msg:renders.runTool"
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "table",
+                    "id": "Waiting to be rendered",
+                    "props": {
+                      "source": "jobs",
+                      "columns": [
+                        {
+                          "headerMsg": "msg:renders.col.in",
+                          "cell": "item.where_resource"
+                        },
+                        {
+                          "headerMsg": "msg:renders.col.kind",
+                          "cell": "item.source"
+                        },
+                        {
+                          "headerMsg": "msg:renders.col.where",
+                          "cell": "item.where_layer"
+                        },
+                        {
+                          "headerMsg": "msg:renders.col.state",
+                          "cell": "item.state_label"
+                        },
+                        {
+                          "headerMsg": "msg:renders.col.size",
+                          "cell": "item.size_display"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "type": "switch",
+            "props": {
+              "discriminant": {
+                "compute": "isEmpty",
+                "args": [
+                  "stale_jobs"
+                ]
+              },
+              "cases": [
+                {
+                  "when": false,
+                  "render": {
+                    "type": "badge",
+                    "props": {
+                      "tone": "warn",
+                      "value": {
+                        "compute": "msg",
+                        "args": [
+                          "msg:renders.stale",
+                          {
+                            "compute": "count",
+                            "args": [
+                              "stale_jobs"
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

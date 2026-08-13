@@ -123,18 +123,24 @@ describe("Waiting to be rendered", () => {
     renderPanel();
 
     const table = await screen.findByRole("table", { name: "Waiting to be rendered" });
+    // Plain cell text now rather than a StatusBadge per row: a `table` column's
+    // `cell` is a Binding, and the catalog has no per-cell widget. The two states
+    // stay distinguishable, which is what the column is for.
     expect(within(table).getAllByText("stale")).toHaveLength(2);
     expect(within(table).getAllByText("pending")).toHaveLength(1);
-    expect(await screen.findByRole("status")).toHaveTextContent(
-      "2 layers are showing an out-of-date picture right now",
-    );
+    // The count is a warn-toned `badge`, and NOT a `role="status"` live region
+    // as the hand-written version was. That is a real, small loss from the
+    // ui-schema conversion and is recorded rather than hidden: the closed widget
+    // catalog (UIS-060) has no live-region kind, so a screen reader is no longer
+    // told when the count changes. It is on the renderer-limits list.
+    expect(await screen.findByText(/2 layer\(s\) are showing an out-of-date picture/i)).toBeInTheDocument();
   });
 
   it("says nothing about staleness when nothing is stale", async () => {
     seed([job()]);
     renderPanel();
     await screen.findByRole("table", { name: "Waiting to be rendered" });
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByText(/showing an out-of-date picture/i)).not.toBeInTheDocument();
   });
 
   // The console cannot start a rasterization — `waiveo-derive` is a separate
