@@ -86,6 +86,36 @@ const settingsFormDoc = {
   ],
 };
 
+// A conformant `dashboard` page (UIS-040) reading TWO declared collections from
+// separate tiles, plus a third tile bound to nothing fetchable. A dashboard has no
+// page-wide bound resource by design — each tile resolves its own root Binding —
+// which is exactly what the route used to have no way to express.
+const dashboardDoc = {
+  pageType: "dashboard",
+  tiles: [
+    {
+      size: "large",
+      widget: {
+        type: "table",
+        id: "Menu items",
+        props: {
+          source: "menu_items",
+          columns: [
+            { headerMsg: "msg:col.name", cell: "item.name" },
+            { headerMsg: "msg:col.section", cell: "item.section" },
+          ],
+        },
+      },
+    },
+    {
+      size: "small",
+      widget: { type: "stat-tile", props: { labelMsg: "msg:col.name", value: "settings.greeting" } },
+    },
+    // Reads renderer state, not a collection: nothing must be fetched for it.
+    { size: "small", widget: { type: "text", props: { value: "$ui.nothing" } } },
+  ],
+};
+
 // A conformant list-detail page whose list.source is the spec-legal PAGINATED form
 // (UIS-023/024): its rows are fetched page-by-page by the renderer through the
 // ActionHandler.fetchPage seam, NOT from the eagerly preloaded resource tree.
@@ -709,6 +739,54 @@ describe("Pack page — safety + spec-form regressions", () => {
     // And it did NOT take the create path — that would 409 against the singleton
     // bound on a real server (MAN-056), losing the operator's edit.
     expect(creates).toBe(0);
+  });
+
+  // Regression: a pack `dashboard` rendered COMPLETELY EMPTY. `primaryCollection`
+  // returns null for a dashboard — correctly, since UIS-040 gives it no page-wide
+  // bound resource — and the route read that null as "this page reads nothing",
+  // handing the renderer `data = {}`. Every tile bound to a pack collection painted
+  // blank, with no error to say why.
+  it("a dashboard renders EVERY tile's collection, not an empty page (UIS-040)", async () => {
+    expect(validatePage(dashboardDoc).ok).toBe(true);
+    server.use(
+      ...baseHandlers({ doc: dashboardDoc }),
+      http.get(`${B}/data/menu_items`, () =>
+        dataPage([
+          packRow({ entity_id: ULID_A, name: "Cortado", section: "Coffee" }),
+          packRow({ entity_id: ULID_B, name: "Almond croissant", section: "Pastry" }),
+        ]),
+      ),
+      http.get(`${B}/data/settings`, () => dataPage([packRow({ entity_id: ULID_C, greeting: "Good morning" })])),
+    );
+    renderPack();
+
+    // Tile one: the table's rows, from its own collection.
+    const table = await screen.findByRole("table", { name: "Menu items" });
+    expect(within(table).getByText("Cortado")).toBeInTheDocument();
+    expect(within(table).getByText("Almond croissant")).toBeInTheDocument();
+    // Tile two: a DIFFERENT collection, resolved independently — this is the half
+    // a single page-wide collection could never have served.
+    expect(await screen.findByText("Good morning")).toBeInTheDocument();
+  });
+
+  // The complement, and the reason the walk intersects with the DECLARED set: a
+  // tile reading renderer state or a mistyped name must fetch nothing. msw is set
+  // to error on an unhandled request, so a stray fetch fails this outright.
+  it("a dashboard fetches nothing for a tile that names no declared collection", async () => {
+    const doc = {
+      pageType: "dashboard",
+      tiles: [
+        { size: "small", widget: { type: "text", props: { value: "$ui.nothing" } } },
+        { size: "small", widget: { type: "text", props: { value: "menu_items_typo.name" } } },
+      ],
+    };
+    expect(validatePage(doc).ok).toBe(true);
+    // No data handler registered AT ALL: any fetch is an unhandled request.
+    server.use(...baseHandlers({ doc }));
+    renderPack();
+    // The page still renders — an empty dashboard is a valid page, and the point
+    // is that it got there without asking for a collection that does not exist.
+    expect(await screen.findByRole("heading", { name: "Menu Items" })).toBeInTheDocument();
   });
 
   // Regression: a spec-legal PAGINATED list.source (UIS-023/024) rendered zero rows

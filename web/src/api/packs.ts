@@ -52,6 +52,10 @@ export interface PackManifestField {
 export interface PackManifestCollection {
   name: string;
   fields: PackManifestField[];
+  /** At most one row (MAN-056) — the shape a settings-form edits and a dashboard
+   * tile binds as a record rather than as a one-element array. Absent on the
+   * ordinary unbounded collection. */
+  singleton?: boolean;
 }
 
 /** The console-relevant slice of an installed pack's manifest. */

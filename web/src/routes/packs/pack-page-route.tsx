@@ -15,7 +15,14 @@ import {
   type ScopeNode,
   type WaiveoApi,
 } from "@/api";
-import { isSettingsForm, loadPackCatalog, primaryCollection, resolveTitle } from "./catalog";
+import {
+  dashboardCollections,
+  isSettingsForm,
+  loadPackCatalog,
+  primaryCollection,
+  resolveTitle,
+  shapeCollection,
+} from "./catalog";
 
 /**
  * The scope node a create attaches a new pack row under (MAN-051: a pack row
@@ -138,6 +145,12 @@ interface Loaded {
   validation: ValidationResult;
   messages: Record<string, string>;
   collection: string | null;
+  /** A dashboard's per-tile collections (UIS-040) — empty on every other page
+   * type, which binds one page-wide collection through `collection` instead. */
+  tileCollections: string[];
+  /** The names the manifest marks `singleton: true` (MAN-056), so a tile bound
+   * to one reads the record rather than a one-element array. */
+  singletonCollections: string[];
   defaultScopeNode: string | null;
   pageTitle: string;
   packTitle: string;
@@ -153,6 +166,11 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
 
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [rows, setRows] = useState<PackRow[]>([]);
+  // A dashboard's rows, keyed by collection. Separate from `rows` rather than
+  // folded into it because the two answer different questions: `rows` is THE
+  // bound resource a list-detail pages and a settings-form edits, and a
+  // dashboard has no such thing (UIS-040).
+  const [tileRows, setTileRows] = useState<Record<string, PackRow[]>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -188,8 +206,14 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
       ]);
       const manifest = packRead.data.manifest;
       const validation = validatePage(rawDoc);
-      const collectionNames = new Set((manifest.dataModel?.collections ?? []).map((c) => c.name));
+      const declaredCollections = manifest.dataModel?.collections ?? [];
+      const collectionNames = new Set(declaredCollections.map((c) => c.name));
+      const singletonCollections = declaredCollections.filter((c) => c.singleton).map((c) => c.name);
       const collection = validation.ok ? primaryCollection(rawDoc, collectionNames) : null;
+      // A dashboard binds no page-wide collection and several per-tile ones
+      // (UIS-040). Without this the route handed the renderer an empty data
+      // namespace and every tile rendered blank.
+      const tileCollections = validation.ok ? dashboardCollections(rawDoc, collectionNames) : [];
 
       // A row must carry a scope_node (MAN-051). Resolve the deployment's root scope
       // deterministically so a cold-open create always has a target: the org root if
@@ -209,7 +233,25 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
       const packTitle = resolveTitle(messages, manifest.displayName);
 
       setRows(collection ? await loadRows(collection) : []);
-      setLoaded({ doc: rawDoc, validation, messages, collection, defaultScopeNode, pageTitle, packTitle });
+      // Fetched together rather than in sequence: a dashboard's tiles are
+      // independent by construction, so serializing them would make an eight-tile
+      // page eight round trips deep for no ordering benefit.
+      setTileRows(
+        Object.fromEntries(
+          await Promise.all(tileCollections.map(async (c) => [c, await loadRows(c)] as const)),
+        ),
+      );
+      setLoaded({
+        doc: rawDoc,
+        validation,
+        messages,
+        collection,
+        tileCollections,
+        singletonCollections,
+        defaultScopeNode,
+        pageTitle,
+        packTitle,
+      });
     } catch (err) {
       setLoadError(
         err instanceof ApiError ? (err.detail ?? err.code) : "The extension page is unreachable.",
@@ -222,6 +264,8 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
   }, [load]);
 
   const collection = loaded?.collection ?? null;
+  const tileCollections = useMemo(() => loaded?.tileCollections ?? [], [loaded]);
+  const singletons = useMemo(() => new Set(loaded?.singletonCollections ?? []), [loaded]);
   // Derived from the loaded document rather than stored beside it: the page type
   // IS the document's, and a second copy could disagree with it after a reload.
   const settingsForm = isSettingsForm(loaded?.doc);
@@ -229,8 +273,15 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
   const reload = useCallback(async () => {
     setFieldErrors({});
     if (collection) setRows(await loadRows(collection));
+    if (tileCollections.length > 0) {
+      setTileRows(
+        Object.fromEntries(
+          await Promise.all(tileCollections.map(async (c) => [c, await loadRows(c)] as const)),
+        ),
+      );
+    }
     setVersion((v) => v + 1);
-  }, [collection, loadRows]);
+  }, [collection, tileCollections, loadRows]);
 
   // The renderer owns the selection (`$ui.selected`); moving to a different row
   // retires any captured 422 field errors (keyed by bind-path, no row identity)
@@ -379,6 +430,11 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
       // collection's rows (its root key IS this page's primary collection); a
       // source that names no declared collection has nothing to page.
       fetchPage: async (_path, cursor, limit) => {
+        // Only a `list-detail`'s `list.source` can be paginated (UIS-023/024) —
+        // a table widget's own `source` prop is an ordinary Binding and the
+        // validator refuses the `{path, paginated}` form there. So this seam only
+        // ever fires on a page that HAS a page-wide collection, and there is
+        // nothing for a dashboard to resolve here.
         if (!collection) return { items: [], cursor: null };
         const page = await client
           .packData(packId, collection)
@@ -393,7 +449,15 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
   // (UIS-005), not to a list — so it is handed the one row as an object, and an
   // empty object before that row exists so the form renders blank and editable
   // rather than not at all. Every other page type binds the rows array.
-  const data = collection ? { [collection]: settingsForm ? (rows[0] ?? {}) : rows } : {};
+  // A dashboard's namespace carries EVERY collection its tiles read, since each
+  // tile resolves its own root Binding (UIS-040); every other page type carries
+  // the one it binds. The two are exclusive by page type, so the spread cannot
+  // collide.
+  const data = collection
+    ? { [collection]: settingsForm ? (rows[0] ?? {}) : rows }
+    : Object.fromEntries(
+        Object.entries(tileRows).map(([c, rs]) => [c, shapeCollection(rs, singletons.has(c))]),
+      );
 
   return (
     <div className="min-h-screen bg-background text-foreground">

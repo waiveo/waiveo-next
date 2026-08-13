@@ -110,8 +110,12 @@ function sourceRootKey(source: unknown): string | null {
  * settings-form's source names a declared SINGLETON collection (MAN-064), so
  * the collection this returns for one always holds at most one row.
  *
- * `dashboard` and `wizard` still return null — neither binds a page-wide
- * collection, and neither has a persistence path yet. */
+ * `dashboard` returns null and always will: it has no page-wide bound resource
+ * BY DESIGN (UIS-040) — each tile resolves its own root Bindings independently.
+ * That is what `dashboardCollections` below is for, and conflating the two is
+ * what left every pack dashboard rendering empty. `wizard` still returns null;
+ * its `draftSource` (UIS-051) is optional and its persistence path is separate
+ * work. */
 export function primaryCollection(doc: unknown, collectionNames: Set<string>): string | null {
   if (!doc || typeof doc !== "object") return null;
   const d = doc as { pageType?: unknown; list?: { source?: unknown }; source?: unknown };
@@ -126,4 +130,92 @@ export function primaryCollection(doc: unknown, collectionNames: Set<string>): s
  * and its save creates the record when it does not exist yet. */
 export function isSettingsForm(doc: unknown): boolean {
   return !!doc && typeof doc === "object" && (doc as { pageType?: unknown }).pageType === "settings-form";
+}
+
+
+/** Every pack collection a `dashboard`'s tiles read (UIS-040/UIS-005).
+ *
+ * # Why this exists separately from `primaryCollection`
+ *
+ * A dashboard has NO page-wide bound resource — that is the page type's
+ * definition, not an omission (UIS-040): each tile's widget and its descendants
+ * resolve every Binding as a root Binding, tile by tile. `primaryCollection`
+ * asks "which one collection does this page bind", and for a dashboard the
+ * honest answer is "none, it binds several". Answering `null` and stopping there
+ * is what shipped: the route handed the renderer `data = {}` and every tile
+ * bound to a pack collection rendered EMPTY — a pack dashboard displayed nothing
+ * at all, with no error anywhere to say why.
+ *
+ * # Why a whole-subtree string walk is the RIGHT reading and not a heuristic
+ *
+ * UIS-108 settles it: in a BindingExpr position a bare string IS a Binding,
+ * never a string literal — `{lit}` is the escape for an actual literal. So every
+ * bare string in a tile is either a Binding or a field the grammar types as
+ * something else (`kind`, `size`, a `msg:` reference), and the two are separated
+ * cheaply: `$`-prefixed roots are the reserved namespaces (`$root`, `$ui`,
+ * `$context`, `$params`), `msg:` refs are messages, and everything else is kept
+ * only if it names a collection this pack DECLARED.
+ *
+ * That last intersection is what makes the walk safe rather than clever. The
+ * worst case is over-collection — a non-Binding string that happens to equal a
+ * declared collection name, which costs one extra fetch of a real collection and
+ * renders nothing differently. Under-collection is the failure that matters: a
+ * missed collection is a tile that silently shows nothing, which is the bug being
+ * fixed. Given that asymmetry the walk deliberately errs wide, and the cost is
+ * bounded by the pack's own declared collection count.
+ *
+ * Returns a sorted array so the load order — and any test asserting it — is
+ * stable rather than dependent on document key order.
+ *
+ * NOTE on paging: a dashboard tile cannot carry a paginated source. The
+ * `{path, paginated}` form is legal only at `list.source` on a `list-detail`
+ * (UIS-023/024) — a `table` widget's own `source` prop is an ordinary Binding,
+ * and the validator refuses the object form there outright. So every collection
+ * this returns is loaded whole, and no `fetchPage` seam is involved. */
+export function dashboardCollections(doc: unknown, collectionNames: Set<string>): string[] {
+  if (!doc || typeof doc !== "object") return [];
+  const d = doc as { pageType?: unknown; tiles?: unknown };
+  if (d.pageType !== "dashboard" || !Array.isArray(d.tiles)) return [];
+
+  const found = new Set<string>();
+  const consider = (s: string): void => {
+    // A reserved root addresses renderer state, never a pack collection; a `msg:`
+    // reference addresses the locale catalog. Neither can name a collection, and
+    // skipping them keeps the intersection below honest rather than lucky.
+    if (s.startsWith("$") || s.startsWith("msg:")) return;
+    const key = sourceRootKey(s);
+    if (key && collectionNames.has(key)) found.add(key);
+  };
+  const visit = (v: unknown): void => {
+    if (typeof v === "string") {
+      consider(v);
+      return;
+    }
+    if (Array.isArray(v)) {
+      v.forEach(visit);
+      return;
+    }
+    if (v && typeof v === "object") {
+      // A `{lit}` node is UIS-108's literal escape — its value is explicitly NOT
+      // a Binding, so descending into it would read a string the author went out
+      // of their way to mark as data.
+      if ("lit" in (v as Record<string, unknown>)) return;
+      for (const val of Object.values(v as Record<string, unknown>)) visit(val);
+    }
+  };
+  d.tiles.forEach(visit);
+  return [...found].sort();
+}
+
+
+/** Shape one collection's rows for the renderer's data namespace.
+ *
+ * A collection the manifest declares `singleton: true` (MAN-056) holds at most
+ * one row, and a tile binding it writes `settings.greeting` — the record's
+ * field — not `settings[0].greeting`. So a singleton enters the namespace as the
+ * ROW, exactly as a settings-form's page-wide source does, and an empty one as
+ * `{}` so the binding resolves to absent rather than to an array that can never
+ * match. Every other collection enters as its rows array. */
+export function shapeCollection(rows: unknown[], singleton: boolean): unknown {
+  return singleton ? (rows[0] ?? {}) : rows;
 }
