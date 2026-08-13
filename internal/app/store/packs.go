@@ -626,6 +626,13 @@ func (s *Store) CreatePackRow(ctx context.Context, packID, collection string, in
 		if err := checkPlacementResolves(ctx, tx, packRowsTable, out.ScopeNode); err != nil {
 			return err
 		}
+		// MAN-054, applied in the SAME transaction as the insert: a row landing
+		// and the sweep it triggers commit together, so a crash between them
+		// cannot leave a collection over its declared bound with nothing
+		// scheduled to notice.
+		if err := applyPackRetention(ctx, tx, packID, collection, pack.Manifest, now); err != nil {
+			return err
+		}
 		return bumpGeneration(ctx, tx)
 	}); err != nil {
 		return PackRow{}, err
