@@ -468,6 +468,75 @@ describe("Extensions console — removing", () => {
     expect(within(card).getByRole("button", { name: `Uninstall ${PACK_ID}` })).toBeDisabled();
   });
 
+  // The pack's own representation now says whether it is protected, so the badge
+  // is there BEFORE an operator tries to remove it. Previously the only way to
+  // find out was to attempt the uninstall and read the refusal — discovery by
+  // attempted destruction.
+  it("marks a required pack from its representation, with the floor, before any attempt", async () => {
+    mockFeeder({ packs: [pack({ required: true, required_floor: "1.0.0" })] });
+    renderRoute();
+    const card = await packCard(PACK_ID);
+
+    // The FLOOR is on the badge, not just the word: "Required" alone does not
+    // tell an operator which versions are refused, and the floor is the number
+    // the box's own refusal quotes.
+    expect(within(card).getByText("Required · floor v1.0.0")).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: `Uninstall ${PACK_ID}` })).toBeDisabled();
+  });
+
+  // An ordinary pack is not marked, which is what makes the badge mean anything.
+  it("leaves an unprotected pack unmarked and removable", async () => {
+    mockFeeder({ packs: [pack({ required: false, required_floor: null })] });
+    renderRoute();
+    const card = await packCard(PACK_ID);
+
+    expect(within(card).queryByText(/^Required/)).toBeNull();
+    expect(within(card).getByRole("button", { name: `Uninstall ${PACK_ID}` })).toBeEnabled();
+  });
+
+  // `unresolved-roster` is not a policy: it means the host could not READ its
+  // roster, so it reports every pack required at a floor no version satisfies
+  // and refuses every mutation. Rendering that as an ordinary Required badge
+  // would present a broken deployment as a deliberate one.
+  it("says the roster is unreadable rather than calling the pack protected", async () => {
+    mockFeeder({ packs: [pack({ required: true, required_floor: "unresolved-roster" })] });
+    renderRoute();
+    const card = await packCard(PACK_ID);
+
+    expect(within(card).getByText("Roster unreadable")).toBeInTheDocument();
+    // NOT the ordinary badge — the two states must not be confusable, and a
+    // floor of "vunresolved-roster" would be nonsense on the face of it.
+    expect(within(card).queryByText(/^Required/)).toBeNull();
+  });
+
+  // An older box sends neither member. `undefined` means "this build does not
+  // report it", which is NOT `false` — so the pack must not be presented as
+  // known-safe, and the learned-from-refusal path stays the only signal.
+  it("does not read an absent member as 'not required'", async () => {
+    mockFeeder({ packs: [pack()] });
+    server.use(
+      http.get("*/api/v1/packs/:publisher/:name", () =>
+        HttpResponse.json(pack(), { headers: { "Trace-Id": TRACE_ID, ETag: '"1"' } }),
+      ),
+      http.delete("*/api/v1/packs/:publisher/:name", () =>
+        problem(422, "VALIDATION_FAILED", "acme/menu-board is a required pack on this deployment.", {
+          errors: [{ field: "pack", code: "REQUIRED_PACK_FLOOR", message: "floor 1.0.0" }],
+        }),
+      ),
+    );
+    renderRoute();
+    const card = await packCard(PACK_ID);
+
+    // Nothing claimed up front — the box did not say.
+    expect(within(card).queryByText(/^Required/)).toBeNull();
+    expect(within(card).queryByText("Roster unreadable")).toBeNull();
+
+    // …and the learned path still works, so an old box loses nothing.
+    await userEvent.click(within(card).getByRole("button", { name: `Uninstall ${PACK_ID}` }));
+    await userEvent.click(await screen.findByRole("button", { name: "Uninstall permanently" }));
+    expect(await within(card).findByText("Required")).toBeInTheDocument();
+  });
+
   it("surfaces a stale-precondition conflict rather than retrying the delete", async () => {
     mockFeeder({ packs: [pack({ revision: 2 })] });
     let deletes = 0;

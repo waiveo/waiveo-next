@@ -909,3 +909,125 @@ func TestSetPackEnabledRefusesABodyWithNoState(t *testing.T) {
 		t.Fatal("a refused request disabled the pack anyway")
 	}
 }
+
+// A pack's own representation says whether this deployment protects it.
+//
+// It could not before, and the console said so in its own source: it "cannot
+// mark required packs up front, and says so rather than guessing". So an
+// operator learned a pack was protected by trying to remove it and reading the
+// refusal — the destructive-action-as-discovery-mechanism shape.
+func TestAPacksRepresentationReportsWhetherItIsRequired(t *testing.T) {
+	reg := newMktRegistry(t)
+	for _, id := range []string{"acme/menu-board", "acme/other-pack"} {
+		m := packManifest()
+		m["id"] = id
+		m["version"] = "1.2.0"
+		reg.publish(id, "1.2.0", signPack(t, packBundle(t, m), id, "1.2.0"), nil)
+	}
+	// One required, one not — the discriminating case. A test with only a
+	// required pack passes against a handler that hardcodes `true`.
+	//
+	// The floor is BELOW the published version deliberately, and they differ:
+	// equal values would let a handler that reported `version` as the floor pass.
+	// (A floor above the version is refused at install — MKT-093b holds on every
+	// path — so this is also the only way to have both a pack and a floor.)
+	roster, err := packs.NewRoster(map[string]string{"acme/menu-board": "1.0.0"})
+	if err != nil {
+		t.Fatalf("NewRoster: %v", err)
+	}
+	e := newEnvWithOptions(t, reg.option(), api.WithRequiredPacks(roster))
+
+	for _, id := range []string{"acme/menu-board", "acme/other-pack"} {
+		ref := mustJSON(t, map[string]any{"pack_id": id, "trust_channel": "community"})
+		if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", ref, jsonHeaders); resp.StatusCode != http.StatusCreated {
+			t.Fatalf("install %s = %d (%s)", id, resp.StatusCode, raw)
+		}
+	}
+
+	read := func(id string) map[string]any {
+		t.Helper()
+		resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/"+id, nil, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("get %s = %d (%s)", id, resp.StatusCode, raw)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode %s: %v", id, err)
+		}
+		return body
+	}
+
+	required := read("acme/menu-board")
+	if required["required"] != true {
+		t.Errorf("acme/menu-board required = %v, want true", required["required"])
+	}
+	// The FLOOR, not merely the flag: "required" alone does not tell an operator
+	// which versions are refused, and the floor is the number the refusal quotes.
+	if required["required_floor"] != "1.0.0" {
+		t.Errorf("required_floor = %v, want the FLOOR 1.0.0, not the version", required["required_floor"])
+	}
+
+	ordinary := read("acme/other-pack")
+	if ordinary["required"] != false {
+		t.Errorf("acme/other-pack required = %v, want false", ordinary["required"])
+	}
+	// null, not "" — an empty string is a floor, and a client rendering it would
+	// print "may not go below " with nothing after it.
+	if ordinary["required_floor"] != nil {
+		t.Errorf("required_floor = %v, want null", ordinary["required_floor"])
+	}
+
+	// The LIST carries it too. A console that reads the list to draw the
+	// extensions table would otherwise have to GET every pack to find out.
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/packs", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list = %d (%s)", resp.StatusCode, raw)
+	}
+	var page struct {
+		Items []struct {
+			ID            string  `json:"id"`
+			Required      bool    `json:"required"`
+			RequiredFloor *string `json:"required_floor"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &page); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, item := range page.Items {
+		seen[item.ID] = item.Required
+	}
+	if !seen["acme/menu-board"] || seen["acme/other-pack"] {
+		t.Errorf("list required flags = %v, want menu-board required and other-pack not", seen)
+	}
+}
+
+// An UNRESOLVED roster is a deployment whose roster the host could not read. It
+// reports EVERY pack as required at a floor no version satisfies, so every pack
+// mutation is refused — a different fact from "this deployment chose to protect
+// everything", and the floor string is what tells them apart.
+//
+// Asserted against the ROSTER rather than over HTTP, and that is not a shortcut:
+// an unresolved roster refuses the install too, so there is no installed pack
+// whose representation could be read back. The HTTP path is unreachable BY
+// CONSTRUCTION, and a test that pretended otherwise would have to skip itself.
+// What the envelope depends on is exactly this — that the value it renders
+// carries the sentinel — so this is the level the dependency lives at.
+func TestAnUnresolvedRosterReportsTheSentinelFloorForEveryPack(t *testing.T) {
+	// The zero value IS the unresolved roster — see packs.Roster's doc, where
+	// that is the deliberate fail-closed spelling.
+	var unresolved packs.Roster
+	if unresolved.Resolved() {
+		t.Fatal("the zero Roster must be UNRESOLVED — the fail-closed state is the zero value on purpose")
+	}
+	for _, id := range []string{"acme/menu-board", "acme/never-heard-of-it"} {
+		floor, required := unresolved.RequiredFloor(id)
+		if !required {
+			t.Errorf("%s: required = false; an unresolved roster requires every pack", id)
+		}
+		if floor != packs.UnresolvedFloor {
+			t.Errorf("%s: floor = %q, want %q — the value that says the roster could not be read",
+				id, floor, packs.UnresolvedFloor)
+		}
+	}
+}

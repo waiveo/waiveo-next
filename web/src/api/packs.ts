@@ -82,6 +82,19 @@ export interface Pack {
   revision: number;
   version: string;
   data_model_version: number;
+  /** Whether this deployment declares the pack essential (MKT-093a): its
+   * uninstall is refused and an update may not take it below `required_floor`.
+   *
+   * Optional on the type because a box built before this member existed does not
+   * send it, and `undefined` there means "this build does not report it" — which
+   * is a different fact from `false` and must not be rendered as one. */
+  required?: boolean;
+  /** The version the pack may not go below, or null when it is not required.
+   *
+   * One value is special: `unresolved-roster` means the host could NOT READ its
+   * roster, in which case every pack reports required at that floor and every
+   * pack mutation is refused. That is a broken deployment, not a protected one. */
+  required_floor?: string | null;
   created_at: number;
   updated_at: number;
   manifest: PackManifest;

@@ -75,15 +75,27 @@ import {
  * the record and disables the button WITH the reason, instead of shipping a
  * control whose only outcome is a refusal.
  *
- * IT DOES NOT PRETEND TO KNOW WHICH PACKS ARE REQUIRED. A required pack cannot be
- * uninstalled (MKT-093b(i)), but the required-pack roster is deployment
- * configuration and NO api/1 route publishes it — so this console genuinely
- * cannot mark required packs up front, and says so rather than guessing. What it
- * does instead is refuse LOUDLY: the removal is attempted, the box's own refusal
- * (its code, its floor version, its sentence) is rendered in full, and the pack is
- * marked Required from then on. The legacy console solved this by hiding the
- * Remove button with no explanation at all, which is the "silently uninstallable"
+ * IT NOW KNOWS WHICH PACKS ARE REQUIRED, AND IT USED NOT TO. A required pack
+ * cannot be uninstalled (MKT-093b(i)), and this file used to say the roster was
+ * deployment configuration no api/1 route published — so the console marked a
+ * pack Required only AFTER an operator tried to remove it and read the refusal.
+ * Discovery by attempted destruction. The pack's own representation now carries
+ * `required` and `required_floor`, so the badge is there before the attempt.
+ *
+ * The learned-from-refusal path is KEPT alongside it, not replaced. A box built
+ * before the member existed sends neither, and `undefined` is not `false` — it
+ * means "this build does not report it", which must not render as "safe to
+ * remove". Against such a box the old behaviour is still the only thing there
+ * is, and it still refuses LOUDLY: the box's own code, floor version and
+ * sentence rendered in full. The legacy console solved this by hiding the Remove
+ * button with no explanation at all, which is the "silently uninstallable"
  * failure inverted — an operator who cannot remove a pack and is told nothing.
+ *
+ * One floor value is not a policy: `unresolved-roster` (packs.UnresolvedFloor)
+ * means the host could not READ its roster, so it reports every pack required at
+ * a floor no version satisfies and refuses every mutation. Rendering that as an
+ * ordinary Required badge would present a broken deployment as a deliberate one,
+ * so it gets its own words.
  *
  * IT SAYS "LIVE" ONLY WHERE LIVE IS TRUE. A pack is DATA: a manifest, page
  * documents, message catalogs and declared collections. Installing one writes
@@ -259,6 +271,16 @@ function HistoryPanel({
   );
 }
 
+/** The floor an UNRESOLVED roster reports for every pack (marketplace/1
+ * MKT-093a; `packs.UnresolvedFloor` server-side). Not a version and deliberately
+ * unparseable as one, so it can never satisfy a floor comparison — which is how
+ * a host that could not read its roster refuses every pack mutation instead of
+ * silently lifting every restriction.
+ *
+ * Named here rather than compared inline so the one place this console decides
+ * "broken, not chosen" is greppable from the constant. */
+const UNRESOLVED_ROSTER_FLOOR = "unresolved-roster";
+
 export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
   const client = useMemo(() => api ?? createApi(), [api]);
 
@@ -288,9 +310,11 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
   // misleading — so the gate applies only where a session actually exists.
   const gated = session !== null && !mayChange;
 
-  // Required status is not published by any route (see the file header), so it is
-  // LEARNED — from the box's own refusal — and remembered for the session so the
-  // operator is not invited to try again into the same wall.
+  // Required status LEARNED from the box's own refusal, and remembered for the
+  // session so the operator is not invited to try again into the same wall.
+  //
+  // Retained now that the representation reports it, for the reason the header
+  // gives: an older box sends neither member, and this is the only signal there.
   const [requiredPacks, setRequiredPacks] = useState<Set<string>>(new Set());
 
   const [outcomes, setOutcomes] = useState<Record<string, Outcome>>({});
@@ -984,7 +1008,17 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
             <ul className="flex flex-col gap-4">
               {cards.map((card) => {
                 const id = card.pack.id;
-                const required = requiredPacks.has(id);
+                // Reported by the box, OR learned from a refusal against a box
+                // that does not report it. The union is the load-bearing part:
+                // an absent member is not `false`, it is "this build does not
+                // say", and the learned set is the only thing that can speak for
+                // that box. (`=== true` reads as intent here and is nothing more
+                // — for `boolean | undefined` it is exactly `Boolean(...)`. A
+                // mutation proved that, after this comment had claimed it was a
+                // guard.)
+                const required = card.pack.required === true || requiredPacks.has(id);
+                // The floor that says the roster itself is broken, not a policy.
+                const rosterUnresolved = card.pack.required_floor === UNRESOLVED_ROSTER_FLOOR;
                 const historyOpen = openHistory.has(id);
                 return (
                   <li
@@ -1008,7 +1042,15 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
                       <div className="flex flex-wrap items-center gap-2">
                         <StatusBadge status="ok">v{card.pack.version}</StatusBadge>
                         {!card.pack.enabled ? <StatusBadge status="off">Disabled</StatusBadge> : null}
-                        {required ? <StatusBadge status="warn">Required</StatusBadge> : null}
+                        {rosterUnresolved ? (
+                          <StatusBadge status="error">Roster unreadable</StatusBadge>
+                        ) : required ? (
+                          <StatusBadge status="warn">
+                            {card.pack.required_floor
+                              ? `Required · floor v${card.pack.required_floor}`
+                              : "Required"}
+                          </StatusBadge>
+                        ) : null}
                         {card.provenance.channel ? (
                           <StatusBadge status="pending">{card.provenance.channel}</StatusBadge>
                         ) : (

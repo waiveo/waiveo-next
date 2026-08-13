@@ -149,14 +149,45 @@ type packEnvelope struct {
 	// build does not report enablement" by a client that has to tell a disabled
 	// pack from an old server, and those need different UI.
 	Enabled bool `json:"enabled"`
+	// Required is MKT-093a's roster membership: this deployment declared the pack
+	// essential, so an uninstall is refused (MKT-093b(i)) and an update may not
+	// take it below RequiredFloor.
+	//
+	// Present for the reason Enabled is, and one more that is specific to it: the
+	// console previously had NO way to learn this and said so in its own source —
+	// "it cannot mark required packs up front, and says so rather than guessing".
+	// An operator therefore discovered a pack was protected by trying to remove
+	// it and reading the refusal.
+	Required bool `json:"required"`
+	// RequiredFloor is the version this pack may not go below, or null when the
+	// pack is not required.
+	//
+	// Watch for one value in particular: packs.UnresolvedFloor
+	// ("unresolved-roster"). An UNRESOLVED roster reports EVERY pack as required
+	// at that floor, which no version satisfies, so every pack mutation is
+	// refused. That is a deployment whose roster the host could not read — not a
+	// deployment that chose to protect everything — and the floor string is the
+	// thing that distinguishes them. It is exported from the packs package
+	// precisely so it can surface here and in refusals rather than being decoded
+	// from behaviour.
+	RequiredFloor *string `json:"required_floor"`
 }
 
-func packEnvelopeOf(p store.Pack) packEnvelope {
-	return packEnvelope{
+// packEnvelopeOf renders one pack, asking the store's roster whether it is
+// required. A method rather than a free function because the roster is
+// deployment configuration the server holds — the previous free function could
+// not have reached it, which is part of why this was never reported.
+func (srv *server) packEnvelopeOf(p store.Pack) packEnvelope {
+	env := packEnvelope{
 		ID: p.ID, Revision: p.Revision, Version: p.Version,
 		DataModelVersion: p.DataModelVersion, CreatedAt: p.CreatedAt,
 		UpdatedAt: p.UpdatedAt, Manifest: p.Manifest, Enabled: p.Enabled,
 	}
+	if floor, required := srv.store.RequiredFloor(p.ID); required {
+		env.Required = true
+		env.RequiredFloor = &floor
+	}
+	return env
 }
 
 // ---- install --------------------------------------------------------------
@@ -334,7 +365,7 @@ func (srv *server) listPacks(w http.ResponseWriter, r *http.Request) {
 		if afterID != "" && p.ID <= afterID {
 			continue
 		}
-		window = append(window, packEnvelopeOf(p))
+		window = append(window, srv.packEnvelopeOf(p))
 	}
 	// The next cursor is bound to this resource type AND base64url-encodes the pack
 	// id (which is not a ULID), so apihttp.Page mints a `pack_<base64url(id)>` token
@@ -358,7 +389,7 @@ func (srv *server) getPack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("ETag", apihttp.ETag(p.Revision))
-	writeJSONValue(w, http.StatusOK, packEnvelopeOf(p))
+	writeJSONValue(w, http.StatusOK, srv.packEnvelopeOf(p))
 }
 
 // ---- delete (uninstall) ---------------------------------------------------
