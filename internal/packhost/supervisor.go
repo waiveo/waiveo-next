@@ -132,6 +132,7 @@ type Supervisor struct {
 
 	mu    sync.Mutex
 	packs map[string]*process
+	exits []Exit
 }
 
 // New builds a supervisor over an identity source.
@@ -144,11 +145,43 @@ type process struct {
 	cmd       *exec.Cmd
 	stdin     io.WriteCloser
 	startedAt time.Time
+
+	// exited is closed by the ONE waiter goroutine launch starts. There can only
+	// be one: exec.Cmd.Wait may be called once, so teardown waits on this
+	// channel rather than calling Wait itself.
+	exited chan struct{}
+	// exitErr is the process's exit status, valid once exited is closed.
+	exitErr error
+	// stopping marks a teardown WE initiated, so the waiter can tell a deliberate
+	// stop from a crash. Without it every Stop and every Swap would be reported
+	// to the operator as an extension crashing.
+	stopping bool
 }
 
 // ErrNotRunning is returned for an operation naming a pack the supervisor does
 // not have.
 var ErrNotRunning = errors.New("packhost: no such pack is running")
+
+// Exit is one pack process ending WITHOUT being asked to.
+//
+// Recorded because a crash is the operator-facing half of crash containment: an
+// extension that dies and is silently forgotten looks identical, from the
+// console, to one that was never installed. It is also how an operator learns a
+// hot-swap went wrong minutes after it reported success.
+type Exit struct {
+	ID      string
+	Version string
+	PID     int
+	At      time.Time
+	// Err is the process's exit status. Nil means it exited zero of its own
+	// accord, which for a supervised pack is still unexpected — a pack's job is
+	// to keep running until told to stop.
+	Err error
+}
+
+// maxRecordedExits bounds the crash log. A pack in a crash loop must not be able
+// to exhaust memory through the very mechanism that reports it is crash-looping.
+const maxRecordedExits = 64
 
 // Start launches a pack, hands it an identity, and waits for it to prove it came
 // up.
@@ -288,7 +321,12 @@ func (s *Supervisor) launch(ctx context.Context, spec Spec) (*process, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("packhost: start %s: %w", spec.ID, err)
 	}
-	p := &process{spec: spec, cmd: cmd, stdin: stdin, startedAt: time.Now()}
+	p := &process{spec: spec, cmd: cmd, stdin: stdin, startedAt: time.Now(), exited: make(chan struct{})}
+	// ONE waiter, started here and never anywhere else. It reaps the child the
+	// moment it ends — which is what stops a crashed pack lingering as a zombie
+	// holding its pid — and tells the supervisor, which is what stops Running()
+	// reporting a dead extension as alive.
+	go s.watch(p)
 
 	// Over stdin, never an environment variable (SEC-037). An env var is
 	// readable from the process table for the life of the process, which turns a
@@ -351,18 +389,49 @@ func (p *process) running() Running {
 // before the child is reaped would let a caller observe "swapped" while the old
 // process is still alive.
 func teardown(p *process, grace time.Duration) {
+	// Marked BEFORE the signal, so the waiter that observes the exit knows it was
+	// asked for. Marking it afterwards would leave a window in which a fast exit
+	// is reported to the operator as a crash.
+	p.stopping = true
 	_ = p.stdin.Close()
 
-	exited := make(chan struct{})
-	go func() {
-		_ = p.cmd.Wait()
-		close(exited)
-	}()
-
 	select {
-	case <-exited:
+	case <-p.exited:
 	case <-time.After(grace):
 		_ = p.cmd.Process.Kill()
-		<-exited
+		<-p.exited
 	}
+}
+
+// watch reaps one pack process and, if nobody asked it to stop, records the
+// exit and forgets the pack.
+func (s *Supervisor) watch(p *process) {
+	p.exitErr = p.cmd.Wait()
+	close(p.exited)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p.stopping {
+		return // a Stop or a Swap; the caller owns the bookkeeping
+	}
+	// Only forget it if the map still points at THIS process. A swap replaces the
+	// entry before tearing the old one down, so a late exit from a retired
+	// process must not delete its replacement.
+	if cur, ok := s.packs[p.spec.ID]; ok && cur == p {
+		delete(s.packs, p.spec.ID)
+	}
+	s.exits = append(s.exits, Exit{
+		ID: p.spec.ID, Version: p.spec.Version, PID: p.cmd.Process.Pid,
+		At: time.Now(), Err: p.exitErr,
+	})
+	if len(s.exits) > maxRecordedExits {
+		s.exits = s.exits[len(s.exits)-maxRecordedExits:]
+	}
+}
+
+// Exits reports the packs that ended without being asked to, oldest first.
+func (s *Supervisor) Exits() []Exit {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Exit(nil), s.exits...)
 }

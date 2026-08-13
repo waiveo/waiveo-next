@@ -421,3 +421,101 @@ func childCount(t *testing.T) int {
 	}
 	return len(strings.Fields(string(out)))
 }
+
+// A pack that dies on its own must stop being reported as running, and must not
+// be left as a zombie holding its pid.
+//
+// Both halves were broken until the single-waiter change: nothing called Wait on
+// a live process, so a crashed pack stayed in Running() forever AND sat in the
+// process table as a zombie. An operator reading the console saw a healthy
+// extension that was not there.
+func TestACrashedPackStopsBeingReportedAsRunning(t *testing.T) {
+	s := newSup(newFakeIdentity())
+	t.Cleanup(s.StopAll)
+
+	run, err := s.Start(context.Background(), specFor("waiveo/crashy", "1.0.0"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// SIGKILL, the way a segfault or an OOM kill ends a process.
+	_ = exec.Command("kill", "-9", strconv.Itoa(run.PID)).Run()
+
+	waitFor(t, 3*time.Second, func() bool { return len(s.Running()) == 0 })
+	if st := processState(run.PID); st != "" {
+		t.Fatalf("pid %d is still in the process table as %q — a crashed pack was never reaped", run.PID, st)
+	}
+}
+
+// The crash is RECORDED, not merely noticed. A pack that dies and is silently
+// forgotten looks identical, from the console, to one that was never installed.
+func TestACrashIsRecordedForTheOperator(t *testing.T) {
+	s := newSup(newFakeIdentity())
+	t.Cleanup(s.StopAll)
+
+	run, err := s.Start(context.Background(), specFor("waiveo/crashy", "2.0.0"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	_ = exec.Command("kill", "-9", strconv.Itoa(run.PID)).Run()
+	waitFor(t, 3*time.Second, func() bool { return len(s.Exits()) == 1 })
+
+	got := s.Exits()[0]
+	if got.ID != "waiveo/crashy" || got.Version != "2.0.0" || got.PID != run.PID {
+		t.Fatalf("exit record = %+v, want the crashed pack named with its version and pid", got)
+	}
+}
+
+// A deliberate Stop is NOT a crash. Without the distinction every stop and every
+// swap would be reported to the operator as an extension crashing, and the crash
+// feed would be noise they learn to ignore.
+func TestADeliberateStopIsNotRecordedAsACrash(t *testing.T) {
+	s := newSup(newFakeIdentity())
+	if _, err := s.Start(context.Background(), specFor("waiveo/tidy", "1.0.0")); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := s.Stop("waiveo/tidy"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := s.Exits(); len(got) != 0 {
+		t.Fatalf("a deliberate stop was recorded as a crash: %+v", got)
+	}
+}
+
+// Nor is a swap. The retired process exits by design, and a swap that reported
+// a crash every time would make the feed useless on the one operation an
+// operator performs most.
+func TestASwapIsNotRecordedAsACrash(t *testing.T) {
+	s := newSup(newFakeIdentity())
+	t.Cleanup(s.StopAll)
+	ctx := context.Background()
+
+	if _, err := s.Start(ctx, specFor("waiveo/tidy", "1.0.0")); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := s.Swap(ctx, specFor("waiveo/tidy", "1.1.0")); err != nil {
+		t.Fatalf("Swap: %v", err)
+	}
+	// Given a moment for any stray waiter to run — the assertion is that none
+	// records anything, so it has to be given the chance to be wrong.
+	time.Sleep(200 * time.Millisecond)
+	if got := s.Exits(); len(got) != 0 {
+		t.Fatalf("a swap was recorded as a crash: %+v", got)
+	}
+	if run := s.Running(); len(run) != 1 || run[0].Version != "1.1.0" {
+		t.Fatalf("Running() = %+v after a swap, want the replacement", run)
+	}
+}
+
+// waitFor polls a condition to a deadline. Used instead of a fixed sleep so a
+// slow runner does not turn "the waiter has not fired yet" into a failure.
+func waitFor(t *testing.T, budget time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(budget)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("condition never became true within %s", budget)
+}

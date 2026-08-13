@@ -116,6 +116,18 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("stopped  %s; pid %d gone too\n", *id, second.PID)
+
+	// Anything that ended WITHOUT being asked to. A pack that crashed during the
+	// run would otherwise be invisible here: the swap would still report success,
+	// because a replacement starting says nothing about the incumbent having died
+	// on its own a moment earlier.
+	if exits := sup.Exits(); len(exits) > 0 {
+		for _, e := range exits {
+			fmt.Fprintf(os.Stderr, "packswap: UNEXPECTED EXIT — %s %s (pid %d) ended on its own: %v\n",
+				e.ID, e.Version, e.PID, e.Err)
+		}
+		os.Exit(1)
+	}
 }
 
 // stillRunning reports whether pid is still present. Signal 0 delivers nothing
