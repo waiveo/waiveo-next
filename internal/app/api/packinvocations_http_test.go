@@ -9,6 +9,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/api"
 	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/app/platformlog"
+	"github.com/maaxton/waiveo-next/internal/events"
 )
 
 // The actions plane over HTTP. The asymmetry is the thing under test: the
@@ -462,5 +463,116 @@ func TestAnExplicitNullParamsIsRefused(t *testing.T) {
 		mustJSON(t, map[string]any{"params": nil}), nil)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("params:null = %d, want 422", resp.StatusCode)
+	}
+}
+
+// recordingEvents captures what a pack emitted, so a test can assert the
+// ENVELOPE and not merely the status code.
+type recordingEvents struct{ got []events.Envelope }
+
+func (r *recordingEvents) Append(e events.Envelope) { r.got = append(r.got, e) }
+
+func eventPack(t *testing.T, e *testEnv, packID string) map[string]any {
+	t.Helper()
+	m := actionPackManifest(packID)
+	m["contributes"] = map[string]any{
+		"automation": map[string]any{
+			"events": []any{
+				map[string]any{"name": packID + ".backup_completed", "payloadSchema": map[string]any{}},
+			},
+		},
+	}
+	return m
+}
+
+// A declared event reaches the durable log, attributed to the pack and placed at
+// the scope its identity was issued at.
+func TestADeclaredPackEventReachesTheDurableLog(t *testing.T) {
+	sink := &recordingEvents{}
+	e := newEnvWithOptions(t, api.WithRunEvents(sink))
+	e.seedPlacementNodes(t, rowScopeNodeA, rowScopeNodeB)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, eventPack(t, e, "acme/menu-board")), nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("install: %d %s", resp.StatusCode, raw)
+	}
+	token := packSession(t, e, "acme/menu-board")
+
+	got, gotBody := asPack(t, e, token, http.MethodPost, "/api/v1/pack-events",
+		mustJSON(t, map[string]any{"name": "acme/menu-board.backup_completed", "payload": map[string]any{"archive": "a.zip"}}))
+	if got.StatusCode != http.StatusNoContent {
+		t.Fatalf("emit = %d, want 204 (%+v)", got.StatusCode, gotBody)
+	}
+	if len(sink.got) != 1 {
+		t.Fatalf("%d events appended, want exactly one", len(sink.got))
+	}
+	env := sink.got[0]
+	if env.Schema != "acme/menu-board.backup_completed" {
+		t.Fatalf("schema = %q", env.Schema)
+	}
+	// origin is EVT-010's closed enum — this process wrote the record on the
+	// pack's behalf — and WHICH pack rides on origin_principal, as a ULID.
+	if env.Origin != "internal" {
+		t.Fatalf("origin = %q, want internal (the closed EVT-010 enum has no pack value)", env.Origin)
+	}
+	if env.OriginPrincipal == "" {
+		t.Fatalf("envelope = %+v, want the pack's principal named", env)
+	}
+	// The scope the pack's IDENTITY was issued at, not merely some scope. A
+	// non-empty check passes on any hardcoded node, which is what a mutation
+	// planting one proved about the first version of this assertion.
+	if env.ScopeNode != rowScopeNodeA {
+		t.Fatalf("scope_node = %q, want the scope the tier grant bound this pack at (%q)", env.ScopeNode, rowScopeNodeA)
+	}
+	if env.CostClass != "telemetry" || env.RetentionClass != "telemetry-standard" {
+		t.Fatalf("class = %q/%q, want the telemetry tier", env.CostClass, env.RetentionClass)
+	}
+}
+
+// An UNDECLARED event is refused and never reaches the log. Otherwise a pack
+// could put a schema into the durable log that no manifest describes, so nothing
+// could validate its payload and an operator would find records with no owner.
+func TestAnUndeclaredPackEventIsRefused(t *testing.T) {
+	sink := &recordingEvents{}
+	e := newEnvWithOptions(t, api.WithRunEvents(sink))
+	e.seedPlacementNodes(t, rowScopeNodeA, rowScopeNodeB)
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, eventPack(t, e, "acme/menu-board")), nil); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("install: %d %s", resp.StatusCode, raw)
+	}
+	token := packSession(t, e, "acme/menu-board")
+
+	got, body := asPack(t, e, token, http.MethodPost, "/api/v1/pack-events",
+		mustJSON(t, map[string]any{"name": "acme/menu-board.never_declared", "payload": map[string]any{}}))
+	if got.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("undeclared emit = %d, want 422 (%+v)", got.StatusCode, body)
+	}
+	if body["code"] != "EVENT_NOT_DECLARED" {
+		t.Fatalf("code = %v, want EVENT_NOT_DECLARED", body["code"])
+	}
+	if len(sink.got) != 0 {
+		t.Fatalf("a refused event still reached the log: %+v", sink.got)
+	}
+}
+
+// A pack cannot emit ANOTHER pack's declared event: the name is checked against
+// the CALLER's manifest, so the check cannot be satisfied by some other pack
+// having declared it.
+func TestAPackCannotEmitAnotherPacksEvent(t *testing.T) {
+	sink := &recordingEvents{}
+	e := newEnvWithOptions(t, api.WithRunEvents(sink))
+	e.seedPlacementNodes(t, rowScopeNodeA, rowScopeNodeB)
+	for _, id := range []string{"acme/menu-board", "acme/other-pack"} {
+		if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, eventPack(t, e, id)), nil); resp.StatusCode != http.StatusCreated {
+			t.Fatalf("install %s: %d %s", id, resp.StatusCode, raw)
+		}
+	}
+	token := packSession(t, e, "acme/other-pack")
+
+	got, _ := asPack(t, e, token, http.MethodPost, "/api/v1/pack-events",
+		mustJSON(t, map[string]any{"name": "acme/menu-board.backup_completed", "payload": map[string]any{}}))
+	if got.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("cross-pack emit = %d, want 422", got.StatusCode)
+	}
+	if len(sink.got) != 0 {
+		t.Fatalf("a pack emitted another pack's event: %+v", sink.got)
 	}
 }

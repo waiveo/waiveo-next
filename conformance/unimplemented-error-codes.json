@@ -53,13 +53,12 @@
     },
     {
       "contract": "ctx-1.md",
-      "reason": "ctx/1 is the pack runtime's wire protocol, and there is no pack runtime: no host process, no verb dispatch, no egress broker. The three ctx/1 codes that ARE implemented (NOT_FOUND, REVISION_CONFLICT, PROTOCOL_VIOLATION) are spelled by the app-to-relay connection, which reuses them by name \u2014 not by a ctx/1 host. Nine remain with nothing to emit them: the two frame refusals, the negotiate range refusal, collection ownership, event declaration, payload schema, both egress refusals, and the removed-verb refusal. State (a).",
+      "reason": "ctx/1 is the pack runtime's wire protocol, and there is no pack runtime: no host process, no verb dispatch, no egress broker. The three ctx/1 codes that ARE implemented (NOT_FOUND, REVISION_CONFLICT, PROTOCOL_VIOLATION) are spelled by the app-to-relay connection, which reuses them by name \u2014 not by a ctx/1 host. Nine remain with nothing to emit them: the two frame refusals, the negotiate range refusal, collection ownership, event declaration, payload schema, both egress refusals, and the removed-verb refusal. State (a). EVENT_NOT_DECLARED is no longer listed: pack event emission is implemented (internal/app/api's /pack-events), and a name the emitting pack did not declare under contributes.automation.events is refused with it.",
       "codes": [
         "FRAME_TOO_LARGE",
         "MALFORMED_FRAME",
         "INCOMPATIBLE_RANGE",
         "COLLECTION_NOT_OWNED",
-        "EVENT_NOT_DECLARED",
         "PAYLOAD_SCHEMA_INVALID",
         "EGRESS_NOT_ALLOWLISTED",
         "EGRESS_DENIED_IP_CLASS",

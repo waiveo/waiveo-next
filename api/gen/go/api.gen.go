@@ -303,6 +303,7 @@ const (
 	ErrorCodeARCHIVEINUSE                ErrorCode = "ARCHIVE_IN_USE"
 	ErrorCodeCREDENTIALLOCKED            ErrorCode = "CREDENTIAL_LOCKED"
 	ErrorCodeCURSORINVALID               ErrorCode = "CURSOR_INVALID"
+	ErrorCodeEVENTNOTDECLARED            ErrorCode = "EVENT_NOT_DECLARED"
 	ErrorCodeEXTERNALIDCONFLICT          ErrorCode = "EXTERNAL_ID_CONFLICT"
 	ErrorCodeFORBIDDEN                   ErrorCode = "FORBIDDEN"
 	ErrorCodeGRANTALREADYREDEEMED        ErrorCode = "GRANT_ALREADY_REDEEMED"
@@ -339,6 +340,8 @@ func (e ErrorCode) Valid() bool {
 	case ErrorCodeCREDENTIALLOCKED:
 		return true
 	case ErrorCodeCURSORINVALID:
+		return true
+	case ErrorCodeEVENTNOTDECLARED:
 		return true
 	case ErrorCodeEXTERNALIDCONFLICT:
 		return true
@@ -1938,6 +1941,12 @@ type PackActionInvokeRequest struct {
 	Params *map[string]interface{} `json:"params,omitempty"`
 }
 
+// PackEventEmitRequest One durable event from an extension. `name` is the pack-namespaced event the manifest declares (MAN-090); the payload validates against that declaration's own `payloadSchema` (events/1 EVT-022).
+type PackEventEmitRequest struct {
+	Name    string                  `json:"name"`
+	Payload *map[string]interface{} `json:"payload,omitempty"`
+}
+
 // PackHealthReportRequest One extension's own account of its condition. `detail` is required even for `ok`: it is the difference between a check that ran and one that was skipped, which is the same promise every other service line on the health page makes.
 type PackHealthReportRequest struct {
 	Detail string                        `json:"detail"`
@@ -3500,6 +3509,12 @@ type GetJobParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// EmitPackEventParams defines parameters for EmitPackEvent.
+type EmitPackEventParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // ReportPackHealthParams defines parameters for ReportPackHealth.
 type ReportPackHealthParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
@@ -4171,6 +4186,9 @@ type UpdateDaypartJSONRequestBody = DaypartUpdate
 // SendEntityCommandJSONRequestBody defines body for SendEntityCommand for application/json ContentType.
 type SendEntityCommandJSONRequestBody = EntityCommandRequest
 
+// EmitPackEventJSONRequestBody defines body for EmitPackEvent for application/json ContentType.
+type EmitPackEventJSONRequestBody = PackEventEmitRequest
+
 // ReportPackHealthJSONRequestBody defines body for ReportPackHealth for application/json ContentType.
 type ReportPackHealthJSONRequestBody = PackHealthReportRequest
 
@@ -4497,6 +4515,11 @@ type ClientInterface interface {
 
 	// GetJob request
 	GetJob(ctx context.Context, jobId Ulid, params *GetJobParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// EmitPackEventWithBody request with any body
+	EmitPackEventWithBody(ctx context.Context, params *EmitPackEventParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	EmitPackEvent(ctx context.Context, params *EmitPackEventParams, body EmitPackEventJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ReportPackHealthWithBody request with any body
 	ReportPackHealthWithBody(ctx context.Context, params *ReportPackHealthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5535,6 +5558,30 @@ func (c *Client) SendEntityCommand(ctx context.Context, entityId Ulid, params *S
 
 func (c *Client) GetJob(ctx context.Context, jobId Ulid, params *GetJobParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetJobRequest(c.Server, jobId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) EmitPackEventWithBody(ctx context.Context, params *EmitPackEventParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewEmitPackEventRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) EmitPackEvent(ctx context.Context, params *EmitPackEventParams, body EmitPackEventJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewEmitPackEventRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -9559,6 +9606,61 @@ func NewGetJobRequest(server string, jobId Ulid, params *GetJobParams) (*http.Re
 	if err != nil {
 		return nil, err
 	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewEmitPackEventRequest calls the generic EmitPackEvent builder with application/json body
+func NewEmitPackEventRequest(server string, params *EmitPackEventParams, body EmitPackEventJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewEmitPackEventRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewEmitPackEventRequestWithBody generates requests for EmitPackEvent with any type of body
+func NewEmitPackEventRequestWithBody(server string, params *EmitPackEventParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/pack-events")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	if params != nil {
 
@@ -14349,6 +14451,11 @@ type ClientWithResponsesInterface interface {
 	// GetJobWithResponse request
 	GetJobWithResponse(ctx context.Context, jobId Ulid, params *GetJobParams, reqEditors ...RequestEditorFn) (*GetJobResponse, error)
 
+	// EmitPackEventWithBodyWithResponse request with any body
+	EmitPackEventWithBodyWithResponse(ctx context.Context, params *EmitPackEventParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*EmitPackEventResponse, error)
+
+	EmitPackEventWithResponse(ctx context.Context, params *EmitPackEventParams, body EmitPackEventJSONRequestBody, reqEditors ...RequestEditorFn) (*EmitPackEventResponse, error)
+
 	// ReportPackHealthWithBodyWithResponse request with any body
 	ReportPackHealthWithBodyWithResponse(ctx context.Context, params *ReportPackHealthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ReportPackHealthResponse, error)
 
@@ -16172,6 +16279,39 @@ func (r GetJobResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r GetJobResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type EmitPackEventResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r EmitPackEventResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r EmitPackEventResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r EmitPackEventResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -19040,6 +19180,23 @@ func (c *ClientWithResponses) GetJobWithResponse(ctx context.Context, jobId Ulid
 		return nil, err
 	}
 	return ParseGetJobResponse(rsp)
+}
+
+// EmitPackEventWithBodyWithResponse request with arbitrary body returning *EmitPackEventResponse
+func (c *ClientWithResponses) EmitPackEventWithBodyWithResponse(ctx context.Context, params *EmitPackEventParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*EmitPackEventResponse, error) {
+	rsp, err := c.EmitPackEventWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseEmitPackEventResponse(rsp)
+}
+
+func (c *ClientWithResponses) EmitPackEventWithResponse(ctx context.Context, params *EmitPackEventParams, body EmitPackEventJSONRequestBody, reqEditors ...RequestEditorFn) (*EmitPackEventResponse, error) {
+	rsp, err := c.EmitPackEvent(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseEmitPackEventResponse(rsp)
 }
 
 // ReportPackHealthWithBodyWithResponse request with arbitrary body returning *ReportPackHealthResponse
@@ -22218,6 +22375,53 @@ func ParseGetJobResponse(rsp *http.Response) (*GetJobResponse, error) {
 			return nil, err
 		}
 		response.ApplicationproblemJSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseEmitPackEventResponse parses an HTTP response from a EmitPackEventWithResponse call
+func ParseEmitPackEventResponse(rsp *http.Response) (*EmitPackEventResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &EmitPackEventResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
 
 	}
 

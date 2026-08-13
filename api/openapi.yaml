@@ -1944,6 +1944,46 @@ paths:
         "422":
           $ref: "#/components/responses/UnprocessableContent"
 
+  /pack-events:
+    post:
+      operationId: emitPackEvent
+      summary: Emit a durable event the calling extension declared
+      description: >-
+        The event lands in the same durable log every first-party event does, so
+        an automation rule can fire on it through machinery that already reads
+        that log.
+
+        The name MUST be one the pack declared under
+        `contributes.automation.events` (`manifest/1` MAN-090). An undeclared
+        name would put a schema into the log that no manifest describes — nothing
+        could validate its payload, and an operator reading the log would find
+        records whose shape has no owner.
+
+        The event is attributed to the calling pack's principal and placed at the
+        scope its identity was issued at. Neither is taken from the request: an
+        event a pack could place at a scope of its choosing is one it could hide
+        from the operators who can see that scope.
+      tags: [packs]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PackEventEmitRequest"
+      responses:
+        "204":
+          description: The event was recorded.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+
   /pack-invocations/pending:
     get:
       operationId: leasePackInvocation
@@ -4874,6 +4914,7 @@ components:
         - MARKETPLACE_REF_INVALID
         - REQUIRED_PACK_FLOOR
         - SINGLETON_COLLECTION_OCCUPIED
+        - EVENT_NOT_DECLARED
 
     LoginRequest:
       type: object
@@ -5085,6 +5126,22 @@ components:
         detail:
           type: string
           minLength: 1
+
+    PackEventEmitRequest:
+      type: object
+      description: >-
+        One durable event from an extension. `name` is the pack-namespaced event
+        the manifest declares (MAN-090); the payload validates against that
+        declaration's own `payloadSchema` (events/1 EVT-022).
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+        payload:
+          type: object
+          additionalProperties: true
 
     PackActionInvokeRequest:
       type: object

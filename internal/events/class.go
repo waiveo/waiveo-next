@@ -51,9 +51,42 @@ var classBySchema = map[string]schemaClass{
 // a pack-namespaced schema — so a caller never builds an envelope with an empty
 // class that Validate would reject.
 func ClassFor(schema string) (costClass, retentionClass string, ok bool) {
-	c, ok := classBySchema[schema]
-	if !ok {
-		return "", "", false
+	if c, found := classBySchema[schema]; found {
+		return c.cost, c.retention, true
 	}
-	return c.cost, c.retention, true
+	// A PACK-CONTRIBUTED schema is classed by its shape rather than by this map.
+	// EVT-021 makes the two namespaces mutually exclusive by construction — a
+	// registered schema is a bare `<domain>.<name>` and a pack-contributed one is
+	// `<publisher>/<name>.<local>`, which always carries the `/` from its owning
+	// pack id — so the presence of a slash IS the discriminator, not a heuristic.
+	//
+	// This map cannot enumerate them: the set is whatever packs are installed,
+	// which is deployment state and not something a compiled-in table can know.
+	// Leaving them unclassed meant every pack event was dropped at its producer,
+	// so `contributes.automation.events` was a declaration with no way to fire —
+	// the automation side already anticipates the pack-namespaced name.
+	if IsPackSchemaName(schema) {
+		return packEventCostClass, packEventRetentionClass, true
+	}
+	return "", "", false
 }
+
+// The discriminator is IsPackSchemaName (validate.go), not a second copy of the
+// rule: two functions deciding what "pack-namespaced" means is how they end up
+// disagreeing, and this one already had an owner.
+
+// The class every pack-contributed event carries.
+//
+// The TELEMETRY tier, deliberately, and not the audit tier. A pack's event
+// volume is bounded by nothing this platform controls — a badly written
+// extension can emit on a loop — so putting it on the long-lived tier would let
+// one pack fill the disk with records the platform has promised to keep. An
+// extension that needs an event kept for years is asking for an audit record,
+// which is a first-party concern with a first-party producer.
+//
+// One class for all packs rather than a per-pack choice: letting a pack pick its
+// own retention is letting it pick how much of the operator's disk it may have.
+const (
+	packEventCostClass      = "telemetry"
+	packEventRetentionClass = "telemetry-standard"
+)

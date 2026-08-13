@@ -747,6 +747,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/pack-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Emit a durable event the calling extension declared
+         * @description The event lands in the same durable log every first-party event does, so an automation rule can fire on it through machinery that already reads that log.
+         *     The name MUST be one the pack declared under `contributes.automation.events` (`manifest/1` MAN-090). An undeclared name would put a schema into the log that no manifest describes — nothing could validate its payload, and an operator reading the log would find records whose shape has no owner.
+         *     The event is attributed to the calling pack's principal and placed at the scope its identity was issued at. Neither is taken from the request: an event a pack could place at a scope of its choosing is one it could hide from the operators who can see that scope.
+         */
+        post: operations["emitPackEvent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/pack-invocations/pending": {
         parameters: {
             query?: never;
@@ -1861,7 +1883,7 @@ export interface components {
          * @description The stable, additive-only machine-readable error registry (`contracts/api-1.md#error-taxonomy`), plus the codes a sibling contract owns for operations that ride this same `/api/v1` binding. api/1's own registry governs API-011 for api/1's own rules; a sibling contract's Problem carries a `code` from ITS registry, by name — the same reuse-by-name discipline `player/1` PLY-007 applies. The trailing values below belong to sibling contracts: four to `security-model.md`'s Error taxonomy, appearing only on the `auth` operations; three to `data-model-1.md`'s, appearing only on the scope-node delete; and two to `marketplace-1.md`'s, appearing on the pack operations.
          * @enum {string}
          */
-        ErrorCode: "VALIDATION_FAILED" | "UNAUTHENTICATED" | "FORBIDDEN" | "NOT_FOUND" | "REVISION_CONFLICT" | "IF_MATCH_REQUIRED" | "CURSOR_INVALID" | "SELECTOR_INVALID" | "IDEMPOTENCY_KEY_REUSED" | "IDEMPOTENCY_KEY_IN_PROGRESS" | "EXTERNAL_ID_CONFLICT" | "ID_SERVER_ASSIGNED" | "RATE_LIMITED" | "INTERNAL" | "UNAVAILABLE" | "RESTART_UNSUPPORTED" | "RESTART_IN_PROGRESS" | "RESTART_BLOCKED" | "ARCHIVE_IN_USE" | "CREDENTIAL_LOCKED" | "GRANT_EXPIRED" | "GRANT_ALREADY_REDEEMED" | "GRANT_PURPOSE_MISMATCH" | "SCOPE_NODE_NOT_EMPTY" | "SCOPE_NODE_IN_USE" | "SCOPE_NODE_ORG_UNDELETABLE" | "MARKETPLACE_REF_INVALID" | "REQUIRED_PACK_FLOOR" | "SINGLETON_COLLECTION_OCCUPIED";
+        ErrorCode: "VALIDATION_FAILED" | "UNAUTHENTICATED" | "FORBIDDEN" | "NOT_FOUND" | "REVISION_CONFLICT" | "IF_MATCH_REQUIRED" | "CURSOR_INVALID" | "SELECTOR_INVALID" | "IDEMPOTENCY_KEY_REUSED" | "IDEMPOTENCY_KEY_IN_PROGRESS" | "EXTERNAL_ID_CONFLICT" | "ID_SERVER_ASSIGNED" | "RATE_LIMITED" | "INTERNAL" | "UNAVAILABLE" | "RESTART_UNSUPPORTED" | "RESTART_IN_PROGRESS" | "RESTART_BLOCKED" | "ARCHIVE_IN_USE" | "CREDENTIAL_LOCKED" | "GRANT_EXPIRED" | "GRANT_ALREADY_REDEEMED" | "GRANT_PURPOSE_MISMATCH" | "SCOPE_NODE_NOT_EMPTY" | "SCOPE_NODE_IN_USE" | "SCOPE_NODE_ORG_UNDELETABLE" | "MARKETPLACE_REF_INVALID" | "REQUIRED_PACK_FLOOR" | "SINGLETON_COLLECTION_OCCUPIED" | "EVENT_NOT_DECLARED";
         /** @description The credentials a login authenticates from (API-091 — carried in the BODY, never as a precondition session). */
         LoginRequest: {
             /** @description The login handle the `password` credential is registered under. */
@@ -1955,6 +1977,13 @@ export interface components {
             /** @enum {string} */
             status: "ok" | "degraded" | "down";
             detail: string;
+        };
+        /** @description One durable event from an extension. `name` is the pack-namespaced event the manifest declares (MAN-090); the payload validates against that declaration's own `payloadSchema` (events/1 EVT-022). */
+        PackEventEmitRequest: {
+            name: string;
+            payload?: {
+                [key: string]: unknown;
+            };
         };
         /** @description The action's parameters, validated against its `paramsSchema` (MAN-100). */
         PackActionInvokeRequest: {
@@ -4770,6 +4799,35 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            422: components["responses"]["UnprocessableContent"];
+        };
+    };
+    emitPackEvent: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PackEventEmitRequest"];
+            };
+        };
+        responses: {
+            /** @description The event was recorded. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             422: components["responses"]["UnprocessableContent"];
         };
     };
