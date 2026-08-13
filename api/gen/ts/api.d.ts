@@ -725,6 +725,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/pack-health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Report the calling extension's own condition
+         * @description An extension says how it is doing, and the line appears in `GET /system-health` beside the first-party services — an operator asking whether a box is healthy should not have to know which parts of it are extensions.
+         *     The host can observe that a pack's PROCESS is alive; it cannot observe whether the pack is working. A backup extension whose credentials expired is running perfectly and doing nothing, and only the pack knows that.
+         *     A report goes STALE. One that never expired would leave a green line for an extension that wedged an hour ago, on the page an operator opened to find out what was wrong. A stale report reads `unknown` — we were told once and have not been told since — rather than `down`, because a missed report is evidence about the reporting, not about the pack.
+         */
+        post: operations["reportPackHealth"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/pack-invocations/pending": {
         parameters: {
             query?: never;
@@ -1927,6 +1949,12 @@ export interface components {
              * @enum {string}
              */
             level?: "error" | "warn" | "info";
+        };
+        /** @description One extension's own account of its condition. `detail` is required even for `ok`: it is the difference between a check that ran and one that was skipped, which is the same promise every other service line on the health page makes. */
+        PackHealthReportRequest: {
+            /** @enum {string} */
+            status: "ok" | "degraded" | "down";
+            detail: string;
         };
         /** @description The action's parameters, validated against its `paramsSchema` (MAN-100). */
         PackActionInvokeRequest: {
@@ -4706,6 +4734,34 @@ export interface operations {
         };
         responses: {
             /** @description The line was recorded. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["UnprocessableContent"];
+        };
+    };
+    reportPackHealth: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PackHealthReportRequest"];
+            };
+        };
+        responses: {
+            /** @description The report was recorded. */
             204: {
                 headers: {
                     [name: string]: unknown;

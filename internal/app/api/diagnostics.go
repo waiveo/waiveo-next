@@ -397,6 +397,10 @@ func (srv *server) getSystemHealth(w http.ResponseWriter, r *http.Request) {
 	screenRollup, screenSvc := srv.screenRollup(r)
 	out.Screens = screenRollup
 	out.Services = append(out.Services, screenSvc)
+	// Extensions report themselves, and appear beside the first-party services
+	// rather than in a separate list — an operator asking "is this box healthy"
+	// should not have to know which parts of it are extensions.
+	out.Services = append(out.Services, srv.packHealth.snapshot(out.CheckedAtMs)...)
 	out.Storage = srv.storageHealth()
 
 	// The summary is the WORST component grade, with storage folded in on the

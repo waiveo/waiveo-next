@@ -472,6 +472,27 @@ func (e MarketplaceRefTrustChannel) Valid() bool {
 	}
 }
 
+// Defines values for PackHealthReportRequestStatus.
+const (
+	PackHealthReportRequestStatusDegraded PackHealthReportRequestStatus = "degraded"
+	PackHealthReportRequestStatusDown     PackHealthReportRequestStatus = "down"
+	PackHealthReportRequestStatusOk       PackHealthReportRequestStatus = "ok"
+)
+
+// Valid indicates whether the value is a known member of the PackHealthReportRequestStatus enum.
+func (e PackHealthReportRequestStatus) Valid() bool {
+	switch e {
+	case PackHealthReportRequestStatusDegraded:
+		return true
+	case PackHealthReportRequestStatusDown:
+		return true
+	case PackHealthReportRequestStatusOk:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PackLogAppendRequestLevel.
 const (
 	PackLogAppendRequestLevelError PackLogAppendRequestLevel = "error"
@@ -1916,6 +1937,15 @@ type PackActionInvokeRequest struct {
 	// Params Parameters for the action; an action taking none may omit it.
 	Params *map[string]interface{} `json:"params,omitempty"`
 }
+
+// PackHealthReportRequest One extension's own account of its condition. `detail` is required even for `ok`: it is the difference between a check that ran and one that was skipped, which is the same promise every other service line on the health page makes.
+type PackHealthReportRequest struct {
+	Detail string                        `json:"detail"`
+	Status PackHealthReportRequestStatus `json:"status"`
+}
+
+// PackHealthReportRequestStatus defines model for PackHealthReportRequest.Status.
+type PackHealthReportRequestStatus string
 
 // PackInvocationResultRequest The outcome of one leased invocation. A result and a failure are mutually exclusive: an invocation that reports an `error_code` is FAILED, and a caller branching on state must not also have to inspect a code.
 type PackInvocationResultRequest struct {
@@ -3470,6 +3500,12 @@ type GetJobParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// ReportPackHealthParams defines parameters for ReportPackHealth.
+type ReportPackHealthParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // LeasePackInvocationParams defines parameters for LeasePackInvocation.
 type LeasePackInvocationParams struct {
 	// Wait Seconds to hold the request open while the queue is empty. Zero returns immediately.
@@ -4135,6 +4171,9 @@ type UpdateDaypartJSONRequestBody = DaypartUpdate
 // SendEntityCommandJSONRequestBody defines body for SendEntityCommand for application/json ContentType.
 type SendEntityCommandJSONRequestBody = EntityCommandRequest
 
+// ReportPackHealthJSONRequestBody defines body for ReportPackHealth for application/json ContentType.
+type ReportPackHealthJSONRequestBody = PackHealthReportRequest
+
 // ReportPackInvocationResultJSONRequestBody defines body for ReportPackInvocationResult for application/json ContentType.
 type ReportPackInvocationResultJSONRequestBody = PackInvocationResultRequest
 
@@ -4458,6 +4497,11 @@ type ClientInterface interface {
 
 	// GetJob request
 	GetJob(ctx context.Context, jobId Ulid, params *GetJobParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ReportPackHealthWithBody request with any body
+	ReportPackHealthWithBody(ctx context.Context, params *ReportPackHealthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ReportPackHealth(ctx context.Context, params *ReportPackHealthParams, body ReportPackHealthJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// LeasePackInvocation request
 	LeasePackInvocation(ctx context.Context, params *LeasePackInvocationParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5491,6 +5535,30 @@ func (c *Client) SendEntityCommand(ctx context.Context, entityId Ulid, params *S
 
 func (c *Client) GetJob(ctx context.Context, jobId Ulid, params *GetJobParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetJobRequest(c.Server, jobId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ReportPackHealthWithBody(ctx context.Context, params *ReportPackHealthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReportPackHealthRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ReportPackHealth(ctx context.Context, params *ReportPackHealthParams, body ReportPackHealthJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReportPackHealthRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -9491,6 +9559,61 @@ func NewGetJobRequest(server string, jobId Ulid, params *GetJobParams) (*http.Re
 	if err != nil {
 		return nil, err
 	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewReportPackHealthRequest calls the generic ReportPackHealth builder with application/json body
+func NewReportPackHealthRequest(server string, params *ReportPackHealthParams, body ReportPackHealthJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewReportPackHealthRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewReportPackHealthRequestWithBody generates requests for ReportPackHealth with any type of body
+func NewReportPackHealthRequestWithBody(server string, params *ReportPackHealthParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/pack-health")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	if params != nil {
 
@@ -14226,6 +14349,11 @@ type ClientWithResponsesInterface interface {
 	// GetJobWithResponse request
 	GetJobWithResponse(ctx context.Context, jobId Ulid, params *GetJobParams, reqEditors ...RequestEditorFn) (*GetJobResponse, error)
 
+	// ReportPackHealthWithBodyWithResponse request with any body
+	ReportPackHealthWithBodyWithResponse(ctx context.Context, params *ReportPackHealthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ReportPackHealthResponse, error)
+
+	ReportPackHealthWithResponse(ctx context.Context, params *ReportPackHealthParams, body ReportPackHealthJSONRequestBody, reqEditors ...RequestEditorFn) (*ReportPackHealthResponse, error)
+
 	// LeasePackInvocationWithResponse request
 	LeasePackInvocationWithResponse(ctx context.Context, params *LeasePackInvocationParams, reqEditors ...RequestEditorFn) (*LeasePackInvocationResponse, error)
 
@@ -16044,6 +16172,38 @@ func (r GetJobResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r GetJobResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ReportPackHealthResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r ReportPackHealthResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ReportPackHealthResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ReportPackHealthResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -18880,6 +19040,23 @@ func (c *ClientWithResponses) GetJobWithResponse(ctx context.Context, jobId Ulid
 		return nil, err
 	}
 	return ParseGetJobResponse(rsp)
+}
+
+// ReportPackHealthWithBodyWithResponse request with arbitrary body returning *ReportPackHealthResponse
+func (c *ClientWithResponses) ReportPackHealthWithBodyWithResponse(ctx context.Context, params *ReportPackHealthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ReportPackHealthResponse, error) {
+	rsp, err := c.ReportPackHealthWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseReportPackHealthResponse(rsp)
+}
+
+func (c *ClientWithResponses) ReportPackHealthWithResponse(ctx context.Context, params *ReportPackHealthParams, body ReportPackHealthJSONRequestBody, reqEditors ...RequestEditorFn) (*ReportPackHealthResponse, error) {
+	rsp, err := c.ReportPackHealth(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseReportPackHealthResponse(rsp)
 }
 
 // LeasePackInvocationWithResponse request returning *LeasePackInvocationResponse
@@ -22041,6 +22218,46 @@ func ParseGetJobResponse(rsp *http.Response) (*GetJobResponse, error) {
 			return nil, err
 		}
 		response.ApplicationproblemJSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseReportPackHealthResponse parses an HTTP response from a ReportPackHealthWithResponse call
+func ParseReportPackHealthResponse(rsp *http.Response) (*ReportPackHealthResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ReportPackHealthResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
 
 	}
 

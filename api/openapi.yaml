@@ -1906,6 +1906,44 @@ paths:
         "422":
           $ref: "#/components/responses/UnprocessableContent"
 
+  /pack-health:
+    post:
+      operationId: reportPackHealth
+      summary: Report the calling extension's own condition
+      description: >-
+        An extension says how it is doing, and the line appears in
+        `GET /system-health` beside the first-party services — an operator asking
+        whether a box is healthy should not have to know which parts of it are
+        extensions.
+
+        The host can observe that a pack's PROCESS is alive; it cannot observe
+        whether the pack is working. A backup extension whose credentials expired
+        is running perfectly and doing nothing, and only the pack knows that.
+
+        A report goes STALE. One that never expired would leave a green line for
+        an extension that wedged an hour ago, on the page an operator opened to
+        find out what was wrong. A stale report reads `unknown` — we were told
+        once and have not been told since — rather than `down`, because a missed
+        report is evidence about the reporting, not about the pack.
+      tags: [packs]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PackHealthReportRequest"
+      responses:
+        "204":
+          description: The report was recorded.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+
   /pack-invocations/pending:
     get:
       operationId: leasePackInvocation
@@ -5030,6 +5068,23 @@ components:
           type: string
           enum: [error, warn, info]
           description: Defaults to `info` when absent or unrecognised.
+
+    PackHealthReportRequest:
+      type: object
+      description: >-
+        One extension's own account of its condition. `detail` is required even
+        for `ok`: it is the difference between a check that ran and one that was
+        skipped, which is the same promise every other service line on the health
+        page makes.
+      required: [status, detail]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        detail:
+          type: string
+          minLength: 1
 
     PackActionInvokeRequest:
       type: object

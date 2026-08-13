@@ -358,3 +358,85 @@ func TestAHumanSessionCannotAppendAPackLog(t *testing.T) {
 		t.Fatalf("a refused caller still wrote %d line(s) into the platform log", snap.Retained)
 	}
 }
+
+// An extension's own report appears on the health page beside the first-party
+// services — an operator asking whether a box is healthy should not have to know
+// which parts of it are extensions.
+func TestAPackHealthReportAppearsOnTheHealthPage(t *testing.T) {
+	e := newEnv(t)
+	e.seedPlacementNodes(t, rowScopeNodeA, rowScopeNodeB)
+	e.installActionPack(t)
+	token := packSession(t, e, "acme/menu-board")
+
+	resp, _ := asPack(t, e, token, http.MethodPost, "/api/v1/pack-health",
+		mustJSON(t, map[string]any{"status": "degraded", "detail": "the archive credentials expire in two days"}))
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("report = %d, want 204", resp.StatusCode)
+	}
+
+	got, raw := e.do(t, http.MethodGet, "/api/v1/system-health", nil, nil)
+	if got.StatusCode != http.StatusOK {
+		t.Fatalf("system-health = %d (%s)", got.StatusCode, raw)
+	}
+	var health struct {
+		Services []struct {
+			Name, Status, Detail string
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(raw, &health); err != nil {
+		t.Fatalf("decode health: %v", err)
+	}
+	var found bool
+	for _, svc := range health.Services {
+		if svc.Name != "pack:acme/menu-board" {
+			continue
+		}
+		found = true
+		if svc.Status != "degraded" {
+			t.Fatalf("status = %q, want the reported degraded", svc.Status)
+		}
+		if svc.Detail != "the archive credentials expire in two days" {
+			t.Fatalf("detail = %q, want what the pack said", svc.Detail)
+		}
+	}
+	if !found {
+		t.Fatalf("the pack's health line is not on the page: %+v", health.Services)
+	}
+}
+
+// A status outside the closed set is refused. It has to be: these values drive
+// the page's overall grade through a rank lookup, and an UNRANKED status counts
+// as the best one — so an invented status would let an extension report its own
+// failure in a way that improves the summary.
+func TestAnInventedHealthStatusIsRefused(t *testing.T) {
+	e := newEnv(t)
+	e.seedPlacementNodes(t, rowScopeNodeA, rowScopeNodeB)
+	e.installActionPack(t)
+	token := packSession(t, e, "acme/menu-board")
+
+	resp, _ := asPack(t, e, token, http.MethodPost, "/api/v1/pack-health",
+		mustJSON(t, map[string]any{"status": "mostly-fine", "detail": "eh"}))
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("invented status = %d, want 422", resp.StatusCode)
+	}
+	// And it did not land: a refused report must not reach the page.
+	_, raw := e.do(t, http.MethodGet, "/api/v1/system-health", nil, nil)
+	if bytes.Contains(raw, []byte("mostly-fine")) {
+		t.Fatalf("a refused status reached the health page: %s", raw)
+	}
+}
+
+// A detail is required even for `ok` — the difference between a check that ran
+// and one that was skipped, which is what every other line on this page promises.
+func TestAHealthReportWithoutADetailIsRefused(t *testing.T) {
+	e := newEnv(t)
+	e.seedPlacementNodes(t, rowScopeNodeA, rowScopeNodeB)
+	e.installActionPack(t)
+	token := packSession(t, e, "acme/menu-board")
+
+	resp, _ := asPack(t, e, token, http.MethodPost, "/api/v1/pack-health",
+		mustJSON(t, map[string]any{"status": "ok"}))
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("detail-less report = %d, want 422", resp.StatusCode)
+	}
+}
