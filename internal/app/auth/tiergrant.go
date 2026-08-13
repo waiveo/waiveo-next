@@ -287,3 +287,27 @@ func (h *Handlers) RedeemTierGrant(w http.ResponseWriter, r *http.Request) {
 		"token":        sess.Token,
 	})
 }
+
+// GrantRedeemed reports whether the grant has been consumed.
+//
+// This is the host's READINESS SIGNAL for a pack it has just started. With no
+// wire protocol between them, the question "did the pack come up?" has no
+// direct answer — but "did it redeem the code I handed it?" does, and it is a
+// strictly stronger one: a pack that redeemed has started, read its stdin, and
+// authenticated. A process that merely exists has done none of those.
+//
+// A grant that no longer exists reads as NOT redeemed rather than as an error.
+// The only thing that removes one is InvalidateGrants, and treating a vanished
+// grant as success would turn an administrative sweep into a false readiness.
+func (s *Store) GrantRedeemed(ctx context.Context, grantID string) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT redemption_count FROM grants WHERE grant_id = ?`, grantID).Scan(&count)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("auth: read grant %s: %w", grantID, err)
+	}
+	return count > 0, nil
+}

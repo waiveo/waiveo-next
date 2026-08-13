@@ -330,3 +330,36 @@ func TestAPackDoesNotAdoptASameNamedPrincipalOfAnotherKind(t *testing.T) {
 		t.Fatalf("adopted principal kind = %q, want %q", kind, KindPackService)
 	}
 }
+
+// The readiness signal: a grant reads as unredeemed until it is spent, and
+// redeemed afterwards. This is how the host learns a pack it started actually
+// came up, so a signal that lied in either direction would either hang every
+// start or declare a dead pack healthy.
+func TestGrantRedeemedIsTheReadinessSignal(t *testing.T) {
+	st, _ := newTestStore(t)
+	g := mintTier(t, st, "waiveo/backups")
+
+	if redeemed, err := st.GrantRedeemed(context.Background(), g.Grant.GrantID); err != nil || redeemed {
+		t.Fatalf("before redemption: redeemed=%v err=%v, want false/nil", redeemed, err)
+	}
+	if _, err := st.RedeemTierGrant(context.Background(), g.Code, nil); err != nil {
+		t.Fatalf("RedeemTierGrant: %v", err)
+	}
+	if redeemed, err := st.GrantRedeemed(context.Background(), g.Grant.GrantID); err != nil || !redeemed {
+		t.Fatalf("after redemption: redeemed=%v err=%v, want true/nil", redeemed, err)
+	}
+}
+
+// A grant that no longer exists is NOT ready. Treating a vanished grant as
+// success would turn an administrative sweep into a false readiness signal, and
+// the host would report a pack up that never started.
+func TestAVanishedGrantIsNotReady(t *testing.T) {
+	st, _ := newTestStore(t)
+	redeemed, err := st.GrantRedeemed(context.Background(), "01J8Z2Q1D0000000000000000D")
+	if err != nil {
+		t.Fatalf("GrantRedeemed on an unknown id: %v", err)
+	}
+	if redeemed {
+		t.Fatal("an unknown grant reported itself redeemed")
+	}
+}

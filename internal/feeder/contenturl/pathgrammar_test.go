@@ -123,6 +123,7 @@ var requiredTrees = map[string]int{
 	"cmd":                    8,  // 14: every binary, including the feeder that mounts the origin
 	"internal/app":           60, // 100: the api producers HV-1 was found on
 	"internal/feeder":        8,  // 13: the origin, the snapshot builder, this package
+	"internal/packhost":      1,  // 2: the pack process supervisor and its tests
 	"internal/relay":         30, // 57: the relay-side producers REL-066d will add to
 	"internal/shared":        15, // 27: wire, where a url-bearing type would be declared
 	"internal/rules":         20, // 36
