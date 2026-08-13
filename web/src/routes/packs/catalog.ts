@@ -104,11 +104,18 @@ function sourceRootKey(source: unknown): string | null {
  * manifest-declared collection (so a source that is not a collection loads
  * nothing rather than 404ing).
  *
- * Two page types bind one: a `list-detail` through `list.source` (the rows it
- * pages through) and a `settings-form` through its top-level `source` (the
- * single record it edits, UIS-005/UIS-030). The install gate guarantees a
- * settings-form's source names a declared SINGLETON collection (MAN-064), so
- * the collection this returns for one always holds at most one row.
+ * Three page types bind one: a `list-detail` through `list.source` (the rows it
+ * pages through), a `settings-form` through its top-level `source` (the single
+ * record it edits, UIS-005/UIS-030), and a `wizard` through `draftSource` when
+ * it declares one (UIS-051 — "a Binding naming a real backing resource the
+ * wizard progressively edits"). The install gate guarantees a settings-form's
+ * source names a declared SINGLETON collection (MAN-064), so the collection this
+ * returns for one always holds at most one row; a wizard's draftSource carries
+ * no such guarantee and is read for what it declares.
+ *
+ * A wizard with NO `draftSource` also returns null, and correctly: its steps are
+ * rooted at the ephemeral `$ui.draft` (UIS-051), which is renderer state with no
+ * backing collection at all — its persistence runs through `onFinish` instead.
  *
  * `dashboard` returns null and always will: it has no page-wide bound resource
  * BY DESIGN (UIS-040) — each tile resolves its own root Bindings independently.
@@ -118,11 +125,30 @@ function sourceRootKey(source: unknown): string | null {
  * work. */
 export function primaryCollection(doc: unknown, collectionNames: Set<string>): string | null {
   if (!doc || typeof doc !== "object") return null;
-  const d = doc as { pageType?: unknown; list?: { source?: unknown }; source?: unknown };
-  const source = d.pageType === "list-detail" ? d.list?.source : d.pageType === "settings-form" ? d.source : null;
+  const d = doc as {
+    pageType?: unknown;
+    list?: { source?: unknown };
+    source?: unknown;
+    draftSource?: unknown;
+  };
+  const source =
+    d.pageType === "list-detail"
+      ? d.list?.source
+      : d.pageType === "settings-form"
+        ? d.source
+        : d.pageType === "wizard"
+          ? (d.draftSource ?? null)
+          : null;
   if (source == null) return null;
   const key = sourceRootKey(source);
   return key && collectionNames.has(key) ? key : null;
+}
+
+/** Whether a page document is a wizard — the page type whose save target is its
+ * `draftSource` rather than a selected row, and whose record (like a
+ * settings-form's) usually does not exist until the first save. */
+export function isWizard(doc: unknown): boolean {
+  return !!doc && typeof doc === "object" && (doc as { pageType?: unknown }).pageType === "wizard";
 }
 
 /** Whether a page document is a settings-form — the page type that binds ONE

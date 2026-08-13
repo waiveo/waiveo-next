@@ -18,6 +18,7 @@ import {
 import {
   dashboardCollections,
   isSettingsForm,
+  isWizard,
   loadPackCatalog,
   primaryCollection,
   resolveTitle,
@@ -269,6 +270,7 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
   // Derived from the loaded document rather than stored beside it: the page type
   // IS the document's, and a second copy could disagree with it after a reload.
   const settingsForm = isSettingsForm(loaded?.doc);
+  const wizard = isWizard(loaded?.doc);
 
   const reload = useCallback(async () => {
     setFieldErrors({});
@@ -302,6 +304,19 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
   }, []);
 
   const defaultScopeNode = loaded?.defaultScopeNode ?? null;
+
+  // Whether this page binds ONE RECORD rather than a list — which decides both
+  // the shape the renderer is handed and whether a save may create the record it
+  // is editing.
+  //
+  // Two page types do, for reasons the contract states separately rather than
+  // one rule covering both: a settings-form always (MAN-064 makes its source a
+  // declared singleton), and a wizard when its `draftSource` names a singleton
+  // collection (UIS-051 leaves the target open, so this is read off MAN-056
+  // rather than assumed). Deliberately NOT "any page whose collection is a
+  // singleton": a list-detail pointed at one is still a list, and collapsing it
+  // to a record would empty the table it exists to show.
+  const bindsSingleRecord = settingsForm || (wizard && collection !== null && singletons.has(collection));
 
   const handler: ActionHandler = useMemo(
     () => ({
@@ -375,20 +390,26 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
       // sent; the server ignores host-owned envelope fields (MAN-051).
       submit: async (_target, resource) => {
         if (!collection) {
-          // No manifest-declared collection backs this page — a dashboard or a
-          // wizard, neither of which has a persistence target yet. There is
-          // nowhere to write, so report honestly rather than fabricating a green
-          // "Saved" for a save that never happened.
+          // No manifest-declared collection backs this page: a dashboard (which
+          // binds none by design, UIS-040), or a wizard with no draftSource
+          // (whose draft is ephemeral and persists through onFinish's
+          // call-action instead, UIS-051). There is nowhere to write, so report
+          // honestly rather than fabricating a green "Saved" for a save that
+          // never happened.
           toast.error("Saving isn't available for this page yet.");
           return;
         }
         const meta = rowRef(resource);
-        // A settings-form edits ONE record (MAN-064), and on a pack's first visit
-        // that record does not exist yet: nothing seeds it at install, because a
-        // pack ships no rows. So the first save CREATES it and every save after
+        // A page binding ONE record — a settings-form (MAN-064), or a wizard
+        // whose draftSource names a singleton (UIS-051/MAN-056) — has no record
+        // on the pack's first visit: nothing seeds one at install, because a pack
+        // ships no rows. So the first save CREATES it and every save after
         // updates it. Without this the page would render, accept input, and have
         // nowhere to put it — which is the defect this whole path closes.
-        if (!meta && settingsForm) {
+        //
+        // A wizard is if anything the more obvious case: it exists to produce a
+        // record that did not exist before.
+        if (!meta && bindsSingleRecord) {
           if (!defaultScopeNode) {
             toast.error("This workspace has no scope to attach records to yet.");
             return;
@@ -411,7 +432,16 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
           }
           return;
         }
-        if (!meta) return;
+        if (!meta) {
+          // No record identity on the resource and no create path for this page
+          // type: a list-detail save with nothing selected, or a wizard whose
+          // draftSource names a collection that holds many rows (so "the record
+          // it edits" does not identify one). Nothing can be written, and this
+          // used to `return` in silence — the same shape of no-op as the branches
+          // above it, and the reason the whole page family is being audited.
+          toast.error("There's no record to save here yet.");
+          return;
+        }
         setFieldErrors({});
         setConflictReview(false);
         try {
@@ -442,7 +472,13 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
       remove: async (_target, resource) => {
         if (!collection) return;
         const meta = rowRef(resource);
-        if (!meta) return;
+        if (!meta) {
+          // Nothing identifies a row to delete — the resource carries no
+          // entity_id/revision. Reported rather than returned in silence, for the
+          // reason the submit path just above states.
+          toast.error("There's no record to delete here.");
+          return;
+        }
         setConflictReview(false);
         try {
           await client.packData(packId, collection).remove(meta.id, etagForRevision(meta.revision));
@@ -471,7 +507,7 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
         return { items: page.items, cursor: page.cursor };
       },
     }),
-    [client, packId, collection, settingsForm, defaultScopeNode, reload],
+    [client, packId, collection, bindsSingleRecord, defaultScopeNode, reload],
   );
 
   // A settings-form's root Binding resolves to the single RECORD it edits
@@ -483,7 +519,7 @@ export default function PackPageRoute({ api }: { api?: WaiveoApi }) {
   // the one it binds. The two are exclusive by page type, so the spread cannot
   // collide.
   const data = collection
-    ? { [collection]: settingsForm ? (rows[0] ?? {}) : rows }
+    ? { [collection]: shapeCollection(rows, bindsSingleRecord) }
     : Object.fromEntries(
         Object.entries(tileRows).map(([c, rs]) => [c, shapeCollection(rs, singletons.has(c))]),
       );

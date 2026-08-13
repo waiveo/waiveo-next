@@ -192,6 +192,74 @@ describe("actions — submit persists the RESOLVED bound record, not the whole d
   });
 });
 
+describe("wizard submit target — a declared draftSource IS the page's primary bound resource", () => {
+  // UIS-160 says `submit` persists "the bound resource `target` names", and a
+  // target-less submit means the page's primary one. For a settings-form that is
+  // `source` and for a list-detail `detail.source`; a wizard's was left
+  // undefined, so its onFinish handed the host "no idea which resource" for a
+  // page that had declared exactly which one (UIS-051).
+  //
+  // Tested here rather than through a route because this IS the renderer's fact:
+  // the pack page route happens to key off its own loaded collection and ignores
+  // `target`, so a route test would pass either way — which a mutation proved.
+  const wizardDoc = {
+    pageType: "wizard",
+    draftSource: "settings",
+    steps: [
+      {
+        id: "one",
+        titleMsg: "msg:step",
+        root: {
+          type: "button",
+          props: { labelMsg: "msg:save" },
+          on: { press: { verb: "submit" } },
+        },
+      },
+    ],
+    onFinish: { verb: "submit" },
+  };
+
+  it("is a valid document", () => {
+    expect(validatePage(wizardDoc).ok).toBe(true);
+  });
+
+  it("names draftSource as the submit target, and hands over its resolved record", async () => {
+    const user = userEvent.setup();
+    const handler: ActionHandler = { submit: vi.fn() };
+    render(
+      <PageRenderer
+        doc={wizardDoc}
+        data={{ settings: { greeting: "hello" } }}
+        messages={{ "msg:step": "Step", "msg:save": "Save" }}
+        handler={handler}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "Save" }));
+    expect(handler.submit).toHaveBeenCalledWith("settings", { greeting: "hello" });
+  });
+
+  // A wizard with NO draftSource has no primary bound resource at all — its
+  // draft is the ephemeral $ui.draft (UIS-051) — so a target-less submit must
+  // NOT invent one. Naming a collection here would give the host a save target
+  // the author never declared.
+  it("names nothing when no draftSource is declared", async () => {
+    const user = userEvent.setup();
+    const handler: ActionHandler = { submit: vi.fn() };
+    const ephemeral: Record<string, unknown> = { ...wizardDoc };
+    delete ephemeral.draftSource;
+    render(
+      <PageRenderer
+        doc={ephemeral}
+        data={{}}
+        messages={{ "msg:step": "Step", "msg:save": "Save" }}
+        handler={handler}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "Save" }));
+    expect(handler.submit).toHaveBeenCalledWith(undefined, expect.anything());
+  });
+});
+
 describe("state — a write DESCENDS through a container, never through a scalar", () => {
   // The regression: `setIn` cloned its intermediate with `{...base}`. When the
   // record legitimately held a STRING there — a `time` condition's

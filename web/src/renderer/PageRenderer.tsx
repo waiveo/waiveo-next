@@ -121,7 +121,15 @@ export function PageRenderer({
       ? String(page.source)
       : page.pageType === "list-detail" && typeof (page.detail as PageDoc)?.source === "string"
         ? String((page.detail as PageDoc).source)
-        : undefined;
+        : // A wizard's DECLARED draftSource is its page-wide bound resource
+          // (UIS-051), so a target-less `submit` in its onFinish means that, the
+          // same way one on a settings-form means `source`. Absent a draftSource
+          // the wizard edits the ephemeral `$ui.draft` and has no primary source
+          // at all — a submit there has nothing to name, which is why UIS-051
+          // routes that case through `call-action` instead.
+          page.pageType === "wizard" && typeof page.draftSource === "string"
+          ? String(page.draftSource)
+          : undefined;
 
   return (
     <LiveProvider factory={eventSourceFactory}>

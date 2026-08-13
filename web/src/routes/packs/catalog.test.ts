@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { dashboardCollections, primaryCollection, shapeCollection } from "./catalog";
+import { dashboardCollections, isWizard, primaryCollection, shapeCollection } from "./catalog";
 
 // The data-source half of catalog.ts: which pack collections a page document
 // reads. The defect these close is silent by construction — a collection the
@@ -25,6 +25,26 @@ describe("primaryCollection — the ONE page-wide bound collection", () => {
   // as "this page reads nothing".
   it("returns null for a dashboard, which binds no page-wide collection", () => {
     expect(primaryCollection(dash({ size: "small", widget: { type: "table", props: { source: "menu_items" } } }), declared)).toBeNull();
+  });
+
+  // UIS-051: a wizard's declared draftSource IS "a real backing resource the
+  // wizard progressively edits" — a page-wide bound resource in the same sense a
+  // settings-form's source is, and the thing a target-less submit means.
+  it("resolves a wizard's declared draftSource (UIS-051)", () => {
+    expect(primaryCollection({ pageType: "wizard", draftSource: "settings", steps: [] }, declared)).toBe("settings");
+  });
+
+  // …and a wizard WITHOUT one binds nothing, correctly: its steps root at the
+  // ephemeral $ui.draft, which is renderer state with no collection behind it.
+  // Returning a collection here would give it a save target the author never
+  // declared.
+  it("returns null for a wizard with no draftSource — its draft is ephemeral", () => {
+    expect(primaryCollection({ pageType: "wizard", steps: [] }, declared)).toBeNull();
+  });
+
+  it("returns null for a wizard whose draftSource names no declared collection", () => {
+    expect(primaryCollection({ pageType: "wizard", draftSource: "$ui.draft", steps: [] }, declared)).toBeNull();
+    expect(primaryCollection({ pageType: "wizard", draftSource: "nope", steps: [] }, declared)).toBeNull();
   });
 
   it("returns null for a source naming no declared collection", () => {
@@ -162,5 +182,14 @@ describe("shapeCollection — a singleton enters the namespace as the RECORD", (
     const rows = [{ name: "a" }, { name: "b" }];
     expect(shapeCollection(rows, false)).toBe(rows);
     expect(shapeCollection([], false)).toEqual([]);
+  });
+});
+
+
+describe("isWizard", () => {
+  it("recognizes only a wizard page", () => {
+    expect(isWizard({ pageType: "wizard", steps: [] })).toBe(true);
+    expect(isWizard({ pageType: "settings-form", source: "settings" })).toBe(false);
+    expect(isWizard(null)).toBe(false);
   });
 });

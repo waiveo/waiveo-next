@@ -146,6 +146,31 @@ const wizardDoc = {
   onFinish: { verb: "call-action", action: "run-backup", params: { greeting: "greeting" } },
 };
 
+// A `wizard` that DOES declare a draftSource: it progressively edits a real
+// backing resource (UIS-051), here the fixture pack's singleton `settings`
+// collection. Its onFinish is a plain target-less `submit` — the whole point of
+// declaring a draftSource is that the wizard has somewhere to save to.
+const backedWizardDoc = {
+  pageType: "wizard",
+  draftSource: "settings",
+  steps: [
+    {
+      id: "greeting",
+      titleMsg: "msg:detail.title",
+      root: {
+        type: "section",
+        props: { titleMsg: "msg:detail.title" },
+        children: [
+          { type: "text-input", bind: "greeting", props: { labelMsg: "msg:detail.name" } },
+          { type: "button", props: { labelMsg: "msg:wiz.next" }, on: { press: { verb: "wizard-next" } } },
+        ],
+      },
+    },
+    { id: "confirm", titleMsg: "msg:detail.title", root: { type: "text", props: { value: "greeting" } } },
+  ],
+  onFinish: { verb: "submit" },
+};
+
 // A conformant `dashboard` page (UIS-040) reading TWO declared collections from
 // separate tiles, plus a third tile bound to nothing fetchable. A dashboard has no
 // page-wide bound resource by design — each tile resolves its own root Binding —
@@ -799,6 +824,108 @@ describe("Pack page — safety + spec-form regressions", () => {
     // And it did NOT take the create path — that would 409 against the singleton
     // bound on a real server (MAN-056), losing the operator's edit.
     expect(creates).toBe(0);
+  });
+
+  // The other half of the wizard row. A wizard that declares a draftSource edits
+  // a REAL backing resource (UIS-051), so its onFinish `submit` must land — and
+  // it did not: `primaryCollection` resolved a collection for list-detail and
+  // settings-form only, so a wizard fell into the "Saving isn't available for
+  // this page yet" branch however it was authored.
+  //
+  // The record does not exist on a pack's first visit (nothing seeds one at
+  // install), and a wizard is if anything the most obvious create flow there is,
+  // so the first Finish must CREATE it.
+  it("a wizard with a draftSource creates its record on the first finish (UIS-051)", async () => {
+    expect(validatePage(backedWizardDoc).ok).toBe(true);
+    const successSpy = vi.spyOn(sonnerToast, "success");
+    let created: Record<string, unknown> | null = null;
+    server.use(
+      ...baseHandlers({ doc: backedWizardDoc, en: ACTION_CATALOG }),
+      // Empty: the singleton has no row yet, which is the cold-open case.
+      http.get(`${B}/data/settings`, () => dataPage([])),
+      http.post(`${B}/data/settings`, async ({ request }) => {
+        created = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(
+          { data: packRow({ entity_id: ULID_C, greeting: "Good evening" }), revision: 1 },
+          { status: 201, headers: { "Trace-Id": TRACE_ID } },
+        );
+      }),
+    );
+    renderPack();
+
+    await userEvent.type(await screen.findByLabelText("Item name"), "Good evening");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Finish" }));
+
+    await waitFor(() => expect(created).not.toBeNull());
+    const body = created as unknown as Record<string, unknown>;
+    expect(body.greeting).toBe("Good evening");
+    // Attached under the deployment's resolved root scope — a row must carry one
+    // (MAN-051), and a wizard's create has no other source for it.
+    expect(body.scope_node).toBe(ULID_ROOT);
+    expect(successSpy).toHaveBeenCalledWith("Saved changes");
+  });
+
+  // Second finish: the record exists now, so the save is an UPDATE under its
+  // If-Match rather than a second create — the same rule a settings-form follows.
+  it("a wizard with a draftSource updates the existing record under If-Match", async () => {
+    let updated: { etag: string | null; body: Record<string, unknown> } | null = null;
+    server.use(
+      ...baseHandlers({ doc: backedWizardDoc, en: ACTION_CATALOG }),
+      http.get(`${B}/data/settings`, () => dataPage([packRow({ entity_id: ULID_C, revision: 4, greeting: "Old" })])),
+      http.patch(`${B}/data/settings/${ULID_C}`, async ({ request }) => {
+        updated = {
+          etag: request.headers.get("If-Match"),
+          body: (await request.json()) as Record<string, unknown>,
+        };
+        return HttpResponse.json(
+          { data: packRow({ entity_id: ULID_C, revision: 5, greeting: "New" }), revision: 5 },
+          { headers: { "Trace-Id": TRACE_ID } },
+        );
+      }),
+    );
+    renderPack();
+
+    // The wizard opens ON the existing record — the draftSource resolved to it —
+    // so the field is seeded rather than blank. That is what "progressively
+    // edits a real backing resource" means.
+    const input = await screen.findByLabelText<HTMLInputElement>("Item name");
+    expect(input.value).toBe("Old");
+    await userEvent.clear(input);
+    await userEvent.type(input, "New");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Finish" }));
+
+    await waitFor(() => expect(updated).not.toBeNull());
+    const call = updated as unknown as { etag: string | null; body: Record<string, unknown> };
+    expect(call.body.greeting).toBe("New");
+    // The optimistic-concurrency guard every other editor carries.
+    expect(call.etag).toBe('"4"');
+  });
+
+    // A wizard whose draftSource names a collection holding MANY rows. UIS-051
+  // calls draftSource "a real backing resource the wizard progressively edits",
+  // and a whole collection is not one record — so there is nothing to save, and
+  // no create either, because a create needs to know it is making the one row.
+  //
+  // This used to be a bare `return`: the operator pressed Finish and the page
+  // said nothing at all. The same silent shape as the others in this family.
+  it("reports honestly when a wizard's draftSource names a many-row collection", async () => {
+    const doc = { ...backedWizardDoc, draftSource: "menu_items" };
+    expect(validatePage(doc).ok).toBe(true);
+    const successSpy = vi.spyOn(sonnerToast, "success");
+    const errorSpy = vi.spyOn(sonnerToast, "error");
+    server.use(
+      ...baseHandlers({ doc, en: ACTION_CATALOG }),
+      http.get(`${B}/data/menu_items`, () => dataPage([packRow({ entity_id: ULID_A }), packRow({ entity_id: ULID_B })])),
+    );
+    renderPack();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Finish" }));
+
+    await waitFor(() => expect(errorSpy).toHaveBeenCalledWith("There's no record to save here yet."));
+    expect(successSpy).not.toHaveBeenCalled();
   });
 
   // Regression: the `call-action` seam was entirely unwired on a pack page, and
