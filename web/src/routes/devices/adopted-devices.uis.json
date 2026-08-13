@@ -1,0 +1,186 @@
+{
+  "pageType": "list-detail",
+  "list": {
+    "source": "adopted",
+    "display": {
+      "type": "table",
+      "id": "Adopted devices",
+      "props": {
+        "source": "adopted",
+        "columns": [
+          {
+            "headerMsg": "msg:adopted.col.name",
+            "cell": "item.name"
+          },
+          {
+            "headerMsg": "msg:adopted.col.driver",
+            "cell": "item.driver"
+          },
+          {
+            "headerMsg": "msg:adopted.col.native",
+            "cell": "item.native_id"
+          },
+          {
+            "headerMsg": "msg:adopted.col.cadence",
+            "cell": "item.cadence_display"
+          },
+          {
+            "headerMsg": "msg:adopted.col.entities",
+            "cell": "item.entities_display"
+          }
+        ]
+      },
+      "on": {
+        "rowPress": {
+          "verb": "set",
+          "target": "$ui.selected",
+          "value": "item.id"
+        }
+      }
+    }
+  },
+  "detail": {
+    "source": "adopted[id=$ui.selected]",
+    "emptyMsg": "msg:adopted.detail.empty",
+    "root": {
+      "type": "section",
+      "props": {
+        "titleMsg": "msg:adopted.detail.title"
+      },
+      "children": [
+        {
+          "type": "text",
+          "props": {
+            "value": {
+              "compute": "msg",
+              "args": [
+                "msg:adopted.detail.lead"
+              ]
+            }
+          }
+        },
+        {
+          "type": "text-input",
+          "bind": "name",
+          "props": {
+            "labelMsg": "msg:adopted.field.name"
+          }
+        },
+        {
+          "type": "number-input",
+          "bind": "poll_cadence_seconds",
+          "props": {
+            "labelMsg": "msg:adopted.field.cadence",
+            "min": 1
+          }
+        },
+        {
+          "type": "text",
+          "props": {
+            "value": {
+              "compute": "msg",
+              "args": [
+                "msg:adopted.field.cadenceHelp"
+              ]
+            }
+          }
+        },
+        {
+          "type": "repeat",
+          "bind": "entities",
+          "props": {
+            "itemScope": "entity",
+            "emptyMsg": "msg:adopted.entities.empty",
+            "itemTemplate": {
+              "type": "section",
+              "props": {
+                "titleMsg": "msg:adopted.entities.one"
+              },
+              "children": [
+                {
+                  "type": "text",
+                  "props": {
+                    "value": "entity.device_class"
+                  }
+                },
+                {
+                  "type": "toggle",
+                  "bind": "entity.enabled",
+                  "props": {
+                    "labelMsg": "msg:adopted.entity.enabled"
+                  }
+                },
+                {
+                  "type": "toggle",
+                  "bind": "entity.hidden",
+                  "props": {
+                    "labelMsg": "msg:adopted.entity.hidden"
+                  }
+                },
+                {
+                  "type": "text-input",
+                  "bind": "entity.display_name",
+                  "props": {
+                    "labelMsg": "msg:adopted.entity.displayName"
+                  }
+                },
+                {
+                  "type": "select",
+                  "bind": "entity.category",
+                  "props": {
+                    "labelMsg": "msg:adopted.entity.category",
+                    "options": {
+                      "kind": "literal",
+                      "items": [
+                        {
+                          "value": "primary",
+                          "labelMsg": "msg:adopted.category.primary"
+                        },
+                        {
+                          "value": "diagnostic",
+                          "labelMsg": "msg:adopted.category.diagnostic"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "button",
+          "props": {
+            "labelMsg": "msg:adopted.save",
+            "style": "primary"
+          },
+          "on": {
+            "press": {
+              "verb": "submit"
+            }
+          }
+        },
+        {
+          "type": "button",
+          "props": {
+            "labelMsg": "msg:adopted.release",
+            "style": "destructive"
+          },
+          "on": {
+            "press": {
+              "verb": "delete",
+              "target": "$root",
+              "confirm": {
+                "titleMsg": "msg:adopted.release.confirm.title",
+                "bodyMsg": "msg:adopted.release.confirm.body",
+                "confirmLabelMsg": "msg:adopted.release.confirm.ok",
+                "cancelLabelMsg": "msg:adopted.release.confirm.cancel",
+                "destructive": true
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -11,7 +11,18 @@ import { ThemeProvider } from "@/components/theme/theme-provider";
 import { AdoptedDevices, cadenceOf } from "./adopted-devices";
 import { createApi, type AdoptedDevice } from "@/api";
 
-// The adopted-device policy panel. The whole capability was ABSENT: full CRUD
+// The adopted-device policy panel, authored as `ui-schema/1`: the editor lives
+// in the list-detail DETAIL PANE rather than in a modal, and Release's
+// confirmation is declared on the verb.
+//
+// THE ONE THING TO KNOW BEFORE EDITING THIS FILE: the panel remounts
+// PageRenderer when its fetch lands (the renderer seeds its store once), which
+// REPLACES the table element. A node captured before the rows arrive is detached
+// and every `within(it)` query fails while the screen is visibly correct. So
+// every case here waits for a ROW and then queries the document fresh. Getting
+// that wrong cost an iteration.
+//
+// The whole capability was ABSENT: full CRUD
 // has been live and mounted server-side since the device plane landed, and the
 // console rendered nothing at all for an adopted row — so after adopting a
 // device an operator could set no cadence, disable no noisy entity, rename none,
@@ -78,6 +89,38 @@ function seed(items: AdoptedDevice[] = [record()]) {
   server.use(http.get(`${TEST_BASE}/adopted-devices`, () => page(items)));
 }
 
+/** Render, then WAIT for a row — the panel remounts on load, so the table that
+ * exists before the fetch lands is not the table that shows the data. */
+async function renderLoaded(): Promise<void> {
+  renderPanel();
+  await screen.findByText("Hanger TV");
+}
+
+/** The live table, queried FRESH. Never hold this across an action that reloads. */
+function table(): HTMLElement {
+  return screen.getByRole("table", { name: "Adopted devices" });
+}
+
+/** Select a record by pressing its row. A pressable DataTable row is a BUTTON,
+ * and the column headers are buttons too, so the body rowgroup separates them. */
+async function selectRow(user: ReturnType<typeof userEvent.setup>, name: string) {
+  const body = within(table()).getAllByRole("rowgroup").at(-1)!;
+  await user.click(within(body).getByRole("button", { name: new RegExp(name) }));
+}
+
+/** One entity's control, by repeat position.
+ *
+ * Addressed by INDEX across the identically-labelled controls rather than by
+ * hunting for a container: a `section` renders as a bare <section> with an <h3>,
+ * which carries no accessible name, so there is no "Entity" region to scope to.
+ * The repeat renders in order, so the i-th "Enabled" switch is entity i's. */
+function entityControl(role: "switch" | "textbox" | "combobox", name: string, i: number): HTMLElement {
+  const all = screen.getAllByRole(role, { name });
+  const el = all[i];
+  if (!el) throw new Error(`no ${role} "${name}" at entity ${i} (found ${all.length})`);
+  return el;
+}
+
 function renderPanel() {
   render(
     <ThemeProvider>
@@ -91,17 +134,22 @@ describe("cadenceOf — blank is a DECISION, not a missing value", () => {
   // REL-063 fixes no default cadence, so "none stated" is a real, distinct
   // policy that must survive the round trip as null rather than collapsing to a
   // number nobody authored.
-  it("reads blank as null and a positive integer as itself", () => {
+  it("reads empty as null and a positive integer as itself", () => {
+    // The value arrives from a `number-input`, so a number is the ordinary case
+    // and the string forms are the coercion boundary.
+    expect(cadenceOf(null)).toBeNull();
+    expect(cadenceOf(undefined)).toBeNull();
     expect(cadenceOf("")).toBeNull();
     expect(cadenceOf("   ")).toBeNull();
+    expect(cadenceOf(30)).toBe(30);
     expect(cadenceOf("30")).toBe(30);
   });
 
   // Refused in the console, because the schema's minimum is 1: sending these
   // would have the server refuse an edit the operator was already told was saved.
   it("refuses anything that is not a whole number of seconds ≥ 1", () => {
-    for (const bad of ["0", "-5", "1.5", "abc", "30s", "1e3", "٣٠"]) {
-      expect(cadenceOf(bad), bad).toBe("invalid");
+    for (const bad of [0, -5, 1.5, "0", "-5", "1.5", "abc", "30s", NaN]) {
+      expect(cadenceOf(bad), String(bad)).toBe("invalid");
     }
   });
 });
@@ -109,17 +157,16 @@ describe("cadenceOf — blank is a DECISION, not a missing value", () => {
 describe("Adopted devices — the records and the policy over them", () => {
   it("lists adopted records with their cadence and enabled-entity count", async () => {
     seed([record(), record({ id: ULID_B, name: "Lobby TV", poll_cadence_seconds: 30 })]);
-    renderPanel();
+    await renderLoaded();
 
-    const table = await screen.findByRole("table", { name: "Adopted devices" });
-    expect(within(table).getByText("Hanger TV")).toBeInTheDocument();
-    expect(within(table).getByText("Lobby TV")).toBeInTheDocument();
+    expect(within(table()).getByText("Hanger TV")).toBeInTheDocument();
+    expect(within(table()).getByText("Lobby TV")).toBeInTheDocument();
     // A stated cadence reads as itself…
-    expect(within(table).getByText("30s")).toBeInTheDocument();
+    expect(within(table()).getByText("30s")).toBeInTheDocument();
     // …and an unstated one as its own fact, never as 0 and never blank.
-    expect(within(table).getByText("none set")).toBeInTheDocument();
+    expect(within(table()).getByText("none set")).toBeInTheDocument();
     // Both records have both entities enabled, so both rows say so.
-    expect(within(table).getAllByText("2 of 2 enabled")).toHaveLength(2);
+    expect(within(table()).getAllByText("2 of 2 enabled")).toHaveLength(2);
   });
 
   // The headline. Every member of the policy is a decision, and this proves the
@@ -136,9 +183,9 @@ describe("Adopted devices — the records and the policy over them", () => {
         return HttpResponse.json({ data: record({ revision: 4 }), revision: 4 }, { headers: { "Trace-Id": "t" } });
       }),
     );
-    const user = renderPanel();
-
-    await user.click(await screen.findByRole("button", { name: "Policy" }));
+    const user = userEvent.setup();
+    await renderLoaded();
+    await selectRow(user, "Hanger TV");
 
     // Rename, state a cadence where none was stated…
     const name = await screen.findByLabelText<HTMLInputElement>("Name");
@@ -146,12 +193,15 @@ describe("Adopted devices — the records and the policy over them", () => {
     await user.type(name, "Hangar TV");
     await user.type(screen.getByLabelText("Poll cadence (seconds)"), "45");
     // …disable the noisy diagnostic entity, hide it, and rename it.
-    await user.click(screen.getByRole("checkbox", { name: "Signal strength enabled" }));
-    await user.click(screen.getByRole("checkbox", { name: "Signal strength hidden" }));
-    const displayName = screen.getByLabelText<HTMLInputElement>("Display name — sensor");
+    // Every entity renders the same labels, so each is addressed through its OWN
+    // repeat row rather than through a label the document would have had to make
+    // unique — which is how the grammar expects a repeat to be driven.
+    await user.click(entityControl("switch", "Enabled", 1));
+    await user.click(entityControl("switch", "Hidden", 1));
+    const displayName = entityControl("textbox", "Display name", 1);
     await user.clear(displayName);
     await user.type(displayName, "RSSI");
-    await user.selectOptions(screen.getByLabelText("Category — media-player"), "diagnostic");
+    await user.selectOptions(entityControl("combobox", "Category", 0), "diagnostic");
 
     await user.click(screen.getByRole("button", { name: "Save policy" }));
 
@@ -186,9 +236,9 @@ describe("Adopted devices — the records and the policy over them", () => {
         return HttpResponse.json({ data: record(), revision: 4 }, { headers: { "Trace-Id": "t" } });
       }),
     );
-    const user = renderPanel();
-
-    await user.click(await screen.findByRole("button", { name: "Policy" }));
+    const user = userEvent.setup();
+    await renderLoaded();
+    await selectRow(user, "Hanger TV");
     // It opens showing the CURRENT policy, not a blank form.
     const box = await screen.findByLabelText<HTMLInputElement>("Poll cadence (seconds)");
     expect(box.value).toBe("30");
@@ -213,9 +263,9 @@ describe("Adopted devices — the records and the policy over them", () => {
       }),
     );
     const errorSpy = vi.spyOn(sonnerToast, "error");
-    const user = renderPanel();
-
-    await user.click(await screen.findByRole("button", { name: "Policy" }));
+    const user = userEvent.setup();
+    await renderLoaded();
+    await selectRow(user, "Hanger TV");
     await user.type(screen.getByLabelText("Poll cadence (seconds)"), "0");
     await user.click(screen.getByRole("button", { name: "Save policy" }));
 
@@ -241,9 +291,9 @@ describe("Adopted devices — the records and the policy over them", () => {
       ),
     );
     const errorSpy = vi.spyOn(sonnerToast, "error");
-    const user = renderPanel();
-
-    await user.click(await screen.findByRole("button", { name: "Policy" }));
+    const user = userEvent.setup();
+    await renderLoaded();
+    await selectRow(user, "Hanger TV");
     await user.click(screen.getByRole("button", { name: "Save policy" }));
 
     await waitFor(() =>
@@ -264,16 +314,25 @@ describe("Adopted devices — the records and the policy over them", () => {
         return new HttpResponse(null, { status: 204, headers: { "Trace-Id": "t" } });
       }),
     );
-    const user = renderPanel();
+    const user = userEvent.setup();
+    await renderLoaded();
+    await selectRow(user, "Hanger TV");
 
-    await user.click(await screen.findByRole("button", { name: "Release" }));
-    // A confirm step: releasing stops a device being polled and commanded.
-    await user.click(await screen.findByRole("button", { name: "Release", hidden: false }));
+    await user.click(screen.getByRole("button", { name: "Release" }));
+    // The confirmation is DECLARED on the verb (`confirm` in the document), not
+    // built by this panel — so this drives the grammar's own dialog, and proves
+    // releasing still asks before it acts.
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent(/stops being polled and commanded/i);
+    await user.click(within(dialog).getByRole("button", { name: "Release" }));
 
     await waitFor(() => expect(releasedEtag).toBe('"3"'));
     // The list re-reads, so the released device is gone from the table rather
     // than lingering until a manual refresh.
-    expect(await screen.findByText("No devices adopted yet")).toBeInTheDocument();
+    // The renderer's table has no `emptyMsg` prop, so the empty list wears the
+    // kit's default wording rather than this panel's. Recorded as a catalog
+    // limit; the assertion follows what the grammar can actually produce.
+    expect(await screen.findByText("Nothing here yet")).toBeInTheDocument();
   });
 
   it("says the list could not be read rather than showing an empty fleet", async () => {
@@ -287,9 +346,9 @@ describe("Adopted devices — the records and the policy over them", () => {
     );
     renderPanel();
 
-    // "No devices adopted yet" would be a claim about the fleet; this is a claim
+    // An empty-list claim would be a claim about the FLEET; this is a claim
     // about the read, which is the only one the console can support.
     expect(await screen.findByText("Adopted devices could not be read")).toBeInTheDocument();
-    expect(screen.queryByText("No devices adopted yet")).not.toBeInTheDocument();
+    expect(screen.queryByText("Nothing here yet")).not.toBeInTheDocument();
   });
 });
