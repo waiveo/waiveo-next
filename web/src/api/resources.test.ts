@@ -156,6 +156,48 @@ describe("automations run", () => {
   });
 });
 
+describe("automations run — dry_run", () => {
+  async function bodyOf(call: (a: ReturnType<typeof api>) => Promise<unknown>) {
+    let raw: string | null = null;
+    server.use(
+      http.post(`${TEST_BASE}/automations/${ULID_A}/run`, async ({ request }) => {
+        raw = await request.text();
+        return HttpResponse.json({ run_id: ULID_B, disposition: "ran" }, { headers: { "Trace-Id": TRACE_ID } });
+      }),
+    );
+    await call(api());
+    return raw as string | null;
+  }
+
+  it("sends dry_run only when asked", async () => {
+    expect(await bodyOf((a) => a.automations.run(ULID_A, { dryRun: true }))).toContain('"dry_run":true');
+  });
+
+  // Omitted, not sent false. The body's schema closes additionalProperties and
+  // `false` is the server's own default, so sending it would put a flag in the
+  // audit trail nobody set.
+  // No body at all, not `{}` and not `{"dry_run":false}`: `false` is the
+  // server's own default, and an empty request is what an ordinary run has
+  // always sent.
+  it("sends no body when dry_run is false or absent", async () => {
+    expect(await bodyOf((a) => a.automations.run(ULID_A))).toBe("");
+    expect(await bodyOf((a) => a.automations.run(ULID_A, { dryRun: false }))).toBe("");
+  });
+
+  // The two options are independent: asking for one must not drop the other.
+  it("carries context and dry_run together", async () => {
+    const body = await bodyOf((a) => a.automations.run(ULID_A, { context: { entity_id: ULID_B }, dryRun: true }));
+    expect(body).toContain('"dry_run":true');
+    expect(body).toContain(ULID_B);
+  });
+
+  it("still sends a context-only run with no dry_run member", async () => {
+    const body = await bodyOf((a) => a.automations.run(ULID_A, { context: { entity_id: ULID_B } }));
+    expect(body).toContain(ULID_B);
+    expect(body).not.toContain("dry_run");
+  });
+});
+
 describe("playlist item normalisation", () => {
   // An editor that lets an operator SWITCH an item's source leaves the previous
   // source's members on the object. That is not cosmetic: the server validates

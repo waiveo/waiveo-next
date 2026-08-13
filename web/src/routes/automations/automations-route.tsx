@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Braces, Play, Power } from "lucide-react";
+import { Braces, FlaskConical, Play, Power } from "lucide-react";
 import { PageRenderer, isCreateDraftUi, type ActionHandler } from "@/renderer";
 import {
   Button,
@@ -325,6 +325,18 @@ function runTargets(result: AutomationRunResult): RunTarget[] {
     for (const sc of screens) {
       out.push({ label: `${s.action} → ${sc.screen_id || "(no screen)"}`, ok: sc.ok, error: sc.error });
     }
+  }
+  // Variable writes and pack actions are EFFECTS, and were missing from this
+  // list — so a rule whose `variable_write` was refused (an invalid name, a
+  // value the store will not hold) or whose `pack_action` could not be routed
+  // (an uninstalled pack, an action not exposed to automation) reported "no
+  // device or signage effects — this run changed nothing", which was true about
+  // devices and false about the run.
+  for (const v of result.variables ?? []) {
+    out.push({ label: `${v.action} → ${v.variable}`, ok: v.ok, error: v.error });
+  }
+  for (const a of result.pack_actions ?? []) {
+    out.push({ label: `${a.action} → ${a.name}`, ok: a.ok, error: a.error });
   }
   return out;
 }
@@ -758,26 +770,36 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
 
   // ── First-party affordances for the selected automation ────────────────────
 
-  const runNow = useCallback(async () => {
+  // One implementation for both controls, because the ONLY difference between
+  // them is whether effects are withheld — and two copies would be two places
+  // for the report handling to drift.
+  const runAutomation = useCallback(async (dryRun: boolean) => {
     if (!selected) return;
     setRunning(true);
     setDisposition(null);
     try {
-      const result = await client.automations.run(selected.id);
+      const result = await client.automations.run(selected.id, dryRun ? { dryRun: true } : undefined);
       setDisposition(result);
       // What the run DID, not merely that it was allowed to start: a run whose
       // targets all refused is a failure the operator has to be told about, and it
       // comes back 200 `ran`.
       const targets = runTargets(result);
       const { label } = runStatus(result, targets);
-      if (targets.some((t) => !t.ok)) toast.error(`Run ${label.toLowerCase()}`);
-      else toast.success(`Run ${label.toLowerCase()}`);
+      // The toast says WHICH kind of run it was. A preview reporting a bare
+      // "Run ran" is the one message that could make an operator believe the
+      // hardware moved — the exact belief a preview exists to avoid.
+      const kind = result.dry_run ? "Preview" : "Run";
+      if (targets.some((t) => !t.ok)) toast.error(`${kind} ${label.toLowerCase()}`);
+      else toast.success(`${kind} ${label.toLowerCase()}`);
     } catch (err) {
-      reportProblem("Couldn't run the automation", err);
+      reportProblem(dryRun ? "Couldn't preview the automation" : "Couldn't run the automation", err);
     } finally {
       setRunning(false);
     }
   }, [client, selected]);
+
+  const runNow = useCallback(() => runAutomation(false), [runAutomation]);
+  const previewRun = useCallback(() => runAutomation(true), [runAutomation]);
 
   const toggleEnabled = useCallback(async () => {
     if (!selected) return;
@@ -998,6 +1020,16 @@ export default function AutomationsRoute({ api }: { api?: WaiveoApi }) {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h2 className="font-display text-[17px] font-semibold">Run &amp; advanced</h2>
               <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={FlaskConical}
+                  className="wv-touch"
+                  disabled={running}
+                  onClick={() => void previewRun()}
+                >
+                  Preview
+                </Button>
                 <Button
                   variant="secondary"
                   size="sm"

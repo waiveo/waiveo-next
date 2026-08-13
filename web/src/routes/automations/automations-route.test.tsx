@@ -1,3 +1,4 @@
+import { toast as sonnerToast } from "sonner";
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import { fireEvent, render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -1150,6 +1151,122 @@ describe("Automations — run / enable / create", () => {
     const badge = await screen.findByTestId("run-disposition");
     expect(badge).toHaveAttribute("data-status", "ok");
     expect(badge).toHaveTextContent("Ran");
+  });
+
+  // The T8 gap: the ONLY execution affordance was "Run now", which ACTS. To
+  // check a rule an operator had to fire it at live hardware or curl the dry
+  // run — the server has supported `dry_run` all along and the typed client
+  // could not send it.
+  it("Preview sends dry_run and the server withholds the effects it reports", async () => {
+    let body: Record<string, unknown> | null = null;
+    server.use(
+      ...liveLists([automation({ id: ULID_A, name: "Open the doors" })], HQ),
+      http.post("*/api/v1/automations/:id/run", async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(
+          {
+            run_id: ULID_C,
+            disposition: "ran",
+            dry_run: true,
+            commands: [{ entity_id: ULID_B, command: "launch", ok: true }],
+            signage: [],
+            logs: [],
+          },
+          { headers: { "Trace-Id": TRACE_ID } },
+        );
+      }),
+    );
+    const successSpy = vi.spyOn(sonnerToast, "success");
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+    await user.click(screen.getByRole("button", { name: "Preview" }));
+
+    await waitFor(() => expect(body).not.toBeNull());
+    // The toast names WHICH kind of run it was. A preview reporting a bare "Run
+    // ran" is the one message that could make an operator believe the hardware
+    // moved — the exact belief a preview exists to avoid.
+    await waitFor(() => expect(successSpy).toHaveBeenCalledWith("Preview ran"));
+    expect((body as unknown as Record<string, unknown>).dry_run).toBe(true);
+
+    // The report says the effects were withheld, so the command listed as `ok`
+    // is not read as a command that happened.
+    const report = await screen.findByTestId("run-report");
+    expect(report).toHaveTextContent(/effects withheld \(dry run\)/i);
+    expect(report).toHaveTextContent(`launch → ${ULID_B}`);
+  });
+
+  // Run now must stay an ordinary run: a body carrying `dry_run: false` would
+  // put a flag in the audit trail nobody set, and one carrying `true` would make
+  // the acting control not act.
+  it("Run now sends no dry_run at all", async () => {
+    let raw: string | null = null;
+    server.use(
+      ...liveLists([automation({ id: ULID_A, name: "Open the doors" })], HQ),
+      http.post("*/api/v1/automations/:id/run", async ({ request }) => {
+        raw = await request.text();
+        return HttpResponse.json(
+          { run_id: ULID_C, disposition: "ran", dry_run: false, commands: [], signage: [], logs: [] },
+          { headers: { "Trace-Id": TRACE_ID } },
+        );
+      }),
+    );
+    const successSpy = vi.spyOn(sonnerToast, "success");
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+    await user.click(screen.getByRole("button", { name: "Run now" }));
+
+    await waitFor(() => expect(raw).not.toBeNull());
+    expect(raw as unknown as string).not.toContain("dry_run");
+    // …and an acting run says so, never "Preview".
+    await waitFor(() => expect(successSpy).toHaveBeenCalledWith("Run ran"));
+  });
+
+  // Variable writes and pack actions are effects, and the report listed neither:
+  // a rule whose only effects were those reported "this run changed nothing",
+  // which was true about devices and false about the run.
+  it("reports a refused variable write and a refused pack action as failed targets", async () => {
+    server.use(
+      ...liveLists([automation({ id: ULID_A, name: "Open the doors" })], HQ),
+      http.post("*/api/v1/automations/:id/run", () =>
+        HttpResponse.json(
+          {
+            run_id: ULID_C,
+            disposition: "ran",
+            dry_run: false,
+            commands: [],
+            signage: [],
+            variables: [
+              { action: "variable_write", variable: "guest_mode", ok: true, value: true },
+              { action: "variable_write", variable: "Store Open", ok: false, error: "invalid name" },
+            ],
+            pack_actions: [
+              { action: "pack_action", name: "acme/x.run-backup", ok: false, error: "no pack `acme/x` is installed" },
+            ],
+            logs: [],
+          },
+          { headers: { "Trace-Id": TRACE_ID } },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderRoute();
+    await openBuilder(user, "Open the doors");
+    await user.click(screen.getByRole("button", { name: "Run now" }));
+
+    const report = await screen.findByTestId("run-report");
+    // Never "changed nothing" — three effects were attempted.
+    expect(report).not.toHaveTextContent(/changed nothing/i);
+    expect(within(report).getAllByTestId("run-target")).toHaveLength(3);
+    expect(report).toHaveTextContent("variable_write → Store Open");
+    expect(report).toHaveTextContent("invalid name");
+    expect(report).toHaveTextContent("pack_action → acme/x.run-backup");
+    expect(report).toHaveTextContent("no pack `acme/x` is installed");
+
+    // And the chip grades the whole run on them: two of three refused.
+    const badge = screen.getByTestId("run-disposition");
+    expect(badge).toHaveAttribute("data-status", "warn");
   });
 
   it("a run whose every target REFUSED is not a success — the chip errors and the refusals are shown", async () => {

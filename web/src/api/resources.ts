@@ -352,8 +352,21 @@ export interface AutomationVersion {
 }
 
 export interface AutomationsModule extends ResourceModule<Automation, AutomationCreate, AutomationUpdate> {
-  /** Run one automation now; returns its mode-evaluation disposition. */
-  run(id: string, context?: Record<string, unknown>): Promise<AutomationRunResult>;
+  /** Run one automation now; returns its mode-evaluation disposition and the
+   * effect report.
+   *
+   * `dryRun` evaluates the rule to completion — conditions, branch selection,
+   * target resolution — and WITHHOLDS every effect: no device command is
+   * dispatched, no screen override written, no variable saved, no pack action
+   * queued. The response reports exactly what a real run would have done.
+   *
+   * An options object rather than a second positional, because `context` and
+   * `dryRun` are independent and a caller wanting only the second should not
+   * have to pass `undefined` for the first. */
+  run(
+    id: string,
+    options?: { context?: Record<string, unknown>; dryRun?: boolean },
+  ): Promise<AutomationRunResult>;
   /** The definitions this rule used to have, newest first (RUL-394). */
   versions(id: string): Promise<AutomationVersion[]>;
   /** Put an earlier definition back, as a NEW update (RUL-394).
@@ -367,10 +380,17 @@ function automationsModule(client: ApiClient): AutomationsModule {
   const base = crud<Automation, AutomationCreate, AutomationUpdate>(client, "/automations");
   return {
     ...base,
-    run(id, context) {
+    run(id, options) {
+      // Members are OMITTED rather than sent at their defaults: the body's
+      // schema closes additionalProperties, and a `dry_run: false` on every
+      // ordinary run would put a flag in the audit trail nobody set. An absent
+      // options object sends no body at all, exactly as before.
+      const body: Record<string, unknown> = {};
+      if (options?.context !== undefined) body.context = options.context;
+      if (options?.dryRun === true) body.dry_run = true;
       return client.action<AutomationRunResult>(
         `/automations/${encodeURIComponent(id)}/run`,
-        context ? { context } : undefined,
+        Object.keys(body).length > 0 ? body : undefined,
       );
     },
     async versions(id) {
