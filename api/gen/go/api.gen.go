@@ -472,6 +472,27 @@ func (e MarketplaceRefTrustChannel) Valid() bool {
 	}
 }
 
+// Defines values for PackLogAppendRequestLevel.
+const (
+	PackLogAppendRequestLevelError PackLogAppendRequestLevel = "error"
+	PackLogAppendRequestLevelInfo  PackLogAppendRequestLevel = "info"
+	PackLogAppendRequestLevelWarn  PackLogAppendRequestLevel = "warn"
+)
+
+// Valid indicates whether the value is a known member of the PackLogAppendRequestLevel enum.
+func (e PackLogAppendRequestLevel) Valid() bool {
+	switch e {
+	case PackLogAppendRequestLevelError:
+		return true
+	case PackLogAppendRequestLevelInfo:
+		return true
+	case PackLogAppendRequestLevelWarn:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PairingCodeResultRedemptionMode.
 const (
 	PairingCodeResultRedemptionModeOneTime PairingCodeResultRedemptionMode = "one-time"
@@ -1907,6 +1928,16 @@ type PackInvocationResultRequest struct {
 	// Result The action's return value, for a successful invocation.
 	Result *map[string]interface{} `json:"result,omitempty"`
 }
+
+// PackLogAppendRequest One log line from an extension. Deliberately carries no source: the platform attributes it to the calling pack.
+type PackLogAppendRequest struct {
+	// Level Defaults to `info` when absent or unrecognised.
+	Level   *PackLogAppendRequestLevel `json:"level,omitempty"`
+	Message string                     `json:"message"`
+}
+
+// PackLogAppendRequestLevel Defaults to `info` when absent or unrecognised.
+type PackLogAppendRequestLevel string
 
 // PairingCodeResult A freshly minted pairing grant, bound to this screen row (`relay/1` REL-121a) and to the one relay that may redeem it (REL-121b), plus the human-enterable pairing code (`player/1` PLY-024) an operator reads onto the screen. Exactly one of `pairing_code` and `code_unavailable_reason` is present: the grant is minted, bound, and delivered either way, and the reason describes only why the code itself could not be formed for the relay it is bound to. A request with no relay to bind to at all is refused before anything is minted (`503`).
 type PairingCodeResult struct {
@@ -3454,6 +3485,12 @@ type ReportPackInvocationResultParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// AppendPackLogParams defines parameters for AppendPackLog.
+type AppendPackLogParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // ListPacksParams defines parameters for ListPacks.
 type ListPacksParams struct {
 	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
@@ -4101,6 +4138,9 @@ type SendEntityCommandJSONRequestBody = EntityCommandRequest
 // ReportPackInvocationResultJSONRequestBody defines body for ReportPackInvocationResult for application/json ContentType.
 type ReportPackInvocationResultJSONRequestBody = PackInvocationResultRequest
 
+// AppendPackLogJSONRequestBody defines body for AppendPackLog for application/json ContentType.
+type AppendPackLogJSONRequestBody = PackLogAppendRequest
+
 // InstallPackJSONRequestBody defines body for InstallPack for application/json ContentType.
 type InstallPackJSONRequestBody = MarketplaceRef
 
@@ -4426,6 +4466,11 @@ type ClientInterface interface {
 	ReportPackInvocationResultWithBody(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	ReportPackInvocationResult(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, body ReportPackInvocationResultJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AppendPackLogWithBody request with any body
+	AppendPackLogWithBody(ctx context.Context, params *AppendPackLogParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	AppendPackLog(ctx context.Context, params *AppendPackLogParams, body AppendPackLogJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListPacks request
 	ListPacks(ctx context.Context, params *ListPacksParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5482,6 +5527,30 @@ func (c *Client) ReportPackInvocationResultWithBody(ctx context.Context, invocat
 
 func (c *Client) ReportPackInvocationResult(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, body ReportPackInvocationResultJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewReportPackInvocationResultRequest(c.Server, invocationId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) AppendPackLogWithBody(ctx context.Context, params *AppendPackLogParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAppendPackLogRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) AppendPackLog(ctx context.Context, params *AppendPackLogParams, body AppendPackLogJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAppendPackLogRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -9538,6 +9607,61 @@ func NewReportPackInvocationResultRequestWithBody(server string, invocationId st
 	}
 
 	operationPath := fmt.Sprintf("/pack-invocations/%s/result", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewAppendPackLogRequest calls the generic AppendPackLog builder with application/json body
+func NewAppendPackLogRequest(server string, params *AppendPackLogParams, body AppendPackLogJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewAppendPackLogRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewAppendPackLogRequestWithBody generates requests for AppendPackLog with any type of body
+func NewAppendPackLogRequestWithBody(server string, params *AppendPackLogParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/pack-logs")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -14110,6 +14234,11 @@ type ClientWithResponsesInterface interface {
 
 	ReportPackInvocationResultWithResponse(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, body ReportPackInvocationResultJSONRequestBody, reqEditors ...RequestEditorFn) (*ReportPackInvocationResultResponse, error)
 
+	// AppendPackLogWithBodyWithResponse request with any body
+	AppendPackLogWithBodyWithResponse(ctx context.Context, params *AppendPackLogParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AppendPackLogResponse, error)
+
+	AppendPackLogWithResponse(ctx context.Context, params *AppendPackLogParams, body AppendPackLogJSONRequestBody, reqEditors ...RequestEditorFn) (*AppendPackLogResponse, error)
+
 	// ListPacksWithResponse request
 	ListPacksWithResponse(ctx context.Context, params *ListPacksParams, reqEditors ...RequestEditorFn) (*ListPacksResponse, error)
 
@@ -15980,6 +16109,38 @@ func (r ReportPackInvocationResultResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r ReportPackInvocationResultResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type AppendPackLogResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r AppendPackLogResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r AppendPackLogResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r AppendPackLogResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -18745,6 +18906,23 @@ func (c *ClientWithResponses) ReportPackInvocationResultWithResponse(ctx context
 		return nil, err
 	}
 	return ParseReportPackInvocationResultResponse(rsp)
+}
+
+// AppendPackLogWithBodyWithResponse request with arbitrary body returning *AppendPackLogResponse
+func (c *ClientWithResponses) AppendPackLogWithBodyWithResponse(ctx context.Context, params *AppendPackLogParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AppendPackLogResponse, error) {
+	rsp, err := c.AppendPackLogWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAppendPackLogResponse(rsp)
+}
+
+func (c *ClientWithResponses) AppendPackLogWithResponse(ctx context.Context, params *AppendPackLogParams, body AppendPackLogJSONRequestBody, reqEditors ...RequestEditorFn) (*AppendPackLogResponse, error) {
+	rsp, err := c.AppendPackLog(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAppendPackLogResponse(rsp)
 }
 
 // ListPacksWithResponse request returning *ListPacksResponse
@@ -21943,6 +22121,46 @@ func ParseReportPackInvocationResultResponse(rsp *http.Response) (*ReportPackInv
 			return nil, err
 		}
 		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseAppendPackLogResponse parses an HTTP response from a AppendPackLogWithResponse call
+func ParseAppendPackLogResponse(rsp *http.Response) (*AppendPackLogResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &AppendPackLogResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
 		var dest UnprocessableContent

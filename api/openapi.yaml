@@ -1870,6 +1870,42 @@ paths:
         "422":
           $ref: "#/components/responses/UnprocessableContent"
 
+  /pack-logs:
+    post:
+      operationId: appendPackLog
+      summary: Record a log line from the calling extension
+      description: >-
+        An installed extension reports its own activity into the platform log an
+        operator already reads at `/platform-logs`, where it is filterable by
+        source like any other component.
+
+        The line's SOURCE is the caller's own pack, resolved from its principal
+        and never taken from the request. A pack that could attribute a line to
+        another pack — or to the platform — would turn the log an operator uses
+        to decide what went wrong into a place an extension can lie.
+
+        `level` is taken rather than inferred from the words: the sender knows
+        whether it is reporting a failure, and classifying by text would let an
+        error hide as an info line simply by avoiding the word.
+      tags: [packs]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PackLogAppendRequest"
+      responses:
+        "204":
+          description: The line was recorded.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+
   /pack-invocations/pending:
     get:
       operationId: leasePackInvocation
@@ -4979,6 +5015,22 @@ components:
           description: >-
             Whether redemption will apply SEC-053's revoke-everything default,
             so the admin sees which of the two behaviours their issuance chose.
+    PackLogAppendRequest:
+      type: object
+      description: >-
+        One log line from an extension. Deliberately carries no source: the
+        platform attributes it to the calling pack.
+      required: [message]
+      additionalProperties: false
+      properties:
+        message:
+          type: string
+          minLength: 1
+        level:
+          type: string
+          enum: [error, warn, info]
+          description: Defaults to `info` when absent or unrecognised.
+
     PackActionInvokeRequest:
       type: object
       description: The action's parameters, validated against its `paramsSchema` (MAN-100).

@@ -703,6 +703,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/pack-logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record a log line from the calling extension
+         * @description An installed extension reports its own activity into the platform log an operator already reads at `/platform-logs`, where it is filterable by source like any other component.
+         *     The line's SOURCE is the caller's own pack, resolved from its principal and never taken from the request. A pack that could attribute a line to another pack — or to the platform — would turn the log an operator uses to decide what went wrong into a place an extension can lie.
+         *     `level` is taken rather than inferred from the words: the sender knows whether it is reporting a failure, and classifying by text would let an error hide as an info line simply by avoiding the word.
+         */
+        post: operations["appendPackLog"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/pack-invocations/pending": {
         parameters: {
             query?: never;
@@ -1896,6 +1918,15 @@ export interface components {
             expires_at_ms: number;
             /** @description Whether redemption will apply SEC-053's revoke-everything default, so the admin sees which of the two behaviours their issuance chose. */
             sessions_revoked_on_redemption: boolean;
+        };
+        /** @description One log line from an extension. Deliberately carries no source: the platform attributes it to the calling pack. */
+        PackLogAppendRequest: {
+            message: string;
+            /**
+             * @description Defaults to `info` when absent or unrecognised.
+             * @enum {string}
+             */
+            level?: "error" | "warn" | "info";
         };
         /** @description The action's parameters, validated against its `paramsSchema` (MAN-100). */
         PackActionInvokeRequest: {
@@ -4655,6 +4686,34 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            422: components["responses"]["UnprocessableContent"];
+        };
+    };
+    appendPackLog: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PackLogAppendRequest"];
+            };
+        };
+        responses: {
+            /** @description The line was recorded. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             422: components["responses"]["UnprocessableContent"];
         };
     };

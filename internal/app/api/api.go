@@ -500,6 +500,7 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// pack's work.
 	rt.HandleFunc("POST "+apiPrefix+"/packs/{publisher}/{name}/actions/{action}", srv.withDeclaredMembers("PackActionInvokeRequest", srv.invokePackAction))
 	rt.HandleFunc("GET "+apiPrefix+"/pack-invocations/pending", srv.leasePackInvocation)
+	rt.HandleFunc("POST "+apiPrefix+"/pack-logs", srv.withDeclaredMembers("PackLogAppendRequest", srv.appendPackLog))
 	rt.HandleFunc("POST "+apiPrefix+"/pack-invocations/{invocation_id}/result", srv.withDeclaredMembers("PackInvocationResultRequest", srv.reportPackInvocationResult))
 }
 

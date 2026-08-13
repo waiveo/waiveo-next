@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/auth"
+	"github.com/maaxton/waiveo-next/internal/app/platformlog"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/manifest"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
@@ -270,3 +271,58 @@ func invocationBody(inv store.PackInvocation) map[string]any {
 	}
 	return out
 }
+
+// appendPackLog records a line from the calling extension into the platform log.
+//
+// The pack's own stderr already reaches the host's log, inherited by the
+// supervisor — but undifferentiated, and only for a pack the host started. This
+// gives an extension a way to say something ATTRIBUTED, which is what makes
+// `/platform-logs?source=pack:waiveo/backups` a question an operator can ask.
+func (srv *server) appendPackLog(w http.ResponseWriter, r *http.Request) {
+	packID, ok := srv.callerPackID(w, r)
+	if !ok {
+		return
+	}
+	if srv.platformLog == nil {
+		// The degrade-not-404 posture the read side takes: a deployment that
+		// captures nothing accepts the line and drops it, rather than making a
+		// pack's logging fail on a box configured without a buffer.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	sink, ok := srv.platformLog.(interface {
+		Append(source string, level platformlog.Level, message string)
+	})
+	if !ok {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	raw, ok := readBody(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Message string `json:"message"`
+		Level   string `json:"level"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		srv.packProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed",
+			"The request body could not be parsed.")
+		return
+	}
+	if body.Message == "" {
+		srv.packProblem(w, r, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "Validation Failed",
+			"`message` is required.")
+		return
+	}
+
+	// The source is the CALLER's pack, never anything in the body.
+	sink.Append(packLogSource(packID), platformlog.Level(body.Level), body.Message)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// packLogSource is how an extension's lines are attributed in the platform log.
+// Namespaced so a pack can never collide with a first-party component's source,
+// and so `source=pack:...` reads as one obvious filter to an operator.
+func packLogSource(packID string) string { return "pack:" + packID }

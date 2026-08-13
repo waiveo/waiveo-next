@@ -347,3 +347,59 @@ func sortStrings(s []string) {
 		}
 	}
 }
+
+// Append records a line whose SOURCE the caller vouches for, rather than one
+// parsed out of the text.
+//
+// Write is for a process's own stdout/stderr, where the component prefix is
+// written by the same binary that owns the buffer, so parsing it is safe. This
+// is for lines that arrive from OUTSIDE — an extension reporting its own
+// activity — and there the source must come from the authenticated identity of
+// whoever sent it. A pack that could write its own prefix could attribute a line
+// to another pack, or to the platform, which turns the log an operator uses to
+// decide what went wrong into a thing an extension can lie in.
+//
+// Level is taken rather than classified for the same reason: the sender knows
+// whether it is reporting a failure, and inferring it from the words would let a
+// pack's error hide as an info line simply by not using the word "error".
+func (b *Buffer) Append(source string, level Level, message string) {
+	message = strings.TrimRight(strings.TrimSpace(message), "\r")
+	if message == "" {
+		return
+	}
+	if len(message) > maxLineBytes {
+		message = message[:maxLineBytes] + truncationMarker
+	}
+	if source == "" {
+		source = DefaultSource
+	}
+	if !validLevel(level) {
+		level = LevelInfo
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.ring[b.next] = Record{
+		Seq: b.total + 1, TSMs: b.nowMs(), Level: level,
+		Source: source, Message: message,
+		// Raw carries the source explicitly, so a reader scanning raw lines sees
+		// the same attribution the Source field carries rather than an
+		// unattributed sentence.
+		Raw: source + ": " + message,
+	}
+	b.next = (b.next + 1) % len(b.ring)
+	b.total++
+}
+
+// validLevel reports whether l is one of the three published levels. An
+// unrecognised level is coerced to info rather than refused: a log line is
+// diagnostic, and dropping one because its level was misspelled loses the
+// message an operator needed while reporting nothing about why.
+func validLevel(l Level) bool {
+	for _, known := range Levels {
+		if l == known {
+			return true
+		}
+	}
+	return false
+}
