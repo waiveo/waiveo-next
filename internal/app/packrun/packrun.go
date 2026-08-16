@@ -41,6 +41,7 @@ import (
 
 	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/app/store"
+	"github.com/maaxton/waiveo-next/internal/manifest"
 	"github.com/maaxton/waiveo-next/internal/packhost"
 )
 
@@ -198,21 +199,42 @@ func (h *Host) Materialize(ctx context.Context, p store.Pack, rt runtimeBlock) (
 
 // argvFor resolves the manifest's `runtime.exec` against the materialised path.
 //
-// `exec[0]` is resolved RELATIVE TO THE PACK'S OWN DIRECTORY when it is not an
-// absolute path, so a manifest saying `["./bin/pack"]` runs the binary this host
+// MAN-065's contract shape is an argv in which the placeholder `$entry` appears
+// exactly once, substituted here with the host's local path to the stored file.
+// The substitution is WHOLE-TOKEN: a token that IS `$entry` becomes the
+// materialised path, and a token merely containing it (`--path=$entry`) is left
+// alone — manifest validation refuses that shape, and substring rewriting here
+// would make this host accept what the validator tells publishers is invalid.
+//
+// Two lenient shapes survive for stored manifests the validator never saw:
+// an EMPTY exec runs the entry itself (the natural default for a compiled
+// binary), and an exec with NO placeholder keeps the older behaviour —
+// `exec[0]` resolved RELATIVE TO THE PACK'S OWN DIRECTORY when it is not
+// absolute, so a manifest saying `["./bin/pack"]` runs the binary this host
 // just wrote rather than whatever `./bin/pack` means in the feeder's working
 // directory. An absolute exec[0] is passed through: a pack declaring
 // `/usr/bin/env` has said something explicit, and this host is not a sandbox
-// (the owner settled that) — but it is still resolved through the same safety
-// check for the RELATIVE case, which is the one this package creates.
+// (the owner settled that).
+//
+// More than one `$entry` is refused rather than substituted N times: the
+// contract says exactly once, and a duplicated placeholder is a manifest this
+// host cannot claim to understand.
 func (h *Host) argvFor(p store.Pack, rt runtimeBlock, entryPath string) ([]string, error) {
 	if len(rt.Exec) == 0 {
-		// The natural default for a compiled binary: run the entry itself. A
-		// pack that needs an interpreter or flags says so in `exec`.
 		return []string{entryPath}, nil
 	}
 	argv := append([]string(nil), rt.Exec...)
-	if !filepath.IsAbs(argv[0]) {
+	placeholders := 0
+	for i, tok := range argv {
+		if tok == manifest.RuntimeEntryPlaceholder {
+			placeholders++
+			argv[i] = entryPath
+		}
+	}
+	if placeholders > 1 {
+		return nil, fmt.Errorf("packrun: %s: runtime.exec declares $entry %d times, want exactly once (MAN-065)", p.ID, placeholders)
+	}
+	if placeholders == 0 && !filepath.IsAbs(argv[0]) {
 		if !entryPathIsSafe(argv[0]) {
 			return nil, fmt.Errorf("packrun: %s: runtime.exec[0] %q is not a safe relative path", p.ID, argv[0])
 		}

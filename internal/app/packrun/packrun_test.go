@@ -251,6 +251,79 @@ func TestADeclaredExecIsResolvedAgainstThePacksOwnDirectory(t *testing.T) {
 	}
 }
 
+// MAN-065's canonical shape: the `$entry` token is substituted with the path of
+// the file this host just materialised. Asserted against the argv the STARTER
+// received AND the file on disk, because "substituted with something plausible"
+// and "substituted with the materialised entry" differ only there.
+func TestTheEntryPlaceholderIsSubstitutedWithTheMaterialisedPath(t *testing.T) {
+	st := &fakeStore{
+		packs: []store.Pack{pack("acme/menu", "1.0.0", true, map[string]any{
+			"entry": "bin/pack", "exec": []string{"$entry", "--serve"},
+		})},
+		files: map[string][]byte{"acme/menu\x00bin/pack": []byte("payload")},
+	}
+	sp := &fakeStarter{}
+	h := host(t, st, sp)
+
+	results, err := h.StartAll(context.Background())
+	if err != nil || len(results) != 1 || results[0].Err != nil {
+		t.Fatalf("StartAll: %v %+v", err, results)
+	}
+	argv := sp.specs[0].Argv
+	if len(argv) != 2 || argv[1] != "--serve" {
+		t.Fatalf("argv = %v, want [<entry path> --serve]", argv)
+	}
+	if argv[0] == "$entry" || !filepath.IsAbs(argv[0]) {
+		t.Fatalf("argv[0] = %q, want the placeholder replaced with the materialised path", argv[0])
+	}
+	body, err := os.ReadFile(argv[0])
+	if err != nil || string(body) != "payload" {
+		t.Fatalf("argv[0] must point at the materialised entry: read %q, err %v", body, err)
+	}
+}
+
+// The placeholder is substituted as a WHOLE token and not inside one — the
+// validator refuses `--path=$entry`, and this host must not quietly accept the
+// shape the validator tells publishers is invalid.
+func TestAnEmbeddedEntryPlaceholderIsNotSubstituted(t *testing.T) {
+	st := &fakeStore{
+		packs: []store.Pack{pack("acme/menu", "1.0.0", true, map[string]any{
+			"entry": "bin/pack", "exec": []string{"/usr/bin/env", "--path=$entry"},
+		})},
+		files: map[string][]byte{"acme/menu\x00bin/pack": []byte("payload")},
+	}
+	sp := &fakeStarter{}
+	h := host(t, st, sp)
+
+	if _, err := h.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	if argv := sp.specs[0].Argv; argv[1] != "--path=$entry" {
+		t.Fatalf("argv = %v, want the embedded placeholder left verbatim", argv)
+	}
+}
+
+// A duplicated `$entry` is refused rather than substituted twice: the contract
+// says exactly once, and this host does not run manifests it half-understands.
+func TestADuplicatedEntryPlaceholderIsRefused(t *testing.T) {
+	st := &fakeStore{
+		packs: []store.Pack{pack("acme/menu", "1.0.0", true, map[string]any{
+			"entry": "bin/pack", "exec": []string{"$entry", "$entry"},
+		})},
+		files: map[string][]byte{"acme/menu\x00bin/pack": []byte("payload")},
+	}
+	sp := &fakeStarter{}
+	h := host(t, st, sp)
+
+	results, _ := h.StartAll(context.Background())
+	if len(results) != 1 || results[0].Err == nil {
+		t.Fatalf("a duplicated $entry was not refused: %+v", results)
+	}
+	if len(sp.specs) != 0 {
+		t.Fatalf("it was started anyway: %+v", sp.specs)
+	}
+}
+
 // --- what must be SKIPPED, and why each is different -------------------------
 
 func TestDisabledAndDeclarativePacksAreNotStarted(t *testing.T) {
