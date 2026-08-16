@@ -595,3 +595,232 @@ func TestHandlePacketReportsInstanceIdentity(t *testing.T) {
 		}
 	}
 }
+
+// --- G3: same-datagram PTR→SRV→A resolution -----------------------------------
+
+// packMsg packs one mDNS response with the given answer/additional sections.
+func packMsg(t *testing.T, answers, additionals []dnsmessage.Resource) []byte {
+	t.Helper()
+	msg := dnsmessage.Message{
+		Header:      dnsmessage.Header{Response: true},
+		Answers:     answers,
+		Additionals: additionals,
+	}
+	data, err := msg.Pack()
+	if err != nil {
+		t.Fatalf("pack message: %v", err)
+	}
+	return data
+}
+
+func ptrRec(owner, target string) dnsmessage.Resource {
+	return dnsmessage.Resource{
+		Header: dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName(owner), Type: dnsmessage.TypePTR, Class: dnsmessage.ClassINET, TTL: 120},
+		Body:   &dnsmessage.PTRResource{PTR: dnsmessage.MustNewName(target)},
+	}
+}
+
+func srvRec(owner, target string, port uint16) dnsmessage.Resource {
+	return dnsmessage.Resource{
+		Header: dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName(owner), Type: dnsmessage.TypeSRV, Class: dnsmessage.ClassINET, TTL: 120},
+		Body:   &dnsmessage.SRVResource{Target: dnsmessage.MustNewName(target), Port: port},
+	}
+}
+
+func aRec(owner string, ip [4]byte) dnsmessage.Resource {
+	return dnsmessage.Resource{
+		Header: dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName(owner), Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 120},
+		Body:   &dnsmessage.AResource{A: ip},
+	}
+}
+
+func aaaaRec(owner string, ip [16]byte) dnsmessage.Resource {
+	return dnsmessage.Resource{
+		Header: dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName(owner), Type: dnsmessage.TypeAAAA, Class: dnsmessage.ClassINET, TTL: 120},
+		Body:   &dnsmessage.AAAAResource{AAAA: ip},
+	}
+}
+
+func newResolvingListener(t *testing.T) (*Listener, *deviceplane.Store) {
+	t.Helper()
+	store := deviceplane.NewStore("relay-1")
+	l, err := New(Config{
+		Watches:   []Watch{watchFor(mustMatch(t, `{"mdns":"_waiveo._tcp"}`))},
+		Store:     store,
+		NowMillis: func() int64 { return 1000 },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return l, store
+}
+
+func soleCandidate(t *testing.T, store *deviceplane.Store) deviceplane.Candidate {
+	t.Helper()
+	cands := store.Report().Body.Candidates
+	if len(cands) != 1 {
+		t.Fatalf("candidates = %d, want 1", len(cands))
+	}
+	return cands[0]
+}
+
+// The RFC 6763 §12.1 bundle — PTR in answers, SRV+A in additionals — resolves
+// to a candidate an operator can read (Name) and this relay can DRIVE
+// (Address). Before this, an mDNS candidate carried no address at all:
+// listable, adoptable, undrivable forever.
+func TestAnnouncementResolvesAddressAndName(t *testing.T) {
+	l, store := newResolvingListener(t)
+	l.handlePacket(packMsg(t,
+		[]dnsmessage.Resource{ptrRec("_waiveo._tcp.local.", "Living Room._waiveo._tcp.local.")},
+		[]dnsmessage.Resource{
+			srvRec("Living Room._waiveo._tcp.local.", "tv.local.", 7423),
+			aRec("tv.local.", [4]byte{192, 168, 0, 9}),
+		},
+	))
+	c := soleCandidate(t, store)
+	if c.Address != "192.168.0.9:7423" {
+		t.Errorf("Address = %q, want the SRV+A resolution", c.Address)
+	}
+	if c.Name != "Living Room" {
+		t.Errorf("Name = %q, want the instance label", c.Name)
+	}
+	if c.NativeID != "Living Room._waiveo._tcp.local" {
+		t.Errorf("NativeID = %q, want the full instance name", c.NativeID)
+	}
+}
+
+// Correlation folds case at BOTH hops (RFC 1035 §2.3.3): the SRV owner and
+// the A owner may be spelled in any case relative to the names that point at
+// them.
+func TestResolutionFoldsCaseAcrossHops(t *testing.T) {
+	l, store := newResolvingListener(t)
+	l.handlePacket(packMsg(t,
+		[]dnsmessage.Resource{ptrRec("_waiveo._tcp.local.", "TV._waiveo._tcp.local.")},
+		[]dnsmessage.Resource{
+			srvRec("tv._WAIVEO._tcp.LOCAL.", "Host.Local.", 8080),
+			aRec("HOST.local.", [4]byte{192, 168, 0, 7}),
+		},
+	))
+	if c := soleCandidate(t, store); c.Address != "192.168.0.7:8080" {
+		t.Errorf("Address = %q, want case-folded correlation to resolve", c.Address)
+	}
+}
+
+// A PTR-only packet still observes the sighting — unlocated, named from the
+// instance — and a LATER full announcement fills the address in. The reverse
+// order must not lose it: a thin re-sighting keeps the learned address
+// (the store's orKeep, exercised here through the lane end to end).
+func TestThinAndFullPacketsConverge(t *testing.T) {
+	l, store := newResolvingListener(t)
+	thin := buildPTRPacket(t, "_waiveo._tcp.local.", "TV._waiveo._tcp.local.")
+	full := packMsg(t,
+		[]dnsmessage.Resource{ptrRec("_waiveo._tcp.local.", "TV._waiveo._tcp.local.")},
+		[]dnsmessage.Resource{
+			srvRec("TV._waiveo._tcp.local.", "tv.local.", 9),
+			aRec("tv.local.", [4]byte{192, 168, 0, 5}),
+		},
+	)
+
+	l.handlePacket(thin)
+	if c := soleCandidate(t, store); c.Address != "" || c.Name != "TV" {
+		t.Fatalf("thin sighting = {addr %q, name %q}, want unlocated but named", c.Address, c.Name)
+	}
+	l.handlePacket(full)
+	if c := soleCandidate(t, store); c.Address != "192.168.0.5:9" {
+		t.Fatalf("full announcement did not fill the address in: %q", c.Address)
+	}
+	l.handlePacket(thin)
+	if c := soleCandidate(t, store); c.Address != "192.168.0.5:9" {
+		t.Fatalf("a thin re-sighting erased the learned address: %q", c.Address)
+	}
+}
+
+// Missing links yield no address rather than a guessed one: an SRV whose
+// target has no address record, and an SRV port of zero (RFC 2782's
+// "service decidedly not available"), both leave the sighting unlocated.
+func TestUnresolvableAnnouncementsStayUnlocated(t *testing.T) {
+	cases := []struct {
+		name string
+		pkt  func(t *testing.T) []byte
+	}{
+		{"srv without address record", func(t *testing.T) []byte {
+			return packMsg(t,
+				[]dnsmessage.Resource{ptrRec("_waiveo._tcp.local.", "TV._waiveo._tcp.local.")},
+				[]dnsmessage.Resource{srvRec("TV._waiveo._tcp.local.", "tv.local.", 9)},
+			)
+		}},
+		{"port zero", func(t *testing.T) []byte {
+			return packMsg(t,
+				[]dnsmessage.Resource{ptrRec("_waiveo._tcp.local.", "TV._waiveo._tcp.local.")},
+				[]dnsmessage.Resource{
+					srvRec("TV._waiveo._tcp.local.", "tv.local.", 0),
+					aRec("tv.local.", [4]byte{192, 168, 0, 5}),
+				},
+			)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l, store := newResolvingListener(t)
+			l.handlePacket(tc.pkt(t))
+			if c := soleCandidate(t, store); c.Address != "" {
+				t.Errorf("Address = %q, want unlocated", c.Address)
+			}
+		})
+	}
+}
+
+// IPv4 wins over IPv6 for one host — every consumer dials plain ip:port on a
+// v4 lab LAN — but a v6-only host still resolves (bracketed, per
+// net.JoinHostPort), so a v6-only device is not silently unlocatable.
+func TestIPv4PreferredIPv6Fallback(t *testing.T) {
+	v6 := [16]byte{0xfd, 0} // fd00::… — ULA, private, dialable
+	v6[15] = 9
+
+	l, store := newResolvingListener(t)
+	l.handlePacket(packMsg(t,
+		[]dnsmessage.Resource{ptrRec("_waiveo._tcp.local.", "TV._waiveo._tcp.local.")},
+		[]dnsmessage.Resource{
+			srvRec("TV._waiveo._tcp.local.", "tv.local.", 9),
+			aaaaRec("tv.local.", v6),
+			aRec("tv.local.", [4]byte{192, 168, 0, 5}),
+		},
+	))
+	if c := soleCandidate(t, store); c.Address != "192.168.0.5:9" {
+		t.Errorf("Address = %q, want the v4 endpoint preferred over v6", c.Address)
+	}
+
+	l2, store2 := newResolvingListener(t)
+	l2.handlePacket(packMsg(t,
+		[]dnsmessage.Resource{ptrRec("_waiveo._tcp.local.", "TV._waiveo._tcp.local.")},
+		[]dnsmessage.Resource{
+			srvRec("TV._waiveo._tcp.local.", "tv.local.", 9),
+			aaaaRec("tv.local.", v6),
+		},
+	))
+	if c := soleCandidate(t, store2); c.Address != "[fd00::9]:9" {
+		t.Errorf("Address = %q, want the bracketed v6 fallback", c.Address)
+	}
+}
+
+// instanceLabel and unescapeDNSLabel are pure and carry the sharp edges:
+// suffix mismatch yields NO label (never a wrong one), presentation escapes
+// decode, and a decode yielding invalid UTF-8 is refused so the store's
+// poison rule can never drop the whole sighting over a name.
+func TestInstanceLabel(t *testing.T) {
+	cases := []struct {
+		instance, owner, want string
+	}{
+		{"Living Room._waiveo._tcp.local.", "_waiveo._tcp.local.", "Living Room"},
+		{"TV\\.2._waiveo._tcp.local.", "_waiveo._tcp.local.", "TV.2"},
+		{"Caf\\195\\169._waiveo._tcp.local.", "_waiveo._tcp.local.", "Café"},
+		{"TV._other._tcp.local.", "_waiveo._tcp.local.", ""},
+		{"Bad\\255Name._waiveo._tcp.local.", "_waiveo._tcp.local.", ""},
+		{"_waiveo._tcp.local.", "_waiveo._tcp.local.", ""},
+	}
+	for _, tc := range cases {
+		if got := instanceLabel(tc.instance, tc.owner); got != tc.want {
+			t.Errorf("instanceLabel(%q, %q) = %q, want %q", tc.instance, tc.owner, got, tc.want)
+		}
+	}
+}

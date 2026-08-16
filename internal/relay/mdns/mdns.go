@@ -34,9 +34,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/net/ipv4"
@@ -231,6 +234,11 @@ func (l *Listener) Run(ctx context.Context) error {
 // truncated/inconsistent section — causes the whole packet to be silently
 // skipped: malformed input on a public multicast group is expected traffic,
 // never a reason to panic or abort the listener.
+//
+// Answers and additionals are processed as ONE record set: an RFC 6763
+// announcement puts the PTR in answers and the SRV/A records that make it
+// USABLE in additionals, so resolution (below) must correlate across the
+// section split, and a PTR in either section is a sighting either way.
 func (l *Listener) handlePacket(data []byte) {
 	var p dnsmessage.Parser
 	if _, err := p.Start(data); err != nil {
@@ -251,9 +259,68 @@ func (l *Listener) handlePacket(data []byte) {
 		return
 	}
 
-	atMs := l.nowMillis()
-	l.observePTRRecords(answers, atMs)
-	l.observePTRRecords(additionals, atMs)
+	records := append(answers, additionals...)
+	l.observePTRRecords(records, l.nowMillis(), srvTargets(records), hostAddrs(records))
+}
+
+// srvEndpoint is one SRV record's RDATA half this lane consumes: where the
+// service instance says it can be reached (RFC 2782 via RFC 6763 §5).
+type srvEndpoint struct {
+	target string // host name, as unpacked (root-dot-terminated)
+	port   uint16
+}
+
+// srvTargets indexes every SRV record by its (case-folded) owner name — the
+// service INSTANCE it locates. First record wins a duplicate owner: one
+// packet stating two endpoints for one instance is already malformed, and
+// deterministic beats last-writer.
+func srvTargets(resources []dnsmessage.Resource) map[string]srvEndpoint {
+	var out map[string]srvEndpoint
+	for _, r := range resources {
+		if r.Header.Type != dnsmessage.TypeSRV {
+			continue
+		}
+		srv, ok := r.Body.(*dnsmessage.SRVResource)
+		if !ok {
+			continue
+		}
+		key := strings.ToLower(r.Header.Name.String())
+		if out == nil {
+			out = map[string]srvEndpoint{}
+		}
+		if _, dup := out[key]; !dup {
+			out[key] = srvEndpoint{target: srv.Target.String(), port: srv.Port}
+		}
+	}
+	return out
+}
+
+// hostAddrs indexes every A/AAAA record by its (case-folded) owner host name.
+// An IPv4 address wins over an IPv6 one for the same host — every consumer of
+// a candidate address on this relay (the ECP controller, the pollers) dials
+// plain ip:port on the LAN, and the lab fleet is v4 — while first-A-wins keeps
+// duplicates deterministic.
+func hostAddrs(resources []dnsmessage.Resource) map[string]string {
+	var out map[string]string
+	put := func(key, ip string, preferred bool) {
+		if out == nil {
+			out = map[string]string{}
+		}
+		if cur, ok := out[key]; ok && !(preferred && strings.Contains(cur, ":")) {
+			return // keep the incumbent unless a v4 is displacing a v6
+		}
+		out[key] = ip
+	}
+	for _, r := range resources {
+		key := strings.ToLower(r.Header.Name.String())
+		switch body := r.Body.(type) {
+		case *dnsmessage.AResource:
+			put(key, netip.AddrFrom4(body.A).String(), true)
+		case *dnsmessage.AAAAResource:
+			put(key, netip.AddrFrom16(body.AAAA).String(), false)
+		}
+	}
+	return out
 }
 
 // observePTRRecords Observes every PTR resource in resources whose owner
@@ -269,7 +336,17 @@ func (l *Listener) handlePacket(data []byte) {
 // would collapse into a single candidate that neither could be listed or
 // addressed as (REL-111a, REL-153). A PTR carrying no instance name identifies
 // no device and is skipped.
-func (l *Listener) observePTRRecords(resources []dnsmessage.Resource, atMs int64) {
+//
+// A sighting is RESOLVED when the same datagram carries the instance's SRV
+// (endpoint) and that target host's A/AAAA record — the shape RFC 6763 §12.1
+// tells responders to bundle — yielding the Address every consumer needs to
+// DRIVE the device and the human instance label as its Name. A thinner packet
+// (PTR alone, or SRV with no address record) still observes the sighting,
+// just unlocated: the store's orKeep merge fills the gap when a fuller
+// announcement arrives, and never lets a thin one erase what a full one
+// taught. Without any of this, an mDNS candidate carried no address at all —
+// listable, adoptable, and undrivable forever.
+func (l *Listener) observePTRRecords(resources []dnsmessage.Resource, atMs int64, srv map[string]srvEndpoint, addrs map[string]string) {
 	for _, r := range resources {
 		if r.Header.Type != dnsmessage.TypePTR {
 			continue
@@ -283,19 +360,82 @@ func (l *Listener) observePTRRecords(resources []dnsmessage.Resource, atMs int64
 		if !ok {
 			continue
 		}
-		instance := strings.TrimSuffix(ptr.PTR.String(), ".")
+		wireInstance := ptr.PTR.String()
+		instance := strings.TrimSuffix(wireInstance, ".")
 		if instance == "" {
 			continue
 		}
+
+		address := ""
+		if ep, ok := srv[strings.ToLower(wireInstance)]; ok && ep.port != 0 {
+			if ip, ok := addrs[strings.ToLower(ep.target)]; ok {
+				address = net.JoinHostPort(ip, strconv.Itoa(int(ep.port)))
+			}
+		}
+
 		l.store.Observe(deviceplane.Observation{
 			Match:       w.Match,
 			Provenance:  deviceplane.ProvenanceDiscovered,
 			Driver:      w.Driver,
 			NativeID:    instance,
 			DeviceClass: w.DeviceClass,
+			Name:        instanceLabel(wireInstance, r.Header.Name.String()),
+			Address:     address,
 			Entities:    w.Entities,
 		}, atMs)
 	}
+}
+
+// instanceLabel extracts the human display label from a full service-instance
+// name: "Living Room TV._waiveo._tcp.local." → "Living Room TV". The service
+// suffix is the PTR's own owner name, trimmed case-insensitively; a name that
+// does not end with it (a nonconforming responder) yields no label rather
+// than a wrong one. DNS presentation escapes (`\.` for a dot inside the
+// label, `\\`, and `\DDD` byte escapes) are decoded so the operator reads
+// the name the device announced, not its wire spelling — and a decode that
+// yields invalid UTF-8 (the escapes admit arbitrary bytes, and the bytes are
+// attacker-chosen multicast) yields no label instead: the store poisons the
+// WHOLE observation on an invalid field, and a device must not lose its
+// sighting to its own weird name.
+func instanceLabel(instance, serviceOwner string) string {
+	inst := strings.TrimSuffix(instance, ".")
+	suffix := "." + strings.TrimSuffix(serviceOwner, ".")
+	label := trimSuffixFold(inst, suffix)
+	if label == inst || label == "" {
+		return ""
+	}
+	decoded := unescapeDNSLabel(label)
+	if !utf8.ValidString(decoded) {
+		return ""
+	}
+	return decoded
+}
+
+// unescapeDNSLabel decodes RFC 1035 presentation-format escapes.
+func unescapeDNSLabel(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c != '\\' || i+1 >= len(s) {
+			b.WriteByte(c)
+			continue
+		}
+		next := s[i+1]
+		if next >= '0' && next <= '9' && i+3 < len(s) {
+			if n, err := strconv.Atoi(s[i+1 : i+4]); err == nil && n <= 255 {
+				b.WriteByte(byte(n))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(next)
+		i++
+	}
+	return b.String()
 }
 
 // normalizeServiceType converts a PTR record's owner name as unpacked off
