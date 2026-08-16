@@ -206,19 +206,22 @@ func (h *Host) Materialize(ctx context.Context, p store.Pack, rt runtimeBlock) (
 // alone — manifest validation refuses that shape, and substring rewriting here
 // would make this host accept what the validator tells publishers is invalid.
 //
-// Two lenient shapes survive for stored manifests the validator never saw:
-// an EMPTY exec runs the entry itself (the natural default for a compiled
-// binary), and an exec with NO placeholder keeps the older behaviour —
-// `exec[0]` resolved RELATIVE TO THE PACK'S OWN DIRECTORY when it is not
-// absolute, so a manifest saying `["./bin/pack"]` runs the binary this host
-// just wrote rather than whatever `./bin/pack` means in the feeder's working
-// directory. An absolute exec[0] is passed through: a pack declaring
-// `/usr/bin/env` has said something explicit, and this host is not a sandbox
-// (the owner settled that).
+// An EMPTY exec survives leniently for stored manifests the validator never
+// saw: it runs the entry itself, the natural default for a compiled binary.
 //
 // More than one `$entry` is refused rather than substituted N times: the
 // contract says exactly once, and a duplicated placeholder is a manifest this
 // host cannot claim to understand.
+//
+// A RELATIVE exec[0] that is not the placeholder — `["./wrapper", "$entry"]`,
+// which the validator accepts, since MAN-065 constrains only the placeholder
+// count — is resolved RELATIVE TO THE PACK'S OWN DIRECTORY, behind the same
+// safety check the entry path gets. This must not depend on where the
+// placeholder sits: unresolved, `./wrapper` would mean whatever it means in
+// the feeder's working directory, a bare word would become a PATH lookup, and
+// a `..` token would walk out of the pack's directory entirely. An absolute
+// exec[0] is passed through: a pack declaring `/usr/bin/env` has said
+// something explicit, and this host is not a sandbox (the owner settled that).
 func (h *Host) argvFor(p store.Pack, rt runtimeBlock, entryPath string) ([]string, error) {
 	if len(rt.Exec) == 0 {
 		return []string{entryPath}, nil
@@ -234,7 +237,7 @@ func (h *Host) argvFor(p store.Pack, rt runtimeBlock, entryPath string) ([]strin
 	if placeholders > 1 {
 		return nil, fmt.Errorf("packrun: %s: runtime.exec declares $entry %d times, want exactly once (MAN-065)", p.ID, placeholders)
 	}
-	if placeholders == 0 && !filepath.IsAbs(argv[0]) {
+	if rt.Exec[0] != manifest.RuntimeEntryPlaceholder && !filepath.IsAbs(argv[0]) {
 		if !entryPathIsSafe(argv[0]) {
 			return nil, fmt.Errorf("packrun: %s: runtime.exec[0] %q is not a safe relative path", p.ID, argv[0])
 		}

@@ -391,3 +391,38 @@ func TestVerifyCommitmentRejectsEmptyInput(t *testing.T) {
 		t.Fatal("VerifyCommitment(commitment, spki, <empty SPKI>) = true, want false")
 	}
 }
+
+// The serving certificate must satisfy a STOCK verifying client dialing
+// loopback — the pack path. Go consults SANs only (the CommonName is never
+// read), so a SAN-less leaf is an anchor that can never verify no matter how
+// correctly the host hands it over; that is exactly how the first SAN-less
+// generation shipped, because every earlier consumer pinned the SPKI and no
+// verifying client existed. VerifyHostname is the check crypto/tls itself runs
+// during a handshake, so this pins the production anchor SHAPE, not a fixture's.
+func TestGenSelfSignedVerifiesAtLoopbackNames(t *testing.T) {
+	cert, err := x509.ParseCertificate(certDER(t))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, name := range []string{"127.0.0.1", "::1", "localhost"} {
+		if err := cert.VerifyHostname(name); err != nil {
+			t.Errorf("VerifyHostname(%q) = %v, want the loopback names a pack dials to verify", name, err)
+		}
+	}
+}
+
+// A feeder bound to a specific address hands packs THAT address, so the
+// certificate must cover it too — IP and DNS shapes both.
+func TestGenSelfSignedForCoversTheBoundHost(t *testing.T) {
+	certPEM, _ := GenSelfSignedFor("192.0.2.7", "waiveo.local")
+	block, _ := pem.Decode(certPEM)
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, name := range []string{"192.0.2.7", "waiveo.local", "127.0.0.1", "localhost"} {
+		if err := cert.VerifyHostname(name); err != nil {
+			t.Errorf("VerifyHostname(%q) = %v, want covered", name, err)
+		}
+	}
+}

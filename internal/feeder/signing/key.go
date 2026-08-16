@@ -80,10 +80,15 @@ func (id *Identity) TLSKeyPEM() []byte {
 // same dir returns the SAME public key as the first — the persistence
 // property a relay's enrollment-anchored trust depends on.
 //
+// serveHosts are the non-loopback names the serving certificate must also
+// cover — the feeder's configured listen host, when it binds a specific
+// address. Loopback is always covered: pack processes are exec'd children on
+// this host and verify the leaf with stock X.509, where names are what count.
+//
 // dir is created (mode 0700) if it does not already exist. Private key
 // material is written with 0600 permissions; the (non-secret) TLS
 // certificate is written 0644.
-func LoadOrCreate(dir string) (*Identity, error) {
+func LoadOrCreate(dir string, serveHosts ...string) (*Identity, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("signing: create dir %s: %w", dir, err)
 	}
@@ -93,17 +98,17 @@ func LoadOrCreate(dir string) (*Identity, error) {
 	certKeyPath := filepath.Join(dir, tlsKeyFile)
 
 	if fileExists(signingKeyPath) {
-		return load(signingKeyPath, certPath, certKeyPath)
+		return load(signingKeyPath, certPath, certKeyPath, serveHosts)
 	}
 
-	return create(signingKeyPath, certPath, certKeyPath)
+	return create(signingKeyPath, certPath, certKeyPath, serveHosts)
 }
 
 // create generates a fresh signing keypair and self-signed TLS cert,
 // persists all three files, and returns the resulting Identity.
-func create(signingKeyPath, certPath, certKeyPath string) (*Identity, error) {
+func create(signingKeyPath, certPath, certKeyPath string, serveHosts []string) (*Identity, error) {
 	pub, priv := signhash.GenerateKey()
-	certPEM, certKeyPEM := tlsboot.GenSelfSigned()
+	certPEM, certKeyPEM := tlsboot.GenSelfSignedFor(serveHosts...)
 
 	signingKeyDER, err := x509.MarshalPKCS8PrivateKey(priv)
 	if err != nil {
@@ -130,7 +135,7 @@ func create(signingKeyPath, certPath, certKeyPath string) (*Identity, error) {
 }
 
 // load reads a previously-persisted identity back from disk.
-func load(signingKeyPath, certPath, certKeyPath string) (*Identity, error) {
+func load(signingKeyPath, certPath, certKeyPath string, serveHosts []string) (*Identity, error) {
 	priv, err := readSigningKey(signingKeyPath)
 	if err != nil {
 		return nil, err
@@ -145,21 +150,22 @@ func load(signingKeyPath, certPath, certKeyPath string) (*Identity, error) {
 		return nil, fmt.Errorf("signing: read TLS key %s: %w", certKeyPath, err)
 	}
 
-	// Self-heal a stale serving leaf. An identity persisted before the
-	// browser-compat fix carries an Ed25519 TLS leaf (the old GenSelfSigned
-	// output), which Chrome/Safari/Firefox and macOS LibreSSL curl reject at
-	// handshake — leaving the embedded-SPA browser->feeder HTTPS path
-	// unreachable. .dev/feeder-keys is designed to persist and the Makefile's
-	// dev-up never clears it (unlike .dev/relay-identity), so without this a
-	// dev checkout that ran the stack once pre-fix would reload and re-serve
-	// the stale leaf forever. Reissue an ECDSA P-256 serving cert in place when
-	// the on-disk leaf is not already one, persisting it so the next restart
-	// reuses it. Only the TLS-serving cert/key change; the enrollment-anchored
-	// Ed25519 SIGNING key (read above) is untouched — and the relay re-pins the
-	// leaf's SPKI at its next (fresh-per-dev-up) enrollment, so reissuing here
-	// breaks no commitment.
-	if !servingLeafIsECDSAP256(certPEM) {
-		certPEM, certKeyPEM, err = reissueTLSLeaf(certPath, certKeyPath)
+	// Self-heal a stale serving leaf. Two generations of staleness exist: an
+	// identity persisted before the browser-compat fix carries an Ed25519 leaf
+	// (browsers reject it at handshake), and one persisted before the pack
+	// runtime carries a SAN-less leaf — pack processes verify the leaf with
+	// stock X.509, where a name match is required and the CommonName is never
+	// consulted, so a SAN-less anchor can never verify no matter how correctly
+	// it is handed over. The identity dir is designed to persist and dev-up
+	// never clears it, so without this a deployment that ever ran a pre-fix
+	// build would re-serve the stale leaf forever. Reissue in place when the
+	// on-disk leaf is stale on either axis, or when the configured listen host
+	// changed and the leaf does not cover it. Only the TLS-serving cert/key
+	// change; the enrollment-anchored Ed25519 SIGNING key (read above) is
+	// untouched — and the relay re-pins the leaf's SPKI at its next
+	// (fresh-per-dev-up) enrollment, so reissuing here breaks no commitment.
+	if !servingLeafIsECDSAP256(certPEM) || !servingLeafCoversHosts(certPEM, serveHosts) {
+		certPEM, certKeyPEM, err = reissueTLSLeaf(certPath, certKeyPath, serveHosts)
 		if err != nil {
 			return nil, err
 		}
@@ -200,13 +206,38 @@ func servingLeafIsECDSAP256(certPEM []byte) bool {
 	return pub.Curve == elliptic.P256()
 }
 
+// servingLeafCoversHosts reports whether the PEM-encoded certificate covers
+// loopback and every host in serveHosts, by the same name-matching rules a
+// verifying client applies (VerifyHostname — SANs, never the CommonName). It
+// returns false for anything that does not parse, failing closed toward a
+// reissue.
+func servingLeafCoversHosts(certPEM []byte, serveHosts []string) bool {
+	block, _ := pem.Decode(certPEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return false
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return false
+	}
+	for _, h := range append([]string{"127.0.0.1", "::1", "localhost"}, serveHosts...) {
+		if h == "" {
+			continue
+		}
+		if cert.VerifyHostname(h) != nil {
+			return false
+		}
+	}
+	return true
+}
+
 // reissueTLSLeaf mints a fresh ECDSA P-256 self-signed serving cert and
 // overwrites the persisted TLS cert/key files (never the signing key),
 // returning the new PEM material. Used by load() to repair a stale serving
 // leaf in place so the fix takes effect on the next feeder start without a
 // manual key-directory wipe.
-func reissueTLSLeaf(certPath, certKeyPath string) (certPEM, certKeyPEM []byte, err error) {
-	certPEM, certKeyPEM = tlsboot.GenSelfSigned()
+func reissueTLSLeaf(certPath, certKeyPath string, serveHosts []string) (certPEM, certKeyPEM []byte, err error) {
+	certPEM, certKeyPEM = tlsboot.GenSelfSignedFor(serveHosts...)
 	if err := os.WriteFile(certKeyPath, certKeyPEM, 0o600); err != nil {
 		return nil, nil, fmt.Errorf("signing: reissue TLS key %s: %w", certKeyPath, err)
 	}

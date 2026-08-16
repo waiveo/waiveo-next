@@ -328,3 +328,111 @@ func repoRootForTest() (string, error) {
 	}
 	return strings.TrimSpace(string(out)), nil
 }
+
+// A SAN-less P-256 leaf is the SECOND stale generation: minted by the
+// GenSelfSigned that predates the pack runtime, it satisfies every SPKI-pinning
+// consumer and can never satisfy a stock verifying client — a pack — because
+// Go matches SANs and never reads the CommonName. load() must reissue it the
+// same way it reissues an Ed25519 leaf, preserving the enrollment-anchored
+// signing key, and persist the result.
+func TestLoadSelfHealsSANLessServingLeaf(t *testing.T) {
+	dir := t.TempDir()
+	signingPub := seedEd25519SigningKey(t, filepath.Join(dir, signingKeyFile))
+	seedSANLessP256TLSLeaf(t, filepath.Join(dir, tlsCertFile), filepath.Join(dir, tlsKeyFile))
+
+	id, err := LoadOrCreate(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreate(%q) error: %v", dir, err)
+	}
+	if !id.SigningPub().Equal(signingPub) {
+		t.Fatalf("self-heal changed the signing pub: got %x, want seeded %x", id.SigningPub(), signingPub)
+	}
+	assertServingLeafCoversLoopback(t, id)
+
+	reloaded, err := LoadOrCreate(dir)
+	if err != nil {
+		t.Fatalf("second LoadOrCreate(%q) error: %v", dir, err)
+	}
+	if !bytes.Equal(id.TLSCertPEM(), reloaded.TLSCertPEM()) {
+		t.Fatal("healed TLS leaf not persisted: second load re-minted a different cert")
+	}
+}
+
+// A leaf that covers loopback but NOT a newly-configured specific listen host
+// is stale for that configuration and must be reissued to cover both.
+func TestLoadReissuesWhenTheConfiguredHostIsNotCovered(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := LoadOrCreate(dir); err != nil {
+		t.Fatalf("first LoadOrCreate: %v", err)
+	}
+
+	id, err := LoadOrCreate(dir, "192.0.2.9")
+	if err != nil {
+		t.Fatalf("LoadOrCreate with host: %v", err)
+	}
+	leaf := parseLeaf(t, id)
+	if err := leaf.VerifyHostname("192.0.2.9"); err != nil {
+		t.Fatalf("reissued leaf does not cover the configured host: %v", err)
+	}
+	assertServingLeafCoversLoopback(t, id)
+}
+
+func assertServingLeafCoversLoopback(t *testing.T, id *Identity) {
+	t.Helper()
+	leaf := parseLeaf(t, id)
+	for _, name := range []string{"127.0.0.1", "::1", "localhost"} {
+		if err := leaf.VerifyHostname(name); err != nil {
+			t.Fatalf("serving leaf does not cover %q: %v — a pack's stock verification fails at handshake", name, err)
+		}
+	}
+}
+
+func parseLeaf(t *testing.T, id *Identity) *x509.Certificate {
+	t.Helper()
+	block, _ := pem.Decode(id.TLSCertPEM())
+	if block == nil || block.Type != "CERTIFICATE" {
+		t.Fatalf("TLSCertPEM did not decode to a CERTIFICATE block")
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse serving leaf: %v", err)
+	}
+	return leaf
+}
+
+// seedSANLessP256TLSLeaf writes the pre-pack-runtime GenSelfSigned output: an
+// ECDSA P-256 self-signed leaf with a CommonName and no SANs at all.
+func seedSANLessP256TLSLeaf(t *testing.T, certPath, keyPath string) {
+	t.Helper()
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate p256 tls key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(2),
+		Subject:               pkix.Name{CommonName: "waiveo-relay"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().AddDate(10, 0, 0),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("create p256 tls cert: %v", err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		t.Fatalf("marshal p256 tls key: %v", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
+		t.Fatalf("write seeded cert: %v", err)
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatalf("write seeded key: %v", err)
+	}
+}

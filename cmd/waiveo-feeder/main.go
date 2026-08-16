@@ -23,6 +23,7 @@ import (
 	"image/png"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -627,7 +628,11 @@ func main() {
 	// invalidates every relay pin already issued. A mint that scrolls past in a
 	// boot log looks exactly like a load.
 	minting := !signing.HasIdentity(cfg.identityDir)
-	id, err := signing.LoadOrCreate(cfg.identityDir)
+	// The serving certificate must cover the names its verifying consumers dial.
+	// Pack processes verify it with stock X.509 (names, never the CommonName),
+	// and dial loopback — always covered — or the specific bound host when the
+	// feeder listens on one.
+	id, err := signing.LoadOrCreate(cfg.identityDir, certServeHost(cfg.listen))
 	if err != nil {
 		log.Fatalf("waiveo-feeder: load identity: %v", err)
 	}
@@ -1429,20 +1434,6 @@ func main() {
 		log.Fatalf("waiveo-feeder: start the webhook delivery loop: %v", err)
 	}
 
-	// The extensions themselves. Until this call existed a pack could be
-	// installed, served, invoked, updated and hot-swap-tested — and never RUN:
-	// `internal/packhost` was imported by no binary. This is the join.
-	// The address a pack redeems its grant at and then leases work from. Derived
-	// from this process's OWN listen address rather than a constant: a feeder on
-	// a non-default port would otherwise hand every pack an address nothing is
-	// listening on.
-	// This process's own TLS certificate is the anchor a pack verifies against:
-	// it is SELF-SIGNED, so the leaf IS the trust root, and without handing it
-	// over every pack author's first move is InsecureSkipVerify.
-	packSupervisor := startPacks(context.Background(), st, authStore, cfg.packBinDir,
-		"https://"+cfg.listen, id.TLSCertPEM())
-	defer packSupervisor.StopAll()
-
 	// The embedded console SPA, served at "/" for every non-API path. The API,
 	// event-stream, content-origin, telemetry and enrollment/handshake routes are
 	// registered as more specific patterns, so http.ServeMux keeps them ahead of
@@ -1560,8 +1551,34 @@ func main() {
 	}
 
 	log.Printf("waiveo-feeder listening (HTTPS) on %s (content base %s)", cfg.listen, cfg.contentBaseURL)
+	// The listener is created HERE, synchronously, rather than inside
+	// ListenAndServeTLS in the goroutine: everything started after this line may
+	// assume the socket accepts connections (the kernel queues them until Serve
+	// runs). The pack supervisor depends on that ordering for its life.
+	ln, err := net.Listen("tcp", cfg.listen)
+	if err != nil {
+		log.Fatalf("waiveo-feeder: listen on %s: %v", cfg.listen, err)
+	}
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- server.ListenAndServeTLS("", "") }()
+	go func() { serveErr <- server.ServeTLS(ln, "", "") }()
+
+	// The extensions themselves — started only now, AFTER the listener exists.
+	// A pack's first act is to redeem its grant at this process's own API, and
+	// redemption is the readiness signal the supervisor waits on: packs started
+	// before the socket accepts would burn their entire readiness budget dialing
+	// a port nobody is bound to and come up dead on every boot.
+	// The address a pack redeems its grant at and then leases work from is
+	// derived from this process's OWN listen address rather than a constant — a
+	// feeder on a non-default port would otherwise hand every pack an address
+	// nothing is listening on — with a wildcard host rewritten to loopback,
+	// because a pack is an exec'd child on this host and "every interface" is
+	// not a dialable name.
+	// This process's own TLS certificate is the anchor a pack verifies against:
+	// it is SELF-SIGNED, so the leaf IS the trust root, and without handing it
+	// over every pack author's first move is InsecureSkipVerify.
+	packSupervisor := startPacks(context.Background(), st, authStore, cfg.packBinDir,
+		"https://"+packDialAddr(cfg.listen), id.TLSCertPEM())
+	defer packSupervisor.StopAll()
 
 	// Keep retiring expired rows while the process runs. The boot sweeps above
 	// cover everything that expired while the box was off; this covers a box that
@@ -2039,6 +2056,39 @@ func placeholderImage() []byte {
 // the packs that do work are the ones an operator is relying on. Failures are
 // per-pack and named; a pack's own condition after it starts shows up on the
 // pack-health surface instead.
+// packDialAddr derives the address a pack process dials from this feeder's own
+// listen address. A wildcard or empty host means "every interface", which a
+// child process on this host reaches at loopback; a specific host means the
+// feeder listens ONLY there — loopback would refuse — so the pack dials the
+// bound address itself. An unparseable listen string is handed through
+// untouched: the listener already bound to it, so it means something.
+func packDialAddr(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return listen
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		return net.JoinHostPort("127.0.0.1", port)
+	}
+	return listen
+}
+
+// certServeHost is packDialAddr's certificate-side twin: the one non-loopback
+// name the serving certificate must also cover, or "" when loopback (always
+// covered) is all a pack will ever dial.
+func certServeHost(listen string) string {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return ""
+	}
+	switch host {
+	case "", "0.0.0.0", "::", "127.0.0.1", "::1", "localhost":
+		return ""
+	}
+	return host
+}
+
 func startPacks(ctx context.Context, st *store.Store, authStore *auth.Store, binDir, apiBaseURL string, apiCACertPEM []byte) *packhost.Supervisor {
 	sup := packhost.New(authStore, packhost.Options{})
 	// The scope a pack principal's role binding is issued at (SEC-037). The

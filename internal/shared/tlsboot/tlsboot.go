@@ -58,6 +58,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"net"
 	"time"
 )
 
@@ -86,6 +87,20 @@ const commitmentBytes = 16
 // cert is actually served — the curve change is safe by design and touches no
 // verification path.
 func GenSelfSigned() (certPEM, keyPEM []byte) {
+	return GenSelfSignedFor()
+}
+
+// GenSelfSignedFor is GenSelfSigned with additional subject-alternative names.
+//
+// Loopback names are ALWAYS present: the first consumer to do full stock X.509
+// verification against this cert — a pack process, which is an exec'd child on
+// the same host by construction — dials loopback, and Go requires a SAN match
+// (the CommonName is never consulted). Every earlier consumer pinned the SPKI
+// and never read the names, which is how a SAN-less leaf survived until a
+// verifying client existed. Extra hosts cover a feeder bound to a specific
+// address, where loopback is not reachable and the pack must dial the bound
+// address itself.
+func GenSelfSignedFor(hosts ...string) (certPEM, keyPEM []byte) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		// crypto/rand.Reader failing is a fatal environment problem
@@ -100,14 +115,29 @@ func GenSelfSigned() (certPEM, keyPEM []byte) {
 		panic("tlsboot: GenSelfSigned: generate serial: " + err.Error())
 	}
 
+	dnsNames := []string{"localhost"}
+	ipAddrs := []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback}
+	for _, h := range hosts {
+		if h == "" {
+			continue
+		}
+		if ip := net.ParseIP(h); ip != nil {
+			ipAddrs = append(ipAddrs, ip)
+		} else {
+			dnsNames = append(dnsNames, h)
+		}
+	}
+
 	now := time.Now()
 	template := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
 			CommonName: "waiveo-relay",
 		},
-		NotBefore: now.Add(-time.Hour),
-		NotAfter:  now.AddDate(10, 0, 0),
+		DNSNames:    dnsNames,
+		IPAddresses: ipAddrs,
+		NotBefore:   now.Add(-time.Hour),
+		NotAfter:    now.AddDate(10, 0, 0),
 		// CA-shaped on purpose: the Roku TLS stack (firmware 15.2.4, first-photon
 		// hardware run) refuses a CA:FALSE self-signed cert as its own trust
 		// anchor with "unsuitable certificate purpose" — it does not implement

@@ -303,6 +303,51 @@ func TestAnEmbeddedEntryPlaceholderIsNotSubstituted(t *testing.T) {
 	}
 }
 
+// A relative wrapper AHEAD of the placeholder — a shape the validator accepts —
+// still gets the pack-dir resolution and the safety check. Where the
+// placeholder sits must not decide whether exec[0] is guarded: unresolved,
+// `./wrapper` would mean the feeder's working directory.
+func TestARelativeWrapperBeforeThePlaceholderIsStillResolvedAndGuarded(t *testing.T) {
+	st := &fakeStore{
+		packs: []store.Pack{pack("acme/menu", "1.0.0", true, map[string]any{
+			"entry": "bin/pack", "exec": []string{"bin/wrapper", "$entry"},
+		})},
+		files: map[string][]byte{"acme/menu\x00bin/pack": []byte("payload")},
+	}
+	sp := &fakeStarter{}
+	h := host(t, st, sp)
+
+	if _, err := h.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	argv := sp.specs[0].Argv
+	if !filepath.IsAbs(argv[0]) || !strings.Contains(argv[0], "acme__menu") {
+		t.Fatalf("argv[0] = %q, want the wrapper resolved into the pack's directory", argv[0])
+	}
+	if argv[1] == "$entry" || !filepath.IsAbs(argv[1]) {
+		t.Fatalf("argv[1] = %q, want the placeholder substituted alongside the resolved wrapper", argv[1])
+	}
+}
+
+func TestAnEscapingWrapperBeforeThePlaceholderIsRefused(t *testing.T) {
+	st := &fakeStore{
+		packs: []store.Pack{pack("acme/menu", "1.0.0", true, map[string]any{
+			"entry": "bin/pack", "exec": []string{"../outside", "$entry"},
+		})},
+		files: map[string][]byte{"acme/menu\x00bin/pack": []byte("payload")},
+	}
+	sp := &fakeStarter{}
+	h := host(t, st, sp)
+
+	results, _ := h.StartAll(context.Background())
+	if len(results) != 1 || results[0].Err == nil {
+		t.Fatalf("an escaping exec[0] beside a $entry was not refused: %+v", results)
+	}
+	if len(sp.specs) != 0 {
+		t.Fatalf("it was started anyway: %+v", sp.specs)
+	}
+}
+
 // A duplicated `$entry` is refused rather than substituted twice: the contract
 // says exactly once, and this host does not run manifests it half-understands.
 func TestADuplicatedEntryPlaceholderIsRefused(t *testing.T) {

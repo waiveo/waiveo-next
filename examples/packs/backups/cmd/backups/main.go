@@ -44,6 +44,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -134,22 +135,44 @@ type session struct {
 	PackID string `json:"pack_id"`
 }
 
+// redeem exchanges the one-time code for the pack's session.
+//
+// TRANSPORT errors are retried for a bounded window: the host starts packs as
+// soon as its listener exists, and a slow boot can still lose the race between
+// this dial and the first Accept. The window sits inside the supervisor's
+// readiness budget and well inside the grant's own ttl, so retrying never
+// outlives either. An HTTP refusal is NOT retried — the request arrived and
+// was judged; the code is one-time, and re-presenting a judged code only
+// spends redemption-attempt budget on an answer that will not change.
 func redeem(client *http.Client, base, code string) (session, error) {
 	body, _ := json.Marshal(map[string]string{"code": code})
-	resp, err := client.Post(base+"/api/v1/auth/tier-grant/redeem", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return session{}, err
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		resp, err := client.Post(base+"/api/v1/auth/tier-grant/redeem", "application/json", bytes.NewReader(body))
+		if err != nil {
+			// A failed certificate VERIFICATION is transport-shaped and NOT
+			// transient: this pack has decided not to trust the peer, and
+			// re-dialing a host you refuse to trust is not a retry, it is a
+			// loop. Fail immediately so a misconfigured anchor surfaces as one
+			// crisp error instead of a silent 15-second stall.
+			var certErr *tls.CertificateVerificationError
+			if errors.As(err, &certErr) || time.Now().After(deadline) {
+				return session{}, fmt.Errorf("redeem: %w", err)
+			}
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated {
+			return session{}, fmt.Errorf("redeem: %d %s", resp.StatusCode, raw)
+		}
+		var s session
+		if err := json.Unmarshal(raw, &s); err != nil || s.Token == "" || s.PackID == "" {
+			return session{}, fmt.Errorf("redeem: unusable session in %s", raw)
+		}
+		return s, nil
 	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusCreated {
-		return session{}, fmt.Errorf("redeem: %d %s", resp.StatusCode, raw)
-	}
-	var s session
-	if err := json.Unmarshal(raw, &s); err != nil || s.Token == "" || s.PackID == "" {
-		return session{}, fmt.Errorf("redeem: unusable session in %s", raw)
-	}
-	return s, nil
 }
 
 // serve is the work loop: lease, perform, report, forever — until the host
@@ -229,7 +252,14 @@ func lease(ctx context.Context, client *http.Client, base, token string) (invoca
 		return invocation{}, resp.StatusCode, nil
 	}
 	var inv invocation
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&inv); err != nil {
+	// The read cap sits WELL ABOVE the server's own 1 MiB invoke-body cap: the
+	// lease response re-wraps an accepted invocation's params in a larger
+	// envelope, so a cap equal to the server's would truncate the largest legal
+	// invocations — a decode error here means the invocation is leased with no
+	// verdict ever coming, and safe-to-retry re-queues it into the same choke
+	// forever. Sizing the client cap by the SERVER's admission bound (plus
+	// headroom) makes that loop unreachable rather than merely unlikely.
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&inv); err != nil {
 		return invocation{}, 0, err
 	}
 	if inv.InvocationID == "" {

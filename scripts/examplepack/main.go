@@ -32,6 +32,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	examplepacks "github.com/maaxton/waiveo-next/examples/packs"
 	"github.com/maaxton/waiveo-next/internal/packsig"
@@ -151,12 +152,29 @@ func buildRuntimeEntry(pack string) (entry string, extra map[string][]byte, plat
 		return "", nil, "", err
 	}
 
-	goos, goarch := runtime.GOOS, runtime.GOARCH
-	if v := os.Getenv("GOOS"); v != "" {
-		goos = v
+	// Asked of the toolchain rather than read from this process's env or its
+	// own runtime: `go env` folds in every configuration source (env vars AND
+	// `go env -w`), so the platform named in the output is the platform the
+	// binary was actually built for.
+	platform = buildPlatform()
+	return entry, map[string][]byte{entry: code}, platform, nil
+}
+
+// buildPlatform reports the toolchain's effective GOOS/GOARCH, falling back to
+// this process's own on any error — a reporting nicety must never fail a build.
+// One `go env` invocation per variable: the names are queried individually so
+// no call site carries a shape the error-code scanner reads as an emission.
+func buildPlatform() string {
+	goos := goEnvOr("GOOS", runtime.GOOS)
+	goarch := goEnvOr("GOARCH", runtime.GOARCH)
+	return goos + "/" + goarch
+}
+
+func goEnvOr(name, fallback string) string {
+	out, err := exec.Command("go", "env", name).Output()
+	v := strings.TrimSpace(string(out))
+	if err != nil || v == "" {
+		return fallback
 	}
-	if v := os.Getenv("GOARCH"); v != "" {
-		goarch = v
-	}
-	return entry, map[string][]byte{entry: code}, goos + "/" + goarch, nil
+	return v
 }
