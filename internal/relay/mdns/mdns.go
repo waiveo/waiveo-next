@@ -36,6 +36,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/net/ipv4"
@@ -92,21 +93,28 @@ type Watch struct {
 // into a deviceplane.Store as a ProvenanceDiscovered candidate (REL-110/111).
 // See the package doc for the LISTENER/(no responder) split.
 type Listener struct {
-	// byServiceType maps a normalized, lower-cased service-type (see
-	// observePTRRecords) to the pattern that watches it. DNS names are
-	// case-insensitive (RFC 1035 §2.3.3), so the key is folded to lower
-	// case at construction and every lookup folds its own name the same
+	// watches holds the CURRENT watch set as an atomically-swapped map of
+	// normalized, lower-cased service-type → watch (see observePTRRecords).
+	// DNS names are case-insensitive (RFC 1035 §2.3.3), so keys are folded to
+	// lower case at installation and every lookup folds its own name the same
 	// way — matching must not depend on whatever case a manifest author or
-	// a particular device on the wire happened to use.
-	byServiceType map[string]Watch
-	store         *deviceplane.Store
-	nowMillis     func() int64
+	// a particular device on the wire happened to use. A pointer swap rather
+	// than a mutex for the same reason discovery.Discoverer.watches is one:
+	// the packet loop reads it per PTR record while SetWatches (driven by
+	// every signed desired-state apply, REL-064) replaces it, and each reader
+	// wants one coherent snapshot, never a mid-update view.
+	watches   atomic.Pointer[map[string]Watch]
+	store     *deviceplane.Store
+	nowMillis func() int64
 
 	listen func() (packetSource, error)
 }
 
 // New returns a Listener for cfg. It errors if cfg.Store or cfg.NowMillis is
-// nil, or if cfg.Watches contains no usable (MDNS-set) watch.
+// nil. An EMPTY (or mDNS-free) initial watch set is legal, not an error:
+// watches follow the signed desired state (REL-064, SetWatches), so a lane
+// that starts before the first pack pattern arrives observes nothing and then
+// picks the patterns up on the first inventory apply.
 func New(cfg Config) (*Listener, error) {
 	if cfg.Store == nil {
 		return nil, errors.New("mdns: Config.Store must not be nil")
@@ -115,23 +123,45 @@ func New(cfg Config) (*Listener, error) {
 		return nil, errors.New("mdns: Config.NowMillis must not be nil")
 	}
 
+	l := &Listener{
+		store:     cfg.Store,
+		nowMillis: cfg.NowMillis,
+		listen:    defaultListen,
+	}
+	l.SetWatches(cfg.Watches)
+	return l, nil
+}
+
+// SetWatches REPLACES the whole watch set — the REL-064 join, mirroring
+// discovery.Discoverer.SetWatches: every signed desired-state apply derives
+// the current pack-declared patterns into watches and installs them here. A
+// full replace rather than a diff because the patterns section is itself a
+// full set (REL-064) and a replace cannot leak a watch whose pack is gone.
+//
+// Only mDNS-form watches are usable on this lane; others are skipped.
+// Returns how many watches are now live.
+func (l *Listener) SetWatches(ws []Watch) int {
 	byServiceType := make(map[string]Watch)
-	for _, w := range cfg.Watches {
+	for _, w := range ws {
 		if w.Match.MDNS == "" {
 			continue
 		}
 		byServiceType[strings.ToLower(w.Match.MDNS)] = w
 	}
-	if len(byServiceType) == 0 {
-		return nil, errors.New("mdns: Config.Watches has no usable MDNS watch")
-	}
+	l.watches.Store(&byServiceType)
+	return len(byServiceType)
+}
 
-	return &Listener{
-		byServiceType: byServiceType,
-		store:         cfg.Store,
-		nowMillis:     cfg.NowMillis,
-		listen:        defaultListen,
-	}, nil
+// watchSet returns the current watch map — one coherent snapshot; callers
+// must not mutate it.
+func (l *Listener) watchSet() map[string]Watch {
+	return *l.watches.Load()
+}
+
+// WatchCount reports how many watches are currently live — the far side of
+// SetWatches, mirroring discovery.Discoverer.WatchCount.
+func (l *Listener) WatchCount() int {
+	return len(l.watchSet())
 }
 
 // Run opens the mDNS multicast listener and processes datagrams until ctx is
@@ -245,7 +275,7 @@ func (l *Listener) observePTRRecords(resources []dnsmessage.Resource, atMs int64
 			continue
 		}
 		serviceType := normalizeServiceType(r.Header.Name.String())
-		w, ok := l.byServiceType[strings.ToLower(serviceType)]
+		w, ok := l.watchSet()[strings.ToLower(serviceType)]
 		if !ok {
 			continue
 		}

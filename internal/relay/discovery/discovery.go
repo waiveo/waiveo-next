@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	ssdp "github.com/koron/go-ssdp"
@@ -267,7 +268,13 @@ type Config struct {
 // deviceplane.Store as a ProvenanceDiscovered candidate (REL-110/111). See
 // the package doc for the CONTROL-POINT/RESPONDER split.
 type Discoverer struct {
-	byST       map[string]Watch
+	// watches holds the CURRENT watch set as an atomically-swapped map keyed
+	// by search-target string. A pointer swap rather than a mutex because the
+	// readers are hot and lock-free today: the sweep loop, go-ssdp's
+	// per-packet NOTIFY goroutines, and SetWatches (driven by every signed
+	// desired-state apply, REL-064) all touch it concurrently, and each reader
+	// wants one coherent snapshot of the whole set, never a mid-update view.
+	watches    atomic.Pointer[map[string]Watch]
 	store      *deviceplane.Store
 	nowMillis  func() int64
 	interval   time.Duration
@@ -299,24 +306,17 @@ type identityEntry struct {
 }
 
 // New returns a Discoverer for cfg. It errors if cfg.Store or cfg.NowMillis
-// is nil, or if cfg.Patterns contains no usable (SSDP-set) pattern.
+// is nil. An EMPTY (or SSDP-free) initial watch set is legal, not an error:
+// since watches follow the signed desired state (REL-064, SetWatches), a lane
+// that starts before the first pack pattern arrives sweeps nothing and then
+// picks the patterns up on the first inventory apply — refusing to construct
+// would make "no packs installed yet" a boot failure.
 func New(cfg Config) (*Discoverer, error) {
 	if cfg.Store == nil {
 		return nil, errors.New("discovery: Config.Store must not be nil")
 	}
 	if cfg.NowMillis == nil {
 		return nil, errors.New("discovery: Config.NowMillis must not be nil")
-	}
-
-	byST := make(map[string]Watch)
-	for _, w := range cfg.Watches {
-		if w.Match.SSDP == "" {
-			continue
-		}
-		byST[w.Match.SSDP] = w
-	}
-	if len(byST) == 0 {
-		return nil, errors.New("discovery: Config.Watches has no usable SSDP watch")
 	}
 
 	interval := cfg.Interval
@@ -332,8 +332,7 @@ func New(cfg Config) (*Discoverer, error) {
 		searchWait = minSearchWait
 	}
 
-	return &Discoverer{
-		byST:       byST,
+	d := &Discoverer{
 		store:      cfg.Store,
 		nowMillis:  cfg.NowMillis,
 		interval:   interval,
@@ -342,7 +341,44 @@ func New(cfg Config) (*Discoverer, error) {
 		newMonitor: defaultMonitorFactory,
 		identify:   cfg.Identify,
 		identities: make(map[string]identityEntry),
-	}, nil
+	}
+	d.SetWatches(cfg.Watches)
+	return d, nil
+}
+
+// SetWatches REPLACES the whole watch set — the REL-064 join: every signed
+// desired-state apply derives the current pack-declared patterns into watches
+// and installs them here, so installing or removing a pack changes what this
+// lane sweeps for at the next generation, no restart. A full replace rather
+// than a diff because the patterns section is itself a full set (REL-064) and
+// a replace cannot leak a watch whose pack is gone.
+//
+// Only SSDP-form watches are usable on this lane (mDNS is its own lane;
+// MacOui has no SSDP analogue); others are skipped. Returns how many watches
+// are now live, so the caller can log the applied set honestly.
+func (d *Discoverer) SetWatches(ws []Watch) int {
+	byST := make(map[string]Watch)
+	for _, w := range ws {
+		if w.Match.SSDP == "" {
+			continue
+		}
+		byST[w.Match.SSDP] = w
+	}
+	d.watches.Store(&byST)
+	return len(byST)
+}
+
+// watchSet returns the current watch map — one coherent snapshot; callers
+// must not mutate it.
+func (d *Discoverer) watchSet() map[string]Watch {
+	return *d.watches.Load()
+}
+
+// WatchCount reports how many watches are currently live — the far side of
+// SetWatches, for callers (and tests) that need to observe what a swap
+// actually installed rather than trusting the return value they passed along.
+func (d *Discoverer) WatchCount() int {
+	return len(d.watchSet())
 }
 
 // Run drives the sweep loop and alive monitor until ctx is canceled
@@ -407,7 +443,7 @@ func (d *Discoverer) Run(ctx context.Context) error {
 // returns immediately rather than searching every remaining pattern in this
 // round, each at the already-doomed full SearchWait cost.
 func (d *Discoverer) sweep(ctx context.Context) {
-	for st, w := range d.byST {
+	for st, w := range d.watchSet() {
 		select {
 		case <-ctx.Done():
 			return
@@ -476,7 +512,7 @@ func (d *Discoverer) searchPattern(ctx context.Context, st string, w Watch) {
 // lane where that fallback is available, since a search response exposes no
 // sender (address.go).
 func (d *Discoverer) observeAlive(ctx context.Context, n aliveNotice) {
-	w, ok := d.byST[n.NT]
+	w, ok := d.watchSet()[n.NT]
 	if !ok || n.USN == "" {
 		return
 	}

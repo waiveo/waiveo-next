@@ -64,18 +64,6 @@ func TestNewValidation(t *testing.T) {
 			name: "nil NowMillis",
 			cfg:  Config{Watches: rokuWatch, Store: store, NowMillis: nil},
 		},
-		{
-			name: "no patterns at all",
-			cfg:  Config{Watches: nil, Store: store, NowMillis: now},
-		},
-		{
-			name: "only non-SSDP patterns",
-			cfg: Config{
-				Watches:   []Watch{watchFor(mustMatch(t, `{"mdns":"_googlecast._tcp"}`))},
-				Store:     store,
-				NowMillis: now,
-			},
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -83,6 +71,66 @@ func TestNewValidation(t *testing.T) {
 				t.Fatal("New() error = nil, want error")
 			}
 		})
+	}
+}
+
+// An empty (or SSDP-free) initial watch set is LEGAL: watches follow the
+// signed desired state (REL-064), so a lane may start before the first pack
+// pattern exists. The sweep and the NOTIFY path must both honor a LIVE swap —
+// asserted against the Store, the far side of the whole lane.
+func TestWatchesFollowSetWatches(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	now := func() int64 { return 1000 }
+
+	d, err := New(Config{Watches: nil, Store: store, NowMillis: now})
+	if err != nil {
+		t.Fatalf("New() with no initial watches must construct, got %v", err)
+	}
+	if got := d.WatchCount(); got != 0 {
+		t.Fatalf("WatchCount() = %d before any SetWatches, want 0", got)
+	}
+
+	// A sweep with no watches searches nothing.
+	searched := 0
+	d.search = func(st string, waitSec int) ([]foundService, error) {
+		searched++
+		return []foundService{{ST: st, USN: "uuid:one", Location: "http://192.0.2.9:8060/"}}, nil
+	}
+	d.sweep(context.Background())
+	if searched != 0 {
+		t.Fatalf("an empty watch set swept %d target(s), want none", searched)
+	}
+
+	// After a live swap the SAME Discoverer sweeps the new target and the hit
+	// lands in the Store under the new watch's declared facts.
+	st := "urn:new-pack:device:thing:1"
+	n := d.SetWatches([]Watch{{
+		Match:       mustMatch(t, `{"ssdp":"`+st+`"}`),
+		Driver:      "ssdp",
+		DeviceClass: "media-player",
+		Entities:    []deviceplane.CandidateEntity{{Key: "main", DeviceClass: "media-player"}},
+	}})
+	if n != 1 || d.WatchCount() != 1 {
+		t.Fatalf("SetWatches installed %d (count %d), want 1", n, d.WatchCount())
+	}
+	d.sweep(context.Background())
+	if searched != 1 {
+		t.Fatalf("the swapped-in watch was swept %d time(s), want 1", searched)
+	}
+	report := store.Report()
+	if len(report.Body.Candidates) != 1 {
+		t.Fatalf("candidates = %d, want the swept hit observed", len(report.Body.Candidates))
+	}
+
+	// The NOTIFY path honors the swap too.
+	d.observeAlive(context.Background(), aliveNotice{NT: st, USN: "uuid:two", Location: "http://192.0.2.10:8060/"})
+	if got := len(store.Report().Body.Candidates); got != 2 {
+		t.Fatalf("candidates after NOTIFY = %d, want 2", got)
+	}
+
+	// A full replace with an empty set forgets the watch rather than leaking it.
+	if n := d.SetWatches(nil); n != 0 || d.WatchCount() != 0 {
+		t.Fatalf("a full replace with no watches must forget the old set; got %d live", d.WatchCount())
 	}
 }
 

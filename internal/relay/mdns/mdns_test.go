@@ -108,18 +108,6 @@ func TestNewValidation(t *testing.T) {
 			name: "nil NowMillis",
 			cfg:  Config{Watches: waiveoWatch, Store: store, NowMillis: nil},
 		},
-		{
-			name: "no patterns at all",
-			cfg:  Config{Watches: nil, Store: store, NowMillis: now},
-		},
-		{
-			name: "only non-MDNS patterns",
-			cfg: Config{
-				Watches:   []Watch{watchFor(mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`))},
-				Store:     store,
-				NowMillis: now,
-			},
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -127,6 +115,37 @@ func TestNewValidation(t *testing.T) {
 				t.Fatal("New() error = nil, want error")
 			}
 		})
+	}
+}
+
+// An empty (or mDNS-free) initial watch set is LEGAL: watches follow the
+// signed desired state (REL-064), so a lane may start before the first pack
+// pattern exists. It observes nothing until SetWatches installs one — and a
+// later full replace with an empty set forgets a removed pack's watch rather
+// than leaking it.
+func TestWatchesFollowSetWatches(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	now := func() int64 { return 1000 }
+
+	l, err := New(Config{Watches: nil, Store: store, NowMillis: now})
+	if err != nil {
+		t.Fatalf("New() with no initial watches must construct, got %v", err)
+	}
+	if got := l.WatchCount(); got != 0 {
+		t.Fatalf("WatchCount() = %d before any SetWatches, want 0", got)
+	}
+
+	n := l.SetWatches([]Watch{
+		watchFor(mustMatch(t, `{"mdns":"_waiveo._tcp"}`)),
+		// An SSDP-form watch is unusable on this lane and must not count.
+		watchFor(mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`)),
+	})
+	if n != 1 || l.WatchCount() != 1 {
+		t.Fatalf("SetWatches installed %d (count %d), want exactly the one mDNS watch", n, l.WatchCount())
+	}
+
+	if n := l.SetWatches(nil); n != 0 || l.WatchCount() != 0 {
+		t.Fatalf("a full replace with no watches must forget the old set; got %d live", l.WatchCount())
 	}
 }
 
@@ -139,11 +158,11 @@ func TestNewOK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
-	if len(l.byServiceType) != 1 {
-		t.Fatalf("byServiceType has %d entries, want 1", len(l.byServiceType))
+	if got := l.WatchCount(); got != 1 {
+		t.Fatalf("WatchCount() = %d, want 1", got)
 	}
-	if _, ok := l.byServiceType["_waiveo._tcp"]; !ok {
-		t.Errorf("byServiceType missing _waiveo._tcp: %+v", l.byServiceType)
+	if _, ok := l.watchSet()["_waiveo._tcp"]; !ok {
+		t.Errorf("watch set missing _waiveo._tcp: %+v", l.watchSet())
 	}
 }
 

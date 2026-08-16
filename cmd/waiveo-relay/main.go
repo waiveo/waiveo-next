@@ -1137,20 +1137,44 @@ func main() {
 	// that identity is reported under (REL-110a). Those are declaration-side
 	// facts — a pack's device contribution, manifest/1 MAN-070 — not something
 	// a discovery response could state.
+	// The BUILTIN watch sets: what this deployment sweeps for before (and
+	// beside) any pack declaration. The roku:ecp watch is the one piece of
+	// device knowledge still hardcoded here — its extraction into a pack
+	// declaration is the Discovery programme's D2/D3, and mergeSSDPWatches'
+	// builtin-first precedence is what lets it move without a window where a
+	// colliding pack declaration degrades it.
+	builtinSSDP := []discovery.Watch{{
+		Match:       deviceplane.Match{SSDP: rokuSearchTarget},
+		Driver:      rokuDriver,
+		DeviceClass: mediaPlayerClass,
+		DefaultPort: rokuECPPort,
+		Entities:    []deviceplane.CandidateEntity{{Key: mainEntityKey, DeviceClass: mediaPlayerClass}},
+	}}
+	builtinMDNS := make([]mdns.Watch, len(cfg.mdnsPatterns))
+	for i, svcType := range cfg.mdnsPatterns {
+		builtinMDNS[i] = mdns.Watch{
+			Match:       deviceplane.Match{MDNS: svcType},
+			Driver:      mdnsDriver,
+			DeviceClass: mediaPlayerClass,
+			Entities:    []deviceplane.CandidateEntity{{Key: mainEntityKey, DeviceClass: mediaPlayerClass}},
+		}
+	}
+	// The boot generation's pack patterns seed the lanes' INITIAL sets — the
+	// lanes are constructed after the boot inventory applies, so without this
+	// a pack-declared watch would not exist until the first LIVE apply.
+	bootSSDPW, bootMDNSW, _, _ := patternWatchSets(applied.DeviceInventory.PackMatchPatterns)
+
+	var disc *discovery.Discoverer
+	var mdnsListener *mdns.Listener
 	if cfg.discoveryOn || len(cfg.mdnsPatterns) > 0 {
 		if cfg.discoveryOn {
 			// One HTTP client for every identification probe: connections to a
 			// device are pooled and reused across sweeps instead of being dialed
 			// fresh each time (see ecp.NewIdentifyClient for the timeout).
 			identifyClient := ecp.NewIdentifyClient()
-			disc, err := discovery.New(discovery.Config{
-				Watches: []discovery.Watch{{
-					Match:       deviceplane.Match{SSDP: rokuSearchTarget},
-					Driver:      rokuDriver,
-					DeviceClass: mediaPlayerClass,
-					DefaultPort: rokuECPPort,
-					Entities:    []deviceplane.CandidateEntity{{Key: mainEntityKey, DeviceClass: mediaPlayerClass}},
-				}},
+			var err error
+			disc, err = discovery.New(discovery.Config{
+				Watches:   mergeSSDPWatches(builtinSSDP, bootSSDPW),
 				Store:     candStore,
 				NowMillis: func() int64 { return time.Now().UnixMilli() },
 				// The identification probe: a discovered address that answers
@@ -1173,21 +1197,21 @@ func main() {
 					log.Printf("waiveo-relay: discovery ended: %v", err)
 				}
 			}()
-			log.Printf("waiveo-relay SSDP discovery live (pattern %s)", rokuSearchTarget)
+			log.Printf("waiveo-relay SSDP discovery live (builtin %s; pack patterns follow desired state, REL-064)", rokuSearchTarget)
 		}
 
+		// The mDNS lane stays a deployment OPT-IN (env patterns set), even now
+		// that pack-declared mDNS patterns could otherwise feed it: constructing
+		// it means BINDING 5353 multicast, which the config doc above draws as
+		// the intrusiveness line — it collides outright with a host's own avahi,
+		// and CI/loopback runs must never multicast. A pack declaration must not
+		// be able to force that bind on a deployment that did not opt in; when
+		// mDNS patterns arrive with no lane to land on, the watch applier SAYS
+		// so instead of silently absorbing them.
 		if len(cfg.mdnsPatterns) > 0 {
-			mdnsWatches := make([]mdns.Watch, len(cfg.mdnsPatterns))
-			for i, svcType := range cfg.mdnsPatterns {
-				mdnsWatches[i] = mdns.Watch{
-					Match:       deviceplane.Match{MDNS: svcType},
-					Driver:      mdnsDriver,
-					DeviceClass: mediaPlayerClass,
-					Entities:    []deviceplane.CandidateEntity{{Key: mainEntityKey, DeviceClass: mediaPlayerClass}},
-				}
-			}
-			mdnsListener, err := mdns.New(mdns.Config{
-				Watches:   mdnsWatches,
+			var err error
+			mdnsListener, err = mdns.New(mdns.Config{
+				Watches:   mergeMDNSWatches(builtinMDNS, bootMDNSW),
 				Store:     candStore,
 				NowMillis: func() int64 { return time.Now().UnixMilli() },
 			})
@@ -1199,7 +1223,7 @@ func main() {
 					log.Printf("waiveo-relay: mDNS discovery ended: %v", err)
 				}
 			}()
-			log.Printf("waiveo-relay mDNS discovery live (patterns %s)", strings.Join(cfg.mdnsPatterns, ", "))
+			log.Printf("waiveo-relay mDNS discovery live (env patterns [%s]; pack patterns follow desired state, REL-064)", strings.Join(cfg.mdnsPatterns, ", "))
 		}
 
 		// The full-set report rides upward on the discovery cadence (REL-110/111
@@ -1280,15 +1304,29 @@ func main() {
 	// "live loop gated on hello acceptance" invariant needs no separate gate
 	// here: an unaccepted relay serves its persisted last-applied snapshot
 	// offline and nothing more, until a redial is accepted.
+	// Live applies drive BOTH inventory consumers: the adoption gate
+	// (installInventory) and the discovery watch sets (REL-064). One composed
+	// hook rather than a second rePuller field, so the two can never be
+	// refreshed from different generations.
+	applyDiscoveryWatches := discoveryWatchApplier(disc, mdnsListener, builtinSSDP, builtinMDNS)
+	// Boot generation, once, for the log line: the lanes were SEEDED with these
+	// watches at construction (they must not sweep even once without them), so
+	// this re-install is idempotent — its value is the operator-visible count of
+	// what the boot generation declared, including what could NOT be delivered
+	// (macOui, malformed), which the seeding path has no place to say.
+	applyDiscoveryWatches(applied.DeviceInventory)
 	puller := &rePuller{
-		nowFn:          func() int64 { return time.Now().UnixMilli() },
-		driver:         driver,
-		host:           host,
-		lastGen:        applied.Generation,
-		lastHash:       applied.Hash,
-		applyInventory: installInventory,
-		adoption:       keepaliveAdoption,
-		geo:            geo,
+		nowFn:    func() int64 { return time.Now().UnixMilli() },
+		driver:   driver,
+		host:     host,
+		lastGen:  applied.Generation,
+		lastHash: applied.Hash,
+		applyInventory: func(inv wire.DeviceInventory) {
+			installInventory(inv)
+			applyDiscoveryWatches(inv)
+		},
+		adoption: keepaliveAdoption,
+		geo:      geo,
 	}
 	puller.pull = func(since int64) (desiredstate.Applied, error) {
 		c := liveConn.get()
