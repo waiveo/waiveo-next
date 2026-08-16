@@ -150,22 +150,33 @@ func load(signingKeyPath, certPath, certKeyPath string, serveHosts []string) (*I
 		return nil, fmt.Errorf("signing: read TLS key %s: %w", certKeyPath, err)
 	}
 
-	// Self-heal a stale serving leaf. Two generations of staleness exist: an
-	// identity persisted before the browser-compat fix carries an Ed25519 leaf
-	// (browsers reject it at handshake), and one persisted before the pack
-	// runtime carries a SAN-less leaf — pack processes verify the leaf with
-	// stock X.509, where a name match is required and the CommonName is never
-	// consulted, so a SAN-less anchor can never verify no matter how correctly
-	// it is handed over. The identity dir is designed to persist and dev-up
-	// never clears it, so without this a deployment that ever ran a pre-fix
-	// build would re-serve the stale leaf forever. Reissue in place when the
-	// on-disk leaf is stale on either axis, or when the configured listen host
-	// changed and the leaf does not cover it. Only the TLS-serving cert/key
-	// change; the enrollment-anchored Ed25519 SIGNING key (read above) is
-	// untouched — and the relay re-pins the leaf's SPKI at its next
-	// (fresh-per-dev-up) enrollment, so reissuing here breaks no commitment.
-	if !servingLeafIsECDSAP256(certPEM) || !servingLeafCoversHosts(certPEM, serveHosts) {
+	// Self-heal a stale serving leaf. Two generations of staleness exist, and
+	// they are repaired DIFFERENTLY because they break different things:
+	//
+	//   - An identity persisted before the browser-compat fix carries an
+	//     Ed25519 leaf, which browsers reject at handshake. The KEY is the
+	//     problem, so the reissue mints a new keypair — accepting that every
+	//     enrolled relay's SPKI pin breaks and re-enrollment follows (the
+	//     dev-up flow re-enrolls fresh; that trade was taken knowingly).
+	//   - An identity persisted before the pack runtime carries a SAN-less
+	//     leaf — pack processes verify with stock X.509, where a name match is
+	//     required and the CommonName is never consulted, so a SAN-less anchor
+	//     can never verify no matter how correctly it is handed over. Here the
+	//     key is FINE, so the reissue mints a new certificate OVER THE SAME
+	//     KEY: the SPKI is unchanged by construction and every enrolled
+	//     relay's pin survives. Healing a certificate's shape must never cost
+	//     a persisted deployment its fleet (REL-137 is exactly that outage).
+	//
+	// The same key-preserving path covers a leaf that no longer covers the
+	// configured listen host. The enrollment-anchored Ed25519 SIGNING key
+	// (read above) is untouched by either repair.
+	if !servingLeafIsECDSAP256(certPEM) {
 		certPEM, certKeyPEM, err = reissueTLSLeaf(certPath, certKeyPath, serveHosts)
+		if err != nil {
+			return nil, err
+		}
+	} else if !servingLeafCoversHosts(certPEM, serveHosts) {
+		certPEM, err = reissueCertOverSameKey(certPath, certKeyPEM, serveHosts)
 		if err != nil {
 			return nil, err
 		}
@@ -231,11 +242,10 @@ func servingLeafCoversHosts(certPEM []byte, serveHosts []string) bool {
 	return true
 }
 
-// reissueTLSLeaf mints a fresh ECDSA P-256 self-signed serving cert and
-// overwrites the persisted TLS cert/key files (never the signing key),
-// returning the new PEM material. Used by load() to repair a stale serving
-// leaf in place so the fix takes effect on the next feeder start without a
-// manual key-directory wipe.
+// reissueTLSLeaf mints a fresh ECDSA P-256 self-signed serving cert AND KEY,
+// overwriting the persisted TLS cert/key files (never the signing key). The
+// key-replacing repair: correct only when the existing key itself is unusable,
+// because a new key is a new SPKI and every enrolled relay's pin breaks.
 func reissueTLSLeaf(certPath, certKeyPath string, serveHosts []string) (certPEM, certKeyPEM []byte, err error) {
 	certPEM, certKeyPEM = tlsboot.GenSelfSignedFor(serveHosts...)
 	if err := os.WriteFile(certKeyPath, certKeyPEM, 0o600); err != nil {
@@ -245,6 +255,21 @@ func reissueTLSLeaf(certPath, certKeyPath string, serveHosts []string) (certPEM,
 		return nil, nil, fmt.Errorf("signing: reissue TLS cert %s: %w", certPath, err)
 	}
 	return certPEM, certKeyPEM, nil
+}
+
+// reissueCertOverSameKey mints a fresh serving cert over the EXISTING TLS key
+// and overwrites only the persisted certificate. The SPKI — the thing every
+// pin in this system is over — is unchanged by construction, so enrolled
+// relays keep trusting the feeder across the repair.
+func reissueCertOverSameKey(certPath string, certKeyPEM []byte, serveHosts []string) ([]byte, error) {
+	certPEM, err := tlsboot.ReissueCertOver(certKeyPEM, serveHosts...)
+	if err != nil {
+		return nil, fmt.Errorf("signing: reissue serving cert over the existing key: %w", err)
+	}
+	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
+		return nil, fmt.Errorf("signing: reissue TLS cert %s: %w", certPath, err)
+	}
+	return certPEM, nil
 }
 
 func readSigningKey(path string) (ed25519.PrivateKey, error) {

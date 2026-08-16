@@ -57,6 +57,8 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"time"
@@ -108,11 +110,54 @@ func GenSelfSignedFor(hosts ...string) (certPEM, keyPEM []byte) {
 		// to propagate to callers.
 		panic("tlsboot: GenSelfSigned: generate key: " + err.Error())
 	}
-	pub := &priv.PublicKey
 
+	certPEM, err = mintServingCert(priv, hosts)
+	if err != nil {
+		panic("tlsboot: GenSelfSigned: " + err.Error())
+	}
+
+	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		panic("tlsboot: GenSelfSigned: marshal key: " + err.Error())
+	}
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+
+	return certPEM, keyPEM
+}
+
+// ReissueCertOver mints a fresh self-signed serving certificate OVER AN
+// EXISTING P-256 key, given the key's PKCS8 PEM. The SubjectPublicKeyInfo is
+// unchanged by construction — which is the entire point: every pin in this
+// system (a relay's enrollment trust, a pairing commitment) is over the SPKI,
+// so a cert-only reissue (new SANs, new validity) is invisible to enrolled
+// peers, while a key rotation is a fleet-wide re-enrollment event. Callers
+// repairing a certificate's SHAPE use this; callers replacing an unusable KEY
+// use GenSelfSignedFor and accept the re-enrollment.
+//
+// Errors rather than panics: the key here is caller-supplied persisted
+// material, not this process's own environment.
+func ReissueCertOver(keyPEM []byte, hosts ...string) (certPEM []byte, err error) {
+	block, _ := pem.Decode(keyPEM)
+	if block == nil {
+		return nil, errors.New("tlsboot: ReissueCertOver: key PEM did not decode")
+	}
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("tlsboot: ReissueCertOver: parse key: %w", err)
+	}
+	priv, ok := key.(*ecdsa.PrivateKey)
+	if !ok || priv.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("tlsboot: ReissueCertOver: key is %T, want an ECDSA P-256 key", key)
+	}
+	return mintServingCert(priv, hosts)
+}
+
+// mintServingCert is the one place the serving-certificate template lives, so
+// a fresh identity and a cert-only reissue cannot drift apart in shape.
+func mintServingCert(priv *ecdsa.PrivateKey, hosts []string) ([]byte, error) {
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
-		panic("tlsboot: GenSelfSigned: generate serial: " + err.Error())
+		return nil, fmt.Errorf("generate serial: %w", err)
 	}
 
 	dnsNames := []string{"localhost"}
@@ -150,20 +195,11 @@ func GenSelfSignedFor(hosts ...string) (certPEM, keyPEM []byte) {
 		IsCA:                  true,
 	}
 
-	der, err := x509.CreateCertificate(rand.Reader, template, template, pub, priv)
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &priv.PublicKey, priv)
 	if err != nil {
-		panic("tlsboot: GenSelfSigned: create certificate: " + err.Error())
+		return nil, fmt.Errorf("create certificate: %w", err)
 	}
-
-	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-
-	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
-	if err != nil {
-		panic("tlsboot: GenSelfSigned: marshal key: " + err.Error())
-	}
-	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
-
-	return certPEM, keyPEM
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), nil
 }
 
 // SPKIFromCertDER parses der as an X.509 certificate and returns its

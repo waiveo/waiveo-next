@@ -332,13 +332,16 @@ func repoRootForTest() (string, error) {
 // A SAN-less P-256 leaf is the SECOND stale generation: minted by the
 // GenSelfSigned that predates the pack runtime, it satisfies every SPKI-pinning
 // consumer and can never satisfy a stock verifying client — a pack — because
-// Go matches SANs and never reads the CommonName. load() must reissue it the
-// same way it reissues an Ed25519 leaf, preserving the enrollment-anchored
-// signing key, and persist the result.
-func TestLoadSelfHealsSANLessServingLeaf(t *testing.T) {
+// Go matches SANs and never reads the CommonName. load() must reissue the
+// CERTIFICATE over the SAME key: the key is fine, and a new key would be a new
+// SPKI — every enrolled relay's pin broken (REL-137), a fleet outage bought to
+// fix a cert's shape. The Ed25519 heal above replaces the key because the key
+// IS its problem; this one must not.
+func TestLoadSelfHealsSANLessServingLeafPreservingItsSPKI(t *testing.T) {
 	dir := t.TempDir()
 	signingPub := seedEd25519SigningKey(t, filepath.Join(dir, signingKeyFile))
 	seedSANLessP256TLSLeaf(t, filepath.Join(dir, tlsCertFile), filepath.Join(dir, tlsKeyFile))
+	seededSPKI := spkiOfCertFile(t, filepath.Join(dir, tlsCertFile))
 
 	id, err := LoadOrCreate(dir)
 	if err != nil {
@@ -348,6 +351,9 @@ func TestLoadSelfHealsSANLessServingLeaf(t *testing.T) {
 		t.Fatalf("self-heal changed the signing pub: got %x, want seeded %x", id.SigningPub(), signingPub)
 	}
 	assertServingLeafCoversLoopback(t, id)
+	if !bytes.Equal(parseLeaf(t, id).RawSubjectPublicKeyInfo, seededSPKI) {
+		t.Fatal("the SAN heal changed the SPKI — every enrolled relay's pin just broke; the cert must be reissued over the SAME key")
+	}
 
 	reloaded, err := LoadOrCreate(dir)
 	if err != nil {
@@ -359,12 +365,15 @@ func TestLoadSelfHealsSANLessServingLeaf(t *testing.T) {
 }
 
 // A leaf that covers loopback but NOT a newly-configured specific listen host
-// is stale for that configuration and must be reissued to cover both.
+// is stale for that configuration and must be reissued to cover both — over
+// the same key, for the same reason as the SAN heal.
 func TestLoadReissuesWhenTheConfiguredHostIsNotCovered(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := LoadOrCreate(dir); err != nil {
+	first, err := LoadOrCreate(dir)
+	if err != nil {
 		t.Fatalf("first LoadOrCreate: %v", err)
 	}
+	firstSPKI := parseLeaf(t, first).RawSubjectPublicKeyInfo
 
 	id, err := LoadOrCreate(dir, "192.0.2.9")
 	if err != nil {
@@ -375,6 +384,28 @@ func TestLoadReissuesWhenTheConfiguredHostIsNotCovered(t *testing.T) {
 		t.Fatalf("reissued leaf does not cover the configured host: %v", err)
 	}
 	assertServingLeafCoversLoopback(t, id)
+	if !bytes.Equal(leaf.RawSubjectPublicKeyInfo, firstSPKI) {
+		t.Fatal("covering a new host changed the SPKI — the repair must reuse the existing key")
+	}
+}
+
+// spkiOfCertFile reads a PEM certificate file and returns its raw
+// SubjectPublicKeyInfo — the bytes every pin in this system is over.
+func spkiOfCertFile(t *testing.T, path string) []byte {
+	t.Helper()
+	pemBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	block, _ := pem.Decode(pemBytes)
+	if block == nil || block.Type != "CERTIFICATE" {
+		t.Fatalf("%s did not decode to a CERTIFICATE block", path)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	return cert.RawSubjectPublicKeyInfo
 }
 
 func assertServingLeafCoversLoopback(t *testing.T, id *Identity) {
