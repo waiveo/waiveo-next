@@ -11,6 +11,7 @@
   "capabilities": [
     { "capability": "storage.write", "scope": "*", "reason": "msg:cap.storage.reason" }
   ],
+  "runtime": { "entry": "bin/backups", "exec": ["$entry"] },
   "egress": [],
   "resources": { "memory": 64, "cpuWeight": 100, "storageQuota": 8, "maxScheduledTimers": 0 },
   "dataModel": {

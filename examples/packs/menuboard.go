@@ -18,6 +18,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"embed"
+	"fmt"
 	"io/fs"
 	"path"
 	"sort"
@@ -41,7 +42,17 @@ var menuBoardFS embed.FS
 // Generalised rather than copied when a second pack arrived — two hardcoded
 // builders would be two places for the entry-naming and the sort order to drift
 // apart, and the layout IS the install contract.
-func PackZip(dir string) ([]byte, error) { return zipPack(dir) }
+func PackZip(dir string) ([]byte, error) { return zipPack(dir, nil) }
+
+// PackZipWithFiles assembles a pack with EXTRA entries the on-disk tree does not
+// carry — the compiled `runtime.entry` binary, which exists only after a build
+// step and must never be committed. An extra whose name collides with an
+// embedded file is an error rather than a silent preference: the two would be
+// different bytes claiming one name in an artifact whose layout is the install
+// contract.
+func PackZipWithFiles(dir string, extra map[string][]byte) ([]byte, error) {
+	return zipPack(dir, extra)
+}
 
 // MenuBoardZip assembles the menu-board example pack into an in-memory zip
 // artifact — its entries named relative to the pack root (manifest.json,
@@ -49,21 +60,38 @@ func PackZip(dir string) ([]byte, error) { return zipPack(dir) }
 // install pipeline expects. Entries are written in sorted order so the artifact
 // is deterministic (a reproducible build, and a stable Idempotency-Key content
 // hash across runs). Nothing is executed: the files are copied as bytes.
-func MenuBoardZip() ([]byte, error) { return zipPack(menuBoardDir) }
+func MenuBoardZip() ([]byte, error) { return zipPack(menuBoardDir, nil) }
 
-// zipPack is the shared assembler.
-func zipPack(dir string) ([]byte, error) {
+// zipPack is the shared assembler. Extra entries (a compiled runtime binary)
+// are merged into the same sorted order, so an artifact with an injected entry
+// is exactly as reproducible as one without.
+func zipPack(dir string, extra map[string][]byte) ([]byte, error) {
 	names, err := entryNames(dir)
 	if err != nil {
 		return nil, err
 	}
+	embedded := make(map[string]bool, len(names))
+	for _, n := range names {
+		embedded[n] = true
+	}
+	for name := range extra {
+		if embedded[name] {
+			return nil, fmt.Errorf("examplepacks: extra entry %q collides with an embedded file", name)
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
 
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	for _, name := range names {
-		data, err := menuBoardFS.ReadFile(path.Join(dir, name))
-		if err != nil {
-			return nil, err
+		data, ok := extra[name]
+		if !ok {
+			var err error
+			data, err = menuBoardFS.ReadFile(path.Join(dir, name))
+			if err != nil {
+				return nil, err
+			}
 		}
 		w, err := zw.Create(name)
 		if err != nil {
@@ -97,17 +125,24 @@ func MenuBoardFile(name string) ([]byte, error) {
 // root), sorted — the exact set MenuBoardZip writes.
 func MenuBoardEntryNames() ([]string, error) { return entryNames(menuBoardDir) }
 
-// entryNames walks one pack's embedded tree.
+// entryNames walks one pack's embedded tree. The `cmd/` subtree is SOURCE — the
+// runtime entry's Go package, which the build step compiles and injects as a
+// binary (PackZipWithFiles) — so it is skipped here: an artifact carries what
+// the host runs and serves, never what a toolchain consumes.
 func entryNames(dir string) ([]string, error) {
 	var names []string
 	err := fs.WalkDir(menuBoardFS, dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
+		rel := strings.TrimPrefix(p, dir+"/")
 		if d.IsDir() {
+			if rel == "cmd" {
+				return fs.SkipDir
+			}
 			return nil
 		}
-		names = append(names, strings.TrimPrefix(p, dir+"/"))
+		names = append(names, rel)
 		return nil
 	})
 	if err != nil {
