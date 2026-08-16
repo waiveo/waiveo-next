@@ -60,7 +60,7 @@ func PackZipWithFiles(dir string, extra map[string][]byte) ([]byte, error) {
 // install pipeline expects. Entries are written in sorted order so the artifact
 // is deterministic (a reproducible build, and a stable Idempotency-Key content
 // hash across runs). Nothing is executed: the files are copied as bytes.
-func MenuBoardZip() ([]byte, error) { return zipPack(menuBoardDir, nil) }
+func MenuBoardZip() ([]byte, error) { return PackZip(menuBoardDir) }
 
 // zipPack is the shared assembler. Extra entries (a compiled runtime binary)
 // are merged into the same sorted order, so an artifact with an injected entry

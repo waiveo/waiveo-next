@@ -27,11 +27,10 @@
   "groups": [
     {
       "package": "examples/packs",
-      "reason": "Readers beside the in-repo example packs. scripts/examplepack builds and writes the zip, which is all `make example-pack` and the end-to-end pack install need; these read a built pack back apart, which only the pack e2e test and this package's own tests do. PackFile is the by-directory form the same tests use for the backups pilot \u2014 same class of caller, same reason.",
+      "reason": "Readers beside the in-repo example packs. scripts/examplepack builds and writes the zip, which is all `make example-pack` and the end-to-end pack install need; these read a built pack back apart, which only the pack e2e test and this package's own tests do.",
       "funcs": [
         "MenuBoardEntryNames",
-        "MenuBoardFile",
-        "PackFile"
+        "MenuBoardFile"
       ]
     },
     {
@@ -285,5 +284,10 @@
       ]
     }
   ],
-  "unimportedPackages": []
+  "unimportedPackages": [
+    {
+      "package": "github.com/maaxton/waiveo-next/examples/packs/backups/cmd/backups",
+      "reason": "the pilot extension's runtime entry (MAN-065): a package main that no root IMPORTS because nothing ever should \u2014 scripts/examplepack compiles it and injects the binary into the signed artifact, and the host reaches it by exec at boot, not by import. The api package's packruntime e2e builds and runs it for real."
+    }
+  ]
 }
