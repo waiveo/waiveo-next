@@ -137,7 +137,9 @@ func buildRuntimeEntry(pack string) (entry string, extra map[string][]byte, plat
 	defer os.RemoveAll(tmp)
 	bin := filepath.Join(tmp, path.Base(entry))
 
-	cmd := exec.Command("go", "build", "-trimpath", "-o", bin, src)
+	// -s -w strips the symbol and DWARF tables: a distributed binary is not a
+	// debug target, and the artifact every box downloads should not carry one.
+	cmd := exec.Command("go", "build", "-trimpath", "-ldflags", "-s -w", "-o", bin, src)
 	// CGO off: a pack binary must not pick up a dynamic libc dependency by
 	// accident — the appliance image is the wrong place to discover one.
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")

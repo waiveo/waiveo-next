@@ -13,8 +13,7 @@ import (
 // cannot exhaust the host: the whole artifact's byte size, each entry's
 // uncompressed size, the total uncompressed bytes across all entries (a
 // decompression-bomb guard the per-file cap alone does not close), and the entry
-// count. Dev-POC values — generous for a declarative pack (a manifest, a handful
-// of small JSON page docs, and locale catalogs) yet firmly bounded.
+// count. Dev-POC values, firmly bounded either way.
 type Limits struct {
 	MaxArtifactBytes     int64
 	MaxFileBytes         int64
@@ -22,13 +21,19 @@ type Limits struct {
 	MaxFiles             int
 }
 
-// DefaultLimits are the install-path caps. A declarative pack is tiny; these
-// leave comfortable headroom while refusing anything that could be a resource
-// attack.
+// DefaultLimits are the install-path caps.
+//
+// Sized for what a pack actually IS since #189: a compiled per-architecture Go
+// binary at runtime.entry plus a declarative tree. The original 1 MiB per-file
+// cap predated that decision and was sized for JSON documents — under it NO Go
+// extension can install at all (the pilot's stdlib-only entry is ~9 MiB; a real
+// extraction with dependencies runs tens). The caps still exist to stop a
+// resource attack, not to ration honest binaries, so they sit an order of
+// magnitude above a plausible extension rather than snug against the pilot.
 var DefaultLimits = Limits{
-	MaxArtifactBytes:     8 << 20,  // 8 MiB compressed artifact
-	MaxFileBytes:         1 << 20,  // 1 MiB per entry, uncompressed
-	MaxTotalUncompressed: 16 << 20, // 16 MiB total, uncompressed
+	MaxArtifactBytes:     64 << 20,  // 64 MiB compressed artifact
+	MaxFileBytes:         64 << 20,  // 64 MiB per entry, uncompressed
+	MaxTotalUncompressed: 128 << 20, // 128 MiB total, uncompressed
 	MaxFiles:             256,
 }
 
