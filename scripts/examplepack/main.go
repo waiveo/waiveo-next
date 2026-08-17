@@ -35,12 +35,14 @@ import (
 	"strings"
 
 	examplepacks "github.com/maaxton/waiveo-next/examples/packs"
+	"github.com/maaxton/waiveo-next/extensions"
 	"github.com/maaxton/waiveo-next/internal/packsig"
 )
 
 func main() {
 	out := flag.String("out", "", "path to write the signed example-pack zip to (required)")
-	pack := flag.String("pack", "menu-board", "which in-repo example pack to build (examples/packs/<name>)")
+	pack := flag.String("pack", "menu-board", "which in-repo pack/extension to build (<tree>/<name>)")
+	tree := flag.String("tree", "examples/packs", "which in-repo tree the pack lives in: examples/packs (reference material) or extensions (shipped first-party extensions)")
 	keyDir := flag.String("key-dir", ".dev/pack-publisher",
 		"directory the make-dev publisher signing keypair persists in (created on first run)")
 	anchors := flag.String("anchors", ".dev/pack-trust/anchors.json",
@@ -52,13 +54,22 @@ func main() {
 		os.Exit(2)
 	}
 
-	entry, extra, platform, err := buildRuntimeEntry(*pack)
+	entry, extra, platform, err := buildRuntimeEntry(*tree, *pack)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "examplepack: %v\n", err)
 		os.Exit(1)
 	}
 
-	art, err := examplepacks.PackZipWithFiles(*pack, extra)
+	// One assembler per tree, same layout contract: examples/packs holds
+	// reference material, extensions/ holds what ships. Which tree an artifact
+	// came from is invisible in the artifact itself — the layout IS the install
+	// contract — so only the source lookup differs.
+	var art []byte
+	if *tree == "extensions" {
+		art, err = extensions.ZipWithFiles(*pack, extra)
+	} else {
+		art, err = examplepacks.PackZipWithFiles(*pack, extra)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "examplepack: build zip: %v\n", err)
 		os.Exit(1)
@@ -105,8 +116,13 @@ func main() {
 // path, the extra artifact files to inject, and the platform the binary was
 // built for. A purely declarative pack returns all zeros: nothing to build is
 // the normal case, not an error.
-func buildRuntimeEntry(pack string) (entry string, extra map[string][]byte, platform string, err error) {
-	rawManifest, err := examplepacks.PackFile(pack, "manifest.json")
+func buildRuntimeEntry(tree, pack string) (entry string, extra map[string][]byte, platform string, err error) {
+	var rawManifest []byte
+	if tree == "extensions" {
+		rawManifest, err = extensions.File(pack, "manifest.json")
+	} else {
+		rawManifest, err = examplepacks.PackFile(pack, "manifest.json")
+	}
 	if err != nil {
 		return "", nil, "", fmt.Errorf("read %s manifest: %w", pack, err)
 	}
@@ -125,9 +141,9 @@ func buildRuntimeEntry(pack string) (entry string, extra map[string][]byte, plat
 
 	// The source-location convention, spelled in one place: the entry package
 	// sits under the pack's own tree, named after the binary it becomes.
-	src := "./" + path.Join("examples/packs", pack, "cmd", path.Base(entry))
+	src := "./" + path.Join(tree, pack, "cmd", path.Base(entry))
 	if _, statErr := os.Stat(filepath.FromSlash(src)); statErr != nil {
-		return "", nil, "", fmt.Errorf("%s declares runtime.entry %q but has no source at %s (run from the repo root; the entry's package lives at examples/packs/<pack>/cmd/<entry base>): %w",
+		return "", nil, "", fmt.Errorf("%s declares runtime.entry %q but has no source at %s (run from the repo root; the entry's package lives at <tree>/<pack>/cmd/<entry base>): %w",
 			pack, entry, src, statErr)
 	}
 
