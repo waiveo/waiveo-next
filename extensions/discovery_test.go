@@ -15,9 +15,9 @@ import (
 
 func discoveryManifest(t *testing.T) manifest.PackManifest {
 	t.Helper()
-	raw, err := extensions.Zip("discovery")
+	raw, err := extensions.ZipWithFiles("discovery", nil)
 	if err != nil {
-		t.Fatalf("Zip(discovery): %v", err)
+		t.Fatalf("ZipWithFiles(discovery): %v", err)
 	}
 	if len(raw) == 0 {
 		t.Fatal("the discovery extension assembled to nothing")

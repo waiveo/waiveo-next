@@ -34,14 +34,12 @@ import (
 //go:embed discovery
 var extensionFS embed.FS
 
-// Zip assembles a first-party extension by directory name into an in-memory zip
-// artifact, entries named relative to the extension root and written in sorted
-// order so the artifact is reproducible (a stable content hash across runs).
-// Nothing is executed: files are copied as bytes.
-func Zip(dir string) ([]byte, error) { return zipExtension(dir, nil) }
-
-// ZipWithFiles assembles an extension with EXTRA entries the on-disk tree does
-// not carry — the compiled `runtime.entry` binary, which exists only after a
+// ZipWithFiles assembles a first-party extension by directory name into an
+// in-memory zip artifact: entries named relative to the extension root, written
+// in sorted order so the artifact is reproducible (a stable content hash across
+// runs). Nothing is executed — files are copied as bytes.
+//
+// `extra` carries entries the on-disk tree does not — the compiled `runtime.entry` binary, which exists only after a
 // build step and must never be committed. An extra whose name collides with an
 // embedded file is an error rather than a silent preference: the two would be
 // different bytes claiming one name in an artifact whose layout is the install
