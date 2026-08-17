@@ -66,6 +66,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/relay/keepalive"
 	"github.com/maaxton/waiveo-next/internal/relay/mdns"
+	"github.com/maaxton/waiveo-next/internal/relay/neighbor"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
 	"github.com/maaxton/waiveo-next/internal/relay/reenroll"
 	"github.com/maaxton/waiveo-next/internal/relay/relayconn"
@@ -1168,11 +1169,32 @@ func main() {
 	var mdnsListener *mdns.Listener
 	if cfg.discoveryOn || len(cfg.mdnsPatterns) > 0 {
 		if cfg.discoveryOn {
+			// The neighbour lane (Discovery spec §4.1): every L2-present host in
+			// the relay host's own kernel neighbour table becomes an
+			// unclassified MAC-keyed candidate — the enumerate-all FOUNDATION
+			// the protocol lanes merge onto. It is a LOCAL READ, not a scan
+			// (the kernel populated the table from ordinary traffic), so it runs
+			// with discovery by default; it is why the box lists every host on
+			// the segment where watch-driven discovery listed only the one Roku
+			// a built-in pattern named.
+			neighborLane, err := neighbor.New(neighbor.Config{
+				Store:     candStore,
+				NowMillis: func() int64 { return time.Now().UnixMilli() },
+			})
+			if err != nil {
+				log.Fatalf("waiveo-relay: configure neighbour discovery: %v", err)
+			}
+			go func() {
+				if err := neighborLane.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("waiveo-relay: neighbour discovery ended: %v", err)
+				}
+			}()
+			log.Printf("waiveo-relay neighbour discovery live (kernel neighbour table; every L2-present host, unclassified until a pattern claims it)")
+
 			// One HTTP client for every identification probe: connections to a
 			// device are pooled and reused across sweeps instead of being dialed
 			// fresh each time (see ecp.NewIdentifyClient for the timeout).
 			identifyClient := ecp.NewIdentifyClient()
-			var err error
 			disc, err = discovery.New(discovery.Config{
 				Watches:   mergeSSDPWatches(builtinSSDP, bootSSDPW),
 				Store:     candStore,
