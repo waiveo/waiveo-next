@@ -8,6 +8,9 @@ func TestVendorResolvesAKnownOUI(t *testing.T) {
 	if v, ok := Vendor("bc:24:11:3f:b9:4d"); !ok || v != "Proxmox" {
 		t.Errorf("Vendor(bc:24:11:…) = %q,%v, want Proxmox,true", v, ok)
 	}
+	if v, ok := Vendor("6c:1f:f7:a6:e4:b6"); !ok || v != "Ugreen" {
+		t.Errorf("Vendor(6c:1f:f7:…) = %q,%v, want Ugreen,true", v, ok)
+	}
 	if v, ok := Vendor("6c:1f:8a:00:00:01"); !ok || v != "Apple" {
 		t.Errorf("Vendor(6c:1f:8a:…) = %q,%v, want Apple,true", v, ok)
 	}

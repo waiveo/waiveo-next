@@ -44,6 +44,7 @@ var byOUI = map[string]string{
 	"503dd1": "TP-Link",
 	"d85ed3": "Gigabyte",
 	"3cefa5": "Cloud Network Tech",
+	"6c1ff7": "Ugreen",
 
 	// Apple.
 	"000393": "Apple",
