@@ -189,13 +189,22 @@ func (l *Lane) sweep() {
 // pattern to assert, not this generic guess.
 func classFor(serviceType string) string {
 	switch serviceType {
-	case "_airplay._tcp", "_raop._tcp", "_googlecast._tcp", "_spotify-connect._tcp", "_sonos._tcp", "_roku._tcp":
+	case "_airplay._tcp", "_raop._tcp", "_googlecast._tcp", "_spotify-connect._tcp",
+		"_sonos._tcp", "_roku._tcp", "_androidtvremote2._tcp":
 		return "media-player"
 	case "_ipp._tcp", "_ipps._tcp", "_printer._tcp", "_pdl-datastream._tcp", "_scanner._tcp", "_uscan._tcp", "_uscans._tcp":
 		return "printer"
 	case "_smb._tcp", "_afpovertcp._tcp", "_nfs._tcp", "_ftp._tcp", "_webdav._tcp":
 		return "storage"
-	case "_hap._tcp", "_homekit._tcp", "_matter._tcp", "_matterc._tcp", "_hue._tcp":
+	// `_home-assistant` (a hub/controller) and `_ecobee` (a thermostat) are
+	// definitive home-automation signals a device advertises on its own — a Home
+	// Assistant box showed unclassified until this line because it advertises
+	// neither HomeKit nor Matter, only its own service. A device that ALSO
+	// advertises a media type (an ecobee carries `_raop` for its chime) still
+	// classifies by whichever type the sweep reads first — the accepted
+	// generic-guess ambiguity, unchanged here.
+	case "_hap._tcp", "_homekit._tcp", "_matter._tcp", "_matterc._tcp", "_hue._tcp",
+		"_home-assistant._tcp", "_ecobee._tcp":
 		return "smart-home"
 	default:
 		return deviceplane.ClassUnclassified

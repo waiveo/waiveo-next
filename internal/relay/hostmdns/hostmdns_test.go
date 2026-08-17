@@ -221,9 +221,16 @@ func TestClassFor(t *testing.T) {
 		"_ipp._tcp":        "printer",
 		"_smb._tcp":        "storage",
 		"_hap._tcp":        "smart-home",
-		"_http._tcp":       deviceplane.ClassUnclassified,
-		"_ssh._tcp":        deviceplane.ClassUnclassified,
-		"":                 deviceplane.ClassUnclassified,
+		// Added: definitive signals a device advertises on its own (a Home
+		// Assistant hub, an ecobee thermostat, an Android TV) that were falling
+		// through to unclassified on the box.
+		"_home-assistant._tcp":   "smart-home",
+		"_ecobee._tcp":           "smart-home",
+		"_androidtvremote2._tcp": "media-player",
+		"_http._tcp":             deviceplane.ClassUnclassified,
+		"_ssh._tcp":              deviceplane.ClassUnclassified,
+		"_nut._tcp":              deviceplane.ClassUnclassified, // a UPS — no generic bucket, stays unclassified
+		"":                       deviceplane.ClassUnclassified,
 	}
 	for in, want := range cases {
 		if got := classFor(in); got != want {
