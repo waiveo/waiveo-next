@@ -142,15 +142,18 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    // Health is read SEPARATELY from the device plane, and its failure never
-    // fails the page: it is owner-only (a 403 for a site admin is routine), and
-    // folding it into the same try would turn "you may not read relay health"
-    // into "the device plane could not be read" — hiding a fleet the caller is
-    // perfectly entitled to see.
+    // Relay connectivity is read SEPARATELY from the device plane, and its
+    // failure never fails the page: an empty device list is meaningful only
+    // once you know whether a relay is connected, but a failure to read THAT
+    // must not hide a fleet the caller is entitled to see. This reads the
+    // operator-readable /discovery/relays (the live connection set) rather than
+    // owner-only /system-health, so a site admin is no longer blind to it — and
+    // it does not 404 when the workspace root is missing, the failure that made
+    // even the owner blind here.
     void client.diagnostics
-      .health()
-      .then((health) => {
-        setRelays(health.relays);
+      .relays()
+      .then((relays) => {
+        setRelays(relays);
         setBlind(null);
       })
       .catch((err: unknown) => {

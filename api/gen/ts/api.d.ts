@@ -289,6 +289,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/discovery/relays": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the relays connected to this deployment
+         * @description The device plane's substrate, readable by any operator: which relays are connected NOW. Unlike `/system-health`, which reserves relay health to the workspace owner and authorizes through the workspace root, this reads the live connection set directly and depends on no scope node — so the console can always tell "discovery is running and found nothing" from "nothing is discovering", the one distinction an empty device list turns on, without the owner privilege the health summary requires.
+         */
+        get: operations["listDiscoveryRelays"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/entities": {
         parameters: {
             query?: never;
@@ -4107,6 +4127,34 @@ export interface operations {
             422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listDiscoveryRelays: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The connected relays. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        relays: components["schemas"]["RelayHealth"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            429: components["responses"]["TooManyRequests"];
         };
     };
     listEntities: {

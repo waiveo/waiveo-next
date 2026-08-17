@@ -936,6 +936,15 @@ var probes = map[string]probe{
 	"listDevices": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		return e.do(t, http.MethodGet, "/api/v1/devices", nil, nil)
 	},
+	"listDiscoveryRelays": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// Operator-readable, and no mintOrg: this route reads the live connection
+		// set directly rather than authorizing through the workspace root, which
+		// is the whole reason it exists beside owner-only getSystemHealth. The
+		// env's pairing directory wires one connected relay, so the response
+		// carries a RelayHealth item and its shape is verified, not trivially
+		// satisfied by an empty array.
+		return e.do(t, http.MethodGet, "/api/v1/discovery/relays", nil, nil)
+	},
 	"listEntities": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		return e.do(t, http.MethodGet, "/api/v1/entities", nil, nil)
 	},

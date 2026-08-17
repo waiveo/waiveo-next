@@ -84,6 +84,26 @@ func (srv *server) mountDevicePlane(rt *router) {
 	rt.HandleFunc("POST "+apiPrefix+"/devices/{id}/adopt", srv.adoptDevice)
 	rt.HandleFunc("GET "+apiPrefix+"/entities", srv.listEntities)
 	rt.HandleFunc("POST "+apiPrefix+"/entities/{id}/commands", srv.sendEntityCommand)
+	rt.HandleFunc("GET "+apiPrefix+"/discovery/relays", srv.getDiscoveryRelays)
+}
+
+// getDiscoveryRelays reports the connected relays to any authenticated operator
+// — the Discovery surface's answer to "is a relay connected NOW", which an
+// empty device list is meaningless without (a relay that is not connected is
+// not discovering, so an empty list says nothing about the network).
+//
+// It exists BESIDE the owner-only /system-health for two reasons. First, scope:
+// an admin bound at one site is entitled to know whether discovery is running,
+// and /system-health reserves that to the workspace owner. Second, and more
+// pressing, robustness: /system-health authorizes through the workspace ROOT
+// (authorizeWorkspaceOwner → WorkspaceRoot), so it 404s outright when the org
+// scope node is missing — taking relay health down with the whole owner
+// surface. This route reads the LIVE connection set directly
+// (pairingRelays.ConnectedRelays, via relayHealth), which depends on no scope
+// node at all, so the device plane can always answer the one question it must.
+func (srv *server) getDiscoveryRelays(w http.ResponseWriter, r *http.Request) {
+	relays, _ := srv.relayHealth()
+	writeJSONValue(w, http.StatusOK, map[string]any{"relays": relays})
 }
 
 // ---- list -----------------------------------------------------------------

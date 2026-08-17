@@ -68,6 +68,12 @@ export interface DiagnosticsModule {
   logs(query?: PlatformLogQuery): Promise<PlatformLogPage>;
   /** The health summary, measured at request time. */
   health(): Promise<SystemHealth>;
+  /** The CONNECTED relays, readable by any operator (unlike `health()`, which
+   * is owner-only). The device plane's substrate: a relay that is not connected
+   * is not discovering, so an empty device list means nothing without this. It
+   * reads the live connection set, so — unlike `health()` — it does not depend
+   * on the workspace root and cannot 404 when that is missing. */
+  relays(): Promise<RelayHealth[]>;
   /** Ask this box to restart its application server (API-150).
    *
    * It resolves with an ACCEPTANCE, not a completion — the process is still
@@ -107,6 +113,10 @@ export function createDiagnosticsModule(client: ApiClient): DiagnosticsModule {
     async health() {
       const { data } = await client.read<SystemHealth>("/system-health");
       return data;
+    },
+    async relays() {
+      const { data } = await client.read<{ relays: RelayHealth[] }>("/discovery/relays");
+      return data.relays;
     },
     async restart() {
       // `action` carries an Idempotency-Key, which matters more here than

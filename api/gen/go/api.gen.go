@@ -3497,6 +3497,12 @@ type AdoptDeviceParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// ListDiscoveryRelaysParams defines parameters for ListDiscoveryRelays.
+type ListDiscoveryRelaysParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // ListEntitiesParams defines parameters for ListEntities.
 type ListEntitiesParams struct {
 	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
@@ -4523,6 +4529,9 @@ type ClientInterface interface {
 	// AdoptDevice request
 	AdoptDevice(ctx context.Context, deviceId Ulid, params *AdoptDeviceParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ListDiscoveryRelays request
+	ListDiscoveryRelays(ctx context.Context, params *ListDiscoveryRelaysParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListEntities request
 	ListEntities(ctx context.Context, params *ListEntitiesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -5528,6 +5537,18 @@ func (c *Client) ListDevices(ctx context.Context, params *ListDevicesParams, req
 
 func (c *Client) AdoptDevice(ctx context.Context, deviceId Ulid, params *AdoptDeviceParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewAdoptDeviceRequest(c.Server, deviceId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListDiscoveryRelays(ctx context.Context, params *ListDiscoveryRelaysParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListDiscoveryRelaysRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -9421,6 +9442,48 @@ func NewAdoptDeviceRequest(server string, deviceId Ulid, params *AdoptDevicePara
 			}
 
 			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewListDiscoveryRelaysRequest generates requests for ListDiscoveryRelays
+func NewListDiscoveryRelaysRequest(server string, params *ListDiscoveryRelaysParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/discovery/relays")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
 		}
 
 	}
@@ -14458,6 +14521,9 @@ type ClientWithResponsesInterface interface {
 	// AdoptDeviceWithResponse request
 	AdoptDeviceWithResponse(ctx context.Context, deviceId Ulid, params *AdoptDeviceParams, reqEditors ...RequestEditorFn) (*AdoptDeviceResponse, error)
 
+	// ListDiscoveryRelaysWithResponse request
+	ListDiscoveryRelaysWithResponse(ctx context.Context, params *ListDiscoveryRelaysParams, reqEditors ...RequestEditorFn) (*ListDiscoveryRelaysResponse, error)
+
 	// ListEntitiesWithResponse request
 	ListEntitiesWithResponse(ctx context.Context, params *ListEntitiesParams, reqEditors ...RequestEditorFn) (*ListEntitiesResponse, error)
 
@@ -16194,6 +16260,40 @@ func (r AdoptDeviceResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r AdoptDeviceResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ListDiscoveryRelaysResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *struct {
+		Relays []RelayHealth `json:"relays"`
+	}
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON429 *TooManyRequests
+}
+
+// Status returns HTTPResponse.Status
+func (r ListDiscoveryRelaysResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListDiscoveryRelaysResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListDiscoveryRelaysResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -19163,6 +19263,15 @@ func (c *ClientWithResponses) AdoptDeviceWithResponse(ctx context.Context, devic
 		return nil, err
 	}
 	return ParseAdoptDeviceResponse(rsp)
+}
+
+// ListDiscoveryRelaysWithResponse request returning *ListDiscoveryRelaysResponse
+func (c *ClientWithResponses) ListDiscoveryRelaysWithResponse(ctx context.Context, params *ListDiscoveryRelaysParams, reqEditors ...RequestEditorFn) (*ListDiscoveryRelaysResponse, error) {
+	rsp, err := c.ListDiscoveryRelays(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListDiscoveryRelaysResponse(rsp)
 }
 
 // ListEntitiesWithResponse request returning *ListEntitiesResponse
@@ -22224,6 +22333,48 @@ func ParseAdoptDeviceResponse(rsp *http.Response) (*AdoptDeviceResponse, error) 
 			return nil, err
 		}
 		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListDiscoveryRelaysResponse parses an HTTP response from a ListDiscoveryRelaysWithResponse call
+func ParseListDiscoveryRelaysResponse(rsp *http.Response) (*ListDiscoveryRelaysResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListDiscoveryRelaysResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest struct {
+			Relays []RelayHealth `json:"relays"`
+		}
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
 
 	}
 

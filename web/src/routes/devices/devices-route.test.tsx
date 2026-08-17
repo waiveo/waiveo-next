@@ -110,11 +110,11 @@ function health(over: Partial<SystemHealth> = {}): SystemHealth {
  * later `server.use` in a test.
  *
  * Four, not five: the page does not read `/scope-nodes` (the server places an
- * adopted device itself). It DOES read `/system-health`, because relay
- * connectivity is the only way to tell "discovery is running and found nothing"
- * from "nothing is discovering" — see ./discovery. And it reads
- * `/adopted-devices` for the policy panel, which lists the RECORDS rather than
- * joining them onto discovered rows (the two share no member).
+ * adopted device itself). It DOES read `/discovery/relays` (the operator-
+ * readable connected-relay list), because relay connectivity is the only way to
+ * tell "discovery is running and found nothing" from "nothing is discovering" —
+ * see ./discovery. And it reads `/adopted-devices` for the policy panel, which
+ * lists the RECORDS rather than joining them onto discovered rows.
  *
  * `onUnhandledRequest: "error"` was described here as what keeps this honest —
  * "a route that gained or lost a fetch fails every test here loudly". It did NOT
@@ -136,7 +136,10 @@ function seed({
   server.use(
     http.get(`${TEST_BASE}/devices`, () => page(devices)),
     http.get(`${TEST_BASE}/entities`, () => page(entities)),
-    http.get(`${TEST_BASE}/system-health`, () => ok(systemHealth)),
+    // Relay connectivity now comes from the operator-readable /discovery/relays,
+    // not owner-only /system-health. The fixture reuses the health body's relay
+    // list so a test still describes one connected relay in one place.
+    http.get(`${TEST_BASE}/discovery/relays`, () => ok({ relays: systemHealth.relays })),
     http.get(`${TEST_BASE}/adopted-devices`, () => page(adopted as never[])),
   );
 }
@@ -288,23 +291,24 @@ describe("Devices — the four ways a device list can be empty", () => {
     expect(state).toHaveTextContent(/This is the steady state, not an empty result/);
   });
 
-  it("says it does not KNOW when relay health is refused, and does not claim a sweep ran", async () => {
-    // /system-health is owner-only. A site admin gets 403 — and the page must
-    // not quietly render that as "a relay swept and found nothing", which is a
-    // claim it has no basis for.
+  it("says it does not KNOW when relay health cannot be read, and does not claim a sweep ran", async () => {
+    // /discovery/relays is operator-readable, so an admin is no longer blind by
+    // owner-gate — but a genuine read failure (the endpoint unreachable) still
+    // leaves the page unable to say whether anything is looking, and it must not
+    // quietly render that as "a relay swept and found nothing".
     seed({ devices: [], entities: [] });
     server.use(
-      http.get(`${TEST_BASE}/system-health`, () =>
+      http.get(`${TEST_BASE}/discovery/relays`, () =>
         HttpResponse.json(
           {
             type: "about:blank",
-            title: "Forbidden",
-            status: 403,
-            code: "FORBIDDEN",
-            detail: "Only the workspace owner may read this.",
+            title: "Internal Server Error",
+            status: 500,
+            code: "INTERNAL",
+            detail: "An unexpected server error occurred.",
             trace_id: TRACE_ID,
           },
-          { status: 403, headers: { "Content-Type": "application/problem+json", "Trace-Id": TRACE_ID } },
+          { status: 500, headers: { "Content-Type": "application/problem+json", "Trace-Id": TRACE_ID } },
         ),
       ),
     );
@@ -312,7 +316,7 @@ describe("Devices — the four ways a device list can be empty", () => {
     const state = await stateRegion();
     await waitFor(() => expect(state).toHaveAttribute("data-kind", "blind"));
     expect(state).toHaveTextContent(/it is not known whether anything is looking/);
-    expect(state).toHaveTextContent(/Only the workspace owner can read relay health/);
+    expect(state).toHaveTextContent(/Relay health could not be read/);
     // The two claims it must NOT make.
     expect(state).not.toHaveTextContent(/Discovery is running/);
     expect(state).not.toHaveTextContent(/Discovery is not running/);
@@ -322,22 +326,22 @@ describe("Devices — the four ways a device list can be empty", () => {
     expect(document.querySelector("[data-slot='discovery-relay']")).toBeNull();
   });
 
-  it("keeps the fleet readable when only health is refused", async () => {
-    // The device plane and health are separate reads. A 403 on health must not
-    // blank a fleet the caller is perfectly entitled to see.
+  it("keeps the fleet readable when only relay health cannot be read", async () => {
+    // The device plane and relay health are separate reads. A failure on relay
+    // health must not blank a fleet the caller is perfectly entitled to see.
     seed();
     server.use(
-      http.get(`${TEST_BASE}/system-health`, () =>
+      http.get(`${TEST_BASE}/discovery/relays`, () =>
         HttpResponse.json(
           {
             type: "about:blank",
-            title: "Forbidden",
-            status: 403,
-            code: "FORBIDDEN",
-            detail: "Only the workspace owner may read this.",
+            title: "Internal Server Error",
+            status: 500,
+            code: "INTERNAL",
+            detail: "An unexpected server error occurred.",
             trace_id: TRACE_ID,
           },
-          { status: 403, headers: { "Content-Type": "application/problem+json", "Trace-Id": TRACE_ID } },
+          { status: 500, headers: { "Content-Type": "application/problem+json", "Trace-Id": TRACE_ID } },
         ),
       ),
     );

@@ -969,6 +969,41 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /discovery/relays:
+    get:
+      operationId: listDiscoveryRelays
+      summary: List the relays connected to this deployment
+      description: >-
+        The device plane's substrate, readable by any operator: which relays are
+        connected NOW. Unlike `/system-health`, which reserves relay health to
+        the workspace owner and authorizes through the workspace root, this reads
+        the live connection set directly and depends on no scope node — so the
+        console can always tell "discovery is running and found nothing" from
+        "nothing is discovering", the one distinction an empty device list turns
+        on, without the owner privilege the health summary requires.
+      tags: [devices, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The connected relays.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [relays]
+                properties:
+                  relays:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RelayHealth"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
   /entities:
     get:
       operationId: listEntities
