@@ -439,6 +439,14 @@ func Open(dsn string, nowMs func() int64) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate discovered devices: %w", err)
 	}
+	// The operator's IGNORE decisions (ignored_devices). Its own table beside the
+	// mirror rather than a resource Kind for the same reasons: nothing authors it
+	// into desired-state, it carries no revision, and — unlike adoption — it never
+	// reaches a relay, so it must not bump the generation (ignoreddevices.go).
+	if _, err := db.Exec(ignoredDevicesSchema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: migrate ignored devices: %w", err)
+	}
 	// Revoked screens and relay certificates (api/1 API-140, revocations.go).
 	// Their own table rather than a column, so a revocation outlives the row it
 	// concerns — the store hard-deletes, and a revocation lost to a tidy-up is

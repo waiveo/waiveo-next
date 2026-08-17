@@ -973,6 +973,47 @@ var probes = map[string]probe{
 		}
 		return e.do(t, http.MethodPost, "/api/v1/devices/"+rsAdoptDeviceID+"/adopt", nil, nil)
 	},
+	"ignoreDevice": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// The ignore path, end to end, against a device the read model reports and
+		// the mirror holds — the 200 body is the Device shape this check verifies.
+		org := e.mintOrg(t)
+		mustPutDevice(t, e.registry, devices.Device{
+			ID: rsAdoptDeviceID, RelayID: rsRelayID, DeviceClass: "media-player",
+			Name: "Back Bar TV", ScopeNode: org, Labels: map[string]string{},
+			Address: "192.0.2.44:8060", Model: "Roku Ultra", Serial: "X00500ADOPT1",
+		})
+		if err := e.store.ReplaceDiscoveredDevices(context.Background(), rsRelayID, []store.DiscoveredDevice{{
+			DeviceID: rsAdoptDeviceID, RelayID: rsRelayID, ScopeNode: org,
+			Driver: "roku-ecp", NativeID: "uuid:roku:ecp:X00500ADOPT1", DeviceClass: "media-player",
+			Name: "Back Bar TV", Address: "192.0.2.44:8060", Model: "Roku Ultra", Serial: "X00500ADOPT1",
+			FirstSeen: 1000, LastSeen: 2000,
+			Entities: []wire.CandidateEntity{{Key: "main", DeviceClass: "media-player"}},
+		}}); err != nil {
+			t.Fatalf("mirror the device the ignore probe ignores: %v", err)
+		}
+		return e.do(t, http.MethodPost, "/api/v1/devices/"+rsAdoptDeviceID+"/ignore", nil, nil)
+	},
+	"unignoreDevice": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// Un-ignoring a device that is not ignored is a valid 200 whose body is the
+		// Device (ignored false) — enough to verify the response shape without
+		// having to establish an ignore first.
+		org := e.mintOrg(t)
+		mustPutDevice(t, e.registry, devices.Device{
+			ID: rsAdoptDeviceID, RelayID: rsRelayID, DeviceClass: "media-player",
+			Name: "Back Bar TV", ScopeNode: org, Labels: map[string]string{},
+			Address: "192.0.2.44:8060", Model: "Roku Ultra", Serial: "X00500ADOPT1",
+		})
+		if err := e.store.ReplaceDiscoveredDevices(context.Background(), rsRelayID, []store.DiscoveredDevice{{
+			DeviceID: rsAdoptDeviceID, RelayID: rsRelayID, ScopeNode: org,
+			Driver: "roku-ecp", NativeID: "uuid:roku:ecp:X00500ADOPT1", DeviceClass: "media-player",
+			Name: "Back Bar TV", Address: "192.0.2.44:8060", Model: "Roku Ultra", Serial: "X00500ADOPT1",
+			FirstSeen: 1000, LastSeen: 2000,
+			Entities: []wire.CandidateEntity{{Key: "main", DeviceClass: "media-player"}},
+		}}); err != nil {
+			t.Fatalf("mirror the device the unignore probe clears: %v", err)
+		}
+		return e.do(t, http.MethodDelete, "/api/v1/devices/"+rsAdoptDeviceID+"/ignore", nil, nil)
+	},
 
 	// --- workspace --------------------------------------------------------
 	"exportWorkspace": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {

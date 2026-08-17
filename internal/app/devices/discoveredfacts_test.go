@@ -100,3 +100,59 @@ func TestMarkAdoptedOutlivesAReport(t *testing.T) {
 		t.Error("adoption was erased while the device was off the network — a powered-off device is not an un-adopted one")
 	}
 }
+
+// TestMarkIgnoredOutlivesAReport is the same requirement for the ignore flag,
+// and it matters MORE here than for adoption: an ignored device keeps being
+// reported (that is the point — it is not adopted, so the relay has no reason to
+// stop listing it), so a re-report that erased the ignore is the COMMON path,
+// not the rare powered-off one. If ignore did not outlive a report, a device an
+// operator set aside would reappear on the next sweep, seconds later.
+func TestMarkIgnoredOutlivesAReport(t *testing.T) {
+	r := New(testSite, func() int64 { return 0 })
+	id := deviceid.Device(testSite, "roku-ecp", "X1")
+
+	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{candidate("roku-ecp", "X1")}); err != nil {
+		t.Fatalf("first report: %v", err)
+	}
+	r.MarkIgnored(id)
+	if d, _ := r.Device(id); !d.Ignored {
+		t.Fatal("MarkIgnored did not take effect")
+	}
+
+	// The device re-reports — the ordinary case for an ignored device — and the
+	// ignore must still be there.
+	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{candidate("roku-ecp", "X1")}); err != nil {
+		t.Fatalf("second report: %v", err)
+	}
+	if d, _ := r.Device(id); !d.Ignored {
+		t.Error("the ignore decision was erased by a re-report — a re-sighting must not un-ignore")
+	}
+}
+
+// TestUnmarkIgnoredIsReversible pins spec §7's "reversible": un-ignoring returns
+// the device to plain discovered, and the flag clears on the next read without a
+// report having to arrive.
+func TestUnmarkIgnoredIsReversible(t *testing.T) {
+	r := New(testSite, func() int64 { return 0 })
+	id := deviceid.Device(testSite, "roku-ecp", "X1")
+
+	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{candidate("roku-ecp", "X1")}); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	r.MarkIgnored(id)
+	if d, _ := r.Device(id); !d.Ignored {
+		t.Fatal("MarkIgnored did not take effect")
+	}
+	r.UnmarkIgnored(id)
+	if d, _ := r.Device(id); d.Ignored {
+		t.Error("UnmarkIgnored left the device ignored — the decision must be reversible")
+	}
+	// And ignore is independent of adoption: a device can be adopted while never
+	// having been ignored, and clearing ignore does not touch adoption.
+	r.MarkAdopted(id)
+	r.MarkIgnored(id)
+	r.UnmarkIgnored(id)
+	if d, _ := r.Device(id); !d.Adopted || d.Ignored {
+		t.Errorf("after adopt+ignore+unignore: adopted=%v ignored=%v, want adopted=true ignored=false", d.Adopted, d.Ignored)
+	}
+}

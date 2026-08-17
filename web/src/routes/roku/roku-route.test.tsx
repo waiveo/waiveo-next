@@ -50,6 +50,7 @@ function device(over: Partial<Device> = {}): Device {
     model: "Roku Ultra",
     serial: "X0012345678",
     adopted: true,
+    ignored: false,
     ...over,
   };
 }

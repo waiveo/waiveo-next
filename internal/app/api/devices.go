@@ -82,6 +82,8 @@ func WithDevicePlane(registry *devices.Registry, dispatcher CommandDispatcher) O
 func (srv *server) mountDevicePlane(rt *router) {
 	rt.HandleFunc("GET "+apiPrefix+"/devices", srv.listDevices)
 	rt.HandleFunc("POST "+apiPrefix+"/devices/{id}/adopt", srv.adoptDevice)
+	rt.HandleFunc("POST "+apiPrefix+"/devices/{id}/ignore", srv.ignoreDevice)
+	rt.HandleFunc("DELETE "+apiPrefix+"/devices/{id}/ignore", srv.unignoreDevice)
 	rt.HandleFunc("GET "+apiPrefix+"/entities", srv.listEntities)
 	rt.HandleFunc("POST "+apiPrefix+"/entities/{id}/commands", srv.sendEntityCommand)
 	rt.HandleFunc("GET "+apiPrefix+"/discovery/relays", srv.getDiscoveryRelays)
@@ -297,6 +299,110 @@ func (srv *server) adoptDeviceExec(w http.ResponseWriter, r *http.Request) {
 	srv.devices.MarkAdopted(id)
 	adopted, _ := srv.devices.Device(id)
 	writeJSONValue(w, http.StatusOK, adopted)
+}
+
+// ---- ignore / unignore ------------------------------------------------------
+
+// resolveWritableDevice runs the resolve-and-authorize preamble every device
+// mutation shares (adopt does the same inline): it resolves the path id against
+// the read model, hides an out-of-scope device behind the same 404 a missing one
+// gets so the refusal cannot confirm existence (scopeview.go), and requires
+// write authority at the device's own placement (SEC-005). On any failure it has
+// already written the problem and returns ok=false; the caller returns.
+func (srv *server) resolveWritableDevice(w http.ResponseWriter, r *http.Request) (devices.Device, string, bool) {
+	id := r.PathValue("id")
+	var device devices.Device
+	found := false
+	if srv.devices != nil {
+		device, found = srv.devices.Device(id)
+	}
+	if !found {
+		writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No device exists with this identifier.")
+		return devices.Device{}, "", false
+	}
+	view, viewErr := srv.scopeView(r)
+	if viewErr != nil {
+		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
+		return devices.Device{}, "", false
+	}
+	if !view.canRead(device.ScopeNode) {
+		writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No device exists with this identifier.")
+		return devices.Device{}, "", false
+	}
+	if !view.canWrite(device.ScopeNode) {
+		writeProblem(w, r, http.StatusForbidden, "FORBIDDEN", "Forbidden", unauthorizedWriteDetail)
+		return devices.Device{}, "", false
+	}
+	return device, id, true
+}
+
+// ignoreDevice handles POST /api/v1/devices/{id}/ignore (openapi ignoreDevice):
+// it records the operator's decision to IGNORE a discovered device — set it
+// aside as something this deployment does not care about — and answers with the
+// device as it now reads, `ignored` true.
+//
+// Unlike adopt, ignore writes NOTHING a relay is sent: an ignored device is
+// still discovered and still reported, just marked so the console can keep it out
+// of the way. So this changes no desired state and bumps no generation
+// (store ignoreddevices.go). It is authorized as a write all the same — it is a
+// durable operator decision at the device's placement — and it is idempotent by
+// construction (ignoring an ignored device is a 200 that changes nothing), plus
+// it honors Idempotency-Key like every other mutating POST (API-050/052).
+func (srv *server) ignoreDevice(w http.ResponseWriter, r *http.Request) {
+	srv.idempotent(w, r, nil, func(w http.ResponseWriter) { srv.ignoreDeviceExec(w, r) })
+}
+
+func (srv *server) ignoreDeviceExec(w http.ResponseWriter, r *http.Request) {
+	device, id, ok := srv.resolveWritableDevice(w, r)
+	if !ok {
+		return
+	}
+	if _, err := srv.store.IgnoreDevice(r.Context(), id, srv.nowMs()); err != nil {
+		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
+		return
+	}
+	// Durable row committed first, then teach the read model, so the response to
+	// this request reports the device ignored and a failed write never leaves the
+	// list claiming an ignore that was not made (adopt's ordering rule).
+	srv.devices.MarkIgnored(id)
+	ignored, ok := srv.devices.Device(id)
+	if !ok {
+		// The device was resolvable at the top of the handler; if it has since
+		// vanished from the read model, the mark still stands and the caller's
+		// pre-read device is the truthful body to return with the flag set.
+		device.Ignored = true
+		writeJSONValue(w, http.StatusOK, device)
+		return
+	}
+	writeJSONValue(w, http.StatusOK, ignored)
+}
+
+// unignoreDevice handles DELETE /api/v1/devices/{id}/ignore (openapi
+// unignoreDevice): it reverses an ignore, returning the device to plain
+// "discovered" (spec §7: ignoring is reversible, never a hidden trash can), and
+// answers with the device as it now reads, `ignored` false.
+//
+// DELETE, not a second POST, because un-ignoring REMOVES the decision rather than
+// recording a new one, and it is naturally idempotent — un-ignoring a device that
+// was not ignored is a 200 that changes nothing — so it needs no Idempotency-Key
+// wrapper, exactly like the other DELETEs on this surface.
+func (srv *server) unignoreDevice(w http.ResponseWriter, r *http.Request) {
+	device, id, ok := srv.resolveWritableDevice(w, r)
+	if !ok {
+		return
+	}
+	if _, err := srv.store.UnignoreDevice(r.Context(), id); err != nil {
+		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
+		return
+	}
+	srv.devices.UnmarkIgnored(id)
+	unignored, ok := srv.devices.Device(id)
+	if !ok {
+		device.Ignored = false
+		writeJSONValue(w, http.StatusOK, device)
+		return
+	}
+	writeJSONValue(w, http.StatusOK, unignored)
 }
 
 // ---- command --------------------------------------------------------------

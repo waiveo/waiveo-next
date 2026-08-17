@@ -20,6 +20,7 @@ function device(over: Partial<Device> = {}): Device {
     scope_node: "01J8Z0ROOT0000000000000000",
     labels: {},
     adopted: false,
+    ignored: false,
     ...over,
   };
 }

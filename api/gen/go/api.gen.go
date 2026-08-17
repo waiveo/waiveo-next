@@ -1771,7 +1771,7 @@ type DeriveSpecKind string
 // DeriveSpecValign Vertical alignment of a `text` spec inside the layer box. Optional; default `top`. It exists because a rasterized layer's box is exactly the layer geometry — unlike a native Label there is no larger canvas to centre against later. Rejected on `qr` and `rect`.
 type DeriveSpecValign string
 
-// Device One physical device a relay has found on its own LAN. Its descriptive members are read-only on this API — a device is DISCOVERED by its relay's device plane (`relay/1` Device plane), not authored here, so this resource carries no `revision` and no optimistic-concurrency envelope. The one decision this API does make about a device is `adopted`, taken through the `adoptDevice` operation. A device exposes one or more entities; commands are addressed to those entities, never to the device.
+// Device One physical device a relay has found on its own LAN. Its descriptive members are read-only on this API — a device is DISCOVERED by its relay's device plane (`relay/1` Device plane), not authored here, so this resource carries no `revision` and no optimistic-concurrency envelope. The two decisions this API does make about a device are `adopted`, taken through the `adoptDevice` operation, and `ignored`, taken through `ignoreDevice`. A device exposes one or more entities; commands are addressed to those entities, never to the device.
 type Device struct {
 	// Address Where the reporting relay can reach this device on its LAN, as a dialable `host:port` authority. Absent when discovery found the device but no usable address for it — the device was genuinely seen, and no command can be delivered to it until an address is.
 	Address *string `json:"address,omitempty"`
@@ -1787,6 +1787,9 @@ type Device struct {
 
 	// Id A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	Id Ulid `json:"id"`
+
+	// Ignored Whether the operator has IGNORED this device — set it aside as something this deployment does not care about. Unlike `adopted`, an ignore reaches no relay: the device is still discovered and still reported, just marked so a console can keep it out of the way. Durable and reversible; `ignoreDevice` sets it and `unignoreDevice` clears it. Discovery alone never sets this.
+	Ignored bool `json:"ignored"`
 
 	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
 	Labels LabelMap `json:"labels"`
@@ -3497,6 +3500,21 @@ type AdoptDeviceParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// UnignoreDeviceParams defines parameters for UnignoreDevice.
+type UnignoreDeviceParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// IgnoreDeviceParams defines parameters for IgnoreDevice.
+type IgnoreDeviceParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // ListDiscoveryRelaysParams defines parameters for ListDiscoveryRelays.
 type ListDiscoveryRelaysParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
@@ -4529,6 +4547,12 @@ type ClientInterface interface {
 	// AdoptDevice request
 	AdoptDevice(ctx context.Context, deviceId Ulid, params *AdoptDeviceParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// UnignoreDevice request
+	UnignoreDevice(ctx context.Context, deviceId Ulid, params *UnignoreDeviceParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// IgnoreDevice request
+	IgnoreDevice(ctx context.Context, deviceId Ulid, params *IgnoreDeviceParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListDiscoveryRelays request
 	ListDiscoveryRelays(ctx context.Context, params *ListDiscoveryRelaysParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -5537,6 +5561,30 @@ func (c *Client) ListDevices(ctx context.Context, params *ListDevicesParams, req
 
 func (c *Client) AdoptDevice(ctx context.Context, deviceId Ulid, params *AdoptDeviceParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewAdoptDeviceRequest(c.Server, deviceId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UnignoreDevice(ctx context.Context, deviceId Ulid, params *UnignoreDeviceParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUnignoreDeviceRequest(c.Server, deviceId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) IgnoreDevice(ctx context.Context, deviceId Ulid, params *IgnoreDeviceParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewIgnoreDeviceRequest(c.Server, deviceId, params)
 	if err != nil {
 		return nil, err
 	}
@@ -9406,6 +9454,115 @@ func NewAdoptDeviceRequest(server string, deviceId Ulid, params *AdoptDevicePara
 	}
 
 	operationPath := fmt.Sprintf("/devices/%s/adopt", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewUnignoreDeviceRequest generates requests for UnignoreDevice
+func NewUnignoreDeviceRequest(server string, deviceId Ulid, params *UnignoreDeviceParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "device_id", deviceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/devices/%s/ignore", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewIgnoreDeviceRequest generates requests for IgnoreDevice
+func NewIgnoreDeviceRequest(server string, deviceId Ulid, params *IgnoreDeviceParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "device_id", deviceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/devices/%s/ignore", pathParam0)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -14521,6 +14678,12 @@ type ClientWithResponsesInterface interface {
 	// AdoptDeviceWithResponse request
 	AdoptDeviceWithResponse(ctx context.Context, deviceId Ulid, params *AdoptDeviceParams, reqEditors ...RequestEditorFn) (*AdoptDeviceResponse, error)
 
+	// UnignoreDeviceWithResponse request
+	UnignoreDeviceWithResponse(ctx context.Context, deviceId Ulid, params *UnignoreDeviceParams, reqEditors ...RequestEditorFn) (*UnignoreDeviceResponse, error)
+
+	// IgnoreDeviceWithResponse request
+	IgnoreDeviceWithResponse(ctx context.Context, deviceId Ulid, params *IgnoreDeviceParams, reqEditors ...RequestEditorFn) (*IgnoreDeviceResponse, error)
+
 	// ListDiscoveryRelaysWithResponse request
 	ListDiscoveryRelaysWithResponse(ctx context.Context, params *ListDiscoveryRelaysParams, reqEditors ...RequestEditorFn) (*ListDiscoveryRelaysResponse, error)
 
@@ -16260,6 +16423,73 @@ func (r AdoptDeviceResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r AdoptDeviceResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type UnignoreDeviceResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *Device
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r UnignoreDeviceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r UnignoreDeviceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r UnignoreDeviceResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type IgnoreDeviceResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *Device
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON429 *TooManyRequests
+}
+
+// Status returns HTTPResponse.Status
+func (r IgnoreDeviceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r IgnoreDeviceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r IgnoreDeviceResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -19263,6 +19493,24 @@ func (c *ClientWithResponses) AdoptDeviceWithResponse(ctx context.Context, devic
 		return nil, err
 	}
 	return ParseAdoptDeviceResponse(rsp)
+}
+
+// UnignoreDeviceWithResponse request returning *UnignoreDeviceResponse
+func (c *ClientWithResponses) UnignoreDeviceWithResponse(ctx context.Context, deviceId Ulid, params *UnignoreDeviceParams, reqEditors ...RequestEditorFn) (*UnignoreDeviceResponse, error) {
+	rsp, err := c.UnignoreDevice(ctx, deviceId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUnignoreDeviceResponse(rsp)
+}
+
+// IgnoreDeviceWithResponse request returning *IgnoreDeviceResponse
+func (c *ClientWithResponses) IgnoreDeviceWithResponse(ctx context.Context, deviceId Ulid, params *IgnoreDeviceParams, reqEditors ...RequestEditorFn) (*IgnoreDeviceResponse, error) {
+	rsp, err := c.IgnoreDevice(ctx, deviceId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseIgnoreDeviceResponse(rsp)
 }
 
 // ListDiscoveryRelaysWithResponse request returning *ListDiscoveryRelaysResponse
@@ -22333,6 +22581,107 @@ func ParseAdoptDeviceResponse(rsp *http.Response) (*AdoptDeviceResponse, error) 
 			return nil, err
 		}
 		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseUnignoreDeviceResponse parses an HTTP response from a UnignoreDeviceWithResponse call
+func ParseUnignoreDeviceResponse(rsp *http.Response) (*UnignoreDeviceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &UnignoreDeviceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Device
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseIgnoreDeviceResponse parses an HTTP response from a IgnoreDeviceWithResponse call
+func ParseIgnoreDeviceResponse(rsp *http.Response) (*IgnoreDeviceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &IgnoreDeviceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Device
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
 
 	}
 

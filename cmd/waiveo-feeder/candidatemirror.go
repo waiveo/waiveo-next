@@ -257,5 +257,18 @@ func restoreDeviceRegistry(ctx context.Context, st *store.Store, registry *devic
 	for _, row := range adopted {
 		registry.MarkAdopted(row.ID)
 	}
+
+	// The operator's IGNORE decisions, re-applied the same way and for the same
+	// reason: they are held beside the relay views, not on the mirrored rows, so a
+	// restart must re-teach them before the console renders. Unlike the adopted
+	// rows these are not a resource Kind — they are a lightweight app-side table
+	// (store ignoreddevices.go) — so they are listed by their own accessor.
+	ignoredIDs, err := st.ListIgnoredDeviceIDs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range ignoredIDs {
+		registry.MarkIgnored(id)
+	}
 	return restored, nil
 }

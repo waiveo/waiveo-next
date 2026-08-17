@@ -43,6 +43,7 @@ function device(over: Partial<Device> = {}): Device {
     scope_node: ULID_C,
     labels: {},
     adopted: false,
+    ignored: false,
     ...over,
   };
 }

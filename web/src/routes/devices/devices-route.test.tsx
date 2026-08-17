@@ -52,6 +52,7 @@ function device(over: Partial<Device> = {}): Device {
     address: "192.0.2.40",
     model: "Roku Ultra",
     adopted: false,
+    ignored: false,
     ...over,
   };
 }

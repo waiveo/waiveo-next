@@ -123,6 +123,15 @@ import (
 // desired-state `device_inventory` section compiles from, REL-063) — the answer
 // to "is this device under our control", which is the question an operator
 // looking at a discovered-device list is actually asking.
+//
+// Ignored is the app's OTHER decision, and the third state beside adopted and
+// plain-discovered (discovery spec §7). It reports whether the operator has
+// ignored this device — set it aside as something they do not care about — which
+// is durable and reversible and, unlike Adopted, reaches no relay: an ignored
+// device is still discovered and still reported, just marked so a console can
+// keep it out of the way. A device is never both adopted and ignored in
+// practice, but the flags are independent: adopting supersedes ignoring in the
+// console's reading, not in this struct.
 type Device struct {
 	ID          string            `json:"id"`
 	ExternalID  *string           `json:"external_id"`
@@ -135,6 +144,7 @@ type Device struct {
 	Model       string            `json:"model,omitempty"`
 	Serial      string            `json:"serial,omitempty"`
 	Adopted     bool              `json:"adopted"`
+	Ignored     bool              `json:"ignored"`
 }
 
 // Entity is one addressable object a device exposes — the openapi Entity schema,
@@ -219,6 +229,17 @@ type Registry struct {
 	// not a device un-adopted.
 	adopted map[string]bool
 
+	// ignored is the set of device ids the operator has ignored. It is held here
+	// for the identical reason adopted is: a relay's report replaces its whole
+	// view, so an ignore stamped onto a view row would be erased by the very next
+	// report — which for ignore is the common case, since an ignored device keeps
+	// being reported. Holding it beside the views is what makes "ignored" survive
+	// a re-sighting (internal/app/store ignoreddevices.go says the same about the
+	// durable half). A device off the network is ignorable too, for the same
+	// reason it is adoptable when absent, so an id this registry has not heard of
+	// is remembered until it reports.
+	ignored map[string]bool
+
 	// Merged view, rebuilt from views on every write. Reads never touch views.
 	devices  map[string]Device
 	entities map[string]Entity
@@ -256,6 +277,7 @@ func New(siteScopeNode string, nowMs func() int64) *Registry {
 		entities:   map[string]Entity{},
 		incumbency: map[string]incumbent{},
 		adopted:    map[string]bool{},
+		ignored:    map[string]bool{},
 		nowMs:      nowMs,
 	}
 }
@@ -279,6 +301,41 @@ func (r *Registry) MarkAdopted(deviceID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.adopted[deviceID] = true
+	r.rematerialize()
+}
+
+// MarkIgnored records that the operator has ignored deviceID, so every later
+// listing of that device reports it ignored (see Registry.ignored).
+//
+// Like MarkAdopted it is a PROJECTION of the durable decision, never the
+// decision itself: the ignored-devices row is written first, in the store, and
+// this only teaches the in-memory read model what the store already committed.
+// Called on the ignore operation and again for every ignored row at boot, which
+// is what makes the flag survive both a restart and every relay re-report in
+// between. Ignoring a device this registry has never heard of is deliberately
+// allowed and remembered, exactly as MarkAdopted allows.
+func (r *Registry) MarkIgnored(deviceID string) {
+	if deviceID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ignored[deviceID] = true
+	r.rematerialize()
+}
+
+// UnmarkIgnored clears the ignore projection for deviceID, returning it to plain
+// "discovered" in every later listing. It is the read-model half of un-ignoring
+// (spec §7's reversibility): the store row is deleted first, and this teaches the
+// in-memory model the decision is gone. Clearing an id that was not ignored is a
+// harmless no-op.
+func (r *Registry) UnmarkIgnored(deviceID string) {
+	if deviceID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.ignored, deviceID)
 	r.rematerialize()
 }
 
@@ -439,6 +496,7 @@ func (r *Registry) rematerialize() {
 			// is rebuilt from scratch on every write, so this is the only place
 			// a fact that outlives a report can be attached to one.
 			d.Adopted = r.adopted[id]
+			d.Ignored = r.ignored[id]
 			devs[id] = d
 		}
 		for id, e := range v.entities {

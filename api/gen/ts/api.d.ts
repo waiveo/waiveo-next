@@ -289,6 +289,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/devices/{device_id}/ignore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                device_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ignore a discovered device
+         * @description Records the operator's decision to IGNORE a discovered device — set it aside as something this deployment does not care about. Unlike adoption, an ignore reaches no relay: the device is still discovered and still reported, just marked so a console can keep it out of the way, so this changes no desired state. The decision is durable and survives a re-sighting; ignoring an already-ignored device succeeds and changes nothing.
+         *
+         *     A mutating POST tagged `mcp:act`, so it accepts `Idempotency-Key`.
+         */
+        post: operations["ignoreDevice"];
+        /**
+         * Reverse an ignore
+         * @description Clears the operator's ignore decision, returning the device to plain "discovered" (ignoring is reversible, never a hidden trash can). Naturally idempotent — un-ignoring a device that was not ignored succeeds and changes nothing.
+         */
+        delete: operations["unignoreDevice"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/discovery/relays": {
         parameters: {
             query?: never;
@@ -3110,7 +3138,7 @@ export interface components {
         LabelMap: {
             [key: string]: string;
         };
-        /** @description One physical device a relay has found on its own LAN. Its descriptive members are read-only on this API — a device is DISCOVERED by its relay's device plane (`relay/1` Device plane), not authored here, so this resource carries no `revision` and no optimistic-concurrency envelope. The one decision this API does make about a device is `adopted`, taken through the `adoptDevice` operation. A device exposes one or more entities; commands are addressed to those entities, never to the device. */
+        /** @description One physical device a relay has found on its own LAN. Its descriptive members are read-only on this API — a device is DISCOVERED by its relay's device plane (`relay/1` Device plane), not authored here, so this resource carries no `revision` and no optimistic-concurrency envelope. The two decisions this API does make about a device are `adopted`, taken through the `adoptDevice` operation, and `ignored`, taken through `ignoreDevice`. A device exposes one or more entities; commands are addressed to those entities, never to the device. */
         Device: {
             id: components["schemas"]["Ulid"];
             /** @description Client-assigned identifier (contracts/api-1.md#client-assignable-external_id). */
@@ -3129,6 +3157,8 @@ export interface components {
             serial?: string;
             /** @description Whether an adoption record exists for this device — that is, whether it is under this platform's control and carried in the desired state its relay is sent (`relay/1` REL-063). Discovery alone never sets this; `adoptDevice` does. */
             adopted: boolean;
+            /** @description Whether the operator has IGNORED this device — set it aside as something this deployment does not care about. Unlike `adopted`, an ignore reaches no relay: the device is still discovered and still reported, just marked so a console can keep it out of the way. Durable and reversible; `ignoreDevice` sets it and `unignoreDevice` clears it. Discovery alone never sets this. */
+            ignored: boolean;
         };
         DeviceListResponse: {
             items: components["schemas"]["Device"][];
@@ -4127,6 +4157,67 @@ export interface operations {
             422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    ignoreDevice: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                device_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The device is ignored. The body is the device as it now reads, with `ignored` true. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Device"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    unignoreDevice: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                device_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The device is no longer ignored. The body is the device as it now reads, with `ignored` false. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Device"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     listDiscoveryRelays: {

@@ -969,6 +969,80 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /devices/{device_id}/ignore:
+    parameters:
+      - name: device_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    post:
+      operationId: ignoreDevice
+      summary: Ignore a discovered device
+      description: >-
+        Records the operator's decision to IGNORE a discovered device — set
+        it aside as something this deployment does not care about. Unlike
+        adoption, an ignore reaches no relay: the device is still discovered
+        and still reported, just marked so a console can keep it out of the
+        way, so this changes no desired state. The decision is durable and
+        survives a re-sighting; ignoring an already-ignored device succeeds
+        and changes nothing.
+
+
+        A mutating POST tagged `mcp:act`, so it accepts `Idempotency-Key`.
+      tags: [devices, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: >-
+            The device is ignored. The body is the device as it now reads,
+            with `ignored` true.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+    delete:
+      operationId: unignoreDevice
+      summary: Reverse an ignore
+      description: >-
+        Clears the operator's ignore decision, returning the device to plain
+        "discovered" (ignoring is reversible, never a hidden trash can).
+        Naturally idempotent — un-ignoring a device that was not ignored
+        succeeds and changes nothing.
+      tags: [devices, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: >-
+            The device is no longer ignored. The body is the device as it now
+            reads, with `ignored` false.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /discovery/relays:
     get:
       operationId: listDiscoveryRelays
@@ -8118,11 +8192,12 @@ components:
         descriptive members are read-only on this API — a device is
         DISCOVERED by its relay's device plane (`relay/1` Device plane), not
         authored here, so this resource carries no `revision` and no
-        optimistic-concurrency envelope. The one decision this API does make
-        about a device is `adopted`, taken through the `adoptDevice`
-        operation. A device exposes one or more entities; commands are
-        addressed to those entities, never to the device.
-      required: [id, relay_id, device_class, name, scope_node, labels, adopted]
+        optimistic-concurrency envelope. The two decisions this API does make
+        about a device are `adopted`, taken through the `adoptDevice`
+        operation, and `ignored`, taken through `ignoreDevice`. A device
+        exposes one or more entities; commands are addressed to those
+        entities, never to the device.
+      required: [id, relay_id, device_class, name, scope_node, labels, adopted, ignored]
       additionalProperties: false
       properties:
         id:
@@ -8166,6 +8241,15 @@ components:
             whether it is under this platform's control and carried in the
             desired state its relay is sent (`relay/1` REL-063). Discovery
             alone never sets this; `adoptDevice` does.
+        ignored:
+          type: boolean
+          description: >-
+            Whether the operator has IGNORED this device — set it aside as
+            something this deployment does not care about. Unlike `adopted`,
+            an ignore reaches no relay: the device is still discovered and
+            still reported, just marked so a console can keep it out of the
+            way. Durable and reversible; `ignoreDevice` sets it and
+            `unignoreDevice` clears it. Discovery alone never sets this.
 
     DeviceListResponse:
       type: object
