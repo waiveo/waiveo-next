@@ -91,7 +91,16 @@ func newPlayerServerWithGrants(t *testing.T, grants ...wire.PairingGrant) *playe
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 
-	srv, err := playerserver.NewServer(certPEM, grants, playerserver.WallClockMs)
+	// A FROZEN clock, not the wall clock. Every screen-status age is computed as
+	// now-minus-observed at READ time, so a fixture on the real clock makes any
+	// test that reads the statuses twice compare two different instants: the ages
+	// differ by however many milliseconds elapsed between the reads. That is
+	// exactly the CI flake this fixture produced ("LastPullAgeMs:1 ... want 0" —
+	// green on a fast laptop, red on a slower runner). Freezing it makes the ages
+	// deterministic without weakening any assertion: a test that wants to observe
+	// time PASSING advances this clock deliberately.
+	frozen := int64(1_700_000_000_000)
+	srv, err := playerserver.NewServer(certPEM, grants, func() int64 { return frozen })
 	if err != nil {
 		t.Fatalf("playerserver.NewServer: %v", err)
 	}
