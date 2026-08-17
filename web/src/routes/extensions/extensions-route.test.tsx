@@ -274,7 +274,7 @@ describe("Extensions console — installing", () => {
     mockFeeder({ packs: [] });
     server.use(
       http.post("*/api/v1/extensions", () =>
-        problem(422, "VALIDATION_FAILED", "The pack manifest failed validation.", {
+        problem(422, "VALIDATION_FAILED", "The extension manifest failed validation.", {
           errors: [
             { field: "capabilities[0]", code: "UNKNOWN_CAPABILITY", message: "capability \"net.raw\" is not a manifest/1 capability" },
             { field: "resources.memory", code: "RESOURCE_BELOW_FLOOR", message: "memory 4 is below the floor" },
@@ -292,7 +292,7 @@ describe("Extensions console — installing", () => {
     await userEvent.click(screen.getByRole("button", { name: /Install the chosen extension file/ }));
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("The pack manifest failed validation.");
+    expect(alert).toHaveTextContent("The extension manifest failed validation.");
     // BOTH violations, not just the first — a manifest refusal names everything at once.
     expect(alert).toHaveTextContent("capabilities[0]: UNKNOWN_CAPABILITY");
     expect(alert).toHaveTextContent("resources.memory: RESOURCE_BELOW_FLOOR");

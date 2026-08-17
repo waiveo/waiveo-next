@@ -599,7 +599,7 @@ func (srv *server) writePackRowStoreError(w http.ResponseWriter, r *http.Request
 // declare (MAN-051).
 func (srv *server) packCollectionNotFound(w http.ResponseWriter, r *http.Request) {
 	srv.packProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found",
-		"No collection with this name is declared by this pack.")
+		"No collection with this name is declared by this extension.")
 }
 
 // packRowNotFound is the 404 for an entity_id that names no row in the collection.

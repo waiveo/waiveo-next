@@ -296,7 +296,7 @@ func (srv *server) writeInstallError(w http.ResponseWriter, r *http.Request, err
 	if errors.As(err, &merr) {
 		apihttp.WriteProblemExt(w, r, apihttp.TraceID(r), http.StatusUnprocessableEntity,
 			"VALIDATION_FAILED", "Validation Failed",
-			"The pack manifest failed validation.", manifestErrorsExtra(merr.Errors))
+			"The extension manifest failed validation.", manifestErrorsExtra(merr.Errors))
 		return
 	}
 	srv.packProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error",
