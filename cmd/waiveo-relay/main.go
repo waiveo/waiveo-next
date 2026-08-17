@@ -63,6 +63,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/ecppoll"
 	"github.com/maaxton/waiveo-next/internal/relay/enroll"
 	"github.com/maaxton/waiveo-next/internal/relay/hello"
+	"github.com/maaxton/waiveo-next/internal/relay/hostmdns"
 	"github.com/maaxton/waiveo-next/internal/relay/identity"
 	"github.com/maaxton/waiveo-next/internal/relay/keepalive"
 	"github.com/maaxton/waiveo-next/internal/relay/mdns"
@@ -1190,6 +1191,28 @@ func main() {
 				}
 			}()
 			log.Printf("waiveo-relay neighbour discovery live (kernel neighbour table; every L2-present host, unclassified until a pattern claims it)")
+
+			// The host-avahi mDNS lane (spec §11 L6): read the HOST avahi
+			// daemon's cache (a local read, not a bind) and merge the human
+			// name of every mDNS-advertising host onto its neighbour candidate.
+			// It names a device the neighbour lane found — including one that is
+			// mDNS-advertising while SSDP-silent — rather than leaving it an
+			// anonymous MAC. Needs the neighbour resolver to correlate a service
+			// to a MAC, so it is wired here beside the lane that provides it.
+			hostMDNSLane, err := hostmdns.New(hostmdns.Config{
+				Store:      candStore,
+				NowMillis:  func() int64 { return time.Now().UnixMilli() },
+				ResolveMAC: neighborLane.MAC,
+			})
+			if err != nil {
+				log.Fatalf("waiveo-relay: configure host-avahi mDNS discovery: %v", err)
+			}
+			go func() {
+				if err := hostMDNSLane.Run(rootCtx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("waiveo-relay: host-avahi mDNS discovery ended: %v", err)
+				}
+			}()
+			log.Printf("waiveo-relay host-avahi mDNS discovery live (host avahi cache; names every mDNS-advertising host, incl. SSDP-silent ones)")
 
 			// One HTTP client for every identification probe: connections to a
 			// device are pooled and reused across sweeps instead of being dialed
