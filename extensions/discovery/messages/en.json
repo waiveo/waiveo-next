@@ -1,0 +1,17 @@
+{
+  "pack.displayName": "Discovery",
+  "cap.scan.reason": "To run a network scan when you ask for one, and on the schedule you set.",
+  "cap.storage.reason": "To record which subnets may be scanned, the schedule, and the rate limit.",
+  "page.settings.title": "Discovery Policy",
+  "settings.scope.title": "What may be scanned",
+  "settings.subnets": "Subnets a scan may probe",
+  "settings.subnets.placeholder": "the relay's own subnet",
+  "settings.schedule.title": "When to scan",
+  "settings.schedule": "Schedule",
+  "settings.schedule.placeholder": "never — scan only when asked",
+  "settings.rate.title": "How hard to scan",
+  "settings.maxConcurrent": "Probes at a time",
+  "settings.probeTimeout": "Give up on a host after (ms)",
+  "settings.save": "Save policy",
+  "settings.scanNow": "Scan the network now"
+}

@@ -1,0 +1,48 @@
+{
+  "id": "waiveo/discovery",
+  "version": "1.0.0",
+  "displayName": "msg:pack.displayName",
+  "icon": "radio",
+  "description": "Finds what is on this deployment's networks. The extension owns the POLICY — which subnets may be actively scanned, on what schedule, and how hard — while the enumeration engine stays in core on the relay, which is the only place that can see a LAN. Passive discovery runs always and originates nothing; everything that probes waits for a scan this extension asks for.",
+  "compat": {
+    "ctx": ">=1.0 <2.0",
+    "renderer": ["settings-form"]
+  },
+  "capabilities": [
+    { "capability": "discovery.scan", "scope": "*", "reason": "msg:cap.scan.reason" },
+    { "capability": "storage.write", "scope": "*", "reason": "msg:cap.storage.reason" }
+  ],
+  "runtime": { "entry": "bin/discovery", "exec": ["$entry"] },
+  "egress": [],
+  "resources": { "memory": 64, "cpuWeight": 100, "storageQuota": 8, "maxScheduledTimers": 0 },
+  "dataModel": {
+    "version": 1,
+    "collections": [
+      {
+        "name": "settings",
+        "singleton": true,
+        "fields": [
+          { "name": "schedule", "type": "string" },
+          { "name": "subnets", "type": "string" },
+          { "name": "max_concurrent", "type": "number" },
+          { "name": "probe_timeout_ms", "type": "number" }
+        ]
+      }
+    ]
+  },
+  "retention": {},
+  "ui": {
+    "pages": [
+      { "path": "settings", "pageType": "settings-form", "titleMsg": "msg:page.settings.title" }
+    ]
+  },
+  "actions": [
+    {
+      "name": "scan-now",
+      "paramsSchema": {},
+      "capabilityScope": "discovery.scan",
+      "auditClass": "write",
+      "idempotencyClass": "safe-to-retry"
+    }
+  ]
+}

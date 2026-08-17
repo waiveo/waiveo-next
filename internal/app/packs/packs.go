@@ -59,8 +59,15 @@ const devMemoryFloorMiB = 32
 // configuration, not part of manifest/1; the real, evolving registry arrives
 // with the security-model + ctx/1 waves.
 var devCapabilities = map[string]bool{
-	"device.read":        true,
-	"device.command":     true,
+	"device.read":    true,
+	"device.command": true,
+	// discovery.scan lets an extension ask the platform to run an ACTIVE network
+	// scan (POST /discovery/scan). It is its own capability rather than folded
+	// into device.command because the two are different powers: commanding an
+	// adopted entity acts on one device this deployment already controls, while
+	// a scan emits probes across a segment. An operator consenting to the first
+	// has not consented to the second.
+	"discovery.scan":     true,
 	"egress.http":        true,
 	"notifications.send": true,
 	"storage.read":       true,
