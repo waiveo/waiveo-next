@@ -233,7 +233,7 @@ func TestBootAutomationStackArmsTheCommandSink(t *testing.T) {
 // is the something.
 func TestRelayDialConfigWiresTheDeviceCommandHandler(t *testing.T) {
 	commands := &deviceCommandSink{}
-	cfg := relayDialConfig(config{feederURL: "https://127.0.0.1:7420"}, nil, &nudgeSink{}, commands)
+	cfg := relayDialConfig(config{feederURL: "https://127.0.0.1:7420"}, nil, &nudgeSink{}, commands, &discoveryScanSink{})
 
 	if cfg.OnDeviceCommand == nil {
 		t.Fatal("relayconn.Config.OnDeviceCommand is nil — every app-issued device command would be answered \"this relay has no device plane wired\"")
@@ -252,6 +252,49 @@ func TestRelayDialConfigWiresTheDeviceCommandHandler(t *testing.T) {
 	}
 	if got.EntityID != "ent-1" || got.Command != "home" {
 		t.Fatalf("handler received %+v, want the dispatched body", got)
+	}
+}
+
+// TestRelayDialConfigWiresTheDiscoveryScanHandler is the same guard for the scan
+// half, and it matters for the same reason: a nil OnDiscoveryScan is not a
+// compile error and not a failure anywhere else — relayconn answers with a typed
+// INTERNAL refusal and the relay looks healthy while every operator scan
+// silently does nothing.
+func TestRelayDialConfigWiresTheDiscoveryScanHandler(t *testing.T) {
+	scans := &discoveryScanSink{}
+	cfg := relayDialConfig(config{feederURL: "https://127.0.0.1:7420"}, nil, &nudgeSink{}, &deviceCommandSink{}, scans)
+
+	if cfg.OnDiscoveryScan == nil {
+		t.Fatal("relayconn.Config.OnDiscoveryScan is nil — every operator scan would be answered \"this relay has no discovery scan capability\"")
+	}
+
+	// And it is genuinely THIS sink: what the discovery block later sets is what
+	// the connection calls.
+	var got wire.DiscoveryScanBody
+	scans.set(func(body wire.DiscoveryScanBody) wire.DiscoveryScanResultBody {
+		got = body
+		return wire.NewDiscoveryScanAccepted("scan-1")
+	})
+	res := cfg.OnDiscoveryScan(wire.DiscoveryScanBody{Subnet: "192.168.50.0/24"})
+	if !res.OK || !res.Started || res.ScanID != "scan-1" {
+		t.Fatalf("dial config's scan handler returned %+v, want an accepted start", res)
+	}
+	if got.Subnet != "192.168.50.0/24" {
+		t.Fatalf("scan handler received %+v, want the requested subnet", got)
+	}
+}
+
+// TestDiscoveryScanSinkRefusesBeforeDiscoveryIsUp: a scan arriving before the
+// discovery block has run — or on a relay with discovery disabled entirely —
+// must draw a typed refusal, never silence, for the same reason a command does.
+func TestDiscoveryScanSinkRefusesBeforeDiscoveryIsUp(t *testing.T) {
+	var sink discoveryScanSink
+	res := sink.run(wire.DiscoveryScanBody{})
+	if res.OK {
+		t.Fatalf("an unwired scan sink answered %+v, want a refusal", res)
+	}
+	if res.Error == nil || res.Error.Code != "UNAVAILABLE" {
+		t.Fatalf("refusal = %+v, want a typed UNAVAILABLE the operator can act on", res.Error)
 	}
 }
 
