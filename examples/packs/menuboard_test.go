@@ -13,7 +13,7 @@ import (
 // The example pack is the living proof of the whole wave, so it must itself be a
 // clean artifact: a safe, well-formed zip whose manifest the REAL manifest engine
 // accepts against genuinely-populated host registries — the same gate a POST
-// /api/v1/packs install applies. If the on-disk pack ever drifts out of contract,
+// /api/v1/extensions install applies. If the on-disk pack ever drifts out of contract,
 // this fails at build time, before the smoke or the e2e ever run.
 
 func TestMenuBoardZipReadsAsASafeBundle(t *testing.T) {

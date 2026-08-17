@@ -780,7 +780,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/packs/{publisher}/{name}/actions/{action}": {
+    "/extensions/{publisher}/{name}/actions/{action}": {
         parameters: {
             query?: never;
             header?: never;
@@ -794,14 +794,14 @@ export interface paths {
          * @description The management-API route `manifest/1` MAN-101 auto-surfaces for every declared action. The call is QUEUED rather than performed inline: a pack is a separate OS process with no inbound address the host can dial, and it may be starting, swapping or stopped. The response is the invocation, and its outcome is read back from it.
          *     The action's idempotency class (MAN-103) is copied onto the invocation at enqueue, which is what decides its fate if the pack takes the work and dies before answering — a `safe-to-retry` action is offered again, a `not-idempotent` one is failed with its fate recorded as unknown, and is never automatically replayed.
          */
-        post: operations["invokePackAction"];
+        post: operations["invokeExtensionAction"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/pack-logs": {
+    "/extension-logs": {
         parameters: {
             query?: never;
             header?: never;
@@ -816,14 +816,14 @@ export interface paths {
          *     The line's SOURCE is the caller's own pack, resolved from its principal and never taken from the request. A pack that could attribute a line to another pack — or to the platform — would turn the log an operator uses to decide what went wrong into a place an extension can lie.
          *     `level` is taken rather than inferred from the words: the sender knows whether it is reporting a failure, and classifying by text would let an error hide as an info line simply by avoiding the word.
          */
-        post: operations["appendPackLog"];
+        post: operations["appendExtensionLog"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/pack-health": {
+    "/extension-health": {
         parameters: {
             query?: never;
             header?: never;
@@ -838,14 +838,14 @@ export interface paths {
          *     The host can observe that a pack's PROCESS is alive; it cannot observe whether the pack is working. A backup extension whose credentials expired is running perfectly and doing nothing, and only the pack knows that.
          *     A report goes STALE. One that never expired would leave a green line for an extension that wedged an hour ago, on the page an operator opened to find out what was wrong. A stale report reads `unknown` — we were told once and have not been told since — rather than `down`, because a missed report is evidence about the reporting, not about the pack.
          */
-        post: operations["reportPackHealth"];
+        post: operations["reportExtensionHealth"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/pack-events": {
+    "/extension-events": {
         parameters: {
             query?: never;
             header?: never;
@@ -860,14 +860,14 @@ export interface paths {
          *     The name MUST be one the pack declared under `contributes.automation.events` (`manifest/1` MAN-090). An undeclared name would put a schema into the log that no manifest describes — nothing could validate its payload, and an operator reading the log would find records whose shape has no owner.
          *     The event is attributed to the calling pack's principal and placed at the scope its identity was issued at. Neither is taken from the request: an event a pack could place at a scope of its choosing is one it could hide from the operators who can see that scope.
          */
-        post: operations["emitPackEvent"];
+        post: operations["emitExtensionEvent"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/pack-invocations/pending": {
+    "/extension-invocations/pending": {
         parameters: {
             query?: never;
             header?: never;
@@ -880,7 +880,7 @@ export interface paths {
          *     Which pack's queue is served is resolved from the CALLER'S PRINCIPAL, not from any parameter: a pack that could name a queue could lease another pack's work and answer on its behalf. Only a `pack-service` principal (`security-model.md` SEC-037) reaches this route at all.
          *     An empty queue answers `204`, not an error — a pack polling an idle host is the common case, and an error there would make "nothing to do" indistinguishable from a broken queue.
          */
-        get: operations["leasePackInvocation"];
+        get: operations["leaseExtensionInvocation"];
         put?: never;
         post?: never;
         delete?: never;
@@ -889,7 +889,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/pack-invocations/{invocation_id}/result": {
+    "/extension-invocations/{invocation_id}/result": {
         parameters: {
             query?: never;
             header?: never;
@@ -902,7 +902,7 @@ export interface paths {
          * Report the outcome of a leased invocation
          * @description The pack answers the work it leased. Accepted only while the caller still holds the lease: a result arriving after expiry is refused, because accepting it would let an invocation already failed at expiry flip to succeeded and erase the uncertainty that failure recorded (MAN-103).
          */
-        post: operations["reportPackInvocationResult"];
+        post: operations["reportExtensionInvocationResult"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1641,7 +1641,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/packs": {
+    "/extensions": {
         parameters: {
             query?: never;
             header?: never;
@@ -1652,20 +1652,20 @@ export interface paths {
          * List installed packs
          * @description Keyset-paginated. No `selector`: a pack is installed workspace-wide rather than placed at a scope node, so there are no labels for the label-selector grammar to evaluate.
          */
-        get: operations["listPacks"];
+        get: operations["listExtensions"];
         put?: never;
         /**
          * Install a pack from its artifact or by marketplace reference
          * @description Two request bodies, distinguished by content type. Raw artifact bytes (any content type but `application/json`) install that artifact directly. An `application/json` body is a marketplace reference (marketplace/1 MKT-060a) resolved against the deployment's configured registry sources. Both converge on one pipeline — the same signature envelope verification against the same trust anchors, the same manifest gate, the same atomic write and the same install record — so resolving a pack can never accept an artifact a direct upload would refuse. Installation executes nothing: a pack is data.
          */
-        post: operations["installPack"];
+        post: operations["installExtension"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/packs/catalog": {
+    "/extensions/catalog": {
         parameters: {
             query?: never;
             header?: never;
@@ -1680,7 +1680,7 @@ export interface paths {
          *     Results are grouped BY SOURCE and never merged: source order is a resolution preference and never a trust decision (MKT-061), so an operator comparing offerings must see which source served what. A source that could not be read is reported with a reason rather than omitted — an empty catalog and an unreachable registry are different facts.
          *     One path segment, so it can never be mistaken for the two-segment `{publisher}/{name}` a pack is addressed by.
          */
-        get: operations["browsePackCatalog"];
+        get: operations["browseExtensionCatalog"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1689,7 +1689,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/packs/{publisher}/{name}": {
+    "/extensions/{publisher}/{name}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1702,20 +1702,20 @@ export interface paths {
             cookie?: never;
         };
         /** Read an installed pack */
-        get: operations["getPack"];
+        get: operations["getExtension"];
         put?: never;
         post?: never;
         /**
          * Uninstall a pack
          * @description Removes the pack and everything it owns — its bundle, its authored collection rows, and its install records (marketplace/1 MKT-094b) — in one transaction. The per-(pack, trust channel) resolved-version high-water mark deliberately survives (MKT-050/MKT-094b), so uninstall-then-reinstall is not a downgrade path. A pack on this deployment's required-pack roster cannot be uninstalled at all (MKT-093b): removal is removal to no version, which is below every floor, and the refusal is decided inside the removal transaction rather than in this handler.
          */
-        delete: operations["uninstallPack"];
+        delete: operations["uninstallExtension"];
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/packs/{publisher}/{name}/pages/{path}": {
+    "/extensions/{publisher}/{name}/pages/{path}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1730,7 +1730,7 @@ export interface paths {
             cookie?: never;
         };
         /** Read a pack-declared page definition */
-        get: operations["getPackPage"];
+        get: operations["getExtensionPage"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1739,7 +1739,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/packs/{publisher}/{name}/messages/{locale}": {
+    "/extensions/{publisher}/{name}/messages/{locale}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1754,7 +1754,7 @@ export interface paths {
             cookie?: never;
         };
         /** Read a pack's message catalog for one locale */
-        get: operations["getPackMessages"];
+        get: operations["getExtensionMessages"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1763,7 +1763,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/packs/{publisher}/{name}/installs": {
+    "/extensions/{publisher}/{name}/installs": {
         parameters: {
             query?: never;
             header?: never;
@@ -1779,7 +1779,7 @@ export interface paths {
          * List a pack's install-record history
          * @description Keyset-paginated, oldest first: the append-only install records marketplace/1 MKT-094b requires, whose last entry is MKT-094's current pin. Each record carries what was resolved (version, trust channel, registry source) and the provenance the install was accepted on (MKT-094a): the content digest and key id of the signature envelope verification that admitted the artifact. That envelope is dropped at install and never persisted (MKT-009a), so these records are the only answer to "which key vouched for the bytes that are running". A pack that is not installed is a 404 — its records were removed with it.
          */
-        get: operations["listPackInstalls"];
+        get: operations["listExtensionInstalls"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1788,7 +1788,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/packs/{publisher}/{name}/enabled": {
+    "/extensions/{publisher}/{name}/enabled": {
         parameters: {
             query?: never;
             header?: never;
@@ -1809,7 +1809,7 @@ export interface paths {
          *     Pre-`ctx/1` a pack carries no executable code, so withdrawing its surfaces is the whole of what disabling can stop. A required pack (MKT-093a) cannot be disabled — a floor that forbids removing a pack forbids equally the state in which it is present and does nothing.
          *     Idempotent by construction: PUT of a state, not a toggle, so a retry cannot flip a pack back on.
          */
-        put: operations["setPackEnabled"];
+        put: operations["setExtensionEnabled"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1817,7 +1817,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/packs/{publisher}/{name}/update": {
+    "/extensions/{publisher}/{name}/update": {
         parameters: {
             query?: never;
             header?: never;
@@ -1836,20 +1836,20 @@ export interface paths {
          *     `action` is what `updatePack` WOULD do: `unchanged`, `updated`, or `reverted`. The last is the case an operator most needs before anything moves — the running version has been revoked and a check would revert to a last-known-good version (MKT-093) — and it is named here without performing it. A pack installed with no trust channel pinned is not auto-tracked and is reported as such (MKT-094a), never resolved against a defaulted channel.
          *     Artifact bytes are not fetched: the resolved entry and its resolution-time checks answer this on their own.
          */
-        get: operations["getPackUpdateAvailability"];
+        get: operations["getExtensionUpdateAvailability"];
         put?: never;
         /**
          * Run one update check against a pack's pinned trust channel
          * @description Channel auto-tracking, applied on demand (marketplace/1 MKT-090): the pack's own pinned trust channel and registry source are read off its newest install record (MKT-094) and re-resolved through that source's channel pointer — nothing about how the pack is re-resolved comes from this request, so a host never silently chooses a provenance tier (MKT-060a(b)) on the operator's behalf. A pack installed directly, with no trust channel pinned, is not auto-tracked and is refused rather than defaulted onto a channel (MKT-094a). If the currently applied version has itself been yanked, the check reverts to the most recent version this install previously applied that is still resolvable (MKT-093, the sole exception MKT-050 allows a resolved version to decrease under). A refused update writes nothing: the install transaction upserts, so the previously installed version, its bundle and its records are left intact. A mutating POST outside plain resource creation — accepts Idempotency-Key so a client's retry-on-timeout cannot run a second check.
          */
-        post: operations["updatePack"];
+        post: operations["updateExtension"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/packs/{publisher}/{name}/data/{collection}": {
+    "/extensions/{publisher}/{name}/data/{collection}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1867,17 +1867,17 @@ export interface paths {
          * List the rows of a pack-declared collection
          * @description Keyset-paginated over the collection's universal-envelope rows (manifest/1 MAN-051/052), scoped to the caller's visible set. No `selector`: the row envelope's labels are not yet exposed to the label-selector grammar on this collection.
          */
-        get: operations["listPackRows"];
+        get: operations["listExtensionRows"];
         put?: never;
         /** Create a row in a pack-declared collection */
-        post: operations["createPackRow"];
+        post: operations["createExtensionRow"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/packs/{publisher}/{name}/data/{collection}/{entity_id}": {
+    "/extensions/{publisher}/{name}/data/{collection}/{entity_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1893,18 +1893,18 @@ export interface paths {
             cookie?: never;
         };
         /** Read one row of a pack-declared collection */
-        get: operations["getPackRow"];
+        get: operations["getExtensionRow"];
         put?: never;
         post?: never;
         /** Delete one row of a pack-declared collection */
-        delete: operations["deletePackRow"];
+        delete: operations["deleteExtensionRow"];
         options?: never;
         head?: never;
         /**
          * Update one row of a pack-declared collection
          * @description Partial update. Requires If-Match against the row's current ETag/revision.
          */
-        patch: operations["updatePackRow"];
+        patch: operations["updateExtensionRow"];
         trace?: never;
     };
 }
@@ -5018,7 +5018,7 @@ export interface operations {
             422: components["responses"]["UnprocessableContent"];
         };
     };
-    invokePackAction: {
+    invokeExtensionAction: {
         parameters: {
             query?: never;
             header?: {
@@ -5056,7 +5056,7 @@ export interface operations {
             422: components["responses"]["UnprocessableContent"];
         };
     };
-    appendPackLog: {
+    appendExtensionLog: {
         parameters: {
             query?: never;
             header?: {
@@ -5084,7 +5084,7 @@ export interface operations {
             422: components["responses"]["UnprocessableContent"];
         };
     };
-    reportPackHealth: {
+    reportExtensionHealth: {
         parameters: {
             query?: never;
             header?: {
@@ -5112,7 +5112,7 @@ export interface operations {
             422: components["responses"]["UnprocessableContent"];
         };
     };
-    emitPackEvent: {
+    emitExtensionEvent: {
         parameters: {
             query?: never;
             header?: {
@@ -5141,7 +5141,7 @@ export interface operations {
             422: components["responses"]["UnprocessableContent"];
         };
     };
-    leasePackInvocation: {
+    leaseExtensionInvocation: {
         parameters: {
             query?: {
                 /** @description Seconds to hold the request open while the queue is empty. Zero returns immediately. */
@@ -5174,7 +5174,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
         };
     };
-    reportPackInvocationResult: {
+    reportExtensionInvocationResult: {
         parameters: {
             query?: never;
             header?: {
@@ -6963,7 +6963,7 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
-    listPacks: {
+    listExtensions: {
         parameters: {
             query?: {
                 /** @description Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client. */
@@ -6991,7 +6991,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
         };
     };
-    installPack: {
+    installExtension: {
         parameters: {
             query?: never;
             header?: {
@@ -7031,7 +7031,7 @@ export interface operations {
             422: components["responses"]["UnprocessableContent"];
         };
     };
-    browsePackCatalog: {
+    browseExtensionCatalog: {
         parameters: {
             query?: never;
             header?: {
@@ -7053,7 +7053,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
         };
     };
-    getPack: {
+    getExtension: {
         parameters: {
             query?: never;
             header?: {
@@ -7081,7 +7081,7 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
-    uninstallPack: {
+    uninstallExtension: {
         parameters: {
             query?: never;
             header: {
@@ -7115,7 +7115,7 @@ export interface operations {
             428: components["responses"]["PreconditionRequired"];
         };
     };
-    getPackPage: {
+    getExtensionPage: {
         parameters: {
             query?: never;
             header?: {
@@ -7145,7 +7145,7 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
-    getPackMessages: {
+    getExtensionMessages: {
         parameters: {
             query?: never;
             header?: {
@@ -7175,7 +7175,7 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
-    listPackInstalls: {
+    listExtensionInstalls: {
         parameters: {
             query?: {
                 /** @description Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client. */
@@ -7209,7 +7209,7 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
-    setPackEnabled: {
+    setExtensionEnabled: {
         parameters: {
             query?: never;
             header?: {
@@ -7245,7 +7245,7 @@ export interface operations {
             422: components["responses"]["UnprocessableContent"];
         };
     };
-    getPackUpdateAvailability: {
+    getExtensionUpdateAvailability: {
         parameters: {
             query?: never;
             header?: {
@@ -7275,7 +7275,7 @@ export interface operations {
             422: components["responses"]["UnprocessableContent"];
         };
     };
-    updatePack: {
+    updateExtension: {
         parameters: {
             query?: never;
             header?: {
@@ -7308,7 +7308,7 @@ export interface operations {
             422: components["responses"]["UnprocessableContent"];
         };
     };
-    listPackRows: {
+    listExtensionRows: {
         parameters: {
             query?: {
                 /** @description Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client. */
@@ -7344,7 +7344,7 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
-    createPackRow: {
+    createExtensionRow: {
         parameters: {
             query?: never;
             header?: {
@@ -7380,7 +7380,7 @@ export interface operations {
             422: components["responses"]["UnprocessableContent"];
         };
     };
-    getPackRow: {
+    getExtensionRow: {
         parameters: {
             query?: never;
             header?: {
@@ -7411,7 +7411,7 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
-    deletePackRow: {
+    deleteExtensionRow: {
         parameters: {
             query?: never;
             header: {
@@ -7447,7 +7447,7 @@ export interface operations {
             428: components["responses"]["PreconditionRequired"];
         };
     };
-    updatePackRow: {
+    updateExtensionRow: {
         parameters: {
             query?: never;
             header: {

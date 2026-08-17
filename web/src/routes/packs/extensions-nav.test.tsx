@@ -38,8 +38,8 @@ function renderShell() {
 describe("Extensions nav", () => {
   it("lists an installed pack's pages with catalog-resolved titles, linking to /p/{pack}/{path}", async () => {
     server.use(
-      http.get("*/api/v1/packs", () => jsonBody({ items: [pack()], cursor: null })),
-      http.get("*/api/v1/packs/acme/menu-board/messages/en", () => jsonBody(PACK_EN_CATALOG)),
+      http.get("*/api/v1/extensions", () => jsonBody({ items: [pack()], cursor: null })),
+      http.get("*/api/v1/extensions/acme/menu-board/messages/en", () => jsonBody(PACK_EN_CATALOG)),
     );
     renderShell();
 
@@ -88,10 +88,10 @@ describe("Extensions nav", () => {
       },
     });
     server.use(
-      http.get("*/api/v1/packs", () =>
+      http.get("*/api/v1/extensions", () =>
         jsonBody({ items: [pack({ manifest: evilManifest })], cursor: null }),
       ),
-      http.get("*/api/v1/packs/acme/menu-board/messages/en", () => jsonBody(PACK_EN_CATALOG)),
+      http.get("*/api/v1/extensions/acme/menu-board/messages/en", () => jsonBody(PACK_EN_CATALOG)),
     );
     renderShell();
 
@@ -124,8 +124,8 @@ describe("Extensions nav", () => {
       "pack.displayName": { evil: 1 },
     } as unknown as typeof PACK_EN_CATALOG;
     server.use(
-      http.get("*/api/v1/packs", () => jsonBody({ items: [pack()], cursor: null })),
-      http.get("*/api/v1/packs/acme/menu-board/messages/en", () => jsonBody(poisonedCatalog)),
+      http.get("*/api/v1/extensions", () => jsonBody({ items: [pack()], cursor: null })),
+      http.get("*/api/v1/extensions/acme/menu-board/messages/en", () => jsonBody(poisonedCatalog)),
     );
     renderShell();
 
@@ -140,7 +140,7 @@ describe("Extensions nav", () => {
   });
 
   it("shows no Extensions section when no packs are installed", async () => {
-    server.use(http.get("*/api/v1/packs", () => jsonBody({ items: [], cursor: null })));
+    server.use(http.get("*/api/v1/extensions", () => jsonBody({ items: [], cursor: null })));
     renderShell();
     // Let the (empty) packs list settle, then confirm no Extensions landmark.
     await waitFor(() => expect(screen.getByText("content")).toBeInTheDocument());
@@ -166,10 +166,10 @@ function iconName(el: Element | null | undefined): string {
 
 async function renderWithPack(over: Record<string, unknown> = {}) {
   server.use(
-    http.get("*/api/v1/packs", () =>
+    http.get("*/api/v1/extensions", () =>
       jsonBody({ items: [pack({ manifest: packManifest(over) })], cursor: null }),
     ),
-    http.get("*/api/v1/packs/acme/menu-board/messages/en", () => jsonBody(PACK_EN_CATALOG)),
+    http.get("*/api/v1/extensions/acme/menu-board/messages/en", () => jsonBody(PACK_EN_CATALOG)),
   );
   renderShell();
   return await screen.findByRole("navigation", { name: "Extensions" });
@@ -282,9 +282,9 @@ describe("Extensions nav — updates badge", () => {
 
   function mountWith(report: Record<string, unknown>) {
     server.use(
-      http.get("*/api/v1/packs", () => jsonBody({ items: [pack()], cursor: null })),
-      http.get("*/api/v1/packs/acme/menu-board/messages/en", () => jsonBody(PACK_EN_CATALOG)),
-      http.get("*/api/v1/packs/acme/menu-board/update", () => jsonBody(report)),
+      http.get("*/api/v1/extensions", () => jsonBody({ items: [pack()], cursor: null })),
+      http.get("*/api/v1/extensions/acme/menu-board/messages/en", () => jsonBody(PACK_EN_CATALOG)),
+      http.get("*/api/v1/extensions/acme/menu-board/update", () => jsonBody(report)),
     );
     renderShell();
   }
@@ -324,11 +324,11 @@ describe("Extensions nav — updates badge", () => {
 // operator already has in a tab keeps working.
 it("does not list a disabled pack's pages", async () => {
   server.use(
-    http.get("*/api/v1/packs", () =>
+    http.get("*/api/v1/extensions", () =>
       jsonBody({ items: [pack({ enabled: false })], cursor: null }),
     ),
-    http.get("*/api/v1/packs/acme/menu-board/messages/en", () => jsonBody(PACK_EN_CATALOG)),
-    http.get("*/api/v1/packs/acme/menu-board/update", () =>
+    http.get("*/api/v1/extensions/acme/menu-board/messages/en", () => jsonBody(PACK_EN_CATALOG)),
+    http.get("*/api/v1/extensions/acme/menu-board/update", () =>
       jsonBody({
         action: "unchanged",
         id: "acme/menu-board",

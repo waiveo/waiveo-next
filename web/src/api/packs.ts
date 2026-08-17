@@ -342,7 +342,7 @@ export interface PackInvocation {
 
 /** Build the pack-registry module over one ApiClient. */
 export function createPacksModule(client: ApiClient): PacksModule {
-  const base = "/packs";
+  const base = "/extensions";
   return {
     path: base,
     list(params = {}) {
@@ -478,7 +478,7 @@ export type PackRowWrite = {
 } & Record<string, unknown>;
 
 /** The uniform api/1 CRUD module for one pack collection's rows, rooted at
- * `/packs/{pack}/data/{collection}`. Identical in shape and conventions to every
+ * `/extensions/{extension}/data/{collection}`. Identical in shape and conventions to every
  * core resource family — the row's `entity_id` is the id the item verbs address. */
 export function packData(
   client: ApiClient,
@@ -487,6 +487,6 @@ export function packData(
 ): ResourceModule<PackRow, PackRowWrite, PackRowWrite> {
   return crud<PackRow, PackRowWrite, PackRowWrite>(
     client,
-    `/packs/${packId}/data/${encodeURIComponent(collection)}`,
+    `/extensions/${packId}/data/${encodeURIComponent(collection)}`,
   );
 }

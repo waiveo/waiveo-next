@@ -75,7 +75,7 @@ type server struct {
 	content     *origin.Store
 	contentBase string
 	// installer runs the signature-gated, manifest-gated declarative-pack
-	// install pipeline the POST /api/v1/packs handler drives
+	// install pipeline the POST /api/v1/extensions handler drives
 	// (internal/app/packs). It shares the same store every other resource
 	// handler writes through, and verifies every artifact against packTrust.
 	installer *packs.Installer
@@ -506,12 +506,12 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// consumer routes are not addressed at all — which queue they serve comes
 	// from the caller's own principal, so a pack has no way to ask for another
 	// pack's work.
-	rt.HandleFunc("POST "+apiPrefix+"/packs/{publisher}/{name}/actions/{action}", srv.withDeclaredMembers("PackActionInvokeRequest", srv.invokePackAction))
-	rt.HandleFunc("GET "+apiPrefix+"/pack-invocations/pending", srv.leasePackInvocation)
-	rt.HandleFunc("POST "+apiPrefix+"/pack-logs", srv.withDeclaredMembers("PackLogAppendRequest", srv.appendPackLog))
-	rt.HandleFunc("POST "+apiPrefix+"/pack-health", srv.withDeclaredMembers("PackHealthReportRequest", srv.reportPackHealth))
-	rt.HandleFunc("POST "+apiPrefix+"/pack-events", srv.withDeclaredMembers("PackEventEmitRequest", srv.emitPackEvent))
-	rt.HandleFunc("POST "+apiPrefix+"/pack-invocations/{invocation_id}/result", srv.withDeclaredMembers("PackInvocationResultRequest", srv.reportPackInvocationResult))
+	rt.HandleFunc("POST "+apiPrefix+"/extensions/{publisher}/{name}/actions/{action}", srv.withDeclaredMembers("PackActionInvokeRequest", srv.invokePackAction))
+	rt.HandleFunc("GET "+apiPrefix+"/extension-invocations/pending", srv.leasePackInvocation)
+	rt.HandleFunc("POST "+apiPrefix+"/extension-logs", srv.withDeclaredMembers("PackLogAppendRequest", srv.appendPackLog))
+	rt.HandleFunc("POST "+apiPrefix+"/extension-health", srv.withDeclaredMembers("PackHealthReportRequest", srv.reportPackHealth))
+	rt.HandleFunc("POST "+apiPrefix+"/extension-events", srv.withDeclaredMembers("PackEventEmitRequest", srv.emitPackEvent))
+	rt.HandleFunc("POST "+apiPrefix+"/extension-invocations/{invocation_id}/result", srv.withDeclaredMembers("PackInvocationResultRequest", srv.reportPackInvocationResult))
 }
 
 // resourceConfig parameterizes the generic resource handler for one resource

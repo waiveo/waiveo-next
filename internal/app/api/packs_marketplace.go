@@ -17,7 +17,7 @@ import (
 
 // WithMarketplace wires the registry sources a pack install by marketplace
 // reference resolves through (marketplace/1 MKT-060/060a). Without it, POST
-// /api/v1/packs still installs a directly-supplied artifact; a marketplace
+// /api/v1/extensions still installs a directly-supplied artifact; a marketplace
 // reference is refused, because a deployment with no configured registry has
 // nothing to resolve against and MUST NOT invent one.
 //
@@ -58,7 +58,7 @@ func wantsMarketplaceRef(r *http.Request) bool {
 	return strings.EqualFold(mt, installRefMediaType)
 }
 
-// installPackFromRef is the marketplace half of POST /api/v1/packs: the body
+// installPackFromRef is the marketplace half of POST /api/v1/extensions: the body
 // names a pack in a configured registry, and the resolver fetches, verifies and
 // installs it through the SAME pipeline a directly-uploaded artifact takes.
 //
@@ -93,7 +93,7 @@ func (srv *server) installPackFromRef(w http.ResponseWriter, r *http.Request, bo
 	if res.Created {
 		status = http.StatusCreated
 	}
-	w.Header().Set("Location", apiPrefix+"/packs/"+res.ID)
+	w.Header().Set("Location", apiPrefix+"/extensions/"+res.ID)
 	writeJSONValue(w, status, res)
 }
 

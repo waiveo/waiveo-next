@@ -6,7 +6,7 @@
 //
 // Signing is not optional: the install pipeline verifies every artifact's
 // signature envelope (internal/packsig), so an unsigned zip would be refused
-// at POST /api/v1/packs. This tool provisions (once) the make-dev publisher
+// at POST /api/v1/extensions. This tool provisions (once) the make-dev publisher
 // keypair under the git-ignored key dir, ensures the feeder's trust-anchors
 // document authorizes it for the pack's own publisher namespace, and signs the
 // artifact as the identity the bundled manifest declares.

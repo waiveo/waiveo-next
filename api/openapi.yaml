@@ -2046,9 +2046,9 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
-  /packs/{publisher}/{name}/actions/{action}:
+  /extensions/{publisher}/{name}/actions/{action}:
     post:
-      operationId: invokePackAction
+      operationId: invokeExtensionAction
       summary: Invoke an action an installed pack declares
       description: >-
         The management-API route `manifest/1` MAN-101 auto-surfaces for every
@@ -2092,9 +2092,9 @@ paths:
         "422":
           $ref: "#/components/responses/UnprocessableContent"
 
-  /pack-logs:
+  /extension-logs:
     post:
-      operationId: appendPackLog
+      operationId: appendExtensionLog
       summary: Record a log line from the calling extension
       description: >-
         An installed extension reports its own activity into the platform log an
@@ -2128,9 +2128,9 @@ paths:
         "422":
           $ref: "#/components/responses/UnprocessableContent"
 
-  /pack-health:
+  /extension-health:
     post:
-      operationId: reportPackHealth
+      operationId: reportExtensionHealth
       summary: Report the calling extension's own condition
       description: >-
         An extension says how it is doing, and the line appears in
@@ -2166,9 +2166,9 @@ paths:
         "422":
           $ref: "#/components/responses/UnprocessableContent"
 
-  /pack-events:
+  /extension-events:
     post:
-      operationId: emitPackEvent
+      operationId: emitExtensionEvent
       summary: Emit a durable event the calling extension declared
       description: >-
         The event lands in the same durable log every first-party event does, so
@@ -2206,9 +2206,9 @@ paths:
         "422":
           $ref: "#/components/responses/UnprocessableContent"
 
-  /pack-invocations/pending:
+  /extension-invocations/pending:
     get:
-      operationId: leasePackInvocation
+      operationId: leaseExtensionInvocation
       summary: Lease the next invocation queued for the calling pack
       description: >-
         The pack side of the actions plane. An extension long-polls this route
@@ -2242,9 +2242,9 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
 
-  /pack-invocations/{invocation_id}/result:
+  /extension-invocations/{invocation_id}/result:
     post:
-      operationId: reportPackInvocationResult
+      operationId: reportExtensionInvocationResult
       summary: Report the outcome of a leased invocation
       description: >-
         The pack answers the work it leased. Accepted only while the caller still
@@ -4291,9 +4291,9 @@ paths:
   # (ui-schema/1) may be nested, so the page path's final template is a
   # multi-segment remainder.
   # ---------------------------------------------------------------------
-  /packs:
+  /extensions:
     get:
-      operationId: listPacks
+      operationId: listExtensions
       summary: List installed packs
       description: >-
         Keyset-paginated. No `selector`: a pack is installed workspace-wide
@@ -4312,7 +4312,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
     post:
-      operationId: installPack
+      operationId: installExtension
       summary: Install a pack from its artifact or by marketplace reference
       description: >-
         Two request bodies, distinguished by content type. Raw artifact bytes
@@ -4353,9 +4353,9 @@ paths:
           $ref: "#/components/responses/Conflict"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
-  /packs/catalog:
+  /extensions/catalog:
     get:
-      operationId: browsePackCatalog
+      operationId: browseExtensionCatalog
       summary: What the configured registry sources currently offer
       description: >-
         marketplace/1 MKT-096. Enumerates the entries this deployment's
@@ -4397,12 +4397,12 @@ paths:
             surface.
         "401":
           $ref: "#/components/responses/Unauthorized"
-  /packs/{publisher}/{name}:
+  /extensions/{publisher}/{name}:
     parameters:
       - $ref: "#/components/parameters/PackPublisherParam"
       - $ref: "#/components/parameters/PackNameParam"
     get:
-      operationId: getPack
+      operationId: getExtension
       summary: Read an installed pack
       tags: [packs, "mcp:read"]
       parameters:
@@ -4415,7 +4415,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
     delete:
-      operationId: uninstallPack
+      operationId: uninstallExtension
       summary: Uninstall a pack
       description: >-
         Removes the pack and everything it owns — its bundle, its authored
@@ -4446,7 +4446,7 @@ paths:
           $ref: "#/components/responses/UnprocessableContent"
         "428":
           $ref: "#/components/responses/PreconditionRequired"
-  /packs/{publisher}/{name}/pages/{path}:
+  /extensions/{publisher}/{name}/pages/{path}:
     parameters:
       - $ref: "#/components/parameters/PackPublisherParam"
       - $ref: "#/components/parameters/PackNameParam"
@@ -4460,7 +4460,7 @@ paths:
         schema:
           type: string
     get:
-      operationId: getPackPage
+      operationId: getExtensionPage
       summary: Read a pack-declared page definition
       tags: [packs, "mcp:read"]
       parameters:
@@ -4472,7 +4472,7 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
-  /packs/{publisher}/{name}/messages/{locale}:
+  /extensions/{publisher}/{name}/messages/{locale}:
     parameters:
       - $ref: "#/components/parameters/PackPublisherParam"
       - $ref: "#/components/parameters/PackNameParam"
@@ -4483,7 +4483,7 @@ paths:
         schema:
           type: string
     get:
-      operationId: getPackMessages
+      operationId: getExtensionMessages
       summary: Read a pack's message catalog for one locale
       tags: [packs, "mcp:read"]
       parameters:
@@ -4495,12 +4495,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
-  /packs/{publisher}/{name}/installs:
+  /extensions/{publisher}/{name}/installs:
     parameters:
       - $ref: "#/components/parameters/PackPublisherParam"
       - $ref: "#/components/parameters/PackNameParam"
     get:
-      operationId: listPackInstalls
+      operationId: listExtensionInstalls
       summary: List a pack's install-record history
       description: >-
         Keyset-paginated, oldest first: the append-only install records
@@ -4526,12 +4526,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
-  /packs/{publisher}/{name}/enabled:
+  /extensions/{publisher}/{name}/enabled:
     parameters:
       - $ref: "#/components/parameters/PackPublisherParam"
       - $ref: "#/components/parameters/PackNameParam"
     put:
-      operationId: setPackEnabled
+      operationId: setExtensionEnabled
       summary: Turn an installed pack off, or back on
       description: >-
         marketplace/1 MKT-097. Disabling WITHDRAWS a pack's surfaces — its
@@ -4581,12 +4581,12 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
-  /packs/{publisher}/{name}/update:
+  /extensions/{publisher}/{name}/update:
     parameters:
       - $ref: "#/components/parameters/PackPublisherParam"
       - $ref: "#/components/parameters/PackNameParam"
     get:
-      operationId: getPackUpdateAvailability
+      operationId: getExtensionUpdateAvailability
       summary: Report what an update check would do, without doing it
       description: >-
         marketplace/1 MKT-095. The same resolution `updatePack` performs — the
@@ -4630,7 +4630,7 @@ paths:
         "422":
           $ref: "#/components/responses/UnprocessableContent"
     post:
-      operationId: updatePack
+      operationId: updateExtension
       summary: Run one update check against a pack's pinned trust channel
       description: >-
         Channel auto-tracking, applied on demand (marketplace/1 MKT-090): the
@@ -4668,13 +4668,13 @@ paths:
           $ref: "#/components/responses/Conflict"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
-  /packs/{publisher}/{name}/data/{collection}:
+  /extensions/{publisher}/{name}/data/{collection}:
     parameters:
       - $ref: "#/components/parameters/PackPublisherParam"
       - $ref: "#/components/parameters/PackNameParam"
       - $ref: "#/components/parameters/PackCollectionParam"
     get:
-      operationId: listPackRows
+      operationId: listExtensionRows
       summary: List the rows of a pack-declared collection
       description: >-
         Keyset-paginated over the collection's universal-envelope rows
@@ -4696,7 +4696,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
     post:
-      operationId: createPackRow
+      operationId: createExtensionRow
       summary: Create a row in a pack-declared collection
       tags: [packs]
       parameters:
@@ -4717,7 +4717,7 @@ paths:
           $ref: "#/components/responses/Conflict"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
-  /packs/{publisher}/{name}/data/{collection}/{entity_id}:
+  /extensions/{publisher}/{name}/data/{collection}/{entity_id}:
     parameters:
       - $ref: "#/components/parameters/PackPublisherParam"
       - $ref: "#/components/parameters/PackNameParam"
@@ -4728,7 +4728,7 @@ paths:
         schema:
           $ref: "#/components/schemas/Ulid"
     get:
-      operationId: getPackRow
+      operationId: getExtensionRow
       summary: Read one row of a pack-declared collection
       tags: [packs, "mcp:read"]
       parameters:
@@ -4741,7 +4741,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
     patch:
-      operationId: updatePackRow
+      operationId: updateExtensionRow
       summary: Update one row of a pack-declared collection
       description: Partial update. Requires If-Match against the row's current ETag/revision.
       tags: [packs]
@@ -4764,7 +4764,7 @@ paths:
         "428":
           $ref: "#/components/responses/PreconditionRequired"
     delete:
-      operationId: deletePackRow
+      operationId: deleteExtensionRow
       summary: Delete one row of a pack-declared collection
       tags: [packs]
       parameters:

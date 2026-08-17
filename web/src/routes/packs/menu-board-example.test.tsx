@@ -56,7 +56,7 @@ function realPackEnvelope() {
   };
 }
 
-const B = "*/api/v1/packs/waiveo/menu-board";
+const B = "*/api/v1/extensions/waiveo/menu-board";
 
 const server = setupServer();
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));

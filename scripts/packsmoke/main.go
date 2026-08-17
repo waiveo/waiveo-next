@@ -1,6 +1,6 @@
 // Command packsmoke is the `make dev` declarative-pack check: it installs the
 // in-repo example pack (examples/packs/menu-board) through the REAL POST
-// /api/v1/packs on the running feeder — the same manifest engine that gates a
+// /api/v1/extensions on the running feeder — the same manifest engine that gates a
 // third party's upload — and asserts the install summary (the pack identity, its
 // two pages, and its menu_items collection). It proves a declarative extension
 // installs end to end on the live stack; NOTHING in the pack executes — a pack is
@@ -21,7 +21,7 @@
 // examples/packs; one make-dev publisher key, so even the signature envelope
 // matches — ed25519 signing and the zip rewrite are both deterministic).
 //
-// Endpoint (the real api/1 surface): POST https://127.0.0.1:7420/api/v1/packs.
+// Endpoint (the real api/1 surface): POST https://127.0.0.1:7420/api/v1/extensions.
 // A fresh `make dev` seeds an empty store, so the first install is a 201; a
 // re-run against a pre-installed pack is a 200 (updated in place). Both are OK —
 // the install succeeded either way. Retried for ~10s (no start ordering between
@@ -43,7 +43,7 @@ import (
 	"github.com/maaxton/waiveo-next/scripts/devcred"
 )
 
-const packsEndpoint = "https://127.0.0.1:7420/api/v1/packs"
+const packsEndpoint = "https://127.0.0.1:7420/api/v1/extensions"
 
 // The make-dev publisher key dir and the feeder's trust-anchors document —
 // the same paths `make example-pack` provisions and the feeder's default

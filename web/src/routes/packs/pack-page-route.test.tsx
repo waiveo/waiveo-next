@@ -269,7 +269,7 @@ function dataPage(rows: unknown[]) {
   return HttpResponse.json({ items: rows, cursor: null }, { headers: { "Trace-Id": TRACE_ID } });
 }
 
-const B = "*/api/v1/packs/acme/menu-board";
+const B = "*/api/v1/extensions/acme/menu-board";
 
 /** The handlers every render needs: the pack, the org scope-node, and (by default)
  * the list-detail page doc + en catalog. Tests override the doc/catalog/data. */
@@ -955,7 +955,7 @@ describe("Pack page — safety + spec-form regressions", () => {
     // It reached the MAN-101 route for THIS action…
     await waitFor(() => expect(invoked).not.toBeNull());
     const call = invoked as unknown as { url: string; body: { params: Record<string, unknown> } };
-    expect(call.url).toContain("/packs/acme/menu-board/actions/run-backup");
+    expect(call.url).toContain("/extensions/acme/menu-board/actions/run-backup");
     // …carrying the declared params, with the Binding one RESOLVED against the
     // bound record rather than sent as the literal string "greeting".
     expect(call.body.params).toEqual({ full: true, note: "Good morning" });

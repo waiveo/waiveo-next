@@ -22,7 +22,7 @@ function api() {
 describe("packs registry client", () => {
   it("lists installed packs as a keyset page", async () => {
     server.use(
-      http.get(`${TEST_BASE}/packs`, () =>
+      http.get(`${TEST_BASE}/extensions`, () =>
         HttpResponse.json({ items: [pack()], cursor: null }, { headers: { "Trace-Id": TRACE_ID } }),
       ),
     );
@@ -35,7 +35,7 @@ describe("packs registry client", () => {
   it("reads one pack by its slash-bearing id WITHOUT percent-encoding the separator", async () => {
     let hitPath: string | null = null;
     server.use(
-      http.get(`${TEST_BASE}/packs/acme/menu-board`, ({ request }) => {
+      http.get(`${TEST_BASE}/extensions/acme/menu-board`, ({ request }) => {
         hitPath = new URL(request.url).pathname;
         return ok(pack(), { revision: 1 });
       }),
@@ -44,7 +44,7 @@ describe("packs registry client", () => {
     expect(read.data.id).toBe(PACK_ID);
     // The single slash in `acme/menu-board` is a real path separator (two server
     // segments), not an id byte to percent-encode.
-    expect(hitPath).toBe("/api/v1/packs/acme/menu-board");
+    expect(hitPath).toBe("/api/v1/extensions/acme/menu-board");
     expect(read.etag).toBe('"1"');
   });
 
@@ -52,7 +52,7 @@ describe("packs registry client", () => {
     let idempotencyKey: string | null = null;
     let contentType: string | null = null;
     server.use(
-      http.post(`${TEST_BASE}/packs`, ({ request }) => {
+      http.post(`${TEST_BASE}/extensions`, ({ request }) => {
         idempotencyKey = request.headers.get("Idempotency-Key");
         contentType = request.headers.get("Content-Type");
         return HttpResponse.json(
@@ -71,7 +71,7 @@ describe("packs registry client", () => {
 
   it("surfaces a manifest-refused install as a 422 ApiError with the field errors mapped", async () => {
     server.use(
-      http.post(`${TEST_BASE}/packs`, () =>
+      http.post(`${TEST_BASE}/extensions`, () =>
         problem(422, "VALIDATION_FAILED", "The pack manifest failed validation.", {
           errors: [{ field: "capabilities[0]", code: "UNKNOWN_CAPABILITY", message: "unknown capability" }],
         }),
@@ -88,7 +88,7 @@ describe("packs registry client", () => {
   it("uninstalls under an If-Match derived from the pack revision", async () => {
     let ifMatch: string | null = null;
     server.use(
-      http.delete(`${TEST_BASE}/packs/acme/menu-board`, ({ request }) => {
+      http.delete(`${TEST_BASE}/extensions/acme/menu-board`, ({ request }) => {
         ifMatch = request.headers.get("If-Match");
         return new HttpResponse(null, { status: 204, headers: { "Trace-Id": TRACE_ID } });
       }),
@@ -100,7 +100,7 @@ describe("packs registry client", () => {
   it("fetches a page document verbatim (the renderer's input)", async () => {
     const doc = { pageType: "list-detail", list: { source: "menu_items" } };
     server.use(
-      http.get(`${TEST_BASE}/packs/acme/menu-board/pages/menu-items`, () =>
+      http.get(`${TEST_BASE}/extensions/acme/menu-board/pages/menu-items`, () =>
         HttpResponse.json(doc, { headers: { "Trace-Id": TRACE_ID } }),
       ),
     );
@@ -121,7 +121,7 @@ describe("packs registry client", () => {
 
     // (a) A literal dot-segment path is refused BEFORE any request leaves — the
     // WHATWG URL parser fetch() uses would otherwise collapse `../` onto another
-    // api/1 endpoint (`/api/v1/packs/acme/scope-nodes`).
+    // api/1 endpoint (`/api/v1/extensions/acme/scope-nodes`).
     await expect(api().packs.pageDoc(PACK_ID, "../../scope-nodes")).rejects.toThrow();
     expect(requested).toHaveLength(0);
 
@@ -131,12 +131,12 @@ describe("packs registry client", () => {
     // escaping to a sibling pack or another resource.
     await api().packs.pageDoc(PACK_ID, "%2e%2e/%2e%2e/scope-nodes");
     expect(requested).toHaveLength(1);
-    expect(requested[0].startsWith("/api/v1/packs/acme/menu-board/pages/")).toBe(true);
+    expect(requested[0].startsWith("/api/v1/extensions/acme/menu-board/pages/")).toBe(true);
   });
 
   it("fetches a locale catalog verbatim (bare keys)", async () => {
     server.use(
-      http.get(`${TEST_BASE}/packs/acme/menu-board/messages/en`, () =>
+      http.get(`${TEST_BASE}/extensions/acme/menu-board/messages/en`, () =>
         HttpResponse.json({ "page.menuItems.title": "Menu Items" }, { headers: { "Trace-Id": TRACE_ID } }),
       ),
     );
@@ -145,7 +145,7 @@ describe("packs registry client", () => {
 
   it("raises a 404 ApiError for a missing locale (the en fallback is the caller's job)", async () => {
     server.use(
-      http.get(`${TEST_BASE}/packs/acme/menu-board/messages/fr`, () =>
+      http.get(`${TEST_BASE}/extensions/acme/menu-board/messages/fr`, () =>
         problem(404, "NOT_FOUND", "No such locale."),
       ),
     );
@@ -166,7 +166,7 @@ describe("packs marketplace client", () => {
     let idempotencyKey: string | null = null;
     let body: Record<string, unknown> | null = null;
     server.use(
-      http.post(`${TEST_BASE}/packs`, async ({ request }) => {
+      http.post(`${TEST_BASE}/extensions`, async ({ request }) => {
         contentType = request.headers.get("Content-Type");
         idempotencyKey = request.headers.get("Idempotency-Key");
         body = (await request.json()) as Record<string, unknown>;
@@ -190,7 +190,7 @@ describe("packs marketplace client", () => {
   it("carries an explicit source and pinned version when the operator supplies them", async () => {
     let body: Record<string, unknown> | null = null;
     server.use(
-      http.post(`${TEST_BASE}/packs`, async ({ request }) => {
+      http.post(`${TEST_BASE}/extensions`, async ({ request }) => {
         body = (await request.json()) as Record<string, unknown>;
         return HttpResponse.json(
           { id: PACK_ID, version: "1.2.0", pages: [], collections: [], locales: ["en"] },
@@ -214,7 +214,7 @@ describe("packs marketplace client", () => {
 
   it("surfaces a refused reference with its own marketplace code", async () => {
     server.use(
-      http.post(`${TEST_BASE}/packs`, () =>
+      http.post(`${TEST_BASE}/extensions`, () =>
         problem(422, "VALIDATION_FAILED", "the pack reference must name one of the four trust channels", {
           errors: [{ field: "artifact", code: "TRUST_CHANNEL_UNKNOWN", message: "got \"\"" }],
         }),
@@ -232,7 +232,7 @@ describe("packs marketplace client", () => {
     let hitPath: string | null = null;
     let raw: string | null = null;
     server.use(
-      http.post(`${TEST_BASE}/packs/acme/menu-board/update`, async ({ request }) => {
+      http.post(`${TEST_BASE}/extensions/acme/menu-board/update`, async ({ request }) => {
         idempotencyKey = request.headers.get("Idempotency-Key");
         hitPath = new URL(request.url).pathname;
         raw = await request.text();
@@ -246,7 +246,7 @@ describe("packs marketplace client", () => {
     expect(result.action).toBe("updated");
     expect(result.to_version).toBe("1.1.0");
     // The pack id's single slash stays a real path separator.
-    expect(hitPath).toBe("/api/v1/packs/acme/menu-board/update");
+    expect(hitPath).toBe("/api/v1/extensions/acme/menu-board/update");
     // Nothing about HOW the pack is re-resolved is sent: the channel pin lives in
     // the install record server-side (MKT-094).
     expect(raw).toBe("");
@@ -269,7 +269,7 @@ describe("packs marketplace client", () => {
       ...over,
     });
     server.use(
-      http.get(`${TEST_BASE}/packs/acme/menu-board/installs`, () =>
+      http.get(`${TEST_BASE}/extensions/acme/menu-board/installs`, () =>
         HttpResponse.json(
           { items: [rec({ id: ULID_A }), rec({ id: ULID_B, resolved_version: "1.1.0" })], cursor: null },
           { headers: { "Trace-Id": TRACE_ID } },
@@ -284,7 +284,7 @@ describe("packs marketplace client", () => {
 
   it("404s the history of a pack that is not installed (its records went with it)", async () => {
     server.use(
-      http.get(`${TEST_BASE}/packs/acme/menu-board/installs`, () =>
+      http.get(`${TEST_BASE}/extensions/acme/menu-board/installs`, () =>
         problem(404, "NOT_FOUND", "No pack exists at this identifier."),
       ),
     );
@@ -296,7 +296,7 @@ describe("packs marketplace client", () => {
 });
 
 describe("pack-data collections client — a first-class api/1 citizen", () => {
-  const base = `${TEST_BASE}/packs/acme/menu-board/data/menu_items`;
+  const base = `${TEST_BASE}/extensions/acme/menu-board/data/menu_items`;
 
   it("lists rows over the keyset cursor", async () => {
     server.use(

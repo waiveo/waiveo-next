@@ -66,7 +66,7 @@ func automationPackManifest(id string) map[string]any {
 
 func (e *testEnv) installAutomationPack(t *testing.T, id string) {
 	t.Helper()
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, automationPackManifest(id)), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", packBundle(t, automationPackManifest(id)), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install automation pack %s: %d %s", id, resp.StatusCode, raw)
 	}
@@ -131,7 +131,7 @@ func TestPackActionFromARuleReachesThePacksQueue(t *testing.T) {
 
 	// The queue starts empty, so a lease below cannot be satisfied by work some
 	// other part of the harness left behind.
-	if resp, _ := asPack(t, e, token, http.MethodGet, "/api/v1/pack-invocations/pending", nil); resp.StatusCode != http.StatusNoContent {
+	if resp, _ := asPack(t, e, token, http.MethodGet, "/api/v1/extension-invocations/pending", nil); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("precondition: the queue must start empty; lease = %d", resp.StatusCode)
 	}
 
@@ -145,7 +145,7 @@ func TestPackActionFromARuleReachesThePacksQueue(t *testing.T) {
 		t.Fatalf("the rule must run; got %v (%+v)", rep["disposition"], rep)
 	}
 
-	resp, leased := asPack(t, e, token, http.MethodGet, "/api/v1/pack-invocations/pending", nil)
+	resp, leased := asPack(t, e, token, http.MethodGet, "/api/v1/extension-invocations/pending", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("RUL-231: the rule's pack_action MUST queue work for the pack; lease = %d. "+
 			"This is the silent no-op the action used to be", resp.StatusCode)
@@ -201,7 +201,7 @@ func TestARelayCommandPackActionIsNeverQueuedToThePackHandler_RUL232(t *testing.
 	})
 	rep := runPackAutomation(t, e, id, `{}`)
 
-	resp, leased := asPack(t, e, token, http.MethodGet, "/api/v1/pack-invocations/pending", nil)
+	resp, leased := asPack(t, e, token, http.MethodGet, "/api/v1/extension-invocations/pending", nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("RUL-232: an execution: relay-command action MUST NOT reach the pack's handler; "+
 			"the pack leased %+v", leased)
@@ -246,7 +246,7 @@ func TestPackActionRefusalsAreNamedAndQueueNothing(t *testing.T) {
 			})
 			rep := runPackAutomation(t, e, id, `{}`)
 
-			if resp, leased := asPack(t, e, token, http.MethodGet, "/api/v1/pack-invocations/pending", nil); resp.StatusCode != http.StatusNoContent {
+			if resp, leased := asPack(t, e, token, http.MethodGet, "/api/v1/extension-invocations/pending", nil); resp.StatusCode != http.StatusNoContent {
 				t.Fatalf("a refused pack_action MUST queue nothing; the pack leased %+v", leased)
 			}
 			out := firstPackActionOutcome(t, rep)
@@ -278,7 +278,7 @@ func TestADryRunRoutesButQueuesNothing(t *testing.T) {
 	if rep["dry_run"] != true {
 		t.Fatalf("the run must report itself as a dry run; got %+v", rep["dry_run"])
 	}
-	if resp, leased := asPack(t, e, token, http.MethodGet, "/api/v1/pack-invocations/pending", nil); resp.StatusCode != http.StatusNoContent {
+	if resp, leased := asPack(t, e, token, http.MethodGet, "/api/v1/extension-invocations/pending", nil); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("a DRY run MUST queue nothing; the pack leased %+v", leased)
 	}
 	// Still reported, and reported as routable: the point of a dry run is to be
@@ -325,7 +325,7 @@ func TestARuleFiredInvocationCarriesTheManifestsIdempotencyClass(t *testing.T) {
 	})
 	runPackAutomation(t, e, id, `{}`)
 
-	resp, leased := asPack(t, e, token, http.MethodGet, "/api/v1/pack-invocations/pending", nil)
+	resp, leased := asPack(t, e, token, http.MethodGet, "/api/v1/extension-invocations/pending", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("lease = %d, want the queued invocation", resp.StatusCode)
 	}
@@ -351,7 +351,7 @@ func TestARulesPackActionOnlyReachesTheNamedPack(t *testing.T) {
 	})
 	runPackAutomation(t, e, id, `{}`)
 
-	if resp, leased := asPack(t, e, other, http.MethodGet, "/api/v1/pack-invocations/pending", nil); resp.StatusCode != http.StatusNoContent {
+	if resp, leased := asPack(t, e, other, http.MethodGet, "/api/v1/extension-invocations/pending", nil); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("the other pack MUST see nothing; it leased %+v", leased)
 	}
 }

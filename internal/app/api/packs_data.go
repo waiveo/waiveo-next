@@ -14,7 +14,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 )
 
-// The pack-data surface — /api/v1/packs/{publisher}/{name}/data/{collection} —
+// The pack-data surface — /api/v1/extensions/{publisher}/{name}/data/{collection} —
 // makes a pack's manifest-declared collections (MAN-051) first-class api/1
 // citizens: each row carries the universal entity envelope plus its declared
 // fields, and every write is gated by packs.ValidateRowWrite (envelope invariants
@@ -215,7 +215,7 @@ func (srv *server) createPackRowExec(w http.ResponseWriter, r *http.Request, raw
 		return
 	}
 	w.Header().Set("ETag", apihttp.ETag(created.Revision))
-	w.Header().Set("Location", apiPrefix+"/packs/"+packID+"/data/"+collection+"/"+created.EntityID)
+	w.Header().Set("Location", apiPrefix+"/extensions/"+packID+"/data/"+collection+"/"+created.EntityID)
 	writeJSON(w, http.StatusCreated, body)
 }
 

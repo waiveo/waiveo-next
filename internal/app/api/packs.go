@@ -95,13 +95,13 @@ func packCursorInvalid(cursor string) *apihttp.PageParamError {
 	}
 }
 
-// mountPacks registers the declarative-packs surface under /api/v1/packs. A pack
+// mountPacks registers the declarative-packs surface under /api/v1/extensions. A pack
 // id is <publisher>/<name> (two path segments, MAN-001), so the item routes
 // capture {publisher} and {name} separately and rejoin them — the id never rides
 // as a single opaque segment. A page path (UIS-001) MAY itself be nested, so the
 // page route takes a trailing {path...} wildcard.
 func (srv *server) mountPacks(rt *router) {
-	base := apiPrefix + "/packs"
+	base := apiPrefix + "/extensions"
 	rt.HandleFunc("POST "+base, srv.installPack)
 	rt.HandleFunc("GET "+base, srv.listPacks)
 	// One literal segment, registered before the two-segment pack routes below.
@@ -270,7 +270,7 @@ func (srv *server) installPackExec(w http.ResponseWriter, r *http.Request, artif
 	if res.Created {
 		status = http.StatusCreated
 	}
-	w.Header().Set("Location", apiPrefix+"/packs/"+res.ID)
+	w.Header().Set("Location", apiPrefix+"/extensions/"+res.ID)
 	writeJSONValue(w, status, res)
 }
 

@@ -10,7 +10,7 @@ import (
 
 // This is the declarative-packs living proof over the REAL api/1 surface: the
 // in-repo example pack (examples/packs/menu-board) is installed through the actual
-// POST /api/v1/packs — gated by the real manifest engine — then exercised exactly
+// POST /api/v1/extensions — gated by the real manifest engine — then exercised exactly
 // as a third party's pack would be. It proves the whole promise of the wave end to
 // end: install → the pack + its page documents + its collection all land → a row
 // created over the pack-data api/1 surface persists and lists → the page document
@@ -26,7 +26,7 @@ const examplePackID = "waiveo/menu-board"
 
 // exampleMenuRowsPath is the pack-data collection surface for the example pack's
 // menu_items collection.
-const exampleMenuRowsPath = "/api/v1/packs/waiveo/menu-board/data/menu_items"
+const exampleMenuRowsPath = "/api/v1/extensions/waiveo/menu-board/data/menu_items"
 
 func TestExamplePackInstallsAndServesDataEndToEnd(t *testing.T) {
 	e := newEnv(t)
@@ -44,7 +44,7 @@ func TestExamplePackInstallsAndServesDataEndToEnd(t *testing.T) {
 	art := signPack(t, raw, examplePackID, "1.0.0")
 
 	// 1. Install the REAL example artifact over the REAL install endpoint.
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", art, nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", art, nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install status = %d, want 201 (body %s)", resp.StatusCode, raw)
 	}
@@ -72,7 +72,7 @@ func TestExamplePackInstallsAndServesDataEndToEnd(t *testing.T) {
 	}
 
 	// 2. The pack landed: GET it (ETag "1", the manifest body present).
-	resp, raw = e.do(t, http.MethodGet, "/api/v1/packs/waiveo/menu-board", nil, nil)
+	resp, raw = e.do(t, http.MethodGet, "/api/v1/extensions/waiveo/menu-board", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("get pack status = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
@@ -87,7 +87,7 @@ func TestExamplePackInstallsAndServesDataEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read on-disk page %q: %v", page, err)
 		}
-		resp, got := e.do(t, http.MethodGet, "/api/v1/packs/waiveo/menu-board/pages/"+page, nil, nil)
+		resp, got := e.do(t, http.MethodGet, "/api/v1/extensions/waiveo/menu-board/pages/"+page, nil, nil)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("get page %q status = %d, want 200 (%s)", page, resp.StatusCode, got)
 		}
@@ -95,7 +95,7 @@ func TestExamplePackInstallsAndServesDataEndToEnd(t *testing.T) {
 			t.Fatalf("page %q served bytes differ from the on-disk document", page)
 		}
 	}
-	resp, _ = e.do(t, http.MethodGet, "/api/v1/packs/waiveo/menu-board/messages/en", nil, nil)
+	resp, _ = e.do(t, http.MethodGet, "/api/v1/extensions/waiveo/menu-board/messages/en", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("get en catalog status = %d, want 200", resp.StatusCode)
 	}

@@ -72,7 +72,7 @@ func installBackupsPilot(t *testing.T, e *testEnv, bin []byte) {
 	if err != nil {
 		t.Fatalf("assemble pilot artifact: %v", err)
 	}
-	resp, body := e.do(t, http.MethodPost, "/api/v1/packs", signPack(t, raw, "waiveo/backups", "1.0.0"), nil)
+	resp, body := e.do(t, http.MethodPost, "/api/v1/extensions", signPack(t, raw, "waiveo/backups", "1.0.0"), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install pilot: %d %s", resp.StatusCode, body)
 	}
@@ -210,7 +210,7 @@ func (s *tlsStub) handler() http.Handler {
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"token":"stub-token","pack_id":"waiveo/backups"}`))
 	})
-	mux.HandleFunc("GET /api/v1/pack-invocations/pending", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/v1/extension-invocations/pending", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		first := !s.leased
 		s.leased = true
@@ -221,10 +221,10 @@ func (s *tlsStub) handler() http.Handler {
 		}
 		_, _ = w.Write([]byte(`{"invocation_id":"inv-tls-1","action":"run-backup","params":{}}`))
 	})
-	mux.HandleFunc("GET /api/v1/packs/waiveo/backups/data/settings", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/v1/extensions/waiveo/backups/data/settings", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"items":[]}`))
 	})
-	mux.HandleFunc("POST /api/v1/pack-invocations/inv-tls-1/result", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/v1/extension-invocations/inv-tls-1/result", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		s.mu.Lock()
 		s.result = body

@@ -3633,26 +3633,20 @@ type SendEntityCommandParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// GetJobParams defines parameters for GetJob.
-type GetJobParams struct {
+// EmitExtensionEventParams defines parameters for EmitExtensionEvent.
+type EmitExtensionEventParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// EmitPackEventParams defines parameters for EmitPackEvent.
-type EmitPackEventParams struct {
+// ReportExtensionHealthParams defines parameters for ReportExtensionHealth.
+type ReportExtensionHealthParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// ReportPackHealthParams defines parameters for ReportPackHealth.
-type ReportPackHealthParams struct {
-	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
-	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
-}
-
-// LeasePackInvocationParams defines parameters for LeasePackInvocation.
-type LeasePackInvocationParams struct {
+// LeaseExtensionInvocationParams defines parameters for LeaseExtensionInvocation.
+type LeaseExtensionInvocationParams struct {
 	// Wait Seconds to hold the request open while the queue is empty. Zero returns immediately.
 	Wait *int `form:"wait,omitempty" json:"wait,omitempty"`
 
@@ -3660,20 +3654,20 @@ type LeasePackInvocationParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// ReportPackInvocationResultParams defines parameters for ReportPackInvocationResult.
-type ReportPackInvocationResultParams struct {
+// ReportExtensionInvocationResultParams defines parameters for ReportExtensionInvocationResult.
+type ReportExtensionInvocationResultParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// AppendPackLogParams defines parameters for AppendPackLog.
-type AppendPackLogParams struct {
+// AppendExtensionLogParams defines parameters for AppendExtensionLog.
+type AppendExtensionLogParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// ListPacksParams defines parameters for ListPacks.
-type ListPacksParams struct {
+// ListExtensionsParams defines parameters for ListExtensions.
+type ListExtensionsParams struct {
 	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
 	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
 
@@ -3684,8 +3678,8 @@ type ListPacksParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// InstallPackParams defines parameters for InstallPack.
-type InstallPackParams struct {
+// InstallExtensionParams defines parameters for InstallExtension.
+type InstallExtensionParams struct {
 	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
 	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
 
@@ -3693,14 +3687,14 @@ type InstallPackParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// BrowsePackCatalogParams defines parameters for BrowsePackCatalog.
-type BrowsePackCatalogParams struct {
+// BrowseExtensionCatalogParams defines parameters for BrowseExtensionCatalog.
+type BrowseExtensionCatalogParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// UninstallPackParams defines parameters for UninstallPack.
-type UninstallPackParams struct {
+// UninstallExtensionParams defines parameters for UninstallExtension.
+type UninstallExtensionParams struct {
 	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
 	IfMatch IfMatchParam `json:"If-Match"`
 
@@ -3708,14 +3702,14 @@ type UninstallPackParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// GetPackParams defines parameters for GetPack.
-type GetPackParams struct {
+// GetExtensionParams defines parameters for GetExtension.
+type GetExtensionParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// InvokePackActionParams defines parameters for InvokePackAction.
-type InvokePackActionParams struct {
+// InvokeExtensionActionParams defines parameters for InvokeExtensionAction.
+type InvokeExtensionActionParams struct {
 	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
 	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
 
@@ -3723,8 +3717,8 @@ type InvokePackActionParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// ListPackRowsParams defines parameters for ListPackRows.
-type ListPackRowsParams struct {
+// ListExtensionRowsParams defines parameters for ListExtensionRows.
+type ListExtensionRowsParams struct {
 	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
 	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
 
@@ -3735,8 +3729,8 @@ type ListPackRowsParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// CreatePackRowParams defines parameters for CreatePackRow.
-type CreatePackRowParams struct {
+// CreateExtensionRowParams defines parameters for CreateExtensionRow.
+type CreateExtensionRowParams struct {
 	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
 	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
 
@@ -3744,8 +3738,8 @@ type CreatePackRowParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// DeletePackRowParams defines parameters for DeletePackRow.
-type DeletePackRowParams struct {
+// DeleteExtensionRowParams defines parameters for DeleteExtensionRow.
+type DeleteExtensionRowParams struct {
 	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
 	IfMatch IfMatchParam `json:"If-Match"`
 
@@ -3753,14 +3747,14 @@ type DeletePackRowParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// GetPackRowParams defines parameters for GetPackRow.
-type GetPackRowParams struct {
+// GetExtensionRowParams defines parameters for GetExtensionRow.
+type GetExtensionRowParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// UpdatePackRowParams defines parameters for UpdatePackRow.
-type UpdatePackRowParams struct {
+// UpdateExtensionRowParams defines parameters for UpdateExtensionRow.
+type UpdateExtensionRowParams struct {
 	// IfMatch The resource's current ETag, as last observed by the client. Required on every state-changing request against a mutable resource; no unconditional-overwrite path exists.
 	IfMatch IfMatchParam `json:"If-Match"`
 
@@ -3768,19 +3762,19 @@ type UpdatePackRowParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// SetPackEnabledJSONBody defines parameters for SetPackEnabled.
-type SetPackEnabledJSONBody struct {
+// SetExtensionEnabledJSONBody defines parameters for SetExtensionEnabled.
+type SetExtensionEnabledJSONBody struct {
 	Enabled bool `json:"enabled"`
 }
 
-// SetPackEnabledParams defines parameters for SetPackEnabled.
-type SetPackEnabledParams struct {
+// SetExtensionEnabledParams defines parameters for SetExtensionEnabled.
+type SetExtensionEnabledParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// ListPackInstallsParams defines parameters for ListPackInstalls.
-type ListPackInstallsParams struct {
+// ListExtensionInstallsParams defines parameters for ListExtensionInstalls.
+type ListExtensionInstallsParams struct {
 	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
 	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
 
@@ -3791,29 +3785,35 @@ type ListPackInstallsParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// GetPackMessagesParams defines parameters for GetPackMessages.
-type GetPackMessagesParams struct {
+// GetExtensionMessagesParams defines parameters for GetExtensionMessages.
+type GetExtensionMessagesParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// GetPackPageParams defines parameters for GetPackPage.
-type GetPackPageParams struct {
+// GetExtensionPageParams defines parameters for GetExtensionPage.
+type GetExtensionPageParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// GetPackUpdateAvailabilityParams defines parameters for GetPackUpdateAvailability.
-type GetPackUpdateAvailabilityParams struct {
+// GetExtensionUpdateAvailabilityParams defines parameters for GetExtensionUpdateAvailability.
+type GetExtensionUpdateAvailabilityParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
-// UpdatePackParams defines parameters for UpdatePack.
-type UpdatePackParams struct {
+// UpdateExtensionParams defines parameters for UpdateExtension.
+type UpdateExtensionParams struct {
 	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
 	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
 
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
+// GetJobParams defines parameters for GetJob.
+type GetJobParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
@@ -4319,26 +4319,26 @@ type StartDiscoveryScanJSONRequestBody = DiscoveryScanRequest
 // SendEntityCommandJSONRequestBody defines body for SendEntityCommand for application/json ContentType.
 type SendEntityCommandJSONRequestBody = EntityCommandRequest
 
-// EmitPackEventJSONRequestBody defines body for EmitPackEvent for application/json ContentType.
-type EmitPackEventJSONRequestBody = PackEventEmitRequest
+// EmitExtensionEventJSONRequestBody defines body for EmitExtensionEvent for application/json ContentType.
+type EmitExtensionEventJSONRequestBody = PackEventEmitRequest
 
-// ReportPackHealthJSONRequestBody defines body for ReportPackHealth for application/json ContentType.
-type ReportPackHealthJSONRequestBody = PackHealthReportRequest
+// ReportExtensionHealthJSONRequestBody defines body for ReportExtensionHealth for application/json ContentType.
+type ReportExtensionHealthJSONRequestBody = PackHealthReportRequest
 
-// ReportPackInvocationResultJSONRequestBody defines body for ReportPackInvocationResult for application/json ContentType.
-type ReportPackInvocationResultJSONRequestBody = PackInvocationResultRequest
+// ReportExtensionInvocationResultJSONRequestBody defines body for ReportExtensionInvocationResult for application/json ContentType.
+type ReportExtensionInvocationResultJSONRequestBody = PackInvocationResultRequest
 
-// AppendPackLogJSONRequestBody defines body for AppendPackLog for application/json ContentType.
-type AppendPackLogJSONRequestBody = PackLogAppendRequest
+// AppendExtensionLogJSONRequestBody defines body for AppendExtensionLog for application/json ContentType.
+type AppendExtensionLogJSONRequestBody = PackLogAppendRequest
 
-// InstallPackJSONRequestBody defines body for InstallPack for application/json ContentType.
-type InstallPackJSONRequestBody = MarketplaceRef
+// InstallExtensionJSONRequestBody defines body for InstallExtension for application/json ContentType.
+type InstallExtensionJSONRequestBody = MarketplaceRef
 
-// InvokePackActionJSONRequestBody defines body for InvokePackAction for application/json ContentType.
-type InvokePackActionJSONRequestBody = PackActionInvokeRequest
+// InvokeExtensionActionJSONRequestBody defines body for InvokeExtensionAction for application/json ContentType.
+type InvokeExtensionActionJSONRequestBody = PackActionInvokeRequest
 
-// SetPackEnabledJSONRequestBody defines body for SetPackEnabled for application/json ContentType.
-type SetPackEnabledJSONRequestBody SetPackEnabledJSONBody
+// SetExtensionEnabledJSONRequestBody defines body for SetExtensionEnabled for application/json ContentType.
+type SetExtensionEnabledJSONRequestBody SetExtensionEnabledJSONBody
 
 // CreatePlaylistJSONRequestBody defines body for CreatePlaylist for application/json ContentType.
 type CreatePlaylistJSONRequestBody = PlaylistCreate
@@ -4663,88 +4663,88 @@ type ClientInterface interface {
 
 	SendEntityCommand(ctx context.Context, entityId Ulid, params *SendEntityCommandParams, body SendEntityCommandJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// EmitExtensionEventWithBody request with any body
+	EmitExtensionEventWithBody(ctx context.Context, params *EmitExtensionEventParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	EmitExtensionEvent(ctx context.Context, params *EmitExtensionEventParams, body EmitExtensionEventJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ReportExtensionHealthWithBody request with any body
+	ReportExtensionHealthWithBody(ctx context.Context, params *ReportExtensionHealthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ReportExtensionHealth(ctx context.Context, params *ReportExtensionHealthParams, body ReportExtensionHealthJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// LeaseExtensionInvocation request
+	LeaseExtensionInvocation(ctx context.Context, params *LeaseExtensionInvocationParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ReportExtensionInvocationResultWithBody request with any body
+	ReportExtensionInvocationResultWithBody(ctx context.Context, invocationId string, params *ReportExtensionInvocationResultParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ReportExtensionInvocationResult(ctx context.Context, invocationId string, params *ReportExtensionInvocationResultParams, body ReportExtensionInvocationResultJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AppendExtensionLogWithBody request with any body
+	AppendExtensionLogWithBody(ctx context.Context, params *AppendExtensionLogParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	AppendExtensionLog(ctx context.Context, params *AppendExtensionLogParams, body AppendExtensionLogJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListExtensions request
+	ListExtensions(ctx context.Context, params *ListExtensionsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// InstallExtensionWithBody request with any body
+	InstallExtensionWithBody(ctx context.Context, params *InstallExtensionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	InstallExtension(ctx context.Context, params *InstallExtensionParams, body InstallExtensionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// BrowseExtensionCatalog request
+	BrowseExtensionCatalog(ctx context.Context, params *BrowseExtensionCatalogParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// UninstallExtension request
+	UninstallExtension(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UninstallExtensionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetExtension request
+	GetExtension(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetExtensionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// InvokeExtensionActionWithBody request with any body
+	InvokeExtensionActionWithBody(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokeExtensionActionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	InvokeExtensionAction(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokeExtensionActionParams, body InvokeExtensionActionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListExtensionRows request
+	ListExtensionRows(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *ListExtensionRowsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateExtensionRow request
+	CreateExtensionRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *CreateExtensionRowParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteExtensionRow request
+	DeleteExtensionRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *DeleteExtensionRowParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetExtensionRow request
+	GetExtensionRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *GetExtensionRowParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// UpdateExtensionRow request
+	UpdateExtensionRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *UpdateExtensionRowParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SetExtensionEnabledWithBody request with any body
+	SetExtensionEnabledWithBody(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetExtensionEnabledParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	SetExtensionEnabled(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetExtensionEnabledParams, body SetExtensionEnabledJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListExtensionInstalls request
+	ListExtensionInstalls(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *ListExtensionInstallsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetExtensionMessages request
+	GetExtensionMessages(ctx context.Context, publisher PackPublisherParam, name PackNameParam, locale string, params *GetExtensionMessagesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetExtensionPage request
+	GetExtensionPage(ctx context.Context, publisher PackPublisherParam, name PackNameParam, path string, params *GetExtensionPageParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetExtensionUpdateAvailability request
+	GetExtensionUpdateAvailability(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetExtensionUpdateAvailabilityParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// UpdateExtension request
+	UpdateExtension(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UpdateExtensionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetJob request
 	GetJob(ctx context.Context, jobId Ulid, params *GetJobParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// EmitPackEventWithBody request with any body
-	EmitPackEventWithBody(ctx context.Context, params *EmitPackEventParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	EmitPackEvent(ctx context.Context, params *EmitPackEventParams, body EmitPackEventJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// ReportPackHealthWithBody request with any body
-	ReportPackHealthWithBody(ctx context.Context, params *ReportPackHealthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	ReportPackHealth(ctx context.Context, params *ReportPackHealthParams, body ReportPackHealthJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// LeasePackInvocation request
-	LeasePackInvocation(ctx context.Context, params *LeasePackInvocationParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// ReportPackInvocationResultWithBody request with any body
-	ReportPackInvocationResultWithBody(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	ReportPackInvocationResult(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, body ReportPackInvocationResultJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// AppendPackLogWithBody request with any body
-	AppendPackLogWithBody(ctx context.Context, params *AppendPackLogParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	AppendPackLog(ctx context.Context, params *AppendPackLogParams, body AppendPackLogJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// ListPacks request
-	ListPacks(ctx context.Context, params *ListPacksParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// InstallPackWithBody request with any body
-	InstallPackWithBody(ctx context.Context, params *InstallPackParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	InstallPack(ctx context.Context, params *InstallPackParams, body InstallPackJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// BrowsePackCatalog request
-	BrowsePackCatalog(ctx context.Context, params *BrowsePackCatalogParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// UninstallPack request
-	UninstallPack(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UninstallPackParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// GetPack request
-	GetPack(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetPackParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// InvokePackActionWithBody request with any body
-	InvokePackActionWithBody(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	InvokePackAction(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, body InvokePackActionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// ListPackRows request
-	ListPackRows(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *ListPackRowsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// CreatePackRow request
-	CreatePackRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *CreatePackRowParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// DeletePackRow request
-	DeletePackRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *DeletePackRowParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// GetPackRow request
-	GetPackRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *GetPackRowParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// UpdatePackRow request
-	UpdatePackRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *UpdatePackRowParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// SetPackEnabledWithBody request with any body
-	SetPackEnabledWithBody(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	SetPackEnabled(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, body SetPackEnabledJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// ListPackInstalls request
-	ListPackInstalls(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *ListPackInstallsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// GetPackMessages request
-	GetPackMessages(ctx context.Context, publisher PackPublisherParam, name PackNameParam, locale string, params *GetPackMessagesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// GetPackPage request
-	GetPackPage(ctx context.Context, publisher PackPublisherParam, name PackNameParam, path string, params *GetPackPageParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// GetPackUpdateAvailability request
-	GetPackUpdateAvailability(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetPackUpdateAvailabilityParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// UpdatePack request
-	UpdatePack(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UpdatePackParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListPlatformLogs request
 	ListPlatformLogs(ctx context.Context, params *ListPlatformLogsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5778,356 +5778,356 @@ func (c *Client) SendEntityCommand(ctx context.Context, entityId Ulid, params *S
 	return c.Client.Do(req)
 }
 
+func (c *Client) EmitExtensionEventWithBody(ctx context.Context, params *EmitExtensionEventParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewEmitExtensionEventRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) EmitExtensionEvent(ctx context.Context, params *EmitExtensionEventParams, body EmitExtensionEventJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewEmitExtensionEventRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ReportExtensionHealthWithBody(ctx context.Context, params *ReportExtensionHealthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReportExtensionHealthRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ReportExtensionHealth(ctx context.Context, params *ReportExtensionHealthParams, body ReportExtensionHealthJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReportExtensionHealthRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) LeaseExtensionInvocation(ctx context.Context, params *LeaseExtensionInvocationParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewLeaseExtensionInvocationRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ReportExtensionInvocationResultWithBody(ctx context.Context, invocationId string, params *ReportExtensionInvocationResultParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReportExtensionInvocationResultRequestWithBody(c.Server, invocationId, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ReportExtensionInvocationResult(ctx context.Context, invocationId string, params *ReportExtensionInvocationResultParams, body ReportExtensionInvocationResultJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReportExtensionInvocationResultRequest(c.Server, invocationId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) AppendExtensionLogWithBody(ctx context.Context, params *AppendExtensionLogParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAppendExtensionLogRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) AppendExtensionLog(ctx context.Context, params *AppendExtensionLogParams, body AppendExtensionLogJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAppendExtensionLogRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListExtensions(ctx context.Context, params *ListExtensionsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListExtensionsRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) InstallExtensionWithBody(ctx context.Context, params *InstallExtensionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewInstallExtensionRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) InstallExtension(ctx context.Context, params *InstallExtensionParams, body InstallExtensionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewInstallExtensionRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) BrowseExtensionCatalog(ctx context.Context, params *BrowseExtensionCatalogParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewBrowseExtensionCatalogRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UninstallExtension(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UninstallExtensionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUninstallExtensionRequest(c.Server, publisher, name, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetExtension(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetExtensionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetExtensionRequest(c.Server, publisher, name, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) InvokeExtensionActionWithBody(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokeExtensionActionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewInvokeExtensionActionRequestWithBody(c.Server, publisher, name, action, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) InvokeExtensionAction(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokeExtensionActionParams, body InvokeExtensionActionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewInvokeExtensionActionRequest(c.Server, publisher, name, action, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListExtensionRows(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *ListExtensionRowsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListExtensionRowsRequest(c.Server, publisher, name, collection, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateExtensionRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *CreateExtensionRowParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateExtensionRowRequest(c.Server, publisher, name, collection, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DeleteExtensionRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *DeleteExtensionRowParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteExtensionRowRequest(c.Server, publisher, name, collection, entityId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetExtensionRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *GetExtensionRowParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetExtensionRowRequest(c.Server, publisher, name, collection, entityId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UpdateExtensionRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *UpdateExtensionRowParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateExtensionRowRequest(c.Server, publisher, name, collection, entityId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SetExtensionEnabledWithBody(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetExtensionEnabledParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSetExtensionEnabledRequestWithBody(c.Server, publisher, name, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SetExtensionEnabled(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetExtensionEnabledParams, body SetExtensionEnabledJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSetExtensionEnabledRequest(c.Server, publisher, name, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListExtensionInstalls(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *ListExtensionInstallsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListExtensionInstallsRequest(c.Server, publisher, name, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetExtensionMessages(ctx context.Context, publisher PackPublisherParam, name PackNameParam, locale string, params *GetExtensionMessagesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetExtensionMessagesRequest(c.Server, publisher, name, locale, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetExtensionPage(ctx context.Context, publisher PackPublisherParam, name PackNameParam, path string, params *GetExtensionPageParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetExtensionPageRequest(c.Server, publisher, name, path, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetExtensionUpdateAvailability(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetExtensionUpdateAvailabilityParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetExtensionUpdateAvailabilityRequest(c.Server, publisher, name, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UpdateExtension(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UpdateExtensionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateExtensionRequest(c.Server, publisher, name, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) GetJob(ctx context.Context, jobId Ulid, params *GetJobParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetJobRequest(c.Server, jobId, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) EmitPackEventWithBody(ctx context.Context, params *EmitPackEventParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewEmitPackEventRequestWithBody(c.Server, params, contentType, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) EmitPackEvent(ctx context.Context, params *EmitPackEventParams, body EmitPackEventJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewEmitPackEventRequest(c.Server, params, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) ReportPackHealthWithBody(ctx context.Context, params *ReportPackHealthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewReportPackHealthRequestWithBody(c.Server, params, contentType, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) ReportPackHealth(ctx context.Context, params *ReportPackHealthParams, body ReportPackHealthJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewReportPackHealthRequest(c.Server, params, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) LeasePackInvocation(ctx context.Context, params *LeasePackInvocationParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewLeasePackInvocationRequest(c.Server, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) ReportPackInvocationResultWithBody(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewReportPackInvocationResultRequestWithBody(c.Server, invocationId, params, contentType, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) ReportPackInvocationResult(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, body ReportPackInvocationResultJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewReportPackInvocationResultRequest(c.Server, invocationId, params, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) AppendPackLogWithBody(ctx context.Context, params *AppendPackLogParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewAppendPackLogRequestWithBody(c.Server, params, contentType, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) AppendPackLog(ctx context.Context, params *AppendPackLogParams, body AppendPackLogJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewAppendPackLogRequest(c.Server, params, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) ListPacks(ctx context.Context, params *ListPacksParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListPacksRequest(c.Server, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) InstallPackWithBody(ctx context.Context, params *InstallPackParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewInstallPackRequestWithBody(c.Server, params, contentType, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) InstallPack(ctx context.Context, params *InstallPackParams, body InstallPackJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewInstallPackRequest(c.Server, params, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) BrowsePackCatalog(ctx context.Context, params *BrowsePackCatalogParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewBrowsePackCatalogRequest(c.Server, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) UninstallPack(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UninstallPackParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewUninstallPackRequest(c.Server, publisher, name, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) GetPack(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetPackParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetPackRequest(c.Server, publisher, name, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) InvokePackActionWithBody(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewInvokePackActionRequestWithBody(c.Server, publisher, name, action, params, contentType, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) InvokePackAction(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, body InvokePackActionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewInvokePackActionRequest(c.Server, publisher, name, action, params, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) ListPackRows(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *ListPackRowsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListPackRowsRequest(c.Server, publisher, name, collection, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) CreatePackRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *CreatePackRowParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCreatePackRowRequest(c.Server, publisher, name, collection, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) DeletePackRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *DeletePackRowParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewDeletePackRowRequest(c.Server, publisher, name, collection, entityId, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) GetPackRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *GetPackRowParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetPackRowRequest(c.Server, publisher, name, collection, entityId, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) UpdatePackRow(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *UpdatePackRowParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewUpdatePackRowRequest(c.Server, publisher, name, collection, entityId, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) SetPackEnabledWithBody(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewSetPackEnabledRequestWithBody(c.Server, publisher, name, params, contentType, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) SetPackEnabled(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, body SetPackEnabledJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewSetPackEnabledRequest(c.Server, publisher, name, params, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) ListPackInstalls(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *ListPackInstallsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListPackInstallsRequest(c.Server, publisher, name, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) GetPackMessages(ctx context.Context, publisher PackPublisherParam, name PackNameParam, locale string, params *GetPackMessagesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetPackMessagesRequest(c.Server, publisher, name, locale, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) GetPackPage(ctx context.Context, publisher PackPublisherParam, name PackNameParam, path string, params *GetPackPageParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetPackPageRequest(c.Server, publisher, name, path, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) GetPackUpdateAvailability(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetPackUpdateAvailabilityParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetPackUpdateAvailabilityRequest(c.Server, publisher, name, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) UpdatePack(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UpdatePackParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewUpdatePackRequest(c.Server, publisher, name, params)
 	if err != nil {
 		return nil, err
 	}
@@ -10057,68 +10057,19 @@ func NewSendEntityCommandRequestWithBody(server string, entityId Ulid, params *S
 	return req, nil
 }
 
-// NewGetJobRequest generates requests for GetJob
-func NewGetJobRequest(server string, jobId Ulid, params *GetJobParams) (*http.Request, error) {
-	var err error
-
-	var pathParam0 string
-
-	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "job_id", jobId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
-	if err != nil {
-		return nil, err
-	}
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/jobs/%s", pathParam0)
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	if params != nil {
-
-		if params.TraceId != nil {
-			var headerParam0 string
-
-			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
-			if err != nil {
-				return nil, err
-			}
-
-			req.Header.Set("Trace-Id", headerParam0)
-		}
-
-	}
-
-	return req, nil
-}
-
-// NewEmitPackEventRequest calls the generic EmitPackEvent builder with application/json body
-func NewEmitPackEventRequest(server string, params *EmitPackEventParams, body EmitPackEventJSONRequestBody) (*http.Request, error) {
+// NewEmitExtensionEventRequest calls the generic EmitExtensionEvent builder with application/json body
+func NewEmitExtensionEventRequest(server string, params *EmitExtensionEventParams, body EmitExtensionEventJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	bodyReader = bytes.NewReader(buf)
-	return NewEmitPackEventRequestWithBody(server, params, "application/json", bodyReader)
+	return NewEmitExtensionEventRequestWithBody(server, params, "application/json", bodyReader)
 }
 
-// NewEmitPackEventRequestWithBody generates requests for EmitPackEvent with any type of body
-func NewEmitPackEventRequestWithBody(server string, params *EmitPackEventParams, contentType string, body io.Reader) (*http.Request, error) {
+// NewEmitExtensionEventRequestWithBody generates requests for EmitExtensionEvent with any type of body
+func NewEmitExtensionEventRequestWithBody(server string, params *EmitExtensionEventParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -10126,7 +10077,7 @@ func NewEmitPackEventRequestWithBody(server string, params *EmitPackEventParams,
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/pack-events")
+	operationPath := fmt.Sprintf("/extension-events")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -10161,19 +10112,19 @@ func NewEmitPackEventRequestWithBody(server string, params *EmitPackEventParams,
 	return req, nil
 }
 
-// NewReportPackHealthRequest calls the generic ReportPackHealth builder with application/json body
-func NewReportPackHealthRequest(server string, params *ReportPackHealthParams, body ReportPackHealthJSONRequestBody) (*http.Request, error) {
+// NewReportExtensionHealthRequest calls the generic ReportExtensionHealth builder with application/json body
+func NewReportExtensionHealthRequest(server string, params *ReportExtensionHealthParams, body ReportExtensionHealthJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	bodyReader = bytes.NewReader(buf)
-	return NewReportPackHealthRequestWithBody(server, params, "application/json", bodyReader)
+	return NewReportExtensionHealthRequestWithBody(server, params, "application/json", bodyReader)
 }
 
-// NewReportPackHealthRequestWithBody generates requests for ReportPackHealth with any type of body
-func NewReportPackHealthRequestWithBody(server string, params *ReportPackHealthParams, contentType string, body io.Reader) (*http.Request, error) {
+// NewReportExtensionHealthRequestWithBody generates requests for ReportExtensionHealth with any type of body
+func NewReportExtensionHealthRequestWithBody(server string, params *ReportExtensionHealthParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -10181,7 +10132,7 @@ func NewReportPackHealthRequestWithBody(server string, params *ReportPackHealthP
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/pack-health")
+	operationPath := fmt.Sprintf("/extension-health")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -10216,8 +10167,8 @@ func NewReportPackHealthRequestWithBody(server string, params *ReportPackHealthP
 	return req, nil
 }
 
-// NewLeasePackInvocationRequest generates requests for LeasePackInvocation
-func NewLeasePackInvocationRequest(server string, params *LeasePackInvocationParams) (*http.Request, error) {
+// NewLeaseExtensionInvocationRequest generates requests for LeaseExtensionInvocation
+func NewLeaseExtensionInvocationRequest(server string, params *LeaseExtensionInvocationParams) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -10225,7 +10176,7 @@ func NewLeasePackInvocationRequest(server string, params *LeasePackInvocationPar
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/pack-invocations/pending")
+	operationPath := fmt.Sprintf("/extension-invocations/pending")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -10285,19 +10236,19 @@ func NewLeasePackInvocationRequest(server string, params *LeasePackInvocationPar
 	return req, nil
 }
 
-// NewReportPackInvocationResultRequest calls the generic ReportPackInvocationResult builder with application/json body
-func NewReportPackInvocationResultRequest(server string, invocationId string, params *ReportPackInvocationResultParams, body ReportPackInvocationResultJSONRequestBody) (*http.Request, error) {
+// NewReportExtensionInvocationResultRequest calls the generic ReportExtensionInvocationResult builder with application/json body
+func NewReportExtensionInvocationResultRequest(server string, invocationId string, params *ReportExtensionInvocationResultParams, body ReportExtensionInvocationResultJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	bodyReader = bytes.NewReader(buf)
-	return NewReportPackInvocationResultRequestWithBody(server, invocationId, params, "application/json", bodyReader)
+	return NewReportExtensionInvocationResultRequestWithBody(server, invocationId, params, "application/json", bodyReader)
 }
 
-// NewReportPackInvocationResultRequestWithBody generates requests for ReportPackInvocationResult with any type of body
-func NewReportPackInvocationResultRequestWithBody(server string, invocationId string, params *ReportPackInvocationResultParams, contentType string, body io.Reader) (*http.Request, error) {
+// NewReportExtensionInvocationResultRequestWithBody generates requests for ReportExtensionInvocationResult with any type of body
+func NewReportExtensionInvocationResultRequestWithBody(server string, invocationId string, params *ReportExtensionInvocationResultParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -10312,7 +10263,7 @@ func NewReportPackInvocationResultRequestWithBody(server string, invocationId st
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/pack-invocations/%s/result", pathParam0)
+	operationPath := fmt.Sprintf("/extension-invocations/%s/result", pathParam0)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -10347,19 +10298,19 @@ func NewReportPackInvocationResultRequestWithBody(server string, invocationId st
 	return req, nil
 }
 
-// NewAppendPackLogRequest calls the generic AppendPackLog builder with application/json body
-func NewAppendPackLogRequest(server string, params *AppendPackLogParams, body AppendPackLogJSONRequestBody) (*http.Request, error) {
+// NewAppendExtensionLogRequest calls the generic AppendExtensionLog builder with application/json body
+func NewAppendExtensionLogRequest(server string, params *AppendExtensionLogParams, body AppendExtensionLogJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	bodyReader = bytes.NewReader(buf)
-	return NewAppendPackLogRequestWithBody(server, params, "application/json", bodyReader)
+	return NewAppendExtensionLogRequestWithBody(server, params, "application/json", bodyReader)
 }
 
-// NewAppendPackLogRequestWithBody generates requests for AppendPackLog with any type of body
-func NewAppendPackLogRequestWithBody(server string, params *AppendPackLogParams, contentType string, body io.Reader) (*http.Request, error) {
+// NewAppendExtensionLogRequestWithBody generates requests for AppendExtensionLog with any type of body
+func NewAppendExtensionLogRequestWithBody(server string, params *AppendExtensionLogParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -10367,7 +10318,7 @@ func NewAppendPackLogRequestWithBody(server string, params *AppendPackLogParams,
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/pack-logs")
+	operationPath := fmt.Sprintf("/extension-logs")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -10402,8 +10353,8 @@ func NewAppendPackLogRequestWithBody(server string, params *AppendPackLogParams,
 	return req, nil
 }
 
-// NewListPacksRequest generates requests for ListPacks
-func NewListPacksRequest(server string, params *ListPacksParams) (*http.Request, error) {
+// NewListExtensionsRequest generates requests for ListExtensions
+func NewListExtensionsRequest(server string, params *ListExtensionsParams) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -10411,7 +10362,7 @@ func NewListPacksRequest(server string, params *ListPacksParams) (*http.Request,
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/packs")
+	operationPath := fmt.Sprintf("/extensions")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -10483,19 +10434,19 @@ func NewListPacksRequest(server string, params *ListPacksParams) (*http.Request,
 	return req, nil
 }
 
-// NewInstallPackRequest calls the generic InstallPack builder with application/json body
-func NewInstallPackRequest(server string, params *InstallPackParams, body InstallPackJSONRequestBody) (*http.Request, error) {
+// NewInstallExtensionRequest calls the generic InstallExtension builder with application/json body
+func NewInstallExtensionRequest(server string, params *InstallExtensionParams, body InstallExtensionJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	bodyReader = bytes.NewReader(buf)
-	return NewInstallPackRequestWithBody(server, params, "application/json", bodyReader)
+	return NewInstallExtensionRequestWithBody(server, params, "application/json", bodyReader)
 }
 
-// NewInstallPackRequestWithBody generates requests for InstallPack with any type of body
-func NewInstallPackRequestWithBody(server string, params *InstallPackParams, contentType string, body io.Reader) (*http.Request, error) {
+// NewInstallExtensionRequestWithBody generates requests for InstallExtension with any type of body
+func NewInstallExtensionRequestWithBody(server string, params *InstallExtensionParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -10503,7 +10454,7 @@ func NewInstallPackRequestWithBody(server string, params *InstallPackParams, con
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/packs")
+	operationPath := fmt.Sprintf("/extensions")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -10549,8 +10500,8 @@ func NewInstallPackRequestWithBody(server string, params *InstallPackParams, con
 	return req, nil
 }
 
-// NewBrowsePackCatalogRequest generates requests for BrowsePackCatalog
-func NewBrowsePackCatalogRequest(server string, params *BrowsePackCatalogParams) (*http.Request, error) {
+// NewBrowseExtensionCatalogRequest generates requests for BrowseExtensionCatalog
+func NewBrowseExtensionCatalogRequest(server string, params *BrowseExtensionCatalogParams) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -10558,7 +10509,7 @@ func NewBrowsePackCatalogRequest(server string, params *BrowsePackCatalogParams)
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/packs/catalog")
+	operationPath := fmt.Sprintf("/extensions/catalog")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -10591,8 +10542,8 @@ func NewBrowsePackCatalogRequest(server string, params *BrowsePackCatalogParams)
 	return req, nil
 }
 
-// NewUninstallPackRequest generates requests for UninstallPack
-func NewUninstallPackRequest(server string, publisher PackPublisherParam, name PackNameParam, params *UninstallPackParams) (*http.Request, error) {
+// NewUninstallExtensionRequest generates requests for UninstallExtension
+func NewUninstallExtensionRequest(server string, publisher PackPublisherParam, name PackNameParam, params *UninstallExtensionParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -10614,7 +10565,7 @@ func NewUninstallPackRequest(server string, publisher PackPublisherParam, name P
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/packs/%s/%s", pathParam0, pathParam1)
+	operationPath := fmt.Sprintf("/extensions/%s/%s", pathParam0, pathParam1)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -10656,8 +10607,8 @@ func NewUninstallPackRequest(server string, publisher PackPublisherParam, name P
 	return req, nil
 }
 
-// NewGetPackRequest generates requests for GetPack
-func NewGetPackRequest(server string, publisher PackPublisherParam, name PackNameParam, params *GetPackParams) (*http.Request, error) {
+// NewGetExtensionRequest generates requests for GetExtension
+func NewGetExtensionRequest(server string, publisher PackPublisherParam, name PackNameParam, params *GetExtensionParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -10679,7 +10630,7 @@ func NewGetPackRequest(server string, publisher PackPublisherParam, name PackNam
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/packs/%s/%s", pathParam0, pathParam1)
+	operationPath := fmt.Sprintf("/extensions/%s/%s", pathParam0, pathParam1)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -10712,19 +10663,19 @@ func NewGetPackRequest(server string, publisher PackPublisherParam, name PackNam
 	return req, nil
 }
 
-// NewInvokePackActionRequest calls the generic InvokePackAction builder with application/json body
-func NewInvokePackActionRequest(server string, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, body InvokePackActionJSONRequestBody) (*http.Request, error) {
+// NewInvokeExtensionActionRequest calls the generic InvokeExtensionAction builder with application/json body
+func NewInvokeExtensionActionRequest(server string, publisher PackPublisherParam, name PackNameParam, action string, params *InvokeExtensionActionParams, body InvokeExtensionActionJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	bodyReader = bytes.NewReader(buf)
-	return NewInvokePackActionRequestWithBody(server, publisher, name, action, params, "application/json", bodyReader)
+	return NewInvokeExtensionActionRequestWithBody(server, publisher, name, action, params, "application/json", bodyReader)
 }
 
-// NewInvokePackActionRequestWithBody generates requests for InvokePackAction with any type of body
-func NewInvokePackActionRequestWithBody(server string, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, contentType string, body io.Reader) (*http.Request, error) {
+// NewInvokeExtensionActionRequestWithBody generates requests for InvokeExtensionAction with any type of body
+func NewInvokeExtensionActionRequestWithBody(server string, publisher PackPublisherParam, name PackNameParam, action string, params *InvokeExtensionActionParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -10753,7 +10704,7 @@ func NewInvokePackActionRequestWithBody(server string, publisher PackPublisherPa
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/packs/%s/%s/actions/%s", pathParam0, pathParam1, pathParam2)
+	operationPath := fmt.Sprintf("/extensions/%s/%s/actions/%s", pathParam0, pathParam1, pathParam2)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -10799,8 +10750,8 @@ func NewInvokePackActionRequestWithBody(server string, publisher PackPublisherPa
 	return req, nil
 }
 
-// NewListPackRowsRequest generates requests for ListPackRows
-func NewListPackRowsRequest(server string, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *ListPackRowsParams) (*http.Request, error) {
+// NewListExtensionRowsRequest generates requests for ListExtensionRows
+func NewListExtensionRowsRequest(server string, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *ListExtensionRowsParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -10829,7 +10780,7 @@ func NewListPackRowsRequest(server string, publisher PackPublisherParam, name Pa
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/packs/%s/%s/data/%s", pathParam0, pathParam1, pathParam2)
+	operationPath := fmt.Sprintf("/extensions/%s/%s/data/%s", pathParam0, pathParam1, pathParam2)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -10901,8 +10852,8 @@ func NewListPackRowsRequest(server string, publisher PackPublisherParam, name Pa
 	return req, nil
 }
 
-// NewCreatePackRowRequest generates requests for CreatePackRow
-func NewCreatePackRowRequest(server string, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *CreatePackRowParams) (*http.Request, error) {
+// NewCreateExtensionRowRequest generates requests for CreateExtensionRow
+func NewCreateExtensionRowRequest(server string, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *CreateExtensionRowParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -10931,7 +10882,7 @@ func NewCreatePackRowRequest(server string, publisher PackPublisherParam, name P
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/packs/%s/%s/data/%s", pathParam0, pathParam1, pathParam2)
+	operationPath := fmt.Sprintf("/extensions/%s/%s/data/%s", pathParam0, pathParam1, pathParam2)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -10975,8 +10926,8 @@ func NewCreatePackRowRequest(server string, publisher PackPublisherParam, name P
 	return req, nil
 }
 
-// NewDeletePackRowRequest generates requests for DeletePackRow
-func NewDeletePackRowRequest(server string, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *DeletePackRowParams) (*http.Request, error) {
+// NewDeleteExtensionRowRequest generates requests for DeleteExtensionRow
+func NewDeleteExtensionRowRequest(server string, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *DeleteExtensionRowParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -11012,7 +10963,7 @@ func NewDeletePackRowRequest(server string, publisher PackPublisherParam, name P
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/packs/%s/%s/data/%s/%s", pathParam0, pathParam1, pathParam2, pathParam3)
+	operationPath := fmt.Sprintf("/extensions/%s/%s/data/%s/%s", pathParam0, pathParam1, pathParam2, pathParam3)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -11054,8 +11005,8 @@ func NewDeletePackRowRequest(server string, publisher PackPublisherParam, name P
 	return req, nil
 }
 
-// NewGetPackRowRequest generates requests for GetPackRow
-func NewGetPackRowRequest(server string, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *GetPackRowParams) (*http.Request, error) {
+// NewGetExtensionRowRequest generates requests for GetExtensionRow
+func NewGetExtensionRowRequest(server string, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *GetExtensionRowParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -11091,7 +11042,7 @@ func NewGetPackRowRequest(server string, publisher PackPublisherParam, name Pack
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/packs/%s/%s/data/%s/%s", pathParam0, pathParam1, pathParam2, pathParam3)
+	operationPath := fmt.Sprintf("/extensions/%s/%s/data/%s/%s", pathParam0, pathParam1, pathParam2, pathParam3)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -11124,8 +11075,8 @@ func NewGetPackRowRequest(server string, publisher PackPublisherParam, name Pack
 	return req, nil
 }
 
-// NewUpdatePackRowRequest generates requests for UpdatePackRow
-func NewUpdatePackRowRequest(server string, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *UpdatePackRowParams) (*http.Request, error) {
+// NewUpdateExtensionRowRequest generates requests for UpdateExtensionRow
+func NewUpdateExtensionRowRequest(server string, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *UpdateExtensionRowParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -11161,7 +11112,7 @@ func NewUpdatePackRowRequest(server string, publisher PackPublisherParam, name P
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/packs/%s/%s/data/%s/%s", pathParam0, pathParam1, pathParam2, pathParam3)
+	operationPath := fmt.Sprintf("/extensions/%s/%s/data/%s/%s", pathParam0, pathParam1, pathParam2, pathParam3)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -11203,19 +11154,19 @@ func NewUpdatePackRowRequest(server string, publisher PackPublisherParam, name P
 	return req, nil
 }
 
-// NewSetPackEnabledRequest calls the generic SetPackEnabled builder with application/json body
-func NewSetPackEnabledRequest(server string, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, body SetPackEnabledJSONRequestBody) (*http.Request, error) {
+// NewSetExtensionEnabledRequest calls the generic SetExtensionEnabled builder with application/json body
+func NewSetExtensionEnabledRequest(server string, publisher PackPublisherParam, name PackNameParam, params *SetExtensionEnabledParams, body SetExtensionEnabledJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	bodyReader = bytes.NewReader(buf)
-	return NewSetPackEnabledRequestWithBody(server, publisher, name, params, "application/json", bodyReader)
+	return NewSetExtensionEnabledRequestWithBody(server, publisher, name, params, "application/json", bodyReader)
 }
 
-// NewSetPackEnabledRequestWithBody generates requests for SetPackEnabled with any type of body
-func NewSetPackEnabledRequestWithBody(server string, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, contentType string, body io.Reader) (*http.Request, error) {
+// NewSetExtensionEnabledRequestWithBody generates requests for SetExtensionEnabled with any type of body
+func NewSetExtensionEnabledRequestWithBody(server string, publisher PackPublisherParam, name PackNameParam, params *SetExtensionEnabledParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -11237,7 +11188,7 @@ func NewSetPackEnabledRequestWithBody(server string, publisher PackPublisherPara
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/packs/%s/%s/enabled", pathParam0, pathParam1)
+	operationPath := fmt.Sprintf("/extensions/%s/%s/enabled", pathParam0, pathParam1)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -11272,8 +11223,8 @@ func NewSetPackEnabledRequestWithBody(server string, publisher PackPublisherPara
 	return req, nil
 }
 
-// NewListPackInstallsRequest generates requests for ListPackInstalls
-func NewListPackInstallsRequest(server string, publisher PackPublisherParam, name PackNameParam, params *ListPackInstallsParams) (*http.Request, error) {
+// NewListExtensionInstallsRequest generates requests for ListExtensionInstalls
+func NewListExtensionInstallsRequest(server string, publisher PackPublisherParam, name PackNameParam, params *ListExtensionInstallsParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -11295,7 +11246,7 @@ func NewListPackInstallsRequest(server string, publisher PackPublisherParam, nam
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/packs/%s/%s/installs", pathParam0, pathParam1)
+	operationPath := fmt.Sprintf("/extensions/%s/%s/installs", pathParam0, pathParam1)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -11367,8 +11318,8 @@ func NewListPackInstallsRequest(server string, publisher PackPublisherParam, nam
 	return req, nil
 }
 
-// NewGetPackMessagesRequest generates requests for GetPackMessages
-func NewGetPackMessagesRequest(server string, publisher PackPublisherParam, name PackNameParam, locale string, params *GetPackMessagesParams) (*http.Request, error) {
+// NewGetExtensionMessagesRequest generates requests for GetExtensionMessages
+func NewGetExtensionMessagesRequest(server string, publisher PackPublisherParam, name PackNameParam, locale string, params *GetExtensionMessagesParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -11397,7 +11348,7 @@ func NewGetPackMessagesRequest(server string, publisher PackPublisherParam, name
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/packs/%s/%s/messages/%s", pathParam0, pathParam1, pathParam2)
+	operationPath := fmt.Sprintf("/extensions/%s/%s/messages/%s", pathParam0, pathParam1, pathParam2)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -11430,8 +11381,8 @@ func NewGetPackMessagesRequest(server string, publisher PackPublisherParam, name
 	return req, nil
 }
 
-// NewGetPackPageRequest generates requests for GetPackPage
-func NewGetPackPageRequest(server string, publisher PackPublisherParam, name PackNameParam, path string, params *GetPackPageParams) (*http.Request, error) {
+// NewGetExtensionPageRequest generates requests for GetExtensionPage
+func NewGetExtensionPageRequest(server string, publisher PackPublisherParam, name PackNameParam, path string, params *GetExtensionPageParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -11460,7 +11411,7 @@ func NewGetPackPageRequest(server string, publisher PackPublisherParam, name Pac
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/packs/%s/%s/pages/%s", pathParam0, pathParam1, pathParam2)
+	operationPath := fmt.Sprintf("/extensions/%s/%s/pages/%s", pathParam0, pathParam1, pathParam2)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -11493,8 +11444,8 @@ func NewGetPackPageRequest(server string, publisher PackPublisherParam, name Pac
 	return req, nil
 }
 
-// NewGetPackUpdateAvailabilityRequest generates requests for GetPackUpdateAvailability
-func NewGetPackUpdateAvailabilityRequest(server string, publisher PackPublisherParam, name PackNameParam, params *GetPackUpdateAvailabilityParams) (*http.Request, error) {
+// NewGetExtensionUpdateAvailabilityRequest generates requests for GetExtensionUpdateAvailability
+func NewGetExtensionUpdateAvailabilityRequest(server string, publisher PackPublisherParam, name PackNameParam, params *GetExtensionUpdateAvailabilityParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -11516,7 +11467,7 @@ func NewGetPackUpdateAvailabilityRequest(server string, publisher PackPublisherP
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/packs/%s/%s/update", pathParam0, pathParam1)
+	operationPath := fmt.Sprintf("/extensions/%s/%s/update", pathParam0, pathParam1)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -11549,8 +11500,8 @@ func NewGetPackUpdateAvailabilityRequest(server string, publisher PackPublisherP
 	return req, nil
 }
 
-// NewUpdatePackRequest generates requests for UpdatePack
-func NewUpdatePackRequest(server string, publisher PackPublisherParam, name PackNameParam, params *UpdatePackParams) (*http.Request, error) {
+// NewUpdateExtensionRequest generates requests for UpdateExtension
+func NewUpdateExtensionRequest(server string, publisher PackPublisherParam, name PackNameParam, params *UpdateExtensionParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -11572,7 +11523,7 @@ func NewUpdatePackRequest(server string, publisher PackPublisherParam, name Pack
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/packs/%s/%s/update", pathParam0, pathParam1)
+	operationPath := fmt.Sprintf("/extensions/%s/%s/update", pathParam0, pathParam1)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -11609,6 +11560,55 @@ func NewUpdatePackRequest(server string, publisher PackPublisherParam, name Pack
 			}
 
 			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetJobRequest generates requests for GetJob
+func NewGetJobRequest(server string, jobId Ulid, params *GetJobParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "job_id", jobId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/jobs/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
 		}
 
 	}
@@ -14946,88 +14946,88 @@ type ClientWithResponsesInterface interface {
 
 	SendEntityCommandWithResponse(ctx context.Context, entityId Ulid, params *SendEntityCommandParams, body SendEntityCommandJSONRequestBody, reqEditors ...RequestEditorFn) (*SendEntityCommandResponse, error)
 
+	// EmitExtensionEventWithBodyWithResponse request with any body
+	EmitExtensionEventWithBodyWithResponse(ctx context.Context, params *EmitExtensionEventParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*EmitExtensionEventResponse, error)
+
+	EmitExtensionEventWithResponse(ctx context.Context, params *EmitExtensionEventParams, body EmitExtensionEventJSONRequestBody, reqEditors ...RequestEditorFn) (*EmitExtensionEventResponse, error)
+
+	// ReportExtensionHealthWithBodyWithResponse request with any body
+	ReportExtensionHealthWithBodyWithResponse(ctx context.Context, params *ReportExtensionHealthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ReportExtensionHealthResponse, error)
+
+	ReportExtensionHealthWithResponse(ctx context.Context, params *ReportExtensionHealthParams, body ReportExtensionHealthJSONRequestBody, reqEditors ...RequestEditorFn) (*ReportExtensionHealthResponse, error)
+
+	// LeaseExtensionInvocationWithResponse request
+	LeaseExtensionInvocationWithResponse(ctx context.Context, params *LeaseExtensionInvocationParams, reqEditors ...RequestEditorFn) (*LeaseExtensionInvocationResponse, error)
+
+	// ReportExtensionInvocationResultWithBodyWithResponse request with any body
+	ReportExtensionInvocationResultWithBodyWithResponse(ctx context.Context, invocationId string, params *ReportExtensionInvocationResultParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ReportExtensionInvocationResultResponse, error)
+
+	ReportExtensionInvocationResultWithResponse(ctx context.Context, invocationId string, params *ReportExtensionInvocationResultParams, body ReportExtensionInvocationResultJSONRequestBody, reqEditors ...RequestEditorFn) (*ReportExtensionInvocationResultResponse, error)
+
+	// AppendExtensionLogWithBodyWithResponse request with any body
+	AppendExtensionLogWithBodyWithResponse(ctx context.Context, params *AppendExtensionLogParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AppendExtensionLogResponse, error)
+
+	AppendExtensionLogWithResponse(ctx context.Context, params *AppendExtensionLogParams, body AppendExtensionLogJSONRequestBody, reqEditors ...RequestEditorFn) (*AppendExtensionLogResponse, error)
+
+	// ListExtensionsWithResponse request
+	ListExtensionsWithResponse(ctx context.Context, params *ListExtensionsParams, reqEditors ...RequestEditorFn) (*ListExtensionsResponse, error)
+
+	// InstallExtensionWithBodyWithResponse request with any body
+	InstallExtensionWithBodyWithResponse(ctx context.Context, params *InstallExtensionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*InstallExtensionResponse, error)
+
+	InstallExtensionWithResponse(ctx context.Context, params *InstallExtensionParams, body InstallExtensionJSONRequestBody, reqEditors ...RequestEditorFn) (*InstallExtensionResponse, error)
+
+	// BrowseExtensionCatalogWithResponse request
+	BrowseExtensionCatalogWithResponse(ctx context.Context, params *BrowseExtensionCatalogParams, reqEditors ...RequestEditorFn) (*BrowseExtensionCatalogResponse, error)
+
+	// UninstallExtensionWithResponse request
+	UninstallExtensionWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UninstallExtensionParams, reqEditors ...RequestEditorFn) (*UninstallExtensionResponse, error)
+
+	// GetExtensionWithResponse request
+	GetExtensionWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetExtensionParams, reqEditors ...RequestEditorFn) (*GetExtensionResponse, error)
+
+	// InvokeExtensionActionWithBodyWithResponse request with any body
+	InvokeExtensionActionWithBodyWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokeExtensionActionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*InvokeExtensionActionResponse, error)
+
+	InvokeExtensionActionWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokeExtensionActionParams, body InvokeExtensionActionJSONRequestBody, reqEditors ...RequestEditorFn) (*InvokeExtensionActionResponse, error)
+
+	// ListExtensionRowsWithResponse request
+	ListExtensionRowsWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *ListExtensionRowsParams, reqEditors ...RequestEditorFn) (*ListExtensionRowsResponse, error)
+
+	// CreateExtensionRowWithResponse request
+	CreateExtensionRowWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *CreateExtensionRowParams, reqEditors ...RequestEditorFn) (*CreateExtensionRowResponse, error)
+
+	// DeleteExtensionRowWithResponse request
+	DeleteExtensionRowWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *DeleteExtensionRowParams, reqEditors ...RequestEditorFn) (*DeleteExtensionRowResponse, error)
+
+	// GetExtensionRowWithResponse request
+	GetExtensionRowWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *GetExtensionRowParams, reqEditors ...RequestEditorFn) (*GetExtensionRowResponse, error)
+
+	// UpdateExtensionRowWithResponse request
+	UpdateExtensionRowWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *UpdateExtensionRowParams, reqEditors ...RequestEditorFn) (*UpdateExtensionRowResponse, error)
+
+	// SetExtensionEnabledWithBodyWithResponse request with any body
+	SetExtensionEnabledWithBodyWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetExtensionEnabledParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetExtensionEnabledResponse, error)
+
+	SetExtensionEnabledWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetExtensionEnabledParams, body SetExtensionEnabledJSONRequestBody, reqEditors ...RequestEditorFn) (*SetExtensionEnabledResponse, error)
+
+	// ListExtensionInstallsWithResponse request
+	ListExtensionInstallsWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *ListExtensionInstallsParams, reqEditors ...RequestEditorFn) (*ListExtensionInstallsResponse, error)
+
+	// GetExtensionMessagesWithResponse request
+	GetExtensionMessagesWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, locale string, params *GetExtensionMessagesParams, reqEditors ...RequestEditorFn) (*GetExtensionMessagesResponse, error)
+
+	// GetExtensionPageWithResponse request
+	GetExtensionPageWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, path string, params *GetExtensionPageParams, reqEditors ...RequestEditorFn) (*GetExtensionPageResponse, error)
+
+	// GetExtensionUpdateAvailabilityWithResponse request
+	GetExtensionUpdateAvailabilityWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetExtensionUpdateAvailabilityParams, reqEditors ...RequestEditorFn) (*GetExtensionUpdateAvailabilityResponse, error)
+
+	// UpdateExtensionWithResponse request
+	UpdateExtensionWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UpdateExtensionParams, reqEditors ...RequestEditorFn) (*UpdateExtensionResponse, error)
+
 	// GetJobWithResponse request
 	GetJobWithResponse(ctx context.Context, jobId Ulid, params *GetJobParams, reqEditors ...RequestEditorFn) (*GetJobResponse, error)
-
-	// EmitPackEventWithBodyWithResponse request with any body
-	EmitPackEventWithBodyWithResponse(ctx context.Context, params *EmitPackEventParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*EmitPackEventResponse, error)
-
-	EmitPackEventWithResponse(ctx context.Context, params *EmitPackEventParams, body EmitPackEventJSONRequestBody, reqEditors ...RequestEditorFn) (*EmitPackEventResponse, error)
-
-	// ReportPackHealthWithBodyWithResponse request with any body
-	ReportPackHealthWithBodyWithResponse(ctx context.Context, params *ReportPackHealthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ReportPackHealthResponse, error)
-
-	ReportPackHealthWithResponse(ctx context.Context, params *ReportPackHealthParams, body ReportPackHealthJSONRequestBody, reqEditors ...RequestEditorFn) (*ReportPackHealthResponse, error)
-
-	// LeasePackInvocationWithResponse request
-	LeasePackInvocationWithResponse(ctx context.Context, params *LeasePackInvocationParams, reqEditors ...RequestEditorFn) (*LeasePackInvocationResponse, error)
-
-	// ReportPackInvocationResultWithBodyWithResponse request with any body
-	ReportPackInvocationResultWithBodyWithResponse(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ReportPackInvocationResultResponse, error)
-
-	ReportPackInvocationResultWithResponse(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, body ReportPackInvocationResultJSONRequestBody, reqEditors ...RequestEditorFn) (*ReportPackInvocationResultResponse, error)
-
-	// AppendPackLogWithBodyWithResponse request with any body
-	AppendPackLogWithBodyWithResponse(ctx context.Context, params *AppendPackLogParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AppendPackLogResponse, error)
-
-	AppendPackLogWithResponse(ctx context.Context, params *AppendPackLogParams, body AppendPackLogJSONRequestBody, reqEditors ...RequestEditorFn) (*AppendPackLogResponse, error)
-
-	// ListPacksWithResponse request
-	ListPacksWithResponse(ctx context.Context, params *ListPacksParams, reqEditors ...RequestEditorFn) (*ListPacksResponse, error)
-
-	// InstallPackWithBodyWithResponse request with any body
-	InstallPackWithBodyWithResponse(ctx context.Context, params *InstallPackParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*InstallPackResponse, error)
-
-	InstallPackWithResponse(ctx context.Context, params *InstallPackParams, body InstallPackJSONRequestBody, reqEditors ...RequestEditorFn) (*InstallPackResponse, error)
-
-	// BrowsePackCatalogWithResponse request
-	BrowsePackCatalogWithResponse(ctx context.Context, params *BrowsePackCatalogParams, reqEditors ...RequestEditorFn) (*BrowsePackCatalogResponse, error)
-
-	// UninstallPackWithResponse request
-	UninstallPackWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UninstallPackParams, reqEditors ...RequestEditorFn) (*UninstallPackResponse, error)
-
-	// GetPackWithResponse request
-	GetPackWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetPackParams, reqEditors ...RequestEditorFn) (*GetPackResponse, error)
-
-	// InvokePackActionWithBodyWithResponse request with any body
-	InvokePackActionWithBodyWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*InvokePackActionResponse, error)
-
-	InvokePackActionWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, body InvokePackActionJSONRequestBody, reqEditors ...RequestEditorFn) (*InvokePackActionResponse, error)
-
-	// ListPackRowsWithResponse request
-	ListPackRowsWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *ListPackRowsParams, reqEditors ...RequestEditorFn) (*ListPackRowsResponse, error)
-
-	// CreatePackRowWithResponse request
-	CreatePackRowWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *CreatePackRowParams, reqEditors ...RequestEditorFn) (*CreatePackRowResponse, error)
-
-	// DeletePackRowWithResponse request
-	DeletePackRowWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *DeletePackRowParams, reqEditors ...RequestEditorFn) (*DeletePackRowResponse, error)
-
-	// GetPackRowWithResponse request
-	GetPackRowWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *GetPackRowParams, reqEditors ...RequestEditorFn) (*GetPackRowResponse, error)
-
-	// UpdatePackRowWithResponse request
-	UpdatePackRowWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *UpdatePackRowParams, reqEditors ...RequestEditorFn) (*UpdatePackRowResponse, error)
-
-	// SetPackEnabledWithBodyWithResponse request with any body
-	SetPackEnabledWithBodyWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetPackEnabledResponse, error)
-
-	SetPackEnabledWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, body SetPackEnabledJSONRequestBody, reqEditors ...RequestEditorFn) (*SetPackEnabledResponse, error)
-
-	// ListPackInstallsWithResponse request
-	ListPackInstallsWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *ListPackInstallsParams, reqEditors ...RequestEditorFn) (*ListPackInstallsResponse, error)
-
-	// GetPackMessagesWithResponse request
-	GetPackMessagesWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, locale string, params *GetPackMessagesParams, reqEditors ...RequestEditorFn) (*GetPackMessagesResponse, error)
-
-	// GetPackPageWithResponse request
-	GetPackPageWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, path string, params *GetPackPageParams, reqEditors ...RequestEditorFn) (*GetPackPageResponse, error)
-
-	// GetPackUpdateAvailabilityWithResponse request
-	GetPackUpdateAvailabilityWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetPackUpdateAvailabilityParams, reqEditors ...RequestEditorFn) (*GetPackUpdateAvailabilityResponse, error)
-
-	// UpdatePackWithResponse request
-	UpdatePackWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UpdatePackParams, reqEditors ...RequestEditorFn) (*UpdatePackResponse, error)
 
 	// ListPlatformLogsWithResponse request
 	ListPlatformLogsWithResponse(ctx context.Context, params *ListPlatformLogsParams, reqEditors ...RequestEditorFn) (*ListPlatformLogsResponse, error)
@@ -16924,6 +16924,723 @@ func (r SendEntityCommandResponse) ContentType() string {
 	return ""
 }
 
+type EmitExtensionEventResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r EmitExtensionEventResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r EmitExtensionEventResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r EmitExtensionEventResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ReportExtensionHealthResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r ReportExtensionHealthResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ReportExtensionHealthResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ReportExtensionHealthResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type LeaseExtensionInvocationResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r LeaseExtensionInvocationResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r LeaseExtensionInvocationResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r LeaseExtensionInvocationResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ReportExtensionInvocationResultResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r ReportExtensionInvocationResultResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ReportExtensionInvocationResultResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ReportExtensionInvocationResultResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type AppendExtensionLogResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r AppendExtensionLogResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r AppendExtensionLogResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r AppendExtensionLogResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ListExtensionsResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+}
+
+// Status returns HTTPResponse.Status
+func (r ListExtensionsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListExtensionsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListExtensionsResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type InstallExtensionResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r InstallExtensionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r InstallExtensionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r InstallExtensionResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type BrowseExtensionCatalogResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+}
+
+// Status returns HTTPResponse.Status
+func (r BrowseExtensionCatalogResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r BrowseExtensionCatalogResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r BrowseExtensionCatalogResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type UninstallExtensionResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON412 *PreconditionFailed
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON428 *PreconditionRequired
+}
+
+// Status returns HTTPResponse.Status
+func (r UninstallExtensionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r UninstallExtensionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r UninstallExtensionResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetExtensionResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetExtensionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetExtensionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetExtensionResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type InvokeExtensionActionResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r InvokeExtensionActionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r InvokeExtensionActionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r InvokeExtensionActionResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ListExtensionRowsResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r ListExtensionRowsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListExtensionRowsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListExtensionRowsResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type CreateExtensionRowResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateExtensionRowResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateExtensionRowResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r CreateExtensionRowResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DeleteExtensionRowResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON412 *PreconditionFailed
+	ApplicationproblemJSON428 *PreconditionRequired
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteExtensionRowResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteExtensionRowResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteExtensionRowResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetExtensionRowResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetExtensionRowResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetExtensionRowResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetExtensionRowResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type UpdateExtensionRowResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON412 *PreconditionFailed
+	ApplicationproblemJSON422 *UnprocessableContent
+	ApplicationproblemJSON428 *PreconditionRequired
+}
+
+// Status returns HTTPResponse.Status
+func (r UpdateExtensionRowResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r UpdateExtensionRowResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r UpdateExtensionRowResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type SetExtensionEnabledResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r SetExtensionEnabledResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SetExtensionEnabledResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r SetExtensionEnabledResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ListExtensionInstallsResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r ListExtensionInstallsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListExtensionInstallsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListExtensionInstallsResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetExtensionMessagesResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetExtensionMessagesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetExtensionMessagesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetExtensionMessagesResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetExtensionPageResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetExtensionPageResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetExtensionPageResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetExtensionPageResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetExtensionUpdateAvailabilityResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r GetExtensionUpdateAvailabilityResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetExtensionUpdateAvailabilityResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetExtensionUpdateAvailabilityResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type UpdateExtensionResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON404 *NotFound
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON422 *UnprocessableContent
+}
+
+// Status returns HTTPResponse.Status
+func (r UpdateExtensionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r UpdateExtensionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r UpdateExtensionResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type GetJobResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
@@ -16950,723 +17667,6 @@ func (r GetJobResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r GetJobResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type EmitPackEventResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON403 *Forbidden
-	ApplicationproblemJSON404 *NotFound
-	ApplicationproblemJSON422 *UnprocessableContent
-}
-
-// Status returns HTTPResponse.Status
-func (r EmitPackEventResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r EmitPackEventResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r EmitPackEventResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type ReportPackHealthResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON403 *Forbidden
-	ApplicationproblemJSON422 *UnprocessableContent
-}
-
-// Status returns HTTPResponse.Status
-func (r ReportPackHealthResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r ReportPackHealthResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r ReportPackHealthResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type LeasePackInvocationResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON403 *Forbidden
-}
-
-// Status returns HTTPResponse.Status
-func (r LeasePackInvocationResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r LeasePackInvocationResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r LeasePackInvocationResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type ReportPackInvocationResultResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON403 *Forbidden
-	ApplicationproblemJSON404 *NotFound
-	ApplicationproblemJSON409 *Conflict
-	ApplicationproblemJSON422 *UnprocessableContent
-}
-
-// Status returns HTTPResponse.Status
-func (r ReportPackInvocationResultResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r ReportPackInvocationResultResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r ReportPackInvocationResultResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type AppendPackLogResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON403 *Forbidden
-	ApplicationproblemJSON422 *UnprocessableContent
-}
-
-// Status returns HTTPResponse.Status
-func (r AppendPackLogResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r AppendPackLogResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r AppendPackLogResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type ListPacksResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON400 *BadRequest
-	ApplicationproblemJSON401 *Unauthorized
-}
-
-// Status returns HTTPResponse.Status
-func (r ListPacksResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r ListPacksResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r ListPacksResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type InstallPackResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON400 *BadRequest
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON403 *Forbidden
-	ApplicationproblemJSON409 *Conflict
-	ApplicationproblemJSON422 *UnprocessableContent
-}
-
-// Status returns HTTPResponse.Status
-func (r InstallPackResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r InstallPackResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r InstallPackResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type BrowsePackCatalogResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON401 *Unauthorized
-}
-
-// Status returns HTTPResponse.Status
-func (r BrowsePackCatalogResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r BrowsePackCatalogResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r BrowsePackCatalogResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type UninstallPackResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON403 *Forbidden
-	ApplicationproblemJSON404 *NotFound
-	ApplicationproblemJSON412 *PreconditionFailed
-	ApplicationproblemJSON422 *UnprocessableContent
-	ApplicationproblemJSON428 *PreconditionRequired
-}
-
-// Status returns HTTPResponse.Status
-func (r UninstallPackResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r UninstallPackResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r UninstallPackResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type GetPackResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON404 *NotFound
-}
-
-// Status returns HTTPResponse.Status
-func (r GetPackResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r GetPackResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetPackResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type InvokePackActionResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON403 *Forbidden
-	ApplicationproblemJSON404 *NotFound
-	ApplicationproblemJSON422 *UnprocessableContent
-}
-
-// Status returns HTTPResponse.Status
-func (r InvokePackActionResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r InvokePackActionResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r InvokePackActionResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type ListPackRowsResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON400 *BadRequest
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON404 *NotFound
-}
-
-// Status returns HTTPResponse.Status
-func (r ListPackRowsResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r ListPackRowsResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r ListPackRowsResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type CreatePackRowResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON400 *BadRequest
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON403 *Forbidden
-	ApplicationproblemJSON404 *NotFound
-	ApplicationproblemJSON409 *Conflict
-	ApplicationproblemJSON422 *UnprocessableContent
-}
-
-// Status returns HTTPResponse.Status
-func (r CreatePackRowResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r CreatePackRowResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r CreatePackRowResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type DeletePackRowResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON403 *Forbidden
-	ApplicationproblemJSON404 *NotFound
-	ApplicationproblemJSON412 *PreconditionFailed
-	ApplicationproblemJSON428 *PreconditionRequired
-}
-
-// Status returns HTTPResponse.Status
-func (r DeletePackRowResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r DeletePackRowResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r DeletePackRowResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type GetPackRowResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON404 *NotFound
-}
-
-// Status returns HTTPResponse.Status
-func (r GetPackRowResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r GetPackRowResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetPackRowResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type UpdatePackRowResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON403 *Forbidden
-	ApplicationproblemJSON404 *NotFound
-	ApplicationproblemJSON412 *PreconditionFailed
-	ApplicationproblemJSON422 *UnprocessableContent
-	ApplicationproblemJSON428 *PreconditionRequired
-}
-
-// Status returns HTTPResponse.Status
-func (r UpdatePackRowResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r UpdatePackRowResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r UpdatePackRowResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type SetPackEnabledResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON400 *BadRequest
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON404 *NotFound
-	ApplicationproblemJSON422 *UnprocessableContent
-}
-
-// Status returns HTTPResponse.Status
-func (r SetPackEnabledResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r SetPackEnabledResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r SetPackEnabledResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type ListPackInstallsResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON400 *BadRequest
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON404 *NotFound
-}
-
-// Status returns HTTPResponse.Status
-func (r ListPackInstallsResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r ListPackInstallsResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r ListPackInstallsResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type GetPackMessagesResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON404 *NotFound
-}
-
-// Status returns HTTPResponse.Status
-func (r GetPackMessagesResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r GetPackMessagesResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetPackMessagesResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type GetPackPageResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON404 *NotFound
-}
-
-// Status returns HTTPResponse.Status
-func (r GetPackPageResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r GetPackPageResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetPackPageResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type GetPackUpdateAvailabilityResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON400 *BadRequest
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON404 *NotFound
-	ApplicationproblemJSON422 *UnprocessableContent
-}
-
-// Status returns HTTPResponse.Status
-func (r GetPackUpdateAvailabilityResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r GetPackUpdateAvailabilityResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetPackUpdateAvailabilityResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-type UpdatePackResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
-	ApplicationproblemJSON400 *BadRequest
-	ApplicationproblemJSON401 *Unauthorized
-	ApplicationproblemJSON404 *NotFound
-	ApplicationproblemJSON409 *Conflict
-	ApplicationproblemJSON422 *UnprocessableContent
-}
-
-// Status returns HTTPResponse.Status
-func (r UpdatePackResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r UpdatePackResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r UpdatePackResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -19897,6 +19897,260 @@ func (c *ClientWithResponses) SendEntityCommandWithResponse(ctx context.Context,
 	return ParseSendEntityCommandResponse(rsp)
 }
 
+// EmitExtensionEventWithBodyWithResponse request with arbitrary body returning *EmitExtensionEventResponse
+func (c *ClientWithResponses) EmitExtensionEventWithBodyWithResponse(ctx context.Context, params *EmitExtensionEventParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*EmitExtensionEventResponse, error) {
+	rsp, err := c.EmitExtensionEventWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseEmitExtensionEventResponse(rsp)
+}
+
+func (c *ClientWithResponses) EmitExtensionEventWithResponse(ctx context.Context, params *EmitExtensionEventParams, body EmitExtensionEventJSONRequestBody, reqEditors ...RequestEditorFn) (*EmitExtensionEventResponse, error) {
+	rsp, err := c.EmitExtensionEvent(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseEmitExtensionEventResponse(rsp)
+}
+
+// ReportExtensionHealthWithBodyWithResponse request with arbitrary body returning *ReportExtensionHealthResponse
+func (c *ClientWithResponses) ReportExtensionHealthWithBodyWithResponse(ctx context.Context, params *ReportExtensionHealthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ReportExtensionHealthResponse, error) {
+	rsp, err := c.ReportExtensionHealthWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseReportExtensionHealthResponse(rsp)
+}
+
+func (c *ClientWithResponses) ReportExtensionHealthWithResponse(ctx context.Context, params *ReportExtensionHealthParams, body ReportExtensionHealthJSONRequestBody, reqEditors ...RequestEditorFn) (*ReportExtensionHealthResponse, error) {
+	rsp, err := c.ReportExtensionHealth(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseReportExtensionHealthResponse(rsp)
+}
+
+// LeaseExtensionInvocationWithResponse request returning *LeaseExtensionInvocationResponse
+func (c *ClientWithResponses) LeaseExtensionInvocationWithResponse(ctx context.Context, params *LeaseExtensionInvocationParams, reqEditors ...RequestEditorFn) (*LeaseExtensionInvocationResponse, error) {
+	rsp, err := c.LeaseExtensionInvocation(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseLeaseExtensionInvocationResponse(rsp)
+}
+
+// ReportExtensionInvocationResultWithBodyWithResponse request with arbitrary body returning *ReportExtensionInvocationResultResponse
+func (c *ClientWithResponses) ReportExtensionInvocationResultWithBodyWithResponse(ctx context.Context, invocationId string, params *ReportExtensionInvocationResultParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ReportExtensionInvocationResultResponse, error) {
+	rsp, err := c.ReportExtensionInvocationResultWithBody(ctx, invocationId, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseReportExtensionInvocationResultResponse(rsp)
+}
+
+func (c *ClientWithResponses) ReportExtensionInvocationResultWithResponse(ctx context.Context, invocationId string, params *ReportExtensionInvocationResultParams, body ReportExtensionInvocationResultJSONRequestBody, reqEditors ...RequestEditorFn) (*ReportExtensionInvocationResultResponse, error) {
+	rsp, err := c.ReportExtensionInvocationResult(ctx, invocationId, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseReportExtensionInvocationResultResponse(rsp)
+}
+
+// AppendExtensionLogWithBodyWithResponse request with arbitrary body returning *AppendExtensionLogResponse
+func (c *ClientWithResponses) AppendExtensionLogWithBodyWithResponse(ctx context.Context, params *AppendExtensionLogParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AppendExtensionLogResponse, error) {
+	rsp, err := c.AppendExtensionLogWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAppendExtensionLogResponse(rsp)
+}
+
+func (c *ClientWithResponses) AppendExtensionLogWithResponse(ctx context.Context, params *AppendExtensionLogParams, body AppendExtensionLogJSONRequestBody, reqEditors ...RequestEditorFn) (*AppendExtensionLogResponse, error) {
+	rsp, err := c.AppendExtensionLog(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAppendExtensionLogResponse(rsp)
+}
+
+// ListExtensionsWithResponse request returning *ListExtensionsResponse
+func (c *ClientWithResponses) ListExtensionsWithResponse(ctx context.Context, params *ListExtensionsParams, reqEditors ...RequestEditorFn) (*ListExtensionsResponse, error) {
+	rsp, err := c.ListExtensions(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListExtensionsResponse(rsp)
+}
+
+// InstallExtensionWithBodyWithResponse request with arbitrary body returning *InstallExtensionResponse
+func (c *ClientWithResponses) InstallExtensionWithBodyWithResponse(ctx context.Context, params *InstallExtensionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*InstallExtensionResponse, error) {
+	rsp, err := c.InstallExtensionWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseInstallExtensionResponse(rsp)
+}
+
+func (c *ClientWithResponses) InstallExtensionWithResponse(ctx context.Context, params *InstallExtensionParams, body InstallExtensionJSONRequestBody, reqEditors ...RequestEditorFn) (*InstallExtensionResponse, error) {
+	rsp, err := c.InstallExtension(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseInstallExtensionResponse(rsp)
+}
+
+// BrowseExtensionCatalogWithResponse request returning *BrowseExtensionCatalogResponse
+func (c *ClientWithResponses) BrowseExtensionCatalogWithResponse(ctx context.Context, params *BrowseExtensionCatalogParams, reqEditors ...RequestEditorFn) (*BrowseExtensionCatalogResponse, error) {
+	rsp, err := c.BrowseExtensionCatalog(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseBrowseExtensionCatalogResponse(rsp)
+}
+
+// UninstallExtensionWithResponse request returning *UninstallExtensionResponse
+func (c *ClientWithResponses) UninstallExtensionWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UninstallExtensionParams, reqEditors ...RequestEditorFn) (*UninstallExtensionResponse, error) {
+	rsp, err := c.UninstallExtension(ctx, publisher, name, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUninstallExtensionResponse(rsp)
+}
+
+// GetExtensionWithResponse request returning *GetExtensionResponse
+func (c *ClientWithResponses) GetExtensionWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetExtensionParams, reqEditors ...RequestEditorFn) (*GetExtensionResponse, error) {
+	rsp, err := c.GetExtension(ctx, publisher, name, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetExtensionResponse(rsp)
+}
+
+// InvokeExtensionActionWithBodyWithResponse request with arbitrary body returning *InvokeExtensionActionResponse
+func (c *ClientWithResponses) InvokeExtensionActionWithBodyWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokeExtensionActionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*InvokeExtensionActionResponse, error) {
+	rsp, err := c.InvokeExtensionActionWithBody(ctx, publisher, name, action, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseInvokeExtensionActionResponse(rsp)
+}
+
+func (c *ClientWithResponses) InvokeExtensionActionWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokeExtensionActionParams, body InvokeExtensionActionJSONRequestBody, reqEditors ...RequestEditorFn) (*InvokeExtensionActionResponse, error) {
+	rsp, err := c.InvokeExtensionAction(ctx, publisher, name, action, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseInvokeExtensionActionResponse(rsp)
+}
+
+// ListExtensionRowsWithResponse request returning *ListExtensionRowsResponse
+func (c *ClientWithResponses) ListExtensionRowsWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *ListExtensionRowsParams, reqEditors ...RequestEditorFn) (*ListExtensionRowsResponse, error) {
+	rsp, err := c.ListExtensionRows(ctx, publisher, name, collection, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListExtensionRowsResponse(rsp)
+}
+
+// CreateExtensionRowWithResponse request returning *CreateExtensionRowResponse
+func (c *ClientWithResponses) CreateExtensionRowWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *CreateExtensionRowParams, reqEditors ...RequestEditorFn) (*CreateExtensionRowResponse, error) {
+	rsp, err := c.CreateExtensionRow(ctx, publisher, name, collection, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateExtensionRowResponse(rsp)
+}
+
+// DeleteExtensionRowWithResponse request returning *DeleteExtensionRowResponse
+func (c *ClientWithResponses) DeleteExtensionRowWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *DeleteExtensionRowParams, reqEditors ...RequestEditorFn) (*DeleteExtensionRowResponse, error) {
+	rsp, err := c.DeleteExtensionRow(ctx, publisher, name, collection, entityId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteExtensionRowResponse(rsp)
+}
+
+// GetExtensionRowWithResponse request returning *GetExtensionRowResponse
+func (c *ClientWithResponses) GetExtensionRowWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *GetExtensionRowParams, reqEditors ...RequestEditorFn) (*GetExtensionRowResponse, error) {
+	rsp, err := c.GetExtensionRow(ctx, publisher, name, collection, entityId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetExtensionRowResponse(rsp)
+}
+
+// UpdateExtensionRowWithResponse request returning *UpdateExtensionRowResponse
+func (c *ClientWithResponses) UpdateExtensionRowWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *UpdateExtensionRowParams, reqEditors ...RequestEditorFn) (*UpdateExtensionRowResponse, error) {
+	rsp, err := c.UpdateExtensionRow(ctx, publisher, name, collection, entityId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateExtensionRowResponse(rsp)
+}
+
+// SetExtensionEnabledWithBodyWithResponse request with arbitrary body returning *SetExtensionEnabledResponse
+func (c *ClientWithResponses) SetExtensionEnabledWithBodyWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetExtensionEnabledParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetExtensionEnabledResponse, error) {
+	rsp, err := c.SetExtensionEnabledWithBody(ctx, publisher, name, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSetExtensionEnabledResponse(rsp)
+}
+
+func (c *ClientWithResponses) SetExtensionEnabledWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetExtensionEnabledParams, body SetExtensionEnabledJSONRequestBody, reqEditors ...RequestEditorFn) (*SetExtensionEnabledResponse, error) {
+	rsp, err := c.SetExtensionEnabled(ctx, publisher, name, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSetExtensionEnabledResponse(rsp)
+}
+
+// ListExtensionInstallsWithResponse request returning *ListExtensionInstallsResponse
+func (c *ClientWithResponses) ListExtensionInstallsWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *ListExtensionInstallsParams, reqEditors ...RequestEditorFn) (*ListExtensionInstallsResponse, error) {
+	rsp, err := c.ListExtensionInstalls(ctx, publisher, name, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListExtensionInstallsResponse(rsp)
+}
+
+// GetExtensionMessagesWithResponse request returning *GetExtensionMessagesResponse
+func (c *ClientWithResponses) GetExtensionMessagesWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, locale string, params *GetExtensionMessagesParams, reqEditors ...RequestEditorFn) (*GetExtensionMessagesResponse, error) {
+	rsp, err := c.GetExtensionMessages(ctx, publisher, name, locale, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetExtensionMessagesResponse(rsp)
+}
+
+// GetExtensionPageWithResponse request returning *GetExtensionPageResponse
+func (c *ClientWithResponses) GetExtensionPageWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, path string, params *GetExtensionPageParams, reqEditors ...RequestEditorFn) (*GetExtensionPageResponse, error) {
+	rsp, err := c.GetExtensionPage(ctx, publisher, name, path, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetExtensionPageResponse(rsp)
+}
+
+// GetExtensionUpdateAvailabilityWithResponse request returning *GetExtensionUpdateAvailabilityResponse
+func (c *ClientWithResponses) GetExtensionUpdateAvailabilityWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetExtensionUpdateAvailabilityParams, reqEditors ...RequestEditorFn) (*GetExtensionUpdateAvailabilityResponse, error) {
+	rsp, err := c.GetExtensionUpdateAvailability(ctx, publisher, name, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetExtensionUpdateAvailabilityResponse(rsp)
+}
+
+// UpdateExtensionWithResponse request returning *UpdateExtensionResponse
+func (c *ClientWithResponses) UpdateExtensionWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UpdateExtensionParams, reqEditors ...RequestEditorFn) (*UpdateExtensionResponse, error) {
+	rsp, err := c.UpdateExtension(ctx, publisher, name, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateExtensionResponse(rsp)
+}
+
 // GetJobWithResponse request returning *GetJobResponse
 func (c *ClientWithResponses) GetJobWithResponse(ctx context.Context, jobId Ulid, params *GetJobParams, reqEditors ...RequestEditorFn) (*GetJobResponse, error) {
 	rsp, err := c.GetJob(ctx, jobId, params, reqEditors...)
@@ -19904,260 +20158,6 @@ func (c *ClientWithResponses) GetJobWithResponse(ctx context.Context, jobId Ulid
 		return nil, err
 	}
 	return ParseGetJobResponse(rsp)
-}
-
-// EmitPackEventWithBodyWithResponse request with arbitrary body returning *EmitPackEventResponse
-func (c *ClientWithResponses) EmitPackEventWithBodyWithResponse(ctx context.Context, params *EmitPackEventParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*EmitPackEventResponse, error) {
-	rsp, err := c.EmitPackEventWithBody(ctx, params, contentType, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseEmitPackEventResponse(rsp)
-}
-
-func (c *ClientWithResponses) EmitPackEventWithResponse(ctx context.Context, params *EmitPackEventParams, body EmitPackEventJSONRequestBody, reqEditors ...RequestEditorFn) (*EmitPackEventResponse, error) {
-	rsp, err := c.EmitPackEvent(ctx, params, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseEmitPackEventResponse(rsp)
-}
-
-// ReportPackHealthWithBodyWithResponse request with arbitrary body returning *ReportPackHealthResponse
-func (c *ClientWithResponses) ReportPackHealthWithBodyWithResponse(ctx context.Context, params *ReportPackHealthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ReportPackHealthResponse, error) {
-	rsp, err := c.ReportPackHealthWithBody(ctx, params, contentType, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseReportPackHealthResponse(rsp)
-}
-
-func (c *ClientWithResponses) ReportPackHealthWithResponse(ctx context.Context, params *ReportPackHealthParams, body ReportPackHealthJSONRequestBody, reqEditors ...RequestEditorFn) (*ReportPackHealthResponse, error) {
-	rsp, err := c.ReportPackHealth(ctx, params, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseReportPackHealthResponse(rsp)
-}
-
-// LeasePackInvocationWithResponse request returning *LeasePackInvocationResponse
-func (c *ClientWithResponses) LeasePackInvocationWithResponse(ctx context.Context, params *LeasePackInvocationParams, reqEditors ...RequestEditorFn) (*LeasePackInvocationResponse, error) {
-	rsp, err := c.LeasePackInvocation(ctx, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseLeasePackInvocationResponse(rsp)
-}
-
-// ReportPackInvocationResultWithBodyWithResponse request with arbitrary body returning *ReportPackInvocationResultResponse
-func (c *ClientWithResponses) ReportPackInvocationResultWithBodyWithResponse(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ReportPackInvocationResultResponse, error) {
-	rsp, err := c.ReportPackInvocationResultWithBody(ctx, invocationId, params, contentType, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseReportPackInvocationResultResponse(rsp)
-}
-
-func (c *ClientWithResponses) ReportPackInvocationResultWithResponse(ctx context.Context, invocationId string, params *ReportPackInvocationResultParams, body ReportPackInvocationResultJSONRequestBody, reqEditors ...RequestEditorFn) (*ReportPackInvocationResultResponse, error) {
-	rsp, err := c.ReportPackInvocationResult(ctx, invocationId, params, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseReportPackInvocationResultResponse(rsp)
-}
-
-// AppendPackLogWithBodyWithResponse request with arbitrary body returning *AppendPackLogResponse
-func (c *ClientWithResponses) AppendPackLogWithBodyWithResponse(ctx context.Context, params *AppendPackLogParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AppendPackLogResponse, error) {
-	rsp, err := c.AppendPackLogWithBody(ctx, params, contentType, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseAppendPackLogResponse(rsp)
-}
-
-func (c *ClientWithResponses) AppendPackLogWithResponse(ctx context.Context, params *AppendPackLogParams, body AppendPackLogJSONRequestBody, reqEditors ...RequestEditorFn) (*AppendPackLogResponse, error) {
-	rsp, err := c.AppendPackLog(ctx, params, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseAppendPackLogResponse(rsp)
-}
-
-// ListPacksWithResponse request returning *ListPacksResponse
-func (c *ClientWithResponses) ListPacksWithResponse(ctx context.Context, params *ListPacksParams, reqEditors ...RequestEditorFn) (*ListPacksResponse, error) {
-	rsp, err := c.ListPacks(ctx, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseListPacksResponse(rsp)
-}
-
-// InstallPackWithBodyWithResponse request with arbitrary body returning *InstallPackResponse
-func (c *ClientWithResponses) InstallPackWithBodyWithResponse(ctx context.Context, params *InstallPackParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*InstallPackResponse, error) {
-	rsp, err := c.InstallPackWithBody(ctx, params, contentType, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseInstallPackResponse(rsp)
-}
-
-func (c *ClientWithResponses) InstallPackWithResponse(ctx context.Context, params *InstallPackParams, body InstallPackJSONRequestBody, reqEditors ...RequestEditorFn) (*InstallPackResponse, error) {
-	rsp, err := c.InstallPack(ctx, params, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseInstallPackResponse(rsp)
-}
-
-// BrowsePackCatalogWithResponse request returning *BrowsePackCatalogResponse
-func (c *ClientWithResponses) BrowsePackCatalogWithResponse(ctx context.Context, params *BrowsePackCatalogParams, reqEditors ...RequestEditorFn) (*BrowsePackCatalogResponse, error) {
-	rsp, err := c.BrowsePackCatalog(ctx, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseBrowsePackCatalogResponse(rsp)
-}
-
-// UninstallPackWithResponse request returning *UninstallPackResponse
-func (c *ClientWithResponses) UninstallPackWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UninstallPackParams, reqEditors ...RequestEditorFn) (*UninstallPackResponse, error) {
-	rsp, err := c.UninstallPack(ctx, publisher, name, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseUninstallPackResponse(rsp)
-}
-
-// GetPackWithResponse request returning *GetPackResponse
-func (c *ClientWithResponses) GetPackWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetPackParams, reqEditors ...RequestEditorFn) (*GetPackResponse, error) {
-	rsp, err := c.GetPack(ctx, publisher, name, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseGetPackResponse(rsp)
-}
-
-// InvokePackActionWithBodyWithResponse request with arbitrary body returning *InvokePackActionResponse
-func (c *ClientWithResponses) InvokePackActionWithBodyWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*InvokePackActionResponse, error) {
-	rsp, err := c.InvokePackActionWithBody(ctx, publisher, name, action, params, contentType, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseInvokePackActionResponse(rsp)
-}
-
-func (c *ClientWithResponses) InvokePackActionWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, action string, params *InvokePackActionParams, body InvokePackActionJSONRequestBody, reqEditors ...RequestEditorFn) (*InvokePackActionResponse, error) {
-	rsp, err := c.InvokePackAction(ctx, publisher, name, action, params, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseInvokePackActionResponse(rsp)
-}
-
-// ListPackRowsWithResponse request returning *ListPackRowsResponse
-func (c *ClientWithResponses) ListPackRowsWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *ListPackRowsParams, reqEditors ...RequestEditorFn) (*ListPackRowsResponse, error) {
-	rsp, err := c.ListPackRows(ctx, publisher, name, collection, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseListPackRowsResponse(rsp)
-}
-
-// CreatePackRowWithResponse request returning *CreatePackRowResponse
-func (c *ClientWithResponses) CreatePackRowWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, params *CreatePackRowParams, reqEditors ...RequestEditorFn) (*CreatePackRowResponse, error) {
-	rsp, err := c.CreatePackRow(ctx, publisher, name, collection, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseCreatePackRowResponse(rsp)
-}
-
-// DeletePackRowWithResponse request returning *DeletePackRowResponse
-func (c *ClientWithResponses) DeletePackRowWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *DeletePackRowParams, reqEditors ...RequestEditorFn) (*DeletePackRowResponse, error) {
-	rsp, err := c.DeletePackRow(ctx, publisher, name, collection, entityId, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseDeletePackRowResponse(rsp)
-}
-
-// GetPackRowWithResponse request returning *GetPackRowResponse
-func (c *ClientWithResponses) GetPackRowWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *GetPackRowParams, reqEditors ...RequestEditorFn) (*GetPackRowResponse, error) {
-	rsp, err := c.GetPackRow(ctx, publisher, name, collection, entityId, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseGetPackRowResponse(rsp)
-}
-
-// UpdatePackRowWithResponse request returning *UpdatePackRowResponse
-func (c *ClientWithResponses) UpdatePackRowWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, collection PackCollectionParam, entityId Ulid, params *UpdatePackRowParams, reqEditors ...RequestEditorFn) (*UpdatePackRowResponse, error) {
-	rsp, err := c.UpdatePackRow(ctx, publisher, name, collection, entityId, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseUpdatePackRowResponse(rsp)
-}
-
-// SetPackEnabledWithBodyWithResponse request with arbitrary body returning *SetPackEnabledResponse
-func (c *ClientWithResponses) SetPackEnabledWithBodyWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetPackEnabledResponse, error) {
-	rsp, err := c.SetPackEnabledWithBody(ctx, publisher, name, params, contentType, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseSetPackEnabledResponse(rsp)
-}
-
-func (c *ClientWithResponses) SetPackEnabledWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *SetPackEnabledParams, body SetPackEnabledJSONRequestBody, reqEditors ...RequestEditorFn) (*SetPackEnabledResponse, error) {
-	rsp, err := c.SetPackEnabled(ctx, publisher, name, params, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseSetPackEnabledResponse(rsp)
-}
-
-// ListPackInstallsWithResponse request returning *ListPackInstallsResponse
-func (c *ClientWithResponses) ListPackInstallsWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *ListPackInstallsParams, reqEditors ...RequestEditorFn) (*ListPackInstallsResponse, error) {
-	rsp, err := c.ListPackInstalls(ctx, publisher, name, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseListPackInstallsResponse(rsp)
-}
-
-// GetPackMessagesWithResponse request returning *GetPackMessagesResponse
-func (c *ClientWithResponses) GetPackMessagesWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, locale string, params *GetPackMessagesParams, reqEditors ...RequestEditorFn) (*GetPackMessagesResponse, error) {
-	rsp, err := c.GetPackMessages(ctx, publisher, name, locale, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseGetPackMessagesResponse(rsp)
-}
-
-// GetPackPageWithResponse request returning *GetPackPageResponse
-func (c *ClientWithResponses) GetPackPageWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, path string, params *GetPackPageParams, reqEditors ...RequestEditorFn) (*GetPackPageResponse, error) {
-	rsp, err := c.GetPackPage(ctx, publisher, name, path, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseGetPackPageResponse(rsp)
-}
-
-// GetPackUpdateAvailabilityWithResponse request returning *GetPackUpdateAvailabilityResponse
-func (c *ClientWithResponses) GetPackUpdateAvailabilityWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *GetPackUpdateAvailabilityParams, reqEditors ...RequestEditorFn) (*GetPackUpdateAvailabilityResponse, error) {
-	rsp, err := c.GetPackUpdateAvailability(ctx, publisher, name, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseGetPackUpdateAvailabilityResponse(rsp)
-}
-
-// UpdatePackWithResponse request returning *UpdatePackResponse
-func (c *ClientWithResponses) UpdatePackWithResponse(ctx context.Context, publisher PackPublisherParam, name PackNameParam, params *UpdatePackParams, reqEditors ...RequestEditorFn) (*UpdatePackResponse, error) {
-	rsp, err := c.UpdatePack(ctx, publisher, name, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseUpdatePackResponse(rsp)
 }
 
 // ListPlatformLogsWithResponse request returning *ListPlatformLogsResponse
@@ -23320,6 +23320,977 @@ func ParseSendEntityCommandResponse(rsp *http.Response) (*SendEntityCommandRespo
 	return response, nil
 }
 
+// ParseEmitExtensionEventResponse parses an HTTP response from a EmitExtensionEventWithResponse call
+func ParseEmitExtensionEventResponse(rsp *http.Response) (*EmitExtensionEventResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &EmitExtensionEventResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseReportExtensionHealthResponse parses an HTTP response from a ReportExtensionHealthWithResponse call
+func ParseReportExtensionHealthResponse(rsp *http.Response) (*ReportExtensionHealthResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ReportExtensionHealthResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseLeaseExtensionInvocationResponse parses an HTTP response from a LeaseExtensionInvocationWithResponse call
+func ParseLeaseExtensionInvocationResponse(rsp *http.Response) (*LeaseExtensionInvocationResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &LeaseExtensionInvocationResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseReportExtensionInvocationResultResponse parses an HTTP response from a ReportExtensionInvocationResultWithResponse call
+func ParseReportExtensionInvocationResultResponse(rsp *http.Response) (*ReportExtensionInvocationResultResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ReportExtensionInvocationResultResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseAppendExtensionLogResponse parses an HTTP response from a AppendExtensionLogWithResponse call
+func ParseAppendExtensionLogResponse(rsp *http.Response) (*AppendExtensionLogResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &AppendExtensionLogResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListExtensionsResponse parses an HTTP response from a ListExtensionsWithResponse call
+func ParseListExtensionsResponse(rsp *http.Response) (*ListExtensionsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListExtensionsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseInstallExtensionResponse parses an HTTP response from a InstallExtensionWithResponse call
+func ParseInstallExtensionResponse(rsp *http.Response) (*InstallExtensionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &InstallExtensionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseBrowseExtensionCatalogResponse parses an HTTP response from a BrowseExtensionCatalogWithResponse call
+func ParseBrowseExtensionCatalogResponse(rsp *http.Response) (*BrowseExtensionCatalogResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &BrowseExtensionCatalogResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseUninstallExtensionResponse parses an HTTP response from a UninstallExtensionWithResponse call
+func ParseUninstallExtensionResponse(rsp *http.Response) (*UninstallExtensionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &UninstallExtensionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
+		var dest PreconditionFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON412 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 428:
+		var dest PreconditionRequired
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetExtensionResponse parses an HTTP response from a GetExtensionWithResponse call
+func ParseGetExtensionResponse(rsp *http.Response) (*GetExtensionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetExtensionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseInvokeExtensionActionResponse parses an HTTP response from a InvokeExtensionActionWithResponse call
+func ParseInvokeExtensionActionResponse(rsp *http.Response) (*InvokeExtensionActionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &InvokeExtensionActionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListExtensionRowsResponse parses an HTTP response from a ListExtensionRowsWithResponse call
+func ParseListExtensionRowsResponse(rsp *http.Response) (*ListExtensionRowsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListExtensionRowsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCreateExtensionRowResponse parses an HTTP response from a CreateExtensionRowWithResponse call
+func ParseCreateExtensionRowResponse(rsp *http.Response) (*CreateExtensionRowResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateExtensionRowResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteExtensionRowResponse parses an HTTP response from a DeleteExtensionRowWithResponse call
+func ParseDeleteExtensionRowResponse(rsp *http.Response) (*DeleteExtensionRowResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteExtensionRowResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
+		var dest PreconditionFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON412 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 428:
+		var dest PreconditionRequired
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetExtensionRowResponse parses an HTTP response from a GetExtensionRowWithResponse call
+func ParseGetExtensionRowResponse(rsp *http.Response) (*GetExtensionRowResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetExtensionRowResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseUpdateExtensionRowResponse parses an HTTP response from a UpdateExtensionRowWithResponse call
+func ParseUpdateExtensionRowResponse(rsp *http.Response) (*UpdateExtensionRowResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &UpdateExtensionRowResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
+		var dest PreconditionFailed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON412 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 428:
+		var dest PreconditionRequired
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON428 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseSetExtensionEnabledResponse parses an HTTP response from a SetExtensionEnabledWithResponse call
+func ParseSetExtensionEnabledResponse(rsp *http.Response) (*SetExtensionEnabledResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SetExtensionEnabledResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListExtensionInstallsResponse parses an HTTP response from a ListExtensionInstallsWithResponse call
+func ParseListExtensionInstallsResponse(rsp *http.Response) (*ListExtensionInstallsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListExtensionInstallsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetExtensionMessagesResponse parses an HTTP response from a GetExtensionMessagesWithResponse call
+func ParseGetExtensionMessagesResponse(rsp *http.Response) (*GetExtensionMessagesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetExtensionMessagesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetExtensionPageResponse parses an HTTP response from a GetExtensionPageWithResponse call
+func ParseGetExtensionPageResponse(rsp *http.Response) (*GetExtensionPageResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetExtensionPageResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetExtensionUpdateAvailabilityResponse parses an HTTP response from a GetExtensionUpdateAvailabilityWithResponse call
+func ParseGetExtensionUpdateAvailabilityResponse(rsp *http.Response) (*GetExtensionUpdateAvailabilityResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetExtensionUpdateAvailabilityResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseUpdateExtensionResponse parses an HTTP response from a UpdateExtensionWithResponse call
+func ParseUpdateExtensionResponse(rsp *http.Response) (*UpdateExtensionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &UpdateExtensionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest UnprocessableContent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseGetJobResponse parses an HTTP response from a GetJobWithResponse call
 func ParseGetJobResponse(rsp *http.Response) (*GetJobResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -23354,977 +24325,6 @@ func ParseGetJobResponse(rsp *http.Response) (*GetJobResponse, error) {
 			return nil, err
 		}
 		response.ApplicationproblemJSON404 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseEmitPackEventResponse parses an HTTP response from a EmitPackEventWithResponse call
-func ParseEmitPackEventResponse(rsp *http.Response) (*EmitPackEventResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &EmitPackEventResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
-		var dest Forbidden
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON403 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFound
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
-		var dest UnprocessableContent
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON422 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseReportPackHealthResponse parses an HTTP response from a ReportPackHealthWithResponse call
-func ParseReportPackHealthResponse(rsp *http.Response) (*ReportPackHealthResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &ReportPackHealthResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
-		var dest Forbidden
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON403 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
-		var dest UnprocessableContent
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON422 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseLeasePackInvocationResponse parses an HTTP response from a LeasePackInvocationWithResponse call
-func ParseLeasePackInvocationResponse(rsp *http.Response) (*LeasePackInvocationResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &LeasePackInvocationResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
-		var dest Forbidden
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON403 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseReportPackInvocationResultResponse parses an HTTP response from a ReportPackInvocationResultWithResponse call
-func ParseReportPackInvocationResultResponse(rsp *http.Response) (*ReportPackInvocationResultResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &ReportPackInvocationResultResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
-		var dest Forbidden
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON403 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFound
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
-		var dest Conflict
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON409 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
-		var dest UnprocessableContent
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON422 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseAppendPackLogResponse parses an HTTP response from a AppendPackLogWithResponse call
-func ParseAppendPackLogResponse(rsp *http.Response) (*AppendPackLogResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &AppendPackLogResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
-		var dest Forbidden
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON403 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
-		var dest UnprocessableContent
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON422 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseListPacksResponse parses an HTTP response from a ListPacksWithResponse call
-func ParseListPacksResponse(rsp *http.Response) (*ListPacksResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &ListPacksResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
-		var dest BadRequest
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON400 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseInstallPackResponse parses an HTTP response from a InstallPackWithResponse call
-func ParseInstallPackResponse(rsp *http.Response) (*InstallPackResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &InstallPackResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
-		var dest BadRequest
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON400 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
-		var dest Forbidden
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON403 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
-		var dest Conflict
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON409 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
-		var dest UnprocessableContent
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON422 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseBrowsePackCatalogResponse parses an HTTP response from a BrowsePackCatalogWithResponse call
-func ParseBrowsePackCatalogResponse(rsp *http.Response) (*BrowsePackCatalogResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &BrowsePackCatalogResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseUninstallPackResponse parses an HTTP response from a UninstallPackWithResponse call
-func ParseUninstallPackResponse(rsp *http.Response) (*UninstallPackResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &UninstallPackResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
-		var dest Forbidden
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON403 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFound
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
-		var dest PreconditionFailed
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON412 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
-		var dest UnprocessableContent
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON422 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 428:
-		var dest PreconditionRequired
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON428 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseGetPackResponse parses an HTTP response from a GetPackWithResponse call
-func ParseGetPackResponse(rsp *http.Response) (*GetPackResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &GetPackResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFound
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON404 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseInvokePackActionResponse parses an HTTP response from a InvokePackActionWithResponse call
-func ParseInvokePackActionResponse(rsp *http.Response) (*InvokePackActionResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &InvokePackActionResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
-		var dest Forbidden
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON403 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFound
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
-		var dest UnprocessableContent
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON422 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseListPackRowsResponse parses an HTTP response from a ListPackRowsWithResponse call
-func ParseListPackRowsResponse(rsp *http.Response) (*ListPackRowsResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &ListPackRowsResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
-		var dest BadRequest
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON400 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFound
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON404 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseCreatePackRowResponse parses an HTTP response from a CreatePackRowWithResponse call
-func ParseCreatePackRowResponse(rsp *http.Response) (*CreatePackRowResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &CreatePackRowResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
-		var dest BadRequest
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON400 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
-		var dest Forbidden
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON403 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFound
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
-		var dest Conflict
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON409 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
-		var dest UnprocessableContent
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON422 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseDeletePackRowResponse parses an HTTP response from a DeletePackRowWithResponse call
-func ParseDeletePackRowResponse(rsp *http.Response) (*DeletePackRowResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &DeletePackRowResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
-		var dest Forbidden
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON403 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFound
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
-		var dest PreconditionFailed
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON412 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 428:
-		var dest PreconditionRequired
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON428 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseGetPackRowResponse parses an HTTP response from a GetPackRowWithResponse call
-func ParseGetPackRowResponse(rsp *http.Response) (*GetPackRowResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &GetPackRowResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFound
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON404 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseUpdatePackRowResponse parses an HTTP response from a UpdatePackRowWithResponse call
-func ParseUpdatePackRowResponse(rsp *http.Response) (*UpdatePackRowResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &UpdatePackRowResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
-		var dest Forbidden
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON403 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFound
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 412:
-		var dest PreconditionFailed
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON412 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
-		var dest UnprocessableContent
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON422 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 428:
-		var dest PreconditionRequired
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON428 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseSetPackEnabledResponse parses an HTTP response from a SetPackEnabledWithResponse call
-func ParseSetPackEnabledResponse(rsp *http.Response) (*SetPackEnabledResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &SetPackEnabledResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
-		var dest BadRequest
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON400 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFound
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
-		var dest UnprocessableContent
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON422 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseListPackInstallsResponse parses an HTTP response from a ListPackInstallsWithResponse call
-func ParseListPackInstallsResponse(rsp *http.Response) (*ListPackInstallsResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &ListPackInstallsResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
-		var dest BadRequest
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON400 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFound
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON404 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseGetPackMessagesResponse parses an HTTP response from a GetPackMessagesWithResponse call
-func ParseGetPackMessagesResponse(rsp *http.Response) (*GetPackMessagesResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &GetPackMessagesResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFound
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON404 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseGetPackPageResponse parses an HTTP response from a GetPackPageWithResponse call
-func ParseGetPackPageResponse(rsp *http.Response) (*GetPackPageResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &GetPackPageResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFound
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON404 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseGetPackUpdateAvailabilityResponse parses an HTTP response from a GetPackUpdateAvailabilityWithResponse call
-func ParseGetPackUpdateAvailabilityResponse(rsp *http.Response) (*GetPackUpdateAvailabilityResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &GetPackUpdateAvailabilityResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
-		var dest BadRequest
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON400 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFound
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
-		var dest UnprocessableContent
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON422 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseUpdatePackResponse parses an HTTP response from a UpdatePackWithResponse call
-func ParseUpdatePackResponse(rsp *http.Response) (*UpdatePackResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &UpdatePackResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
-		var dest BadRequest
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON400 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest Unauthorized
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFound
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
-		var dest Conflict
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON409 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
-		var dest UnprocessableContent
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.ApplicationproblemJSON422 = &dest
 
 	}
 

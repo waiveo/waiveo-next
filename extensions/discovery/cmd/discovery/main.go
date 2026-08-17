@@ -22,8 +22,8 @@
 //
 //  1. The host writes a one-time tier-grant code on stdin.
 //  2. Redeem it at POST {WAIVEO_API_BASE_URL}/api/v1/auth/tier-grant/redeem.
-//  3. Long-poll GET /api/v1/pack-invocations/pending for work; answer each
-//     invocation at POST /api/v1/pack-invocations/{id}/result.
+//  3. Long-poll GET /api/v1/extension-invocations/pending for work; answer each
+//     invocation at POST /api/v1/extension-invocations/{id}/result.
 //  4. EOF on stdin means the host is asking this process to stop.
 //
 // Redemption IS the readiness signal, and the CA the host hands over
@@ -233,7 +233,7 @@ type invocation struct {
 // lease long-polls the pending queue. `wait=20` holds the request server-side,
 // so an idle pack costs one open connection rather than a poll storm.
 func lease(ctx context.Context, client *http.Client, base, token string) (invocation, int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/pack-invocations/pending?wait=20", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/extension-invocations/pending?wait=20", nil)
 	if err != nil {
 		return invocation{}, 0, err
 	}
@@ -328,7 +328,7 @@ func scanNow(ctx context.Context, client *http.Client, base string, sess session
 // a missing setting look like a broken engine.
 func scanSubnet(ctx context.Context, client *http.Client, base string, sess session) string {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		base+"/api/v1/packs/"+sess.PackID+"/data/settings", nil)
+		base+"/api/v1/extensions/"+sess.PackID+"/data/settings", nil)
 	if err != nil {
 		return ""
 	}
@@ -383,7 +383,7 @@ func report(ctx context.Context, client *http.Client, base, token, invocationID 
 	}
 	raw, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		base+"/api/v1/pack-invocations/"+invocationID+"/result", bytes.NewReader(raw))
+		base+"/api/v1/extension-invocations/"+invocationID+"/result", bytes.NewReader(raw))
 	if err != nil {
 		return err
 	}

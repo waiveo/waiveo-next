@@ -72,7 +72,7 @@ func invokeAction(t *testing.T, e *testEnv, packID, action string, params map[st
 		payload["params"] = params
 	}
 	body := mustJSON(t, payload)
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs/"+packID+"/actions/"+action, body, nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions/"+packID+"/actions/"+action, body, nil)
 	var out map[string]any
 	_ = json.Unmarshal(raw, &out)
 	return resp, out
@@ -93,7 +93,7 @@ func TestAnActionIsQueuedLeasedByThePackAndAnswered(t *testing.T) {
 		t.Fatalf("queued = %+v", queued)
 	}
 
-	lease, leased := asPack(t, e, token, http.MethodGet, "/api/v1/pack-invocations/pending", nil)
+	lease, leased := asPack(t, e, token, http.MethodGet, "/api/v1/extension-invocations/pending", nil)
 	if lease.StatusCode != http.StatusOK {
 		t.Fatalf("lease = %d, want 200 (%+v)", lease.StatusCode, leased)
 	}
@@ -109,7 +109,7 @@ func TestAnActionIsQueuedLeasedByThePackAndAnswered(t *testing.T) {
 
 	id, _ := leased["invocation_id"].(string)
 	done, answered := asPack(t, e, token, http.MethodPost,
-		"/api/v1/pack-invocations/"+id+"/result", mustJSON(t, map[string]any{"result": map[string]any{"archive": "a.zip"}}))
+		"/api/v1/extension-invocations/"+id+"/result", mustJSON(t, map[string]any{"result": map[string]any{"archive": "a.zip"}}))
 	if done.StatusCode != http.StatusOK {
 		t.Fatalf("result = %d, want 200 (%+v)", done.StatusCode, answered)
 	}
@@ -127,7 +127,7 @@ func TestAnEmptyQueueIs204(t *testing.T) {
 	e.installActionPack(t)
 	token := packSession(t, e, "acme/menu-board")
 
-	resp, _ := asPack(t, e, token, http.MethodGet, "/api/v1/pack-invocations/pending", nil)
+	resp, _ := asPack(t, e, token, http.MethodGet, "/api/v1/extension-invocations/pending", nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("empty queue = %d, want 204", resp.StatusCode)
 	}
@@ -149,7 +149,7 @@ func TestAPackOnlyEverLeasesItsOwnWork(t *testing.T) {
 
 	// The OTHER pack polls and must see nothing.
 	other := packSession(t, e, "acme/other-pack")
-	resp, body := asPack(t, e, other, http.MethodGet, "/api/v1/pack-invocations/pending", nil)
+	resp, body := asPack(t, e, other, http.MethodGet, "/api/v1/extension-invocations/pending", nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("a different pack leased %d (%+v) — queues are not isolated", resp.StatusCode, body)
 	}
@@ -166,11 +166,11 @@ func TestAPackCannotAnswerAnotherPacksInvocation(t *testing.T) {
 
 	owner := packSession(t, e, "acme/menu-board")
 	invokeAction(t, e, "acme/menu-board", "run-backup", nil)
-	_, leased := asPack(t, e, owner, http.MethodGet, "/api/v1/pack-invocations/pending", nil)
+	_, leased := asPack(t, e, owner, http.MethodGet, "/api/v1/extension-invocations/pending", nil)
 	id, _ := leased["invocation_id"].(string)
 
 	thief := packSession(t, e, "acme/other-pack")
-	resp, _ := asPack(t, e, thief, http.MethodPost, "/api/v1/pack-invocations/"+id+"/result",
+	resp, _ := asPack(t, e, thief, http.MethodPost, "/api/v1/extension-invocations/"+id+"/result",
 		mustJSON(t, map[string]any{"result": map[string]any{"stolen": true}}))
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("another pack answered a foreign invocation with %d, want 404", resp.StatusCode)
@@ -185,7 +185,7 @@ func TestAHumanSessionIsRefusedFromThePackOnlyRoutes(t *testing.T) {
 	e.seedPlacementNodes(t, rowScopeNodeA, rowScopeNodeB)
 	e.installActionPack(t)
 
-	resp, raw := e.do(t, http.MethodGet, "/api/v1/pack-invocations/pending", nil, nil)
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/extension-invocations/pending", nil, nil)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("operator session on the lease route = %d, want 403 (%s)", resp.StatusCode, raw)
 	}
@@ -247,7 +247,7 @@ func actionPackManifest(id string) map[string]any {
 
 func (e *testEnv) installActionPack(t *testing.T) {
 	t.Helper()
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, actionPackManifest("acme/menu-board")), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", packBundle(t, actionPackManifest("acme/menu-board")), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install action pack: %d %s", resp.StatusCode, raw)
 	}
@@ -257,7 +257,7 @@ func (e *testEnv) installActionPack(t *testing.T) {
 // tested against a real second identity rather than against an absence.
 func (e *testEnv) installSecondActionPack(t *testing.T) {
 	t.Helper()
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, actionPackManifest("acme/other-pack")), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", packBundle(t, actionPackManifest("acme/other-pack")), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install second action pack: %d %s", resp.StatusCode, raw)
 	}
@@ -276,7 +276,7 @@ func TestAPackLogLineIsAttributedToTheCallingPack(t *testing.T) {
 	e.installActionPack(t)
 	token := packSession(t, e, "acme/menu-board")
 
-	resp, _ := asPack(t, e, token, http.MethodPost, "/api/v1/pack-logs",
+	resp, _ := asPack(t, e, token, http.MethodPost, "/api/v1/extension-logs",
 		mustJSON(t, map[string]any{"level": "warn", "message": "the archive directory is nearly full"}))
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("append = %d, want 204", resp.StatusCode)
@@ -329,7 +329,7 @@ func TestAPackCannotForgeAnotherSource(t *testing.T) {
 
 	// An undeclared member is refused outright (API-013a), which is the first
 	// line of defence; the second is that nothing reads one even if it arrived.
-	resp, _ := asPack(t, e, token, http.MethodPost, "/api/v1/pack-logs",
+	resp, _ := asPack(t, e, token, http.MethodPost, "/api/v1/extension-logs",
 		mustJSON(t, map[string]any{"message": "impostor", "source": "waiveo-feeder"}))
 	if resp.StatusCode == http.StatusNoContent {
 		t.Fatal("a body carrying its own source was accepted")
@@ -337,7 +337,7 @@ func TestAPackCannotForgeAnotherSource(t *testing.T) {
 
 	// And a line whose TEXT looks like another component's prefix is still
 	// attributed to the pack — the source comes from the principal, not the words.
-	if r, _ := asPack(t, e, token, http.MethodPost, "/api/v1/pack-logs",
+	if r, _ := asPack(t, e, token, http.MethodPost, "/api/v1/extension-logs",
 		mustJSON(t, map[string]any{"message": "waiveo-relay: pretending to be the relay"})); r.StatusCode != http.StatusNoContent {
 		t.Fatalf("append = %d, want 204", r.StatusCode)
 	}
@@ -355,7 +355,7 @@ func TestAHumanSessionCannotAppendAPackLog(t *testing.T) {
 	e.seedPlacementNodes(t, rowScopeNodeA, rowScopeNodeB)
 	e.installActionPack(t)
 
-	resp, _ := e.do(t, http.MethodPost, "/api/v1/pack-logs", mustJSON(t, map[string]any{"message": "hello"}), nil)
+	resp, _ := e.do(t, http.MethodPost, "/api/v1/extension-logs", mustJSON(t, map[string]any{"message": "hello"}), nil)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("operator append = %d, want 403", resp.StatusCode)
 	}
@@ -377,7 +377,7 @@ func TestAPackHealthReportAppearsOnTheHealthPage(t *testing.T) {
 	e.installActionPack(t)
 	token := packSession(t, e, "acme/menu-board")
 
-	resp, _ := asPack(t, e, token, http.MethodPost, "/api/v1/pack-health",
+	resp, _ := asPack(t, e, token, http.MethodPost, "/api/v1/extension-health",
 		mustJSON(t, map[string]any{"status": "degraded", "detail": "the archive credentials expire in two days"}))
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("report = %d, want 204", resp.StatusCode)
@@ -423,7 +423,7 @@ func TestAnInventedHealthStatusIsRefused(t *testing.T) {
 	e.installActionPack(t)
 	token := packSession(t, e, "acme/menu-board")
 
-	resp, _ := asPack(t, e, token, http.MethodPost, "/api/v1/pack-health",
+	resp, _ := asPack(t, e, token, http.MethodPost, "/api/v1/extension-health",
 		mustJSON(t, map[string]any{"status": "mostly-fine", "detail": "eh"}))
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("invented status = %d, want 422", resp.StatusCode)
@@ -443,7 +443,7 @@ func TestAHealthReportWithoutADetailIsRefused(t *testing.T) {
 	e.installActionPack(t)
 	token := packSession(t, e, "acme/menu-board")
 
-	resp, _ := asPack(t, e, token, http.MethodPost, "/api/v1/pack-health",
+	resp, _ := asPack(t, e, token, http.MethodPost, "/api/v1/extension-health",
 		mustJSON(t, map[string]any{"status": "ok"}))
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("detail-less report = %d, want 422", resp.StatusCode)
@@ -459,7 +459,7 @@ func TestAnExplicitNullParamsIsRefused(t *testing.T) {
 	e.seedPlacementNodes(t, rowScopeNodeA, rowScopeNodeB)
 	e.installActionPack(t)
 
-	resp, _ := e.do(t, http.MethodPost, "/api/v1/packs/acme/menu-board/actions/run-backup",
+	resp, _ := e.do(t, http.MethodPost, "/api/v1/extensions/acme/menu-board/actions/run-backup",
 		mustJSON(t, map[string]any{"params": nil}), nil)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("params:null = %d, want 422", resp.StatusCode)
@@ -491,13 +491,13 @@ func TestADeclaredPackEventReachesTheDurableLog(t *testing.T) {
 	sink := &recordingEvents{}
 	e := newEnvWithOptions(t, api.WithRunEvents(sink))
 	e.seedPlacementNodes(t, rowScopeNodeA, rowScopeNodeB)
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, eventPack(t, e, "acme/menu-board")), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", packBundle(t, eventPack(t, e, "acme/menu-board")), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install: %d %s", resp.StatusCode, raw)
 	}
 	token := packSession(t, e, "acme/menu-board")
 
-	got, gotBody := asPack(t, e, token, http.MethodPost, "/api/v1/pack-events",
+	got, gotBody := asPack(t, e, token, http.MethodPost, "/api/v1/extension-events",
 		mustJSON(t, map[string]any{"name": "acme/menu-board.backup_completed", "payload": map[string]any{"archive": "a.zip"}}))
 	if got.StatusCode != http.StatusNoContent {
 		t.Fatalf("emit = %d, want 204 (%+v)", got.StatusCode, gotBody)
@@ -535,12 +535,12 @@ func TestAnUndeclaredPackEventIsRefused(t *testing.T) {
 	sink := &recordingEvents{}
 	e := newEnvWithOptions(t, api.WithRunEvents(sink))
 	e.seedPlacementNodes(t, rowScopeNodeA, rowScopeNodeB)
-	if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, eventPack(t, e, "acme/menu-board")), nil); resp.StatusCode != http.StatusCreated {
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", packBundle(t, eventPack(t, e, "acme/menu-board")), nil); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install: %d %s", resp.StatusCode, raw)
 	}
 	token := packSession(t, e, "acme/menu-board")
 
-	got, body := asPack(t, e, token, http.MethodPost, "/api/v1/pack-events",
+	got, body := asPack(t, e, token, http.MethodPost, "/api/v1/extension-events",
 		mustJSON(t, map[string]any{"name": "acme/menu-board.never_declared", "payload": map[string]any{}}))
 	if got.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("undeclared emit = %d, want 422 (%+v)", got.StatusCode, body)
@@ -561,13 +561,13 @@ func TestAPackCannotEmitAnotherPacksEvent(t *testing.T) {
 	e := newEnvWithOptions(t, api.WithRunEvents(sink))
 	e.seedPlacementNodes(t, rowScopeNodeA, rowScopeNodeB)
 	for _, id := range []string{"acme/menu-board", "acme/other-pack"} {
-		if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, eventPack(t, e, id)), nil); resp.StatusCode != http.StatusCreated {
+		if resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", packBundle(t, eventPack(t, e, id)), nil); resp.StatusCode != http.StatusCreated {
 			t.Fatalf("install %s: %d %s", id, resp.StatusCode, raw)
 		}
 	}
 	token := packSession(t, e, "acme/other-pack")
 
-	got, _ := asPack(t, e, token, http.MethodPost, "/api/v1/pack-events",
+	got, _ := asPack(t, e, token, http.MethodPost, "/api/v1/extension-events",
 		mustJSON(t, map[string]any{"name": "acme/menu-board.backup_completed", "payload": map[string]any{}}))
 	if got.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("cross-pack emit = %d, want 422", got.StatusCode)

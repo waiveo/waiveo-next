@@ -48,13 +48,13 @@ func dataPackManifest() map[string]any {
 func (e *testEnv) installDataPack(t *testing.T) {
 	t.Helper()
 	e.seedPlacementNodes(t, rowScopeNodeA, rowScopeNodeB)
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, dataPackManifest()), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", packBundle(t, dataPackManifest()), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install data pack: status %d, body %s", resp.StatusCode, raw)
 	}
 }
 
-const menuRowsPath = "/api/v1/packs/acme/menu-board/data/menu_items"
+const menuRowsPath = "/api/v1/extensions/acme/menu-board/data/menu_items"
 
 // createRow POSTs a row body to the menu_items collection and returns the response
 // + decoded body.
@@ -135,7 +135,7 @@ func TestPackRowCreateFieldTypeMismatch422(t *testing.T) {
 // TestPackRowUnknownPack404: pack rows under a pack that is not installed → 404.
 func TestPackRowUnknownPack404(t *testing.T) {
 	e := newEnv(t)
-	resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/nobody/here/data/menu_items", nil, nil)
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions/nobody/here/data/menu_items", nil, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 (%s)", resp.StatusCode, raw)
 	}
@@ -146,13 +146,13 @@ func TestPackRowUnknownPack404(t *testing.T) {
 func TestPackRowUndeclaredCollection404(t *testing.T) {
 	e := newEnv(t)
 	e.installDataPack(t)
-	resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/data/nonexistent", nil, nil)
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board/data/nonexistent", nil, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 (%s)", resp.StatusCode, raw)
 	}
 	assertProblem(t, resp, raw, "NOT_FOUND")
 	// And a create into an undeclared collection is likewise a 404.
-	resp, _ = e.do(t, http.MethodPost, "/api/v1/packs/acme/menu-board/data/nonexistent",
+	resp, _ = e.do(t, http.MethodPost, "/api/v1/extensions/acme/menu-board/data/nonexistent",
 		mustJSON(t, map[string]any{"scope_node": rowScopeNodeA}), nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("create undeclared status = %d, want 404", resp.StatusCode)
@@ -231,9 +231,9 @@ func TestPackRowListRejectsForeignCursor(t *testing.T) {
 	e.createRow(t, map[string]any{"scope_node": rowScopeNodeA, "name": "A"}, nil)
 
 	// Mint a real cursor from the ARTICLES collection, then replay it on menu_items.
-	_, _ = e.do(t, http.MethodPost, "/api/v1/packs/acme/menu-board/data/articles",
+	_, _ = e.do(t, http.MethodPost, "/api/v1/extensions/acme/menu-board/data/articles",
 		mustJSON(t, map[string]any{"scope_node": rowScopeNodeA, "title": "X"}), nil)
-	_, araw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/data/articles?limit=1", nil, nil)
+	_, araw := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board/data/articles?limit=1", nil, nil)
 	articleCursor := ""
 	if c := decodePage(t, araw).Cursor; c != nil {
 		articleCursor = *c
@@ -402,7 +402,7 @@ func TestPackRowLifecycleNotAllowed422(t *testing.T) {
 	errorsHasFieldCode(t, p, "lifecycle_state", "LIFECYCLE_NOT_ALLOWED")
 
 	// The participating collection accepts a draft row.
-	resp, raw = e.do(t, http.MethodPost, "/api/v1/packs/acme/menu-board/data/articles",
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/extensions/acme/menu-board/data/articles",
 		mustJSON(t, map[string]any{"scope_node": rowScopeNodeA, "title": "Draft One", "lifecycle_state": "draft"}), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("draft article status = %d, want 201 (%s)", resp.StatusCode, raw)
@@ -416,7 +416,7 @@ func TestPackRowLifecycleNotAllowed422(t *testing.T) {
 
 // ── MAN-056: a singleton collection holds exactly one row ───────────────────
 
-const settingsRowsPath = "/api/v1/packs/acme/menu-board/data/settings"
+const settingsRowsPath = "/api/v1/extensions/acme/menu-board/data/settings"
 
 // TestSingletonCollectionAcceptsOneRowThenRefusesTheNext: the first create into
 // a collection declared `singleton: true` lands; the second is refused 409 with

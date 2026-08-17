@@ -281,7 +281,7 @@ func TestAPIV1RoutesRefuseAnUnauthenticatedCaller(t *testing.T) {
 		{http.MethodPost, "/api/v1/automations/bulk-enable"},
 		{http.MethodGet, "/api/v1/devices"},
 		{http.MethodGet, "/api/v1/entities"},
-		{http.MethodGet, "/api/v1/packs"},
+		{http.MethodGet, "/api/v1/extensions"},
 		{http.MethodPost, "/api/v1/content"},
 		{http.MethodPost, "/api/v1/auth/logout"},
 		{http.MethodGet, "/api/v1/auth/session"},

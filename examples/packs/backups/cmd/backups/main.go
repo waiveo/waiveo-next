@@ -14,8 +14,8 @@
 //  3. Keep the returned bearer token. It is the pack's ONLY credential and it
 //     dies with this process; there is nothing to persist and nowhere to
 //     persist it.
-//  4. Long-poll GET /api/v1/pack-invocations/pending for work; answer each
-//     invocation at POST /api/v1/pack-invocations/{id}/result.
+//  4. Long-poll GET /api/v1/extension-invocations/pending for work; answer each
+//     invocation at POST /api/v1/extension-invocations/{id}/result.
 //
 // TLS: the feeder usually serves HTTPS with a self-signed certificate, and the
 // host hands this process the anchor to trust as WAIVEO_API_CA_FILE. The file
@@ -237,7 +237,7 @@ type invocation struct {
 // lease long-polls the pending queue. `wait=20` holds the request server-side,
 // so an idle pack costs one open connection rather than a poll storm.
 func lease(ctx context.Context, client *http.Client, base, token string) (invocation, int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/pack-invocations/pending?wait=20", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/extension-invocations/pending?wait=20", nil)
 	if err != nil {
 		return invocation{}, 0, err
 	}
@@ -292,7 +292,7 @@ func perform(ctx context.Context, client *http.Client, base string, sess session
 // differently-named results.
 func runBackup(ctx context.Context, client *http.Client, base string, sess session, inv invocation) (json.RawMessage, string, string) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		base+"/api/v1/packs/"+sess.PackID+"/data/settings", nil)
+		base+"/api/v1/extensions/"+sess.PackID+"/data/settings", nil)
 	if err != nil {
 		return nil, "BACKUP_FAILED", err.Error()
 	}
@@ -355,7 +355,7 @@ func report(ctx context.Context, client *http.Client, base, token, invocationID 
 	}
 	raw, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		base+"/api/v1/pack-invocations/"+invocationID+"/result", bytes.NewReader(raw))
+		base+"/api/v1/extension-invocations/"+invocationID+"/result", bytes.NewReader(raw))
 	if err != nil {
 		return err
 	}

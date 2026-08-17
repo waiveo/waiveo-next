@@ -150,7 +150,7 @@ type installRecordPage struct {
 
 func packInstallHistory(t *testing.T, e *testEnv, packID string) installRecordPage {
 	t.Helper()
-	resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/"+packID+"/installs", nil, nil)
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions/"+packID+"/installs", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("install history status = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
@@ -189,17 +189,17 @@ func TestInstallByMarketplaceRefOverHTTP(t *testing.T) {
 	e := newEnvWithOptions(t, reg.option())
 
 	ref := mustJSON(t, map[string]any{"pack_id": "acme/menu-board", "trust_channel": "community"})
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", ref, jsonHeaders)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", ref, jsonHeaders)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install-by-ref status = %d, want 201 (%s)", resp.StatusCode, raw)
 	}
-	if loc := resp.Header.Get("Location"); loc != "/api/v1/packs/acme/menu-board" {
+	if loc := resp.Header.Get("Location"); loc != "/api/v1/extensions/acme/menu-board" {
 		t.Fatalf("Location = %q", loc)
 	}
 
 	// The pack genuinely landed — checked through a different route than the one
 	// that claimed it did.
-	resp, raw = e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board", nil, nil)
+	resp, raw = e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("get pack status = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
@@ -235,7 +235,7 @@ func TestInstallByMarketplaceRefOverHTTP(t *testing.T) {
 func TestDirectArtifactUploadAlsoRecordsOverHTTP(t *testing.T) {
 	e := newEnv(t)
 	art := signPack(t, packBundle(t, packManifest()), "acme/menu-board", "1.0.0")
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", art, nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", art, nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install status = %d, want 201 (%s)", resp.StatusCode, raw)
 	}
@@ -292,7 +292,7 @@ func TestMarketplaceRefRefusalsSurfaceTheirCode(t *testing.T) {
 		}, "MARKETPLACE_REF_INVALID"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", mustJSON(t, tc.body), jsonHeaders)
+			resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", mustJSON(t, tc.body), jsonHeaders)
 			if resp.StatusCode != http.StatusUnprocessableEntity {
 				t.Fatalf("status = %d, want 422 (%s)", resp.StatusCode, raw)
 			}
@@ -304,7 +304,7 @@ func TestMarketplaceRefRefusalsSurfaceTheirCode(t *testing.T) {
 	}
 
 	// Nothing installed by any of the refusals.
-	resp, _ := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board", nil, nil)
+	resp, _ := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board", nil, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("a refused reference installed something: get pack = %d", resp.StatusCode)
 	}
@@ -316,19 +316,19 @@ func TestMarketplaceRefRefusalsSurfaceTheirCode(t *testing.T) {
 func TestInstallHistoryIsRemovedWithThePack(t *testing.T) {
 	e := newEnv(t)
 	art := signPack(t, packBundle(t, packManifest()), "acme/menu-board", "1.0.0")
-	if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", art, nil); resp.StatusCode != http.StatusCreated {
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", art, nil); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install status = %d (%s)", resp.StatusCode, raw)
 	}
 	if len(packInstallHistory(t, e, "acme/menu-board").Items) != 1 {
 		t.Fatal("expected one install record before uninstall")
 	}
 
-	resp, raw := e.do(t, http.MethodDelete, "/api/v1/packs/acme/menu-board",
+	resp, raw := e.do(t, http.MethodDelete, "/api/v1/extensions/acme/menu-board",
 		nil, map[string]string{"If-Match": `"1"`})
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("uninstall status = %d, want 204 (%s)", resp.StatusCode, raw)
 	}
-	resp, _ = e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/installs", nil, nil)
+	resp, _ = e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board/installs", nil, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("install history for an uninstalled pack = %d, want 404", resp.StatusCode)
 	}
@@ -343,16 +343,16 @@ func TestInstallHistoryCursorIsScopedToItsPack(t *testing.T) {
 		m := packManifest()
 		m["id"] = id
 		art := signPack(t, packBundle(t, m), id, "1.0.0")
-		if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", art, nil); resp.StatusCode != http.StatusCreated {
+		if resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", art, nil); resp.StatusCode != http.StatusCreated {
 			t.Fatalf("install %s = %d (%s)", id, resp.StatusCode, raw)
 		}
 		// A second install so a page of limit=1 yields a next cursor.
-		if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", art, nil); resp.StatusCode != http.StatusOK {
+		if resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", art, nil); resp.StatusCode != http.StatusOK {
 			t.Fatalf("reinstall %s = %d (%s)", id, resp.StatusCode, raw)
 		}
 	}
 
-	resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/installs?limit=1", nil, nil)
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board/installs?limit=1", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("history page status = %d (%s)", resp.StatusCode, raw)
 	}
@@ -365,13 +365,13 @@ func TestInstallHistoryCursorIsScopedToItsPack(t *testing.T) {
 	}
 
 	// The same cursor under a different pack's history is refused.
-	resp, raw = e.do(t, http.MethodGet, "/api/v1/packs/acme/other-board/installs?cursor="+*page.Cursor, nil, nil)
+	resp, raw = e.do(t, http.MethodGet, "/api/v1/extensions/acme/other-board/installs?cursor="+*page.Cursor, nil, nil)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("cross-pack cursor status = %d, want 400 (%s)", resp.StatusCode, raw)
 	}
 
 	// Under its own pack it pages correctly.
-	resp, raw = e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/installs?cursor="+*page.Cursor, nil, nil)
+	resp, raw = e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board/installs?cursor="+*page.Cursor, nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("same-pack cursor status = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
@@ -396,11 +396,11 @@ func TestMarketplaceRefIsIdempotent(t *testing.T) {
 	ref := mustJSON(t, map[string]any{"pack_id": "acme/menu-board", "trust_channel": "community"})
 	headers := map[string]string{"Content-Type": "application/json", "Idempotency-Key": "mkt-ref-retry-1"}
 
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", ref, headers)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", ref, headers)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("first install status = %d (%s)", resp.StatusCode, raw)
 	}
-	resp, raw = e.do(t, http.MethodPost, "/api/v1/packs", ref, headers)
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/extensions", ref, headers)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("retry status = %d, want the original 201 replayed (%s)", resp.StatusCode, raw)
 	}
@@ -414,7 +414,7 @@ func TestMarketplaceRefIsIdempotent(t *testing.T) {
 func TestMarketplaceRefWithoutAConfiguredRegistry(t *testing.T) {
 	e := newEnv(t) // no WithMarketplace
 	ref := mustJSON(t, map[string]any{"pack_id": "acme/menu-board", "trust_channel": "community"})
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", ref, jsonHeaders)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", ref, jsonHeaders)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422 (%s)", resp.StatusCode, raw)
 	}
@@ -444,13 +444,13 @@ func TestUpdatePackOverHTTP(t *testing.T) {
 	e := newEnvWithOptions(t, reg.option())
 
 	ref := mustJSON(t, map[string]any{"pack_id": "acme/menu-board", "trust_channel": "community"})
-	if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", ref, jsonHeaders); resp.StatusCode != http.StatusCreated {
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", ref, jsonHeaders); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install status = %d, want 201 (%s)", resp.StatusCode, raw)
 	}
 
 	// A no-op check first: the pointer has not moved, so nothing is written and
 	// the history stays at one record.
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs/acme/menu-board/update", nil, nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions/acme/menu-board/update", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("update status = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
@@ -472,7 +472,7 @@ func TestUpdatePackOverHTTP(t *testing.T) {
 		signPack(t, packBundle(t, m), "acme/menu-board", "2.0.0"), nil)
 	reg.reindex(t)
 
-	resp, raw = e.do(t, http.MethodPost, "/api/v1/packs/acme/menu-board/update", nil, nil)
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/extensions/acme/menu-board/update", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("update status = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
@@ -485,7 +485,7 @@ func TestUpdatePackOverHTTP(t *testing.T) {
 
 	// Checked through a different route than the one that claimed it: the pack
 	// really is at 2.0.0 and the history really did grow.
-	resp, raw = e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board", nil, nil)
+	resp, raw = e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("get pack status = %d (%s)", resp.StatusCode, raw)
 	}
@@ -506,7 +506,7 @@ func TestUpdatePackOverHTTP(t *testing.T) {
 func TestUpdatePackOfAnUninstalledPackIs404(t *testing.T) {
 	reg := newMktRegistry(t)
 	e := newEnvWithOptions(t, reg.option())
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs/acme/menu-board/update", nil, nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions/acme/menu-board/update", nil, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("update of an uninstalled pack status = %d, want 404 (%s)", resp.StatusCode, raw)
 	}
@@ -520,11 +520,11 @@ func TestUpdatePackRefusesADirectInstallOverHTTP(t *testing.T) {
 	e := newEnvWithOptions(t, reg.option())
 
 	art := signPack(t, packBundle(t, packManifest()), "acme/menu-board", "1.0.0")
-	if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", art, nil); resp.StatusCode != http.StatusCreated {
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", art, nil); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("direct install status = %d, want 201 (%s)", resp.StatusCode, raw)
 	}
 
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs/acme/menu-board/update", nil, nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions/acme/menu-board/update", nil, nil)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("update of a direct install status = %d, want 422 (%s)", resp.StatusCode, raw)
 	}
@@ -548,11 +548,11 @@ func TestUninstallOfARequiredPackIsRefusedOverHTTP(t *testing.T) {
 	e := newEnvWithOptions(t, reg.option(), api.WithRequiredPacks(roster))
 
 	ref := mustJSON(t, map[string]any{"pack_id": "acme/menu-board", "trust_channel": "community"})
-	if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", ref, jsonHeaders); resp.StatusCode != http.StatusCreated {
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", ref, jsonHeaders); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install status = %d, want 201 (%s)", resp.StatusCode, raw)
 	}
 
-	resp, raw := e.do(t, http.MethodDelete, "/api/v1/packs/acme/menu-board", nil,
+	resp, raw := e.do(t, http.MethodDelete, "/api/v1/extensions/acme/menu-board", nil,
 		map[string]string{"If-Match": `"1"`})
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("uninstall of a required pack status = %d, want 422 (%s)", resp.StatusCode, raw)
@@ -560,7 +560,7 @@ func TestUninstallOfARequiredPackIsRefusedOverHTTP(t *testing.T) {
 	if codes := problemCodes(t, raw); len(codes) != 1 || codes[0] != "REQUIRED_PACK_FLOOR" {
 		t.Fatalf("problem codes = %v, want [REQUIRED_PACK_FLOOR]", codes)
 	}
-	if resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board", nil, nil); resp.StatusCode != http.StatusOK {
+	if resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board", nil, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("the refused uninstall removed the pack: get status = %d (%s)", resp.StatusCode, raw)
 	}
 	if page := packInstallHistory(t, e, "acme/menu-board"); len(page.Items) != 1 {
@@ -605,9 +605,9 @@ func TestPackLifecycleRefusesBelowAdminAtTheOrgNode(t *testing.T) {
 				t.Fatalf("AddPrincipal: %v", err)
 			}
 			for _, rt := range []struct{ method, path string }{
-				{http.MethodPost, "/api/v1/packs"},
-				{http.MethodDelete, "/api/v1/packs/acme/menu-board"},
-				{http.MethodPost, "/api/v1/packs/acme/menu-board/update"},
+				{http.MethodPost, "/api/v1/extensions"},
+				{http.MethodDelete, "/api/v1/extensions/acme/menu-board"},
+				{http.MethodPost, "/api/v1/extensions/acme/menu-board/update"},
 			} {
 				resp, raw := e.doAsPrincipal(t, who, rt.method, rt.path, nil)
 				if resp.StatusCode != http.StatusForbidden {
@@ -626,7 +626,7 @@ func TestPackLifecycleRefusesBelowAdminAtTheOrgNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddPrincipal(admin at org): %v", err)
 	}
-	resp, raw := e.doAsPrincipal(t, admin, http.MethodPost, "/api/v1/packs", []byte("not-a-zip"))
+	resp, raw := e.doAsPrincipal(t, admin, http.MethodPost, "/api/v1/extensions", []byte("not-a-zip"))
 	if resp.StatusCode == http.StatusForbidden {
 		t.Fatalf("an admin at the org node was refused by the lifecycle gate; body %s", raw)
 	}
@@ -672,11 +672,11 @@ func TestARosterAuthoredOnDiskRefusesTheUninstallOverHTTP(t *testing.T) {
 	e := newEnvWithOptions(t, reg.option(), api.WithRequiredPacks(roster))
 
 	ref := mustJSON(t, map[string]any{"pack_id": "acme/menu-board", "trust_channel": "community"})
-	if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", ref, jsonHeaders); resp.StatusCode != http.StatusCreated {
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", ref, jsonHeaders); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install status = %d, want 201 (%s)", resp.StatusCode, raw)
 	}
 
-	resp, raw := e.do(t, http.MethodDelete, "/api/v1/packs/acme/menu-board", nil,
+	resp, raw := e.do(t, http.MethodDelete, "/api/v1/extensions/acme/menu-board", nil,
 		map[string]string{"If-Match": `"1"`})
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("uninstall of a roster-declared pack status = %d, want 422 (%s)", resp.StatusCode, raw)
@@ -684,7 +684,7 @@ func TestARosterAuthoredOnDiskRefusesTheUninstallOverHTTP(t *testing.T) {
 	if codes := problemCodes(t, raw); len(codes) != 1 || codes[0] != "REQUIRED_PACK_FLOOR" {
 		t.Fatalf("problem codes = %v, want [REQUIRED_PACK_FLOOR]", codes)
 	}
-	if resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board", nil, nil); resp.StatusCode != http.StatusOK {
+	if resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board", nil, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("the refused uninstall removed the pack: get status = %d (%s)", resp.StatusCode, raw)
 	}
 }
@@ -703,14 +703,14 @@ func TestARosterAuthoredOnDiskRefusesABelowFloorInstallOverHTTP(t *testing.T) {
 	e := newEnvWithOptions(t, reg.option(), api.WithRequiredPacks(roster))
 
 	ref := mustJSON(t, map[string]any{"pack_id": "acme/menu-board", "trust_channel": "community"})
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", ref, jsonHeaders)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", ref, jsonHeaders)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("below-floor install status = %d, want 422 (%s)", resp.StatusCode, raw)
 	}
 	if codes := problemCodes(t, raw); len(codes) != 1 || codes[0] != "REQUIRED_PACK_FLOOR" {
 		t.Fatalf("problem codes = %v, want [REQUIRED_PACK_FLOOR]", codes)
 	}
-	if resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board", nil, nil); resp.StatusCode != http.StatusNotFound {
+	if resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board", nil, nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("the refused install landed the pack anyway: get status = %d (%s)", resp.StatusCode, raw)
 	}
 }
@@ -740,12 +740,12 @@ func TestPackUpdateAvailabilityOverHTTP(t *testing.T) {
 	e := newEnvWithOptions(t, reg.option())
 
 	ref := mustJSON(t, map[string]any{"pack_id": "acme/menu-board", "trust_channel": "community"})
-	if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", ref, jsonHeaders); resp.StatusCode != http.StatusCreated {
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", ref, jsonHeaders); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install status = %d, want 201 (%s)", resp.StatusCode, raw)
 	}
 
 	// Nothing waiting yet.
-	resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/update", nil, nil)
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board/update", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("availability status = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
@@ -770,7 +770,7 @@ func TestPackUpdateAvailabilityOverHTTP(t *testing.T) {
 	// is still "unchanged", which is what this test first asserted against.
 	reg.reindex(t)
 
-	_, raw = e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/update", nil, nil)
+	_, raw = e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board/update", nil, nil)
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("decode availability: %v (%s)", err, raw)
 	}
@@ -782,7 +782,7 @@ func TestPackUpdateAvailabilityOverHTTP(t *testing.T) {
 	}
 
 	// And the POST on the same path still acts, so the two have not been merged.
-	if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs/acme/menu-board/update", nil, nil); resp.StatusCode != http.StatusOK {
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions/acme/menu-board/update", nil, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("update status = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
 	if page := packInstallHistory(t, e, "acme/menu-board"); len(page.Items) != 2 {
@@ -803,7 +803,7 @@ func TestBrowsePackCatalogOverHTTP(t *testing.T) {
 		signPack(t, packBundle(t, packManifest()), "acme/menu-board", "1.0.0"), nil)
 	e := newEnvWithOptions(t, reg.option())
 
-	resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/catalog", nil, nil)
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions/catalog", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("catalog status = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
@@ -837,7 +837,7 @@ func TestBrowsePackCatalogOverHTTP(t *testing.T) {
 
 	// The sibling two-segment route still resolves a real pack, so `catalog`
 	// took nothing from it.
-	if resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board", nil, nil); resp.StatusCode != http.StatusNotFound {
+	if resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board", nil, nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("get of an uninstalled pack = %d, want 404 (%s)", resp.StatusCode, raw)
 	}
 }
@@ -852,41 +852,41 @@ func TestBrowsePackCatalogOverHTTP(t *testing.T) {
 // see the flag and not the route.
 func TestDisablingAPackWithdrawsItsPages(t *testing.T) {
 	e := newEnv(t)
-	if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, packManifest()), nil); resp.StatusCode != http.StatusCreated {
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", packBundle(t, packManifest()), nil); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install status = %d, want 201 (%s)", resp.StatusCode, raw)
 	}
 
 	// Enabled: the page is served.
-	resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/pages/menu-items", nil, nil)
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board/pages/menu-items", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("page status while enabled = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
 
-	if resp, raw := e.do(t, http.MethodPut, "/api/v1/packs/acme/menu-board/enabled",
+	if resp, raw := e.do(t, http.MethodPut, "/api/v1/extensions/acme/menu-board/enabled",
 		mustJSON(t, map[string]any{"enabled": false}), jsonHeaders); resp.StatusCode != http.StatusOK {
 		t.Fatalf("disable status = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
 
 	// Withdrawn: the same URL is gone.
-	if resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/pages/menu-items", nil, nil); resp.StatusCode != http.StatusNotFound {
+	if resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board/pages/menu-items", nil, nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("page status while DISABLED = %d, want 404 — a disabled pack that still serves its pages has been hidden, not withdrawn (%s)", resp.StatusCode, raw)
 	}
 
 	// Still installed, and its locale catalog still resolves — the console has
 	// to be able to NAME a pack it is offering to re-enable.
-	if resp, _ := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board", nil, nil); resp.StatusCode != http.StatusOK {
+	if resp, _ := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board", nil, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("a disabled pack reads as uninstalled: %d", resp.StatusCode)
 	}
-	if resp, _ := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/messages/en", nil, nil); resp.StatusCode != http.StatusOK {
+	if resp, _ := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board/messages/en", nil, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("a disabled pack's locale catalog was withheld: %d — it would render as its raw msg: key", resp.StatusCode)
 	}
 
 	// And enabling brings the page back.
-	if resp, raw := e.do(t, http.MethodPut, "/api/v1/packs/acme/menu-board/enabled",
+	if resp, raw := e.do(t, http.MethodPut, "/api/v1/extensions/acme/menu-board/enabled",
 		mustJSON(t, map[string]any{"enabled": true}), jsonHeaders); resp.StatusCode != http.StatusOK {
 		t.Fatalf("enable status = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
-	if resp, _ := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/pages/menu-items", nil, nil); resp.StatusCode != http.StatusOK {
+	if resp, _ := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board/pages/menu-items", nil, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("the page did not come back after enabling: %d", resp.StatusCode)
 	}
 }
@@ -896,16 +896,16 @@ func TestDisablingAPackWithdrawsItsPages(t *testing.T) {
 // malformed request.
 func TestSetPackEnabledRefusesABodyWithNoState(t *testing.T) {
 	e := newEnv(t)
-	if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, packManifest()), nil); resp.StatusCode != http.StatusCreated {
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", packBundle(t, packManifest()), nil); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install status = %d, want 201 (%s)", resp.StatusCode, raw)
 	}
 
-	resp, raw := e.do(t, http.MethodPut, "/api/v1/packs/acme/menu-board/enabled",
+	resp, raw := e.do(t, http.MethodPut, "/api/v1/extensions/acme/menu-board/enabled",
 		mustJSON(t, map[string]any{}), jsonHeaders)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 for a body with no `enabled` (%s)", resp.StatusCode, raw)
 	}
-	if resp, _ := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/pages/menu-items", nil, nil); resp.StatusCode != http.StatusOK {
+	if resp, _ := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board/pages/menu-items", nil, nil); resp.StatusCode != http.StatusOK {
 		t.Fatal("a refused request disabled the pack anyway")
 	}
 }
@@ -939,14 +939,14 @@ func TestAPacksRepresentationReportsWhetherItIsRequired(t *testing.T) {
 
 	for _, id := range []string{"acme/menu-board", "acme/other-pack"} {
 		ref := mustJSON(t, map[string]any{"pack_id": id, "trust_channel": "community"})
-		if resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", ref, jsonHeaders); resp.StatusCode != http.StatusCreated {
+		if resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", ref, jsonHeaders); resp.StatusCode != http.StatusCreated {
 			t.Fatalf("install %s = %d (%s)", id, resp.StatusCode, raw)
 		}
 	}
 
 	read := func(id string) map[string]any {
 		t.Helper()
-		resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/"+id, nil, nil)
+		resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions/"+id, nil, nil)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("get %s = %d (%s)", id, resp.StatusCode, raw)
 		}
@@ -979,7 +979,7 @@ func TestAPacksRepresentationReportsWhetherItIsRequired(t *testing.T) {
 
 	// The LIST carries it too. A console that reads the list to draw the
 	// extensions table would otherwise have to GET every pack to find out.
-	resp, raw := e.do(t, http.MethodGet, "/api/v1/packs", nil, nil)
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("list = %d (%s)", resp.StatusCode, raw)
 	}

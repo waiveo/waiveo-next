@@ -70,17 +70,17 @@ function mockFeeder(options: {
   };
   const catalog = options.catalog === undefined ? PACK_EN_CATALOG : options.catalog;
   server.use(
-    http.get("*/api/v1/packs", () => jsonBody({ items: state.packs, cursor: null })),
-    http.get("*/api/v1/packs/:publisher/:name/messages/:locale", () =>
+    http.get("*/api/v1/extensions", () => jsonBody({ items: state.packs, cursor: null })),
+    http.get("*/api/v1/extensions/:publisher/:name/messages/:locale", () =>
       catalog === null ? problem(404, "NOT_FOUND", "No such locale.") : jsonBody(catalog),
     ),
-    http.get("*/api/v1/packs/:publisher/:name/installs", () =>
+    http.get("*/api/v1/extensions/:publisher/:name/installs", () =>
       jsonBody({ items: state.records, cursor: null }),
     ),
     // The catalog (MKT-096). Its literal segment must not be read as a
     // publisher, which is the same collision the server's route ordering
     // guards against.
-    http.get("*/api/v1/packs/catalog", () =>
+    http.get("*/api/v1/extensions/catalog", () =>
       options.marketplace === null
         ? problem(503, "UNAVAILABLE", "No registry sources answered.")
         : jsonBody({ sources: options.marketplace ?? [] }),
@@ -89,7 +89,7 @@ function mockFeeder(options: {
     // path: if this were missing the console would silently render its
     // could-not-read branch for every pack, and every assertion below about
     // update state would pass against a page that had asked nothing.
-    http.get("*/api/v1/packs/:publisher/:name/update", () =>
+    http.get("*/api/v1/extensions/:publisher/:name/update", () =>
       options.availability === null
         ? problem(503, "UNAVAILABLE", "The registry source did not answer.")
         : jsonBody(
@@ -154,7 +154,7 @@ describe("Extensions console — seeing what is installed", () => {
   });
 
   it("reports the box being unreachable rather than showing an empty, healthy-looking list", async () => {
-    server.use(http.get("*/api/v1/packs", () => problem(500, "INTERNAL", "An unexpected server error occurred.")));
+    server.use(http.get("*/api/v1/extensions", () => problem(500, "INTERNAL", "An unexpected server error occurred.")));
     renderRoute();
     // Scoped to the INSTALLED region, which is what this test is about. The
     // page now has a second, independently-failing region (the catalog reads a
@@ -193,7 +193,7 @@ describe("Extensions console — installing", () => {
     let contentType: string | null = null;
     let bytes = 0;
     server.use(
-      http.post("*/api/v1/packs", async ({ request }) => {
+      http.post("*/api/v1/extensions", async ({ request }) => {
         contentType = request.headers.get("Content-Type");
         bytes = (await request.arrayBuffer()).byteLength;
         state.packs = [pack()];
@@ -247,7 +247,7 @@ describe("Extensions console — installing", () => {
     const state = mockFeeder({ packs: [] });
     let body: Record<string, unknown> | null = null;
     server.use(
-      http.post("*/api/v1/packs", async ({ request }) => {
+      http.post("*/api/v1/extensions", async ({ request }) => {
         body = (await request.json()) as Record<string, unknown>;
         state.packs = [pack()];
         return HttpResponse.json(
@@ -273,7 +273,7 @@ describe("Extensions console — installing", () => {
   it("renders a refused install in full — its sentence, EVERY field violation, its codes and the trace", async () => {
     mockFeeder({ packs: [] });
     server.use(
-      http.post("*/api/v1/packs", () =>
+      http.post("*/api/v1/extensions", () =>
         problem(422, "VALIDATION_FAILED", "The pack manifest failed validation.", {
           errors: [
             { field: "capabilities[0]", code: "UNKNOWN_CAPABILITY", message: "capability \"net.raw\" is not a manifest/1 capability" },
@@ -306,7 +306,7 @@ describe("Extensions console — updating", () => {
   it("checks the pinned channel and reports that nothing changed, without claiming an update", async () => {
     mockFeeder({ packs: [pack()] });
     server.use(
-      http.post("*/api/v1/packs/:publisher/:name/update", () =>
+      http.post("*/api/v1/extensions/:publisher/:name/update", () =>
         jsonBody({ action: "unchanged", id: PACK_ID, from_version: "1.0.0", to_version: "1.0.0" }),
       ),
     );
@@ -319,7 +319,7 @@ describe("Extensions console — updating", () => {
   it("applies an update and re-reads, so the version on screen is the one installed", async () => {
     const state = mockFeeder({ packs: [pack()] });
     server.use(
-      http.post("*/api/v1/packs/:publisher/:name/update", () => {
+      http.post("*/api/v1/extensions/:publisher/:name/update", () => {
         state.packs = [pack({ version: "1.1.0", revision: 2 })];
         return jsonBody({ action: "updated", id: PACK_ID, from_version: "1.0.0", to_version: "1.1.0", pages: ["menu-items"] });
       }),
@@ -335,7 +335,7 @@ describe("Extensions console — updating", () => {
   it("explains a REVERT as a publisher withdrawal, not as a failed update", async () => {
     const state = mockFeeder({ packs: [pack({ version: "1.2.0" })] });
     server.use(
-      http.post("*/api/v1/packs/:publisher/:name/update", () => {
+      http.post("*/api/v1/extensions/:publisher/:name/update", () => {
         state.packs = [pack({ version: "1.1.0", revision: 3 })];
         return jsonBody({ action: "reverted", id: PACK_ID, from_version: "1.2.0", to_version: "1.1.0" });
       }),
@@ -361,7 +361,7 @@ describe("Extensions console — updating", () => {
   it("surfaces a refused update check verbatim instead of a generic failure", async () => {
     mockFeeder({ packs: [pack()] });
     server.use(
-      http.post("*/api/v1/packs/:publisher/:name/update", () =>
+      http.post("*/api/v1/extensions/:publisher/:name/update", () =>
         problem(422, "VALIDATION_FAILED", "the channel pointer named a lower version than this box has already resolved", {
           errors: [{ field: "artifact", code: "POINTER_ROLLBACK_REJECTED", message: "1.0.0 < 1.1.0" }],
         }),
@@ -385,10 +385,10 @@ describe("Extensions console — removing", () => {
     const state = mockFeeder({ packs: [pack({ revision: 7 })] });
     let ifMatch: string | null = null;
     server.use(
-      http.get("*/api/v1/packs/:publisher/:name", () =>
+      http.get("*/api/v1/extensions/:publisher/:name", () =>
         HttpResponse.json(pack({ revision: 9 }), { headers: { "Trace-Id": TRACE_ID, ETag: '"9"' } }),
       ),
-      http.delete("*/api/v1/packs/:publisher/:name", ({ request }) => {
+      http.delete("*/api/v1/extensions/:publisher/:name", ({ request }) => {
         ifMatch = request.headers.get("If-Match");
         state.packs = [];
         return new HttpResponse(null, { status: 204, headers: { "Trace-Id": TRACE_ID } });
@@ -416,10 +416,10 @@ describe("Extensions console — removing", () => {
     mockFeeder({ packs: [pack()] });
     let deletes = 0;
     server.use(
-      http.get("*/api/v1/packs/:publisher/:name", () =>
+      http.get("*/api/v1/extensions/:publisher/:name", () =>
         HttpResponse.json(pack(), { headers: { "Trace-Id": TRACE_ID, ETag: '"1"' } }),
       ),
-      http.delete("*/api/v1/packs/:publisher/:name", () => {
+      http.delete("*/api/v1/extensions/:publisher/:name", () => {
         deletes += 1;
         return new HttpResponse(null, { status: 204, headers: { "Trace-Id": TRACE_ID } });
       }),
@@ -442,10 +442,10 @@ describe("Extensions console — removing", () => {
     // seen from the other side.
     mockFeeder({ packs: [pack()] });
     server.use(
-      http.get("*/api/v1/packs/:publisher/:name", () =>
+      http.get("*/api/v1/extensions/:publisher/:name", () =>
         HttpResponse.json(pack(), { headers: { "Trace-Id": TRACE_ID, ETag: '"1"' } }),
       ),
-      http.delete("*/api/v1/packs/:publisher/:name", () =>
+      http.delete("*/api/v1/extensions/:publisher/:name", () =>
         problem(
           422,
           "VALIDATION_FAILED",
@@ -515,10 +515,10 @@ describe("Extensions console — removing", () => {
   it("does not read an absent member as 'not required'", async () => {
     mockFeeder({ packs: [pack()] });
     server.use(
-      http.get("*/api/v1/packs/:publisher/:name", () =>
+      http.get("*/api/v1/extensions/:publisher/:name", () =>
         HttpResponse.json(pack(), { headers: { "Trace-Id": TRACE_ID, ETag: '"1"' } }),
       ),
-      http.delete("*/api/v1/packs/:publisher/:name", () =>
+      http.delete("*/api/v1/extensions/:publisher/:name", () =>
         problem(422, "VALIDATION_FAILED", "acme/menu-board is a required pack on this deployment.", {
           errors: [{ field: "pack", code: "REQUIRED_PACK_FLOOR", message: "floor 1.0.0" }],
         }),
@@ -541,10 +541,10 @@ describe("Extensions console — removing", () => {
     mockFeeder({ packs: [pack({ revision: 2 })] });
     let deletes = 0;
     server.use(
-      http.get("*/api/v1/packs/:publisher/:name", () =>
+      http.get("*/api/v1/extensions/:publisher/:name", () =>
         HttpResponse.json(pack({ revision: 2 }), { headers: { "Trace-Id": TRACE_ID, ETag: '"2"' } }),
       ),
-      http.delete("*/api/v1/packs/:publisher/:name", () => {
+      http.delete("*/api/v1/extensions/:publisher/:name", () => {
         deletes += 1;
         return problem(412, "REVISION_CONFLICT", "The pack was modified concurrently.", {
           current_revision: 3,
@@ -601,9 +601,9 @@ describe("Extensions console — honest health", () => {
 
   it("says when the install history could not be read, instead of implying a direct install", async () => {
     server.use(
-      http.get("*/api/v1/packs", () => jsonBody({ items: [pack()], cursor: null })),
-      http.get("*/api/v1/packs/:publisher/:name/messages/:locale", () => jsonBody(PACK_EN_CATALOG)),
-      http.get("*/api/v1/packs/:publisher/:name/installs", () =>
+      http.get("*/api/v1/extensions", () => jsonBody({ items: [pack()], cursor: null })),
+      http.get("*/api/v1/extensions/:publisher/:name/messages/:locale", () => jsonBody(PACK_EN_CATALOG)),
+      http.get("*/api/v1/extensions/:publisher/:name/installs", () =>
         problem(500, "INTERNAL", "An unexpected server error occurred."),
       ),
     );
@@ -622,7 +622,7 @@ describe("Extensions console — live, in this console", () => {
     // the operator sits.
     const state = mockFeeder({ packs: [] });
     server.use(
-      http.post("*/api/v1/packs", () => {
+      http.post("*/api/v1/extensions", () => {
         state.packs = [pack()];
         return HttpResponse.json(
           { id: PACK_ID, version: "1.0.0", pages: ["menu-items", "settings"], collections: ["menu_items"], locales: ["en"] },
@@ -661,10 +661,10 @@ describe("Extensions console — live, in this console", () => {
   it("an uninstalled pack's pages LEAVE the shell nav with no reload either", async () => {
     const state = mockFeeder({ packs: [pack()] });
     server.use(
-      http.get("*/api/v1/packs/:publisher/:name", () =>
+      http.get("*/api/v1/extensions/:publisher/:name", () =>
         HttpResponse.json(pack(), { headers: { "Trace-Id": TRACE_ID, ETag: '"1"' } }),
       ),
-      http.delete("*/api/v1/packs/:publisher/:name", () => {
+      http.delete("*/api/v1/extensions/:publisher/:name", () => {
         state.packs = [];
         return new HttpResponse(null, { status: 204, headers: { "Trace-Id": TRACE_ID } });
       }),
@@ -719,15 +719,15 @@ describe("Extensions console — the real example pack, installed end to end", (
     const REAL_ID = realManifest.id as string;
     const state: { packs: Record<string, unknown>[] } = { packs: [] };
     server.use(
-      http.get("*/api/v1/packs", () => jsonBody({ items: state.packs, cursor: null })),
-      http.get("*/api/v1/packs/waiveo/menu-board/messages/:locale", () => jsonBody(realEnCatalog)),
-      http.get("*/api/v1/packs/waiveo/menu-board/installs", () =>
+      http.get("*/api/v1/extensions", () => jsonBody({ items: state.packs, cursor: null })),
+      http.get("*/api/v1/extensions/waiveo/menu-board/messages/:locale", () => jsonBody(realEnCatalog)),
+      http.get("*/api/v1/extensions/waiveo/menu-board/installs", () =>
         jsonBody({
           items: [installRecord({ pack_id: REAL_ID, trust_channel: "first-party", source: "official" })],
           cursor: null,
         }),
       ),
-      http.post("*/api/v1/packs", () => {
+      http.post("*/api/v1/extensions", () => {
         state.packs = [
           {
             id: REAL_ID,
@@ -945,7 +945,7 @@ it("installs the exact reference a catalog row names", async () => {
     marketplace: [{ source: "example-registry", trust_channel: "community", entries: [CATALOG_ENTRY] }],
   });
   server.use(
-    http.post("*/api/v1/packs", async ({ request }) => {
+    http.post("*/api/v1/extensions", async ({ request }) => {
       installed = (await request.json()) as Record<string, unknown>;
       return jsonBody({ id: "acme/menu-board", version: "2.0.0", pages: [], collections: [], locales: [] });
     }),
@@ -974,7 +974,7 @@ it("turns a pack off through the real control, and says the data survived", asyn
   let sent: Record<string, unknown> | null = null;
   mockFeeder({ packs: [pack()] });
   server.use(
-    http.put("*/api/v1/packs/acme/menu-board/enabled", async ({ request }) => {
+    http.put("*/api/v1/extensions/acme/menu-board/enabled", async ({ request }) => {
       sent = (await request.json()) as Record<string, unknown>;
       return jsonBody({ id: "acme/menu-board", enabled: false });
     }),
@@ -1009,7 +1009,7 @@ it("shows a disabled pack as off, and offers to enable it", async () => {
 it("reports the refusal when a required pack cannot be disabled", async () => {
   mockFeeder({ packs: [pack()] });
   server.use(
-    http.put("*/api/v1/packs/acme/menu-board/enabled", () =>
+    http.put("*/api/v1/extensions/acme/menu-board/enabled", () =>
       problem(422, "REQUIRED_PACK_FLOOR", "acme/menu-board is a required pack on this deployment (floor 1.0.0)."),
     ),
   );
@@ -1037,7 +1037,7 @@ it("offers a way back to an earlier version, using that install's own channel an
     ],
   });
   server.use(
-    http.post("*/api/v1/packs", async ({ request }) => {
+    http.post("*/api/v1/extensions", async ({ request }) => {
       sent = (await request.json()) as Record<string, unknown>;
       return jsonBody({ id: PACK_ID, version: "1.0.0", pages: [], collections: [], locales: [] });
     }),

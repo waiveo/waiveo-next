@@ -132,7 +132,7 @@ func packBundle(t *testing.T, m map[string]any) []byte {
 // install response.
 func (e *testEnv) installBase(t *testing.T) map[string]any {
 	t.Helper()
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, packManifest()), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", packBundle(t, packManifest()), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install status = %d, want 201 (body %s)", resp.StatusCode, raw)
 	}
@@ -189,7 +189,7 @@ func TestPackReinstall200(t *testing.T) {
 	e.installBase(t)
 	m := packManifest()
 	m["version"] = "1.1.0"
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, m), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", packBundle(t, m), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("reinstall status = %d, want 200 (body %s)", resp.StatusCode, raw)
 	}
@@ -204,7 +204,7 @@ func TestPackInstallManifestRefused422(t *testing.T) {
 	e := newEnv(t)
 	m := packManifest()
 	m["capabilities"] = []any{map[string]any{"capability": "world.domination", "scope": "*", "reason": "msg:x"}}
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, m), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", packBundle(t, m), nil)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422 (body %s)", resp.StatusCode, raw)
 	}
@@ -226,12 +226,12 @@ func TestPackReinstallVersionRegression422(t *testing.T) {
 			map[string]any{"name": "board_name", "type": "string"},
 		}},
 	}}
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, m), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", packBundle(t, m), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install v5 status = %d, want 201 (%s)", resp.StatusCode, raw)
 	}
 	// Now reinstall at the lower base dataModel.version 1.
-	resp, raw = e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, packManifest()), nil)
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/extensions", packBundle(t, packManifest()), nil)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("regression status = %d, want 422 (%s)", resp.StatusCode, raw)
 	}
@@ -246,7 +246,7 @@ func TestPackReinstallVersionRegression422(t *testing.T) {
 // fall outside api/1's closed error-code registry.
 func TestPackInstallMalformedArtifact422(t *testing.T) {
 	e := newEnv(t)
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", []byte("not a zip at all"), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", []byte("not a zip at all"), nil)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422 (%s)", resp.StatusCode, raw)
 	}
@@ -263,7 +263,7 @@ func TestPackInstallZipSlip422(t *testing.T) {
 		"../escape.json":   "x",
 		"messages/en.json": apiEnCatalog,
 	})
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", z, nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", z, nil)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422 (%s)", resp.StatusCode, raw)
 	}
@@ -282,14 +282,14 @@ func TestPackInstallUnsigned422(t *testing.T) {
 		"ui/settings.json":   apiSettingsDoc,
 		"messages/en.json":   apiEnCatalog,
 	})
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", unsigned, nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", unsigned, nil)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422 (%s)", resp.StatusCode, raw)
 	}
 	p := assertProblem(t, resp, raw, "VALIDATION_FAILED")
 	errorsHasFieldCode(t, p, "artifact", "PACK_UNSIGNED")
 
-	resp, _ = e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board", nil, nil)
+	resp, _ = e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board", nil, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("get after unsigned install = %d, want 404 (nothing installed)", resp.StatusCode)
 	}
@@ -302,7 +302,7 @@ func TestPackInstallTampered422(t *testing.T) {
 	e := newEnv(t)
 	signed := packBundle(t, packManifest())
 	tampered := rewriteZipEntry(t, signed, "ui/menu-items.json", apiMenuDoc+" ")
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", tampered, nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", tampered, nil)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422 (%s)", resp.StatusCode, raw)
 	}
@@ -343,7 +343,7 @@ func rewriteZipEntry(t *testing.T, artifact []byte, name, body string) []byte {
 func TestPackGet(t *testing.T) {
 	e := newEnv(t)
 	e.installBase(t)
-	resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board", nil, nil)
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("get status = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
@@ -366,7 +366,7 @@ func TestPackGet(t *testing.T) {
 // TestPackGetNotFound: an unknown pack is 404.
 func TestPackGetNotFound(t *testing.T) {
 	e := newEnv(t)
-	resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/nobody/here", nil, nil)
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions/nobody/here", nil, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 (%s)", resp.StatusCode, raw)
 	}
@@ -378,7 +378,7 @@ func TestPackGetNotFound(t *testing.T) {
 func TestPackList(t *testing.T) {
 	e := newEnv(t)
 	e.installBase(t)
-	resp, raw := e.do(t, http.MethodGet, "/api/v1/packs", nil, nil)
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("list status = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
@@ -407,13 +407,13 @@ func TestPackListPaginatesPastFirstPage(t *testing.T) {
 	e.installBase(t) // acme/menu-board
 	m2 := packManifest()
 	m2["id"] = "acme/second-board"
-	resp, raw := e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, m2), nil)
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/extensions", packBundle(t, m2), nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install second pack status = %d, want 201 (%s)", resp.StatusCode, raw)
 	}
 
 	// Page 1 (limit 1): the id-ascending list yields acme/menu-board + a cursor.
-	resp, raw = e.do(t, http.MethodGet, "/api/v1/packs?limit=1", nil, nil)
+	resp, raw = e.do(t, http.MethodGet, "/api/v1/extensions?limit=1", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("page 1 status = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
@@ -427,7 +427,7 @@ func TestPackListPaginatesPastFirstPage(t *testing.T) {
 
 	// Page 2: replaying the server's OWN cursor must decode (not 400), yielding the
 	// next pack and a null cursor (last page).
-	resp, raw = e.do(t, http.MethodGet, "/api/v1/packs?limit=1&cursor="+url.QueryEscape(*p1.Cursor), nil, nil)
+	resp, raw = e.do(t, http.MethodGet, "/api/v1/extensions?limit=1&cursor="+url.QueryEscape(*p1.Cursor), nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("page 2 status = %d, want 200 — the cursor the server minted was rejected (%s)", resp.StatusCode, raw)
 	}
@@ -457,7 +457,7 @@ func TestPackListRejectsForeignCursor(t *testing.T) {
 		"device_01ARZ3NDEKTSV4RRFFQ69G5FAV", // another resource's scoped cursor
 		"acme/menu-board",                   // a raw, un-encoded pack id
 	} {
-		resp, raw := e.do(t, http.MethodGet, "/api/v1/packs?limit=1&cursor="+url.QueryEscape(c), nil, nil)
+		resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions?limit=1&cursor="+url.QueryEscape(c), nil, nil)
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("cursor %q status = %d, want 400 (%s)", c, resp.StatusCode, raw)
 		}
@@ -475,13 +475,13 @@ func TestPackInstallIdempotency(t *testing.T) {
 	art := packBundle(t, packManifest())
 	keyed := map[string]string{"Idempotency-Key": "pack-install-key-1"}
 
-	resp, raw1 := e.do(t, http.MethodPost, "/api/v1/packs", art, keyed)
+	resp, raw1 := e.do(t, http.MethodPost, "/api/v1/extensions", art, keyed)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("first install status = %d, want 201 (%s)", resp.StatusCode, raw1)
 	}
 
 	// Same key + same artifact: replay the retained 201 verbatim, not a reinstall.
-	resp, raw2 := e.do(t, http.MethodPost, "/api/v1/packs", art, keyed)
+	resp, raw2 := e.do(t, http.MethodPost, "/api/v1/extensions", art, keyed)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("idempotent replay status = %d, want 201 — the install re-ran (%s)", resp.StatusCode, raw2)
 	}
@@ -491,7 +491,7 @@ func TestPackInstallIdempotency(t *testing.T) {
 
 	// The pack was installed exactly once — still revision 1 (ETag "1"): the keyed
 	// retry did NOT reinstall it in place.
-	resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board", nil, nil)
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("get status = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
@@ -502,7 +502,7 @@ func TestPackInstallIdempotency(t *testing.T) {
 	// Same key, DIFFERENT artifact → reuse conflict (409), no execution.
 	m2 := packManifest()
 	m2["version"] = "1.1.0"
-	resp, raw = e.do(t, http.MethodPost, "/api/v1/packs", packBundle(t, m2), keyed)
+	resp, raw = e.do(t, http.MethodPost, "/api/v1/extensions", packBundle(t, m2), keyed)
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("same-key different-artifact status = %d, want 409 (%s)", resp.StatusCode, raw)
 	}
@@ -524,7 +524,7 @@ func decodePage(t *testing.T, raw []byte) pageEnvelope {
 func TestPackGetPageDoc(t *testing.T) {
 	e := newEnv(t)
 	e.installBase(t)
-	resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/pages/menu-items", nil, nil)
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board/pages/menu-items", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("page status = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
@@ -537,7 +537,7 @@ func TestPackGetPageDoc(t *testing.T) {
 func TestPackGetPageDocNotFound(t *testing.T) {
 	e := newEnv(t)
 	e.installBase(t)
-	resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/pages/nope", nil, nil)
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board/pages/nope", nil, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 (%s)", resp.StatusCode, raw)
 	}
@@ -547,7 +547,7 @@ func TestPackGetPageDocNotFound(t *testing.T) {
 func TestPackGetMessages(t *testing.T) {
 	e := newEnv(t)
 	e.installBase(t)
-	resp, raw := e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/messages/en", nil, nil)
+	resp, raw := e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board/messages/en", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("messages status = %d, want 200 (%s)", resp.StatusCode, raw)
 	}
@@ -561,7 +561,7 @@ func TestPackGetMessages(t *testing.T) {
 func TestPackDeleteRequiresIfMatch(t *testing.T) {
 	e := newEnv(t)
 	e.installBase(t)
-	resp, raw := e.do(t, http.MethodDelete, "/api/v1/packs/acme/menu-board", nil, nil)
+	resp, raw := e.do(t, http.MethodDelete, "/api/v1/extensions/acme/menu-board", nil, nil)
 	if resp.StatusCode != http.StatusPreconditionRequired {
 		t.Fatalf("status = %d, want 428 (%s)", resp.StatusCode, raw)
 	}
@@ -572,7 +572,7 @@ func TestPackDeleteRequiresIfMatch(t *testing.T) {
 func TestPackDeleteStaleIfMatch(t *testing.T) {
 	e := newEnv(t)
 	e.installBase(t)
-	resp, raw := e.do(t, http.MethodDelete, "/api/v1/packs/acme/menu-board", nil, map[string]string{"If-Match": `"99"`})
+	resp, raw := e.do(t, http.MethodDelete, "/api/v1/extensions/acme/menu-board", nil, map[string]string{"If-Match": `"99"`})
 	if resp.StatusCode != http.StatusPreconditionFailed {
 		t.Fatalf("status = %d, want 412 (%s)", resp.StatusCode, raw)
 	}
@@ -584,15 +584,15 @@ func TestPackDeleteStaleIfMatch(t *testing.T) {
 func TestPackDeleteUninstalls(t *testing.T) {
 	e := newEnv(t)
 	e.installBase(t)
-	resp, raw := e.do(t, http.MethodDelete, "/api/v1/packs/acme/menu-board", nil, map[string]string{"If-Match": `"1"`})
+	resp, raw := e.do(t, http.MethodDelete, "/api/v1/extensions/acme/menu-board", nil, map[string]string{"If-Match": `"1"`})
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete status = %d, want 204 (%s)", resp.StatusCode, raw)
 	}
-	resp, _ = e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board", nil, nil)
+	resp, _ = e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board", nil, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("get after delete = %d, want 404", resp.StatusCode)
 	}
-	resp, _ = e.do(t, http.MethodGet, "/api/v1/packs/acme/menu-board/pages/menu-items", nil, nil)
+	resp, _ = e.do(t, http.MethodGet, "/api/v1/extensions/acme/menu-board/pages/menu-items", nil, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("page after delete = %d, want 404 (files must be gone)", resp.StatusCode)
 	}
