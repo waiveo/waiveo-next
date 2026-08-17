@@ -445,6 +445,76 @@ func TestRunIsPassiveAndNeverSearches(t *testing.T) {
 	}
 }
 
+// TestPassiveSightingNeverProbesTheDevice is the second half of the owner's rule
+// (2026-08-17), and the half that is invisible without a test: a NOTIFY arriving
+// on its own must not draw an outbound identity probe at the device. The
+// M-SEARCH was the loud violation; this is the quiet one — every announcing
+// device on the LAN drew an HTTP GET from the relay, at rest, with no scan.
+//
+// A passive sighting may still REPORT what a previous scan learned (that is
+// memory, not traffic), which the second half of this case pins.
+func TestPassiveSightingNeverProbesTheDevice(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	now := func() int64 { return 1000 }
+	pattern := mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`)
+
+	var probes atomic.Int64
+	d, err := New(Config{
+		Watches:   []Watch{watchFor(pattern)},
+		Store:     store,
+		NowMillis: now,
+		Identify: func(ctx context.Context, address string) (Identity, bool) {
+			probes.Add(1)
+			return Identity{Name: "Lobby TV", Model: "Roku Ultra", Serial: "X1"}, true
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	d.search = func(st string, wait int) ([]foundService, error) {
+		return []foundService{{ST: st, USN: "uuid:device:1", Location: "http://192.168.50.31:8060/"}}, nil
+	}
+
+	// A passive NOTIFY for a device nothing has scanned: observed, but NOT probed.
+	d.observeAlive(context.Background(), aliveNotice{
+		NT: "urn:roku-com:device:player:1", USN: "uuid:device:1",
+		Location: "http://192.168.50.31:8060/",
+	})
+	if n := probes.Load(); n != 0 {
+		t.Fatalf("a passive NOTIFY drew %d identity probe(s), want 0 — probing waits for a scan", n)
+	}
+	cands := store.Report().Body.Candidates
+	if len(cands) != 1 {
+		t.Fatalf("passive sighting produced %d candidate(s), want 1 — it must still be SEEN, just not probed", len(cands))
+	}
+	if cands[0].Model != "" {
+		t.Errorf("un-scanned passive candidate carries model %q, want empty until a scan enriches it", cands[0].Model)
+	}
+
+	// A scan DOES probe, and fills the identity in.
+	d.Scan(context.Background())
+	if n := probes.Load(); n == 0 {
+		t.Fatal("a scan drew no identity probe — the active half must still enrich")
+	}
+	if got := store.Report().Body.Candidates[0].Model; got != "Roku Ultra" {
+		t.Errorf("after a scan model = %q, want the probed value", got)
+	}
+
+	// And a LATER passive sighting reports what the scan learned, without
+	// probing again — memory, not traffic.
+	before := probes.Load()
+	d.observeAlive(context.Background(), aliveNotice{
+		NT: "urn:roku-com:device:player:1", USN: "uuid:device:1",
+		Location: "http://192.168.50.31:8060/",
+	})
+	if probes.Load() != before {
+		t.Errorf("a passive sighting re-probed after a scan had already identified the device")
+	}
+	if got := store.Report().Body.Candidates[0].Model; got != "Roku Ultra" {
+		t.Errorf("passive sighting after a scan lost the known model (%q) — cached identity must still be reported", got)
+	}
+}
+
 // TestScanStopsPromptlyDuringSlowSearch is C1's regression test, now aimed at
 // Scan (the active half that actually searches): it proves a caller is released
 // promptly on ctx cancellation even while a real, blocking search is still in

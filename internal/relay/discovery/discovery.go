@@ -523,7 +523,7 @@ func (d *Discoverer) searchPattern(ctx context.Context, st string, w Watch) {
 			// A search response has no observed sender go-ssdp exposes, so
 			// LOCATION is the only address available on this lane.
 			addr, _ := addressFromLocation(f.Location)
-			d.store.Observe(d.canonicalize(w.observation(f.USN, addr, d.identityOf(ctx, f.USN, addr))), d.nowMillis())
+			d.store.Observe(d.canonicalize(w.observation(f.USN, addr, d.identityOf(ctx, f.USN, addr, true))), d.nowMillis())
 		}
 	}()
 	select {
@@ -550,7 +550,7 @@ func (d *Discoverer) observeAlive(ctx context.Context, n aliveNotice) {
 	if !ok {
 		addr, _ = addressFromSource(n.From, w.DefaultPort)
 	}
-	d.store.Observe(d.canonicalize(w.observation(n.USN, addr, d.identityOf(ctx, n.USN, addr))), d.nowMillis())
+	d.store.Observe(d.canonicalize(w.observation(n.USN, addr, d.identityOf(ctx, n.USN, addr, false))), d.nowMillis())
 }
 
 // canonicalize re-keys a sighting under the canonical MAC identity when the
@@ -596,7 +596,7 @@ func (d *Discoverer) canonicalize(o deviceplane.Observation) deviceplane.Observa
 // (deviceplane.Store.Observe), so a transient failure costs nothing already
 // known. With no Identify wired at all this is a pure zero-value return and no
 // cache entry is written — there is no outcome to remember.
-func (d *Discoverer) identityOf(ctx context.Context, usn, address string) Identity {
+func (d *Discoverer) identityOf(ctx context.Context, usn, address string, allowProbe bool) Identity {
 	if d.identify == nil || address == "" {
 		return Identity{}
 	}
@@ -613,6 +613,21 @@ func (d *Discoverer) identityOf(ctx context.Context, usn, address string) Identi
 		if now-cached.atMs < ttl.Milliseconds() {
 			return cached.id
 		}
+	}
+
+	// A PASSIVE sighting NEVER probes (owner, 2026-08-17). The identity probe is
+	// an outbound HTTP request to the device — the "advanced networking" that
+	// waits for a scan — so a NOTIFY announcement arriving on its own may only
+	// READ what a previous scan already learned. That read is memory, not
+	// traffic, and it is served even once the TTL has lapsed: a slightly stale
+	// name beats blanking a device the operator has already seen named. A device
+	// nothing has scanned yet reports its address and class with no model or
+	// serial until a scan fills them in, which is the intended trade.
+	if !allowProbe {
+		if hit && cached.address == address {
+			return cached.id
+		}
+		return Identity{}
 	}
 
 	// Nothing usable is cached, so this USN is about to cost an outbound HTTP

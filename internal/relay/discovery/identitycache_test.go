@@ -61,7 +61,7 @@ func TestIdentityCacheIsBoundedAgainstAUSNFlood(t *testing.T) {
 
 	const flood = maxCachedIdentities * 3
 	for i := 0; i < flood; i++ {
-		d.identityOf(context.Background(), fmt.Sprintf("uuid:spoof:%d", i), "192.168.50.31:8060")
+		d.identityOf(context.Background(), fmt.Sprintf("uuid:spoof:%d", i), "192.168.50.31:8060", true)
 	}
 
 	d.idMu.Lock()
@@ -87,9 +87,9 @@ func TestAFloodDoesNotEvictTheRealDevicesAlreadyFound(t *testing.T) {
 	d := newFloodDiscoverer(t, ids, &nowMs)
 
 	const realUSN = "uuid:roku:ecp:X0051LOBBY1"
-	d.identityOf(context.Background(), realUSN, "192.168.50.31:8060")
+	d.identityOf(context.Background(), realUSN, "192.168.50.31:8060", true)
 	for i := 0; i < maxCachedIdentities*2; i++ {
-		d.identityOf(context.Background(), fmt.Sprintf("uuid:spoof:%d", i), "192.168.50.31:8060")
+		d.identityOf(context.Background(), fmt.Sprintf("uuid:spoof:%d", i), "192.168.50.31:8060", true)
 	}
 
 	d.idMu.Lock()
@@ -101,7 +101,7 @@ func TestAFloodDoesNotEvictTheRealDevicesAlreadyFound(t *testing.T) {
 
 	// And it is still served from cache rather than re-probed.
 	before := ids.count()
-	d.identityOf(context.Background(), realUSN, "192.168.50.31:8060")
+	d.identityOf(context.Background(), realUSN, "192.168.50.31:8060", true)
 	if after := ids.count(); after != before {
 		t.Errorf("probes went %d -> %d for a device that is still cached", before, after)
 	}
@@ -117,11 +117,11 @@ func TestAFullCacheRecoversAsEntriesAgeOut(t *testing.T) {
 	d := newFloodDiscoverer(t, ids, &nowMs)
 
 	for i := 0; i < maxCachedIdentities; i++ {
-		d.identityOf(context.Background(), fmt.Sprintf("uuid:spoof:%d", i), "192.168.50.31:8060")
+		d.identityOf(context.Background(), fmt.Sprintf("uuid:spoof:%d", i), "192.168.50.31:8060", true)
 	}
 	// A new device arriving while the cache is full is refused, not probed.
 	before := ids.count()
-	if id := d.identityOf(context.Background(), "uuid:roku:ecp:NEWTV", "192.168.50.77:8060"); id.Name != "" {
+	if id := d.identityOf(context.Background(), "uuid:roku:ecp:NEWTV", "192.168.50.77:8060", true); id.Name != "" {
 		t.Fatalf("a new USN was identified with the cache full: %+v", id)
 	}
 	if after := ids.count(); after != before {
@@ -130,7 +130,7 @@ func TestAFullCacheRecoversAsEntriesAgeOut(t *testing.T) {
 
 	// The flood ages out; the same device is now admitted.
 	nowMs += identifyTTL.Milliseconds() + 1
-	if id := d.identityOf(context.Background(), "uuid:roku:ecp:NEWTV", "192.168.50.77:8060"); id.Name != "Lobby TV" {
+	if id := d.identityOf(context.Background(), "uuid:roku:ecp:NEWTV", "192.168.50.77:8060", true); id.Name != "Lobby TV" {
 		t.Fatalf("identity after the flood aged out = %+v, want the probed name", id)
 	}
 }
