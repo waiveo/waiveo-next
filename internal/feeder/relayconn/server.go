@@ -226,6 +226,29 @@ func WithScreenStatusSink(sink ScreenStatusSink, nowMs func() int64) Option {
 	}
 }
 
+// DiscoveryScanStatusSink receives one relay's `discovery.scan_status` report —
+// what its scan engine is doing right now (wire.DiscoveryScanStatusBody).
+//
+// It is a plain latest-wins set rather than a merge: the report IS the relay's
+// whole scan state, so a later one replaces an earlier one outright. There is
+// deliberately no Forget counterpart the way ScreenStatusSink has one — scan
+// state is not a claim about the SITE (a screen a revoked relay reported would
+// still be speaking for the site), it is a fact about the relay's own engine,
+// and it becomes irrelevant on its own the moment that relay stops appearing in
+// the connected set the console reads beside it.
+type DiscoveryScanStatusSink interface {
+	ApplyDiscoveryScanStatus(relayID string, status wire.DiscoveryScanStatusBody)
+}
+
+// WithDiscoveryScanStatusSink wires the intake for those reports. Optional, with
+// the same accepted-and-dropped degrade the other sinks document: a deployment
+// that wires none is conformant and simply shows no scan state.
+func WithDiscoveryScanStatusSink(sink DiscoveryScanStatusSink) Option {
+	return func(s *Server) {
+		s.scanStatus = sink
+	}
+}
+
 // RevocationCheck reports whether the certificate with this serial, issued
 // to relayID, has been revoked — enroll.Server.IsRevoked. REL-016: the
 // check runs at EVERY connection attempt, not only at issuance time; again
@@ -248,6 +271,7 @@ type Server struct {
 	candidates         CandidateSink
 	redemptions        RedemptionSink
 	screenStatus       ScreenStatusSink
+	scanStatus         DiscoveryScanStatusSink
 	screenStatusNow    func() int64
 	site               hello.SiteBinding
 	implementedMinors  []string
@@ -946,6 +970,10 @@ func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
 			if err := s.handleScreenStatus(conn, f, relayID); err != nil {
 				return
 			}
+		case wire.FrameTypeDiscoveryScanStatus:
+			if err := s.handleDiscoveryScanStatus(conn, f, relayID); err != nil {
+				return
+			}
 		case wire.FrameTypePairingRedeemed:
 			if err := s.handlePairingRedeemed(conn, f, relayID); err != nil {
 				return
@@ -1019,6 +1047,24 @@ func (s *Server) forgetCandidates(relayID string) {
 //
 // relayID is the connection's AUTHENTICATED identity, never f.RelayID. See
 // ScreenStatusSink's own doc for why that is load-bearing here specifically.
+// handleDiscoveryScanStatus records one relay's scan-engine state. Unlike the
+// screen report there is nothing to validate beyond decoding: every member is
+// descriptive, none of it authorizes anything or names another relay's
+// resources, and the relayID it is filed under is the AUTHENTICATED connection's
+// identity rather than anything the frame asserts.
+func (s *Server) handleDiscoveryScanStatus(conn *serverConn, f wire.Frame, relayID string) error {
+	var body wire.DiscoveryScanStatusBody
+	if err := f.DecodeBody(&body); err != nil {
+		return conn.send(wire.NewErrorFrame(f.ID, f.TraceID, relayID,
+			"MALFORMED_MESSAGE", "discovery.scan_status body did not decode"))
+	}
+	if s.scanStatus == nil {
+		return nil // no read model wired: accepted and dropped (REL-004)
+	}
+	s.scanStatus.ApplyDiscoveryScanStatus(relayID, body)
+	return nil
+}
+
 func (s *Server) handleScreenStatus(conn *serverConn, f wire.Frame, relayID string) error {
 	var body wire.ScreenStatusBody
 	if err := f.DecodeBody(&body); err != nil {

@@ -44,6 +44,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/packrun"
 	"github.com/maaxton/waiveo-next/internal/app/packs"
 	"github.com/maaxton/waiveo-next/internal/app/platformlog"
+	"github.com/maaxton/waiveo-next/internal/app/scanstatus"
 	"github.com/maaxton/waiveo-next/internal/app/screens"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/app/webhookdeliver"
@@ -960,6 +961,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("waiveo-feeder: build the screen-status read model: %v", err)
 	}
+	// The relays' scan-engine state (discovery.scan_status), so the console can
+	// tell "still sweeping" from "finished" from "never scanned".
+	scanStatusRegistry := scanstatus.New()
 
 	relayConnSrv := relayconn.New(
 		src.current,
@@ -983,6 +987,7 @@ func main() {
 		// growing while a relay is disconnected instead of freezing at whatever
 		// the last report said.
 		relayconn.WithScreenStatusSink(screenRegistry, nowMs),
+		relayconn.WithDiscoveryScanStatusSink(scanStatusRegistry),
 	)
 
 	idem := apihttp.NewIdempotencyStore(nowMs, 0)
@@ -1321,6 +1326,7 @@ func main() {
 		// GET /screen-status joins the authored screen rows to what the relays
 		// have observed of them (parity row 5.8, api/screenstatus.go).
 		api.WithScreenStatus(screenRegistry),
+		api.WithScanStatus(scanStatusRegistry),
 		api.WithPackTrust(packsig.FileAnchors{Path: cfg.packTrustPath}),
 		// The marketplace's ONE wiring seam (MKT-060/060a). Without this option
 		// srv.market stays nil, the installer is built with no registry, and every

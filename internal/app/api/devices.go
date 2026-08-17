@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/devices"
+	"github.com/maaxton/waiveo-next/internal/app/scanstatus"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	feederrelayconn "github.com/maaxton/waiveo-next/internal/feeder/relayconn"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
@@ -94,6 +95,7 @@ func (srv *server) mountDevicePlane(rt *router) {
 	rt.HandleFunc("POST "+apiPrefix+"/entities/{id}/commands", srv.sendEntityCommand)
 	rt.HandleFunc("GET "+apiPrefix+"/discovery/relays", srv.getDiscoveryRelays)
 	rt.HandleFunc("POST "+apiPrefix+"/discovery/scan", srv.startDiscoveryScan)
+	rt.HandleFunc("GET "+apiPrefix+"/discovery/scan-status", srv.getDiscoveryScanStatus)
 }
 
 // getDiscoveryRelays reports the connected relays to any authenticated operator
@@ -113,6 +115,23 @@ func (srv *server) mountDevicePlane(rt *router) {
 func (srv *server) getDiscoveryRelays(w http.ResponseWriter, r *http.Request) {
 	relays, _ := srv.relayHealth()
 	writeJSONValue(w, http.StatusOK, map[string]any{"relays": relays})
+}
+
+// getDiscoveryScanStatus reports what each relay's scan engine is doing — the
+// answer to "is my scan still running", which the scan operation itself cannot
+// give (it returns an acceptance, since a scan outlives the request).
+//
+// A relay that has never reported is ABSENT rather than listed as idle: only the
+// relay can assert it is idle, and inventing that would tell an operator their
+// never-scanned deployment had finished scanning. Operator-readable for the same
+// reason /discovery/relays is — it depends on no scope node, so it answers even
+// when the owner surface cannot.
+func (srv *server) getDiscoveryScanStatus(w http.ResponseWriter, r *http.Request) {
+	out := []scanstatus.Status{}
+	if srv.scanStatus != nil {
+		out = srv.scanStatus.Statuses()
+	}
+	writeJSONValue(w, http.StatusOK, map[string]any{"scans": out})
 }
 
 // discoveryScanRequest is the openapi DiscoveryScanRequest body. Every member is

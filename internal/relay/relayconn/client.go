@@ -808,6 +808,28 @@ func (c *Client) SendScreenStatus(body wire.ScreenStatusBody) error {
 	return nil
 }
 
+// SendDiscoveryScanStatus reports this relay's scan-engine state upward
+// (`discovery.scan_status`). It is unsolicited and fire-and-forget, exactly like
+// SendScreenStatus: the app peer holds the latest per relay and nothing
+// correlates or acknowledges it.
+//
+// It is sent on TRANSITIONS — a scan starting, a scan finishing — rather than on
+// a timer, because the state only changes at those two moments and a periodic
+// re-send would be traffic that tells the app nothing new. The consequence is
+// stated in the wire doc: a relay that dies mid-scan leaves the app's view at
+// `scanning`, which is honest, since nothing on this side knows how that scan
+// ended either.
+func (c *Client) SendDiscoveryScanStatus(body wire.DiscoveryScanStatusBody) error {
+	f, err := wire.NewFrame(wire.FrameTypeDiscoveryScanStatus, ulid.New(), c.relayID, body)
+	if err != nil {
+		return fmt.Errorf("relayconn: SendDiscoveryScanStatus: %w", err)
+	}
+	if err := c.send(f); err != nil {
+		return fmt.Errorf("relayconn: SendDiscoveryScanStatus: send: %w", err)
+	}
+	return nil
+}
+
 // SendPairingRedeemed reports one pairing-grant redemption this relay performed
 // upstream (REL-124), as REL-124a's `pairing.redeemed {grant_id, redeemed_at}`.
 //

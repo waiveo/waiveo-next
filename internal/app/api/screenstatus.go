@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"github.com/maaxton/waiveo-next/internal/app/scanstatus"
 	"net/http"
 
 	"github.com/maaxton/waiveo-next/internal/app/screens"
@@ -165,6 +166,20 @@ type ScreenStatusSource interface {
 // relays report nothing.
 func WithScreenStatus(src ScreenStatusSource) Option {
 	return func(srv *server) { srv.screenStatus = src }
+}
+
+// ScanStatusSource reads the latest discovery scan-engine state each relay
+// reported (`discovery.scan_status`). internal/app/scanstatus.Registry
+// satisfies it directly.
+type ScanStatusSource interface {
+	Statuses() []scanstatus.Status
+}
+
+// WithScanStatus wires that read model. Optional — without it the scan-status
+// route answers an empty list rather than disappearing, so a console never has
+// to tell "no scan state" apart from "route missing".
+func WithScanStatus(src ScanStatusSource) Option {
+	return func(srv *server) { srv.scanStatus = src }
 }
 
 // mountScreenStatus registers the read. A distinct top-level path rather than a

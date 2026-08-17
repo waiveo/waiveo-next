@@ -1111,6 +1111,51 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /discovery/scan-status:
+    get:
+      operationId: listDiscoveryScanStatus
+      summary: What each relay's scan engine is doing
+      description: >-
+        Reports the latest scan state each relay has pushed up: whether it is
+        scanning now, which scan, when it started and finished, and how many
+        candidates it holds.
+
+
+        This is the answer `startDiscoveryScan` cannot give. A scan outlives the
+        request that starts it, so that operation returns an acceptance and the
+        progress is read here.
+
+
+        A relay that has never reported is ABSENT rather than listed as idle:
+        only a relay can assert that it is idle, and showing a never-scanned
+        deployment as "finished" would be the same fabrication an empty device
+        list makes when nothing is discovering. State is not persisted across a
+        feeder restart either — a restarted feeder genuinely does not know what a
+        relay was doing, and says so by reporting nothing.
+      tags: [devices, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: The scan state each relay has reported.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [scans]
+                properties:
+                  scans:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DiscoveryScanStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /discovery/relays:
     get:
       operationId: listDiscoveryRelays
@@ -8253,6 +8298,45 @@ components:
       propertyNames:
         pattern: "^([a-z0-9A-Z][a-z0-9A-Z.-]{0,251}/)?[a-z0-9A-Z][a-z0-9A-Z_.-]{0,62}$"
 
+    DiscoveryScanStatus:
+      type: object
+      description: >-
+        One relay's reported scan-engine state. `state` is `scanning` or `idle`;
+        `idle` covers both "finished" and "never scanned", told apart by
+        `finished_at` rather than by a third state a console would have to guess
+        the meaning of.
+      required: [relay_id, state, candidates]
+      additionalProperties: false
+      properties:
+        relay_id:
+          $ref: "#/components/schemas/RelayId"
+        state:
+          type: string
+          enum: [scanning, idle]
+        scan_id:
+          type: string
+          description: Correlates with the id `startDiscoveryScan` returned for this run.
+        started_at:
+          type: integer
+          format: int64
+          description: Epoch ms the current or last scan began.
+        finished_at:
+          type: integer
+          format: int64
+          description: >-
+            Epoch ms the last scan ended. Absent while a scan runs and while none
+            has ever run — with `started_at` it is what distinguishes those two.
+        candidates:
+          type: integer
+          description: >-
+            How many candidates the relay holds now (its whole current view). A
+            scan that finds nothing new is a successful scan of an unchanged
+            network, so this is a total, not a delta.
+        error:
+          type: string
+          description: >-
+            Why the last scan ended badly, when it did. A scan that ran and found
+            nothing leaves this empty — finding nothing is a result, not an error.
     DiscoveryScanRequest:
       type: object
       description: >-

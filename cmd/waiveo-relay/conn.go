@@ -10,6 +10,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -451,4 +452,22 @@ func (d *discoveryScanSink) run(body wire.DiscoveryScanBody) wire.DiscoveryScanR
 			"this relay is not running discovery, so it cannot scan")
 	}
 	return fn(body)
+}
+
+// reportScanStatus pushes one `discovery.scan_status` frame up the CURRENT live
+// connection, if there is one. Best-effort by design: a scan is a local activity
+// and must not fail because the app peer is momentarily unreachable — the relay
+// keeps scanning and the app simply learns the state on the next transition (or
+// stays at its last known one, which the wire doc explains is the honest answer).
+func reportScanStatus(live *connHolder, body wire.DiscoveryScanStatusBody) {
+	if live == nil {
+		return
+	}
+	c := live.get()
+	if c == nil {
+		return
+	}
+	if err := c.SendDiscoveryScanStatus(body); err != nil {
+		log.Printf("waiveo-relay: reporting scan status failed (the scan itself is unaffected): %v", err)
+	}
 }

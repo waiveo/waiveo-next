@@ -1283,9 +1283,18 @@ func main() {
 						scanRunning = ""
 						scanMu.Unlock()
 					}()
+					startedAt := time.Now().UnixMilli()
 					log.Printf("waiveo-relay: discovery scan %s starting (operator-requested)", id)
+					reportScanStatus(liveConn, wire.DiscoveryScanStatusBody{
+						State: wire.DiscoveryScanStateScanning, ScanID: id, StartedAt: startedAt,
+						Candidates: len(candStore.Report().Body.Candidates),
+					})
 					scanDisc.Scan(rootCtx)
 					log.Printf("waiveo-relay: discovery scan %s complete", id)
+					reportScanStatus(liveConn, wire.DiscoveryScanStatusBody{
+						State: wire.DiscoveryScanStateIdle, ScanID: id, StartedAt: startedAt,
+						FinishedAt: time.Now().UnixMilli(), Candidates: len(candStore.Report().Body.Candidates),
+					})
 				}()
 				return wire.NewDiscoveryScanAccepted(id)
 			})

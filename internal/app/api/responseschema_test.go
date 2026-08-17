@@ -75,6 +75,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
 	"github.com/maaxton/waiveo-next/internal/app/devices"
 	"github.com/maaxton/waiveo-next/internal/app/platformlog"
+	"github.com/maaxton/waiveo-next/internal/app/scanstatus"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/app/webhookdeliver"
 	"github.com/maaxton/waiveo-next/internal/app/workspacekey"
@@ -363,6 +364,10 @@ type schemaProbeEnv struct {
 	// needs one, because adoption writes an authored row and a row's placement
 	// must be a node that actually exists in the tree.
 	registry *devices.Registry
+	// scanStatus is the same scan-state read model the handler serves, so the
+	// scan-status probe can seed a report — a relay that never reported is
+	// absent by design, so an unseeded probe would validate an empty array.
+	scanStatus *scanstatus.Registry
 	// logs is the SAME captured-log buffer the handler serves the diagnostics
 	// read from, kept so the platform-logs probe can put a line in it. That
 	// operation's item schema declares required members, so an empty page would
@@ -419,10 +424,12 @@ func newSchemaProbeEnv(t *testing.T) *schemaProbeEnv {
 	logs := platformlog.New(64, clock)
 	dataDir := t.TempDir()
 	restartOrders := &[]api.RestartOrder{}
+	scanStatusReg := scanstatus.New()
 	ts := httptest.NewServer(api.New(st, apihttp.NewIdempotencyStore(clock, 0), clock, ulid.Monotonic(),
 		content, testContentBase, fixture.Auth,
 		api.WithJobRunner(jobs),
 		api.WithDevicePlane(registry, &fakeDispatcher{result: wire.DeviceCommandResultBody{OK: true}}),
+		api.WithScanStatus(scanStatusReg),
 		// The REAL sealing construction, over the same workspace key the TOTP
 		// probes seal under — a stub would let the rotate probe pass against an
 		// implementation that never sealed the signing secret it was handed.
@@ -457,11 +464,12 @@ func newSchemaProbeEnv(t *testing.T) *schemaProbeEnv {
 	t.Cleanup(ts.Close)
 
 	return &schemaProbeEnv{
-		testEnv:   &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture, jobs: jobs},
-		authStore: fixture.Store,
-		registry:  registry,
-		logs:      logs,
-		dataDir:   dataDir,
+		testEnv:    &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture, jobs: jobs},
+		authStore:  fixture.Store,
+		registry:   registry,
+		scanStatus: scanStatusReg,
+		logs:       logs,
+		dataDir:    dataDir,
 
 		restartOrders: restartOrders,
 	}
@@ -944,6 +952,17 @@ var probes = map[string]probe{
 		// carries a RelayHealth item and its shape is verified, not trivially
 		// satisfied by an empty array.
 		return e.do(t, http.MethodGet, "/api/v1/discovery/relays", nil, nil)
+	},
+	"listDiscoveryScanStatus": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// Seeded so the array is non-empty and the item shape is actually
+		// verified: a relay that has never reported is deliberately absent from
+		// this list, so without a seeded report the probe would validate an empty
+		// array and prove nothing.
+		e.scanStatus.ApplyDiscoveryScanStatus(rsRelayID, wire.DiscoveryScanStatusBody{
+			State: wire.DiscoveryScanStateIdle, ScanID: "01J8Z8SCANPR0BE0000000001",
+			StartedAt: 1_700_000_000_000, FinishedAt: 1_700_000_003_000, Candidates: 35,
+		})
+		return e.do(t, http.MethodGet, "/api/v1/discovery/scan-status", nil, nil)
 	},
 	"startDiscoveryScan": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		// The env's pairing directory wires one connected relay, so the response

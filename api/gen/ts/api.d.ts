@@ -343,6 +343,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/discovery/scan-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What each relay's scan engine is doing
+         * @description Reports the latest scan state each relay has pushed up: whether it is scanning now, which scan, when it started and finished, and how many candidates it holds.
+         *
+         *     This is the answer `startDiscoveryScan` cannot give. A scan outlives the request that starts it, so that operation returns an acceptance and the progress is read here.
+         *
+         *     A relay that has never reported is ABSENT rather than listed as idle: only a relay can assert that it is idle, and showing a never-scanned deployment as "finished" would be the same fabrication an empty device list makes when nothing is discovering. State is not persisted across a feeder restart either — a restarted feeder genuinely does not know what a relay was doing, and says so by reporting nothing.
+         */
+        get: operations["listDiscoveryScanStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/discovery/relays": {
         parameters: {
             query?: never;
@@ -3164,6 +3188,28 @@ export interface components {
         LabelMap: {
             [key: string]: string;
         };
+        /** @description One relay's reported scan-engine state. `state` is `scanning` or `idle`; `idle` covers both "finished" and "never scanned", told apart by `finished_at` rather than by a third state a console would have to guess the meaning of. */
+        DiscoveryScanStatus: {
+            relay_id: components["schemas"]["RelayId"];
+            /** @enum {string} */
+            state: "scanning" | "idle";
+            /** @description Correlates with the id `startDiscoveryScan` returned for this run. */
+            scan_id?: string;
+            /**
+             * Format: int64
+             * @description Epoch ms the current or last scan began.
+             */
+            started_at?: number;
+            /**
+             * Format: int64
+             * @description Epoch ms the last scan ended. Absent while a scan runs and while none has ever run — with `started_at` it is what distinguishes those two.
+             */
+            finished_at?: number;
+            /** @description How many candidates the relay holds now (its whole current view). A scan that finds nothing new is a successful scan of an unchanged network, so this is a total, not a delta. */
+            candidates: number;
+            /** @description Why the last scan ended badly, when it did. A scan that ran and found nothing leaves this empty — finding nothing is a result, not an error. */
+            error?: string;
+        };
         /** @description Optional narrowing for an active scan. An empty body means "every connected relay scans its own default scope", which is what the operator's plain "scan the network" sends. */
         DiscoveryScanRequest: {
             relay_id?: components["schemas"]["RelayId"];
@@ -4302,6 +4348,34 @@ export interface operations {
             409: components["responses"]["Conflict"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listDiscoveryScanStatus: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The scan state each relay has reported. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        scans: components["schemas"]["DiscoveryScanStatus"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     listDiscoveryRelays: {
