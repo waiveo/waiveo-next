@@ -549,3 +549,92 @@ func TestResponseWithoutUSNIsNotObserved(t *testing.T) {
 		t.Fatalf("got %d candidate(s) from an alive NOTIFY with no USN, want 0", n)
 	}
 }
+
+// --- §4.1 resolve-and-merge: one device, one candidate ------------------------
+
+// An SSDP responder the neighbour lane also saw (its IP resolves to a MAC)
+// MERGES onto the canonical MAC candidate — one row, carrying the neighbour's
+// MAC identity AND the SSDP watch's class/name, not two rows. This is the fix
+// for the double-count the neighbour lane would otherwise create.
+func TestSSDPMergesOntoTheNeighbourCandidate(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	now := func() int64 { return 1000 }
+	mac := "b0:a7:37:5d:22:c8"
+
+	// The neighbour lane already minted this host by MAC.
+	driver, nativeID, match, ok := deviceplane.MACIdentity(mac)
+	if !ok {
+		t.Fatal("MACIdentity rejected a valid MAC")
+	}
+	store.Observe(deviceplane.Observation{
+		Match: match, Provenance: deviceplane.ProvenanceDiscovered,
+		Driver: driver, NativeID: nativeID, DeviceClass: "unclassified",
+		Address: "192.168.50.31",
+	}, now())
+
+	d, err := New(Config{
+		Watches:   []Watch{watchFor(mustMatch(t, `{"ssdp":"roku:ecp"}`))},
+		Store:     store,
+		NowMillis: now,
+		ResolveMAC: func(ip string) (string, bool) {
+			if ip == "192.168.50.31" {
+				return mac, true
+			}
+			return "", false
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	d.search = func(st string, wait int) ([]foundService, error) {
+		return []foundService{{ST: st, USN: "uuid:roku:ecp:X029009", Location: "http://192.168.50.31:8060/"}}, nil
+	}
+	d.sweep(context.Background())
+
+	cands := store.Report().Body.Candidates
+	if len(cands) != 1 {
+		t.Fatalf("candidates = %d, want 1 — the SSDP sighting must MERGE onto the MAC host, not add a row: %+v", len(cands), cands)
+	}
+	c := cands[0]
+	if c.Driver != deviceplane.HostDriver || c.NativeID != nativeID {
+		t.Errorf("merged identity = (%q,%q), want the canonical MAC identity", c.Driver, c.NativeID)
+	}
+	if c.Match.MacOui == "" {
+		t.Errorf("merged Match lost its OUI (would thrash against the neighbour sweep): %+v", c.Match)
+	}
+	if c.DeviceClass != "media-player" {
+		t.Errorf("class = %q, want the SSDP watch's media-player to ride the merge", c.DeviceClass)
+	}
+	if c.Address != "192.168.50.31:8060" {
+		t.Errorf("address = %q, want the SSDP LOCATION address", c.Address)
+	}
+}
+
+// A responder the neighbour table cannot resolve (cross-subnet) keeps its watch
+// identity and mints its own candidate — merge is best-effort, never a drop.
+func TestSSDPWithoutAMACKeepsItsWatchIdentity(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	now := func() int64 { return 1000 }
+	d, err := New(Config{
+		Watches:    []Watch{watchFor(mustMatch(t, `{"ssdp":"roku:ecp"}`))},
+		Store:      store,
+		NowMillis:  now,
+		ResolveMAC: func(string) (string, bool) { return "", false },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	d.search = func(st string, wait int) ([]foundService, error) {
+		return []foundService{{ST: st, USN: "uuid:far:away", Location: "http://10.9.9.9:8060/"}}, nil
+	}
+	d.sweep(context.Background())
+
+	cands := store.Report().Body.Candidates
+	if len(cands) != 1 {
+		t.Fatalf("candidates = %d, want 1", len(cands))
+	}
+	if cands[0].Driver != "roku-ecp" || cands[0].NativeID != "uuid:far:away" {
+		t.Errorf("identity = (%q,%q), want the unresolved sighting to keep its watch identity",
+			cands[0].Driver, cands[0].NativeID)
+	}
+}

@@ -11,7 +11,38 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 )
+
+// HostDriver is the identity namespace (REL-153) for a device identified by its
+// MAC — the canonical identity every discovery lane keys a MAC-resolved sighting
+// under, so one physical device is ONE candidate however many lanes see it
+// (Discovery spec §4.1). The neighbour lane mints it from the kernel neighbour
+// table; a protocol lane (SSDP/mDNS) that resolves a sighting's IP to a known
+// MAC keys under the same identity and thereby MERGES rather than double-counts.
+const HostDriver = "net"
+
+// MACIdentity returns the canonical (driver, native_id, match) a MAC-identified
+// host is keyed under: driver HostDriver, native_id the lower-cased MAC, and a
+// MacOui Match so a MAN-071 macOui pattern can recognise it. ok is false when
+// the MAC yields no valid 6-hex OUI — a caller then keeps its own identity
+// rather than key a device under a malformed one (and a candidate whose Match
+// will not marshal is dropped at report time, so producing one is worse than
+// declining). This is the ONE place the MAC→identity rule lives, so no two
+// lanes can derive a device's identity differently.
+func MACIdentity(mac string) (driver, nativeID string, match Match, ok bool) {
+	lower := strings.ToLower(strings.TrimSpace(mac))
+	hex := strings.ReplaceAll(lower, ":", "")
+	if len(hex) < 6 {
+		return "", "", Match{}, false
+	}
+	for _, c := range hex[:6] {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return "", "", Match{}, false
+		}
+	}
+	return HostDriver, lower, Match{MacOui: hex[:6]}, true
+}
 
 // ErrUnknownDeviceMatchForm is the sentinel a caller checks with errors.Is
 // to detect UNKNOWN_DEVICE_MATCH_FORM (manifest/1 MAN-071, Error taxonomy):

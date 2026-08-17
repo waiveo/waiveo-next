@@ -30,6 +30,7 @@ import (
 	ssdp "github.com/koron/go-ssdp"
 
 	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
+	"github.com/maaxton/waiveo-next/internal/relay/lanaddr"
 )
 
 // Default sweep timing (Config.Interval / Config.SearchWait zero values).
@@ -260,6 +261,15 @@ type Config struct {
 	// Results are cached per device (identifyTTL / identifyRetryAfter), so a
 	// device is probed on first sight and then rarely, not on every sighting.
 	Identify IdentifyFunc
+
+	// ResolveMAC resolves a sighting's IP to the MAC the relay's neighbour table
+	// saw it at, so an SSDP responder the neighbour lane ALSO found becomes ONE
+	// candidate under the canonical MAC identity (spec §4.1) rather than a second
+	// row. Optional: left nil, a sighting keeps its watch identity — correct for
+	// a deployment with no neighbour lane, and the honest degradation (it just
+	// cannot merge). A miss (cross-subnet host the table cannot see) also keeps
+	// the watch identity.
+	ResolveMAC func(ip string) (string, bool)
 }
 
 // Discoverer periodically SSDP M-SEARCHes a configured set of manifest/1
@@ -283,6 +293,7 @@ type Discoverer struct {
 	search     searchFn
 	newMonitor monitorFactory
 	identify   IdentifyFunc
+	resolveMAC func(ip string) (string, bool)
 
 	// identities caches one probe result per device (keyed by USN), so a device
 	// is probed on first sight and then only after its entry ages out. Guarded
@@ -337,6 +348,7 @@ func New(cfg Config) (*Discoverer, error) {
 		nowMillis:  cfg.NowMillis,
 		interval:   interval,
 		searchWait: searchWait,
+		resolveMAC: cfg.ResolveMAC,
 		search:     defaultSearch,
 		newMonitor: defaultMonitorFactory,
 		identify:   cfg.Identify,
@@ -493,7 +505,7 @@ func (d *Discoverer) searchPattern(ctx context.Context, st string, w Watch) {
 			// A search response has no observed sender go-ssdp exposes, so
 			// LOCATION is the only address available on this lane.
 			addr, _ := addressFromLocation(f.Location)
-			d.store.Observe(w.observation(f.USN, addr, d.identityOf(ctx, f.USN, addr)), d.nowMillis())
+			d.store.Observe(d.canonicalize(w.observation(f.USN, addr, d.identityOf(ctx, f.USN, addr))), d.nowMillis())
 		}
 	}()
 	select {
@@ -520,7 +532,36 @@ func (d *Discoverer) observeAlive(ctx context.Context, n aliveNotice) {
 	if !ok {
 		addr, _ = addressFromSource(n.From, w.DefaultPort)
 	}
-	d.store.Observe(w.observation(n.USN, addr, d.identityOf(ctx, n.USN, addr)), d.nowMillis())
+	d.store.Observe(d.canonicalize(w.observation(n.USN, addr, d.identityOf(ctx, n.USN, addr))), d.nowMillis())
+}
+
+// canonicalize re-keys a sighting under the canonical MAC identity when the
+// relay's neighbour table knows the device's address — the merge that keeps one
+// physical device to one candidate (spec §4.1). The service facts, the probed
+// name/model/serial, the class and entities the watch supplied all ride along
+// unchanged; only the IDENTITY and its Match move to the MAC, so the SSDP
+// sighting lands on the SAME store key the neighbour lane minted rather than a
+// second row. A device the neighbour table cannot resolve (cross-subnet), or a
+// deployment with no resolver wired, keeps the watch identity — the honest
+// degradation, not a dropped sighting.
+func (d *Discoverer) canonicalize(o deviceplane.Observation) deviceplane.Observation {
+	if d.resolveMAC == nil || o.Address == "" {
+		return o
+	}
+	host, _, ok := lanaddr.Split(o.Address)
+	if !ok {
+		return o
+	}
+	mac, ok := d.resolveMAC(host)
+	if !ok {
+		return o
+	}
+	driver, nativeID, match, ok := deviceplane.MACIdentity(mac)
+	if !ok {
+		return o
+	}
+	o.Driver, o.NativeID, o.Match = driver, nativeID, match
+	return o
 }
 
 // identityOf returns what is known about the device with this USN at this

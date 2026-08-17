@@ -21,27 +21,25 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
 	"github.com/maaxton/waiveo-next/internal/relay/lanaddr"
 )
 
-const (
-	// Driver is the discovery-source namespace for a host known only at L2. The
-	// identity (Driver, MAC) is STABLE across classification (spec §4.1): when a
-	// pattern later recognises this host, its device_class changes and this
-	// identity does not, so a classified device is not a second row.
-	Driver = "net"
+// Driver is the identity namespace this lane mints under — the shared canonical
+// MAC identity (deviceplane.HostDriver), re-exported so a caller can name it
+// without reaching across packages.
+const Driver = deviceplane.HostDriver
 
-	// ClassUnclassified is the device_class a host carries until an extension's
-	// pattern recognises it. Non-empty on purpose — REL-110a requires a class,
-	// and an empty one would make the whole candidate report unapplyable, so
-	// "unclassified" is a real value, not a blank.
-	ClassUnclassified = "unclassified"
+// ClassUnclassified is the device_class a host carries until an extension's
+// pattern recognises it. Non-empty on purpose — REL-110a requires a class, and
+// an empty one would make the whole candidate report unapplyable, so
+// "unclassified" is a real value, not a blank.
+const ClassUnclassified = "unclassified"
 
-	defaultInterval = 30 * time.Second
-)
+const defaultInterval = 30 * time.Second
 
 // Entry is one resolved neighbour: an IP and the MAC the kernel resolved it to.
 // An entry with no hardware address (INCOMPLETE/FAILED) is not one of these —
@@ -66,12 +64,20 @@ type Config struct {
 }
 
 // Lane periodically reads the neighbour table and Observes each L2-present host
-// as an unclassified MAC-keyed candidate (REL-110/111, spec §4.1).
+// as an unclassified MAC-keyed candidate (REL-110/111, spec §4.1). It also
+// serves as the IP→MAC RESOLVER the protocol lanes use to merge their sightings
+// onto the same MAC identity rather than mint a second row.
 type Lane struct {
 	store     *deviceplane.Store
 	nowMillis func() int64
 	interval  time.Duration
 	read      func() ([]Entry, error)
+
+	// ipMAC is the last sweep's IP→MAC map, swapped whole under mu so a reader
+	// (MAC, called from another lane's goroutine) sees one coherent sweep, and
+	// a departed host is forgotten rather than resolved to a stale MAC.
+	mu    sync.RWMutex
+	ipMAC map[string]string
 }
 
 // New returns a Lane for cfg.
@@ -90,7 +96,19 @@ func New(cfg Config) (*Lane, error) {
 	if read == nil {
 		read = readKernelNeighbours
 	}
-	return &Lane{store: cfg.Store, nowMillis: cfg.NowMillis, interval: interval, read: read}, nil
+	return &Lane{store: cfg.Store, nowMillis: cfg.NowMillis, interval: interval, read: read, ipMAC: map[string]string{}}, nil
+}
+
+// MAC resolves an IP to the MAC the last sweep saw it at, or ("", false) when
+// this relay's neighbour table does not know it (a cross-subnet host the table
+// cannot see). This is the resolver a protocol lane calls to key a sighting
+// under the canonical MAC identity (spec §4.1); its signature is the seam a
+// lane depends on, not this concrete type.
+func (l *Lane) MAC(ip string) (string, bool) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	mac, ok := l.ipMAC[ip]
+	return mac, ok
 }
 
 // Run reads the neighbour table immediately, then every Interval, until ctx is
@@ -125,47 +143,34 @@ func (l *Lane) sweep() {
 		return
 	}
 	now := l.nowMillis()
+	fresh := make(map[string]string, len(entries))
 	for _, e := range entries {
 		// A neighbour is minted only with all three of: a dialable LAN address
 		// (the store's own policy, applied here so a link-local neighbour is
 		// never-minted noise rather than a candidate with a blanked address); a
-		// valid MAC-OUI (the candidate's MAN-071 Match — a candidate whose Match
-		// will not marshal is silently DROPPED at report time, so it is filtered
-		// here at mint time instead); and the MAC as its identity.
+		// valid MAC identity/OUI (a candidate whose Match will not marshal is
+		// silently DROPPED at report time, so it is filtered here at mint time
+		// instead); and the MAC as its canonical identity.
 		if !lanaddr.Host(e.IP) {
 			continue
 		}
-		oui := macOUI(e.MAC)
-		if oui == "" {
+		driver, nativeID, match, ok := deviceplane.MACIdentity(e.MAC)
+		if !ok {
 			continue
 		}
+		fresh[e.IP] = nativeID
 		l.store.Observe(deviceplane.Observation{
-			Match:       deviceplane.Match{MacOui: oui},
+			Match:       match,
 			Provenance:  deviceplane.ProvenanceDiscovered,
-			Driver:      Driver,
-			NativeID:    strings.ToLower(e.MAC),
+			Driver:      driver,
+			NativeID:    nativeID,
 			DeviceClass: ClassUnclassified,
 			Address:     e.IP,
 		}, now)
 	}
-}
-
-// macOUI is the 6-hex-digit vendor prefix of a MAC (the manufacturer half): the
-// candidate's Match, so a MAC-OUI pattern (MAN-071) an extension declares can
-// later recognise this host. A kernel-resolved MAC is always well-formed; this
-// is defensive against garbage input, returning "" (skip the neighbour) rather
-// than a short prefix the Match's own MAN-071 encoding would reject.
-func macOUI(mac string) string {
-	hex := strings.ToLower(strings.ReplaceAll(mac, ":", ""))
-	if len(hex) < 6 {
-		return ""
-	}
-	for _, c := range hex[:6] {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-			return ""
-		}
-	}
-	return hex[:6]
+	l.mu.Lock()
+	l.ipMAC = fresh
+	l.mu.Unlock()
 }
 
 // readKernelNeighbours reads the host's neighbour table via `ip neigh show`.

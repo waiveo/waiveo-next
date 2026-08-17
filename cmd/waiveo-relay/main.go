@@ -1196,9 +1196,14 @@ func main() {
 			// fresh each time (see ecp.NewIdentifyClient for the timeout).
 			identifyClient := ecp.NewIdentifyClient()
 			disc, err = discovery.New(discovery.Config{
-				Watches:   mergeSSDPWatches(builtinSSDP, bootSSDPW),
-				Store:     candStore,
-				NowMillis: func() int64 { return time.Now().UnixMilli() },
+				Watches: mergeSSDPWatches(builtinSSDP, bootSSDPW),
+				Store:   candStore,
+				// Resolve an SSDP responder's IP to the MAC the neighbour lane
+				// saw it at, so a device both lanes found is ONE candidate under
+				// the canonical MAC identity (spec §4.1), not a double-counted
+				// row — the Roku shows once, not as both a raw host and a Roku.
+				ResolveMAC: neighborLane.MAC,
+				NowMillis:  func() int64 { return time.Now().UnixMilli() },
 				// The identification probe: a discovered address that answers
 				// Roku's ECP device-info query IS a Roku, and says which one.
 				// Without it a sweep reports opaque USNs an operator cannot map
