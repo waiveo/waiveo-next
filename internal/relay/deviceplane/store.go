@@ -73,6 +73,31 @@ func observationFieldOK(v string) bool {
 
 const IgnoredForever = "forever"
 
+// ClassUnclassified is the device_class a host carries until something
+// recognises it — a first-class value, not a blank, because REL-110a requires a
+// non-empty class. It is the ONE generic default every lane mints under and the
+// store's merge treats as "not yet learned": a sighting carrying it never
+// downgrades a candidate another lane has already classified (keepClass).
+const ClassUnclassified = "unclassified"
+
+// keepClass merges a re-sighting's device_class without letting the generic
+// default erase a learned one. Enumerate-all means several lanes observe one
+// device: the neighbour lane knows only that a host exists (unclassified), while
+// the mDNS lane may know it is a media player. Overwriting unconditionally
+// (which every re-sighting used to do) let whichever lane swept last win, so a
+// classified device flickered back to unclassified on the next neighbour sweep.
+// A SPECIFIC class wins; between two specific classes the newer sighting wins
+// (an actual reclassification); ClassUnclassified only fills a gap.
+func keepClass(next, current string) string {
+	if next != "" && next != ClassUnclassified {
+		return next
+	}
+	if current != "" && current != ClassUnclassified {
+		return current
+	}
+	return next
+}
+
 // candidatesMessageType is the device.candidates envelope type (REL-110).
 const candidatesMessageType = "device.candidates"
 
@@ -303,7 +328,9 @@ func (s *Store) Observe(o Observation, atMs int64) {
 			c.LastSeen = atMs
 		}
 		c.Match = o.Match
-		c.DeviceClass = o.DeviceClass
+		// keepClass, not a bare overwrite: a specific class one lane learned must
+		// not be downgraded to the generic default by another lane's next sweep.
+		c.DeviceClass = keepClass(o.DeviceClass, c.DeviceClass)
 		// Entity STATE is carried across a re-sighting, for exactly the reason
 		// the learned facts below are: a discovery sighting never observes state
 		// (an SSDP NOTIFY says a device exists, not that it is playing), so the

@@ -33,11 +33,10 @@ import (
 // without reaching across packages.
 const Driver = deviceplane.HostDriver
 
-// ClassUnclassified is the device_class a host carries until an extension's
-// pattern recognises it. Non-empty on purpose — REL-110a requires a class, and
-// an empty one would make the whole candidate report unapplyable, so
-// "unclassified" is a real value, not a blank.
-const ClassUnclassified = "unclassified"
+// ClassUnclassified is the device_class a host carries until something
+// recognises it — the shared generic default (deviceplane.ClassUnclassified),
+// re-exported so a caller names it without reaching across packages.
+const ClassUnclassified = deviceplane.ClassUnclassified
 
 const defaultInterval = 30 * time.Second
 

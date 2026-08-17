@@ -434,3 +434,36 @@ func TestObserveDropsHostileSightingsRatherThanPoisoningTheReport(t *testing.T) 
 		t.Fatalf("a flood displaced %d of the 2 genuine devices — the cap must refuse newcomers, not evict incumbents", 2-haveReal)
 	}
 }
+
+// keepClass: a specific class one lane learned must survive another lane's
+// re-sighting under the generic default — the class-thrash the neighbour lane
+// would otherwise cause on every sweep of a classified device.
+func TestObserveDoesNotDowngradeAClassifiedDevice(t *testing.T) {
+	store := NewStore("relay-1")
+	obs := func(class string) Observation {
+		return Observation{
+			Match:       Match{MacOui: "c48b66"},
+			Provenance:  ProvenanceDiscovered,
+			Driver:      HostDriver,
+			NativeID:    "c4:8b:66:68:21:25",
+			DeviceClass: class,
+			Address:     "192.168.50.31",
+		}
+	}
+	store.Observe(obs(ClassUnclassified), 1000) // neighbour lane: unclassified
+	store.Observe(obs("media-player"), 1001)    // mDNS lane classifies it
+	store.Observe(obs(ClassUnclassified), 1002) // neighbour lane sweeps again
+
+	c := store.Report().Body.Candidates
+	if len(c) != 1 {
+		t.Fatalf("candidates = %d, want 1", len(c))
+	}
+	if c[0].DeviceClass != "media-player" {
+		t.Fatalf("class = %q after a re-sighting under the generic default, want media-player kept", c[0].DeviceClass)
+	}
+	// A genuine reclassification (specific → specific) still takes effect.
+	store.Observe(obs("printer"), 1003)
+	if got := store.Report().Body.Candidates[0].DeviceClass; got != "printer" {
+		t.Fatalf("class = %q, want a real reclassification to take", got)
+	}
+}

@@ -40,8 +40,8 @@ func TestParseAvahi(t *testing.T) {
 `
 	got := parseAvahi(out)
 	want := []Service{
-		{Name: "The Hanger", Address: "192.168.50.31"},
-		{Name: "Matt’s MacBook Air", Address: "192.168.51.214"},
+		{Name: "The Hanger", Type: "AirPlay Remote Video", Address: "192.168.50.31"},
+		{Name: "Matt’s MacBook Air", Type: "AirPlay Remote Video", Address: "192.168.51.214"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("parsed %d services, want %d: %+v", len(got), len(want), got)
@@ -139,6 +139,73 @@ func TestBestHumanNameWins(t *testing.T) {
 	}
 	if cands[0].Name != "The Hanger" {
 		t.Fatalf("name = %q, want %q — the human AirPlay name must beat the UUID and the hyphenated variant", cands[0].Name, "The Hanger")
+	}
+}
+
+// A device is classified from the SET of mDNS types it advertises: the Brother
+// answers _http and _ipp and _printer, and the specific class (printer) must
+// win the generic ones; The Hanger's _airplay makes it a media-player even
+// though it is SSDP-silent. Discovery's generic guess, from passive facts.
+func TestSweepClassifiesFromServiceTypes(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	now := func() int64 { return 1000 }
+	roku, printer := "c4:8b:66:68:21:25", "ac:50:de:6f:06:a8"
+	deviceplaneSeed(t, store, roku, now())
+	// Seed the printer host too (neighbour lane would have).
+	dp, ni, m, _ := deviceplane.MACIdentity(printer)
+	store.Observe(deviceplane.Observation{Match: m, Provenance: deviceplane.ProvenanceDiscovered, Driver: dp, NativeID: ni, DeviceClass: deviceplane.ClassUnclassified, Address: "192.168.50.36"}, now())
+
+	l, _ := New(Config{
+		Store: store, NowMillis: now,
+		ResolveMAC: func(ip string) (string, bool) {
+			switch ip {
+			case "192.168.50.31":
+				return roku, true
+			case "192.168.50.36":
+				return printer, true
+			}
+			return "", false
+		},
+		Browse: func() ([]Service, error) {
+			return []Service{
+				{Name: "The Hanger", Type: "_airplay._tcp", Address: "192.168.50.31"},
+				{Name: "Brother MFC", Type: "_http._tcp", Address: "192.168.50.36"},
+				{Name: "Brother MFC", Type: "_ipp._tcp", Address: "192.168.50.36"},
+				{Name: "Brother MFC", Type: "_printer._tcp", Address: "192.168.50.36"},
+			}, nil
+		},
+	})
+	l.sweep()
+
+	byMAC := map[string]string{}
+	for _, c := range store.Report().Body.Candidates {
+		byMAC[c.NativeID] = c.DeviceClass
+	}
+	if byMAC[ni] != "printer" {
+		t.Errorf("printer class = %q, want printer (specific type beats _http)", byMAC[ni])
+	}
+	rokuNI := "c4:8b:66:68:21:25"
+	if byMAC[rokuNI] != "media-player" {
+		t.Errorf("Roku class = %q, want media-player from _airplay", byMAC[rokuNI])
+	}
+}
+
+func TestClassFor(t *testing.T) {
+	cases := map[string]string{
+		"_airplay._tcp":    "media-player",
+		"_googlecast._tcp": "media-player",
+		"_printer._tcp":    "printer",
+		"_ipp._tcp":        "printer",
+		"_smb._tcp":        "storage",
+		"_hap._tcp":        "smart-home",
+		"_http._tcp":       deviceplane.ClassUnclassified,
+		"_ssh._tcp":        deviceplane.ClassUnclassified,
+		"":                 deviceplane.ClassUnclassified,
+	}
+	for in, want := range cases {
+		if got := classFor(in); got != want {
+			t.Errorf("classFor(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

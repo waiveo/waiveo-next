@@ -34,20 +34,19 @@ import (
 )
 
 const (
-	// ClassUnclassified matches the neighbour lane: avahi NAMES a host, it does
-	// not classify it — the device_class stays whatever it already is until a
-	// pattern recognises it.
-	ClassUnclassified = "unclassified"
-
 	defaultInterval = 30 * time.Second
 	browseTimeout   = 10 * time.Second
 )
 
-// Service is one resolved mDNS service: the instance name avahi shows and the
-// IPv4 address it resolved to. The service type and TXT are not carried — this
-// lane's job is the NAME; the richer facts a classifier wants are a later slice.
+// Service is one resolved mDNS service: the instance name avahi shows, the DNS
+// service type (`_airplay._tcp`), and the IPv4 address it resolved to. The type
+// is Discovery's own GENERIC classification signal — a passive fact, from a
+// cache avahi already holds, so it needs no active probe (review H1/H2). It is
+// distinct from an EXTENSION pattern, which stays app-side: this is Discovery's
+// built-in guess (spec §5), a sensible default an extension can later refine.
 type Service struct {
 	Name    string
+	Type    string
 	Address string
 }
 
@@ -134,27 +133,39 @@ func (l *Lane) sweep() {
 	if err != nil {
 		return
 	}
-	type named struct{ name, addr string }
-	best := map[string]named{}
+	type host struct {
+		name  string
+		addr  string
+		class string
+	}
+	best := map[string]*host{}
 	for _, s := range services {
 		if s.Address == "" {
-			continue
-		}
-		name := cleanName(s.Name)
-		if name == "" {
 			continue
 		}
 		mac, ok := l.resolveMAC(s.Address)
 		if !ok {
 			continue // cross-subnet / not in the neighbour table — deferred
 		}
-		if cur, seen := best[mac]; !seen || nameScore(name) > nameScore(cur.name) {
-			best[mac] = named{name: name, addr: s.Address}
+		h := best[mac]
+		if h == nil {
+			h = &host{class: deviceplane.ClassUnclassified, addr: s.Address}
+			best[mac] = h
+		}
+		// The best NAME across the host's services (a human name beats a UUID).
+		if name := cleanName(s.Name); name != "" && nameScore(name) > nameScore(h.name) {
+			h.name = name
+		}
+		// The most SPECIFIC class its service types imply. A device advertises
+		// several types (a printer answers _printer AND _http); classFor ranks
+		// them so the specific one wins over the generic.
+		if c := classFor(s.Type); classRank(c) > classRank(h.class) {
+			h.class = c
 		}
 	}
 
 	now := l.nowMillis()
-	for mac, n := range best {
+	for mac, h := range best {
 		driver, nativeID, match, ok := deviceplane.MACIdentity(mac)
 		if !ok {
 			continue
@@ -164,11 +175,42 @@ func (l *Lane) sweep() {
 			Provenance:  deviceplane.ProvenanceDiscovered,
 			Driver:      driver,
 			NativeID:    nativeID,
-			DeviceClass: ClassUnclassified,
-			Name:        n.name,
-			Address:     n.addr,
+			DeviceClass: h.class,
+			Name:        h.name,
+			Address:     h.addr,
 		}, now)
 	}
+}
+
+// classFor maps an mDNS service type to Discovery's generic device class, or
+// ClassUnclassified when the type says nothing about what a device IS (a plain
+// _http or _ssh is any computer). The map is deliberately small and only claims
+// what a service type reliably implies; a precise identity is an extension's
+// pattern to assert, not this generic guess.
+func classFor(serviceType string) string {
+	switch serviceType {
+	case "_airplay._tcp", "_raop._tcp", "_googlecast._tcp", "_spotify-connect._tcp", "_sonos._tcp", "_roku._tcp":
+		return "media-player"
+	case "_ipp._tcp", "_ipps._tcp", "_printer._tcp", "_pdl-datastream._tcp", "_scanner._tcp", "_uscan._tcp", "_uscans._tcp":
+		return "printer"
+	case "_smb._tcp", "_afpovertcp._tcp", "_nfs._tcp", "_ftp._tcp", "_webdav._tcp":
+		return "storage"
+	case "_hap._tcp", "_homekit._tcp", "_matter._tcp", "_matterc._tcp", "_hue._tcp":
+		return "smart-home"
+	default:
+		return deviceplane.ClassUnclassified
+	}
+}
+
+// classRank orders classes for the "most specific wins" pick within a host's
+// services. Any real class outranks the generic default; the specific classes
+// are equal rank (a device is not both a printer and a media player, and if two
+// disagree the first parsed simply holds — a rare edge not worth a hierarchy).
+func classRank(class string) int {
+	if class == "" || class == deviceplane.ClassUnclassified {
+		return 0
+	}
+	return 1
 }
 
 // cleanName turns an mDNS instance name into a display name, or "" when there
@@ -227,7 +269,9 @@ func isHexBlob(s string) bool {
 func browseAvahi() ([]Service, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), browseTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "avahi-browse", "-a", "-t", "-r", "-p").Output()
+	// -k keeps the service type in its DNS form (`_airplay._tcp`) rather than a
+	// localised human string, so classFor matches a stable token, not a label.
+	out, err := exec.CommandContext(ctx, "avahi-browse", "-a", "-t", "-r", "-p", "-k").Output()
 	if err != nil {
 		// A non-zero exit or a timeout is not fatal to discovery: the cache is
 		// optional enrichment. Report no services rather than an error the caller
@@ -261,7 +305,7 @@ func parseAvahi(out string) []Service {
 		if addr == "" {
 			continue
 		}
-		services = append(services, Service{Name: name, Address: addr})
+		services = append(services, Service{Name: name, Type: strings.TrimSpace(fields[4]), Address: addr})
 	}
 	return services
 }
