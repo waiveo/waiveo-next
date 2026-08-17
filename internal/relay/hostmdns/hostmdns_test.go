@@ -107,6 +107,71 @@ func TestSweepNamesResolvableHosts(t *testing.T) {
 	}
 }
 
+// The Hanger case: a device advertising a human AirPlay name AND a bare Spotify
+// UUID AND a hyphenated Cast name with a hex suffix must show the HUMAN name,
+// not the UUID a last-writer merge would have left. This is the exact wart the
+// box surfaced (The Hanger labelled 013186e4-…).
+func TestBestHumanNameWins(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	now := func() int64 { return 1000 }
+	mac := "c4:8b:66:68:21:25"
+	deviceplaneSeed(t, store, mac, now())
+
+	l, err := New(Config{
+		Store: store, NowMillis: now,
+		ResolveMAC: func(string) (string, bool) { return mac, true },
+		Browse: func() ([]Service, error) {
+			return []Service{
+				{Name: "013186e4-3622-5568-bbe4-df32fa293b59", Address: "192.168.50.31"}, // Spotify UUID: rejected
+				{Name: "The-Hanger-89edfc7ba2211b500945eaeb", Address: "192.168.50.31"},  // Cast: suffix stripped -> "The-Hanger"
+				{Name: "The Hanger", Address: "192.168.50.31"},                           // AirPlay: the human name, wins
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	l.sweep()
+
+	cands := store.Report().Body.Candidates
+	if len(cands) != 1 {
+		t.Fatalf("candidates = %d, want 1 (all three services are one device)", len(cands))
+	}
+	if cands[0].Name != "The Hanger" {
+		t.Fatalf("name = %q, want %q — the human AirPlay name must beat the UUID and the hyphenated variant", cands[0].Name, "The Hanger")
+	}
+}
+
+func TestCleanName(t *testing.T) {
+	cases := map[string]string{
+		"The Hanger":                 "The Hanger",
+		"Brother MFC-L2730DW series": "Brother MFC-L2730DW series",
+		"onn.-4K-Streaming-Bo-89edfc7ba2211b500945eaeb2c0265c9": "onn.-4K-Streaming-Bo",
+		"013186e4-3622-5568-bbe4-df32fa293b59":                  "",
+		"CA580E3802EAF5C2-00000000B0050473":                     "",
+		"HA-Barn":                                               "HA-Barn",
+		"NAS":                                                   "NAS",
+	}
+	for in, want := range cases {
+		if got := cleanName(in); got != want {
+			t.Errorf("cleanName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func deviceplaneSeed(t *testing.T, store *deviceplane.Store, mac string, atMs int64) {
+	t.Helper()
+	driver, nativeID, match, ok := deviceplane.MACIdentity(mac)
+	if !ok {
+		t.Fatalf("MACIdentity(%q) rejected a valid MAC", mac)
+	}
+	store.Observe(deviceplane.Observation{
+		Match: match, Provenance: deviceplane.ProvenanceDiscovered,
+		Driver: driver, NativeID: nativeID, DeviceClass: "unclassified",
+		Address: "192.168.50.31",
+	}, atMs)
+}
+
 func TestBrowseErrorIsNonFatal(t *testing.T) {
 	store := deviceplane.NewStore("relay-1")
 	l, err := New(Config{

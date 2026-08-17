@@ -119,21 +119,42 @@ func (l *Lane) Run(ctx context.Context) error {
 	}
 }
 
-// sweep reads the cache once and merges each usable service.
+// sweep reads the cache once and merges the BEST name per host.
+//
+// One device advertises several mDNS services with names of very different
+// quality — a Roku answers AirPlay as "The Hanger" and Spotify as a bare UUID —
+// so a last-writer merge would leave a device showing whichever service was
+// parsed last, often the ugly one. Instead the sweep groups resolved services
+// by their MAC, cleans each name, and keeps the most human of them, then
+// Observes each host once. A device whose only names are machine ids (a bare
+// UUID, a hex blob) contributes no name and stays its neighbour identity rather
+// than being labelled with a hardware string no operator would recognise.
 func (l *Lane) sweep() {
 	services, err := l.browse()
 	if err != nil {
 		return
 	}
-	now := l.nowMillis()
+	type named struct{ name, addr string }
+	best := map[string]named{}
 	for _, s := range services {
-		if s.Name == "" || s.Address == "" {
+		if s.Address == "" {
+			continue
+		}
+		name := cleanName(s.Name)
+		if name == "" {
 			continue
 		}
 		mac, ok := l.resolveMAC(s.Address)
 		if !ok {
 			continue // cross-subnet / not in the neighbour table — deferred
 		}
+		if cur, seen := best[mac]; !seen || nameScore(name) > nameScore(cur.name) {
+			best[mac] = named{name: name, addr: s.Address}
+		}
+	}
+
+	now := l.nowMillis()
+	for mac, n := range best {
 		driver, nativeID, match, ok := deviceplane.MACIdentity(mac)
 		if !ok {
 			continue
@@ -144,10 +165,59 @@ func (l *Lane) sweep() {
 			Driver:      driver,
 			NativeID:    nativeID,
 			DeviceClass: ClassUnclassified,
-			Name:        s.Name,
-			Address:     s.Address,
+			Name:        n.name,
+			Address:     n.addr,
 		}, now)
 	}
+}
+
+// cleanName turns an mDNS instance name into a display name, or "" when there
+// is no human name in it. It first strips a trailing hardware-id suffix — the
+// long hex tail Google Cast and similar append to a friendly name
+// (`onn 4K Box-89edfc…`) — then rejects a name that is nothing BUT a machine id
+// (a UUID, or a hex/colon blob), because a hex string is worse than the
+// neighbour identity it would replace.
+func cleanName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	if i := strings.LastIndexByte(name, '-'); i > 0 && isHexBlob(name[i+1:]) && len(name[i+1:]) >= 12 {
+		name = strings.TrimSpace(name[:i])
+	}
+	if isHexBlob(name) {
+		return ""
+	}
+	return name
+}
+
+// nameScore ranks display names so the most human wins a device with several:
+// a name with a space (`The Hanger`) beats one without (`The-Hanger`), and a
+// longer name beats a shorter one at equal spacing. It only ever compares names
+// cleanName already admitted, so it need not re-check for machine ids.
+func nameScore(name string) int {
+	score := len(name)
+	if strings.Contains(name, " ") {
+		score += 1000
+	}
+	return score
+}
+
+// isHexBlob reports whether s, once its id separators (`:` `-` `.`) are
+// dropped, is a non-empty run of at least 8 hex digits and nothing else — a
+// UUID, a MAC, or a device-id string, none of which is a name.
+func isHexBlob(s string) bool {
+	hex := 0
+	for _, c := range s {
+		switch {
+		case (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'):
+			hex++
+		case c == ':' || c == '-' || c == '.':
+		default:
+			return false
+		}
+	}
+	return hex >= 8
 }
 
 // browseAvahi dumps the host avahi cache via `avahi-browse -a -t -r -p` and
