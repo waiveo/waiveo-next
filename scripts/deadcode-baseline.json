@@ -8,19 +8,19 @@
     "Read the reasons. A function lands here for one of four honest causes, and which one it is",
     "matters when you come to close it:",
     "  (a) a whole subsystem is built and not yet wired to anything (internal/archive);",
-    "  (b) a capability was declared and its caller never written \u2014 the defect class this gate",
+    "  (b) a capability was declared and its caller never written — the defect class this gate",
     "      exists for (internal/manifest's compat-range evaluation);",
     "  (c) a constructor option, accessor, or fixture helper only a unit test ever passes. Not a",
     "      bug, but not a wired capability either: production takes the default and always has;",
     "  (d) a String()/Error() method on a type nothing ever formats.",
     "",
     "Unit tests are deliberately NOT roots. If they were, this file would hold a handful of",
-    "entries instead of 100-odd, and it would never have listed eventsse's Hub.after \u2014 the one",
+    "entries instead of 100-odd, and it would never have listed eventsse's Hub.after — the one",
     "defect here a human review had already found by hand, since deleted, and the case that",
     "settled the root set. See scripts/validate-deadcode.mjs's header for the full argument.",
     "",
     "Do not read a green gate as 'nothing is unwired'. RTA cannot report a new EXPORTED METHOD on",
-    "a type whose values reach the reflection machinery \u2014 eventsse.Hub and relay/identity.Store",
+    "a type whose values reach the reflection machinery — eventsse.Hub and relay/identity.Store",
     "are two, measured by mutation. Unexported methods, package-level functions, and exported",
     "methods on other types are all caught. This is a ratchet, not a proof."
   ],
@@ -35,7 +35,7 @@
     },
     {
       "package": "internal/app/auth",
-      "reason": "ValidCredentialKind has no caller at all \u2014 not in a binary, a driver, a script, or a test; the credential-kind vocabulary is validated inline where it is read. DecodeTOTPSecret is the inverse of EncodeTOTPSecret and exists so a test can compute the enrollee's own codes (internal/app/auth/totphttp_test.go); the server stores and compares sealed, never decoding back.",
+      "reason": "ValidCredentialKind has no caller at all — not in a binary, a driver, a script, or a test; the credential-kind vocabulary is validated inline where it is read. DecodeTOTPSecret is the inverse of EncodeTOTPSecret and exists so a test can compute the enrollee's own codes (internal/app/auth/totphttp_test.go); the server stores and compares sealed, never decoding back.",
       "funcs": [
         "ValidCredentialKind",
         "DecodeTOTPSecret"
@@ -43,7 +43,7 @@
     },
     {
       "package": "internal/app/auth/authtest",
-      "reason": "A test-fixture package: every function here exists to be called from a _test.go, and unit tests are not roots for this analysis. AddPrincipal is the one fixture verb no current test needs \u2014 the fixtures build their principals at construction instead.",
+      "reason": "A test-fixture package: every function here exists to be called from a _test.go, and unit tests are not roots for this analysis. AddPrincipal is the one fixture verb no current test needs — the fixtures build their principals at construction instead.",
       "funcs": [
         "Fixture.AddPrincipal"
       ]
@@ -59,7 +59,7 @@
     },
     {
       "package": "internal/app/eventsse",
-      "reason": "Two constructor options production never passes (the defaults ship) and one test-only counter. WithGapDeferral left this list once the events/1 conformance driver began passing it: the EVT-142a bounded-deferral case has to run under a bound short enough to observe, and a driver is not a test \u2014 it is the thing that measures conformance, so an option it depends on is wired. Hub.after used to head this list and is now DELETED rather than baselined: it was a bare tail read left behind when the live loop moved to drain, which reads the tail and the eviction condition under one WithCloseObserver joins this list as a DELIBERATE test seam, approved as one: EVT-142's slow-consumer disconnect could not be pinned any other way. Two attempts failed for the same underlying reason \u2014 whether a nanosecond write deadline is actually exhausted on loopback, and whether the close frame survives a socket poisoned by a mid-frame abort, are both scheduling outcomes. The requirement is about which close the server DECIDES on, so the hook reports the decision where it is made. Production passes no observer and behaves exactly as before; the cost is one option nothing wires, and the alternative was the branch staying unpinned.",
+      "reason": "Two constructor options production never passes (the defaults ship) and one test-only counter. WithGapDeferral left this list once the events/1 conformance driver began passing it: the EVT-142a bounded-deferral case has to run under a bound short enough to observe, and a driver is not a test — it is the thing that measures conformance, so an option it depends on is wired. Hub.after used to head this list and is now DELETED rather than baselined: it was a bare tail read left behind when the live loop moved to drain, which reads the tail and the eviction condition under one WithCloseObserver joins this list as a DELIBERATE test seam, approved as one: EVT-142's slow-consumer disconnect could not be pinned any other way. Two attempts failed for the same underlying reason — whether a nanosecond write deadline is actually exhausted on loopback, and whether the close frame survives a socket poisoned by a mid-frame abort, are both scheduling outcomes. The requirement is about which close the server DECIDES on, so the hook reports the decision where it is made. Production passes no observer and behaves exactly as before; the cost is one option nothing wires, and the alternative was the branch staying unpinned.",
       "funcs": [
         "Hub.subscriberCount",
         "WithCloseObserver",
@@ -76,7 +76,7 @@
     },
     {
       "package": "internal/events",
-      "reason": "Two unwired clusters. The webhook ENDPOINT LIFECYCLE \u2014 construct fresh, enable, rotate the signing secret, verify an inbound signature \u2014 has no caller: internal/app/webhookdeliver restores an existing endpoint's state and delivers with it, and never runs the lifecycle verbs, which is why events/1's WEBHOOK_ENDPOINT_DISABLED has nothing to emit it. The rest are constructors and frame builders on paths that take a different entry point today (retention is configured at the log, gap frames are built by the SSE hub).",
+      "reason": "Two unwired clusters. The webhook ENDPOINT LIFECYCLE — construct fresh, enable, rotate the signing secret, verify an inbound signature — has no caller: internal/app/webhookdeliver restores an existing endpoint's state and delivers with it, and never runs the lifecycle verbs, which is why events/1's WEBHOOK_ENDPOINT_DISABLED has nothing to emit it. The rest are constructors and frame builders on paths that take a different entry point today (retention is configured at the log, gap frames are built by the SSE hub).",
       "funcs": [
         "Gap",
         "AckHello",
@@ -98,7 +98,7 @@
     },
     {
       "package": "internal/manifest",
-      "reason": "The version-range half is a capability with no caller: VersionRange.Allows and the comparator behind it are exercised only by version_test.go, and structurally could not be called anyway \u2014 HostRegistries carries no map of host-implemented ctx/relay versions to evaluate a range against. That is exactly why manifest/1 publishes COMPAT_RANGE_UNSATISFIED with nothing to emit it: validateCompat parses the range and discards the result. The consent-diff cluster is a second, smaller instance \u2014 the reconsent decision is computed and no install path asks for it.",
+      "reason": "The version-range half is a capability with no caller: VersionRange.Allows and the comparator behind it are exercised only by version_test.go, and structurally could not be called anyway — HostRegistries carries no map of host-implemented ctx/relay versions to evaluate a range against. That is exactly why manifest/1 publishes COMPAT_RANGE_UNSATISFIED with nothing to emit it: validateCompat parses the range and discards the result. The consent-diff cluster is a second, smaller instance — the reconsent decision is computed and no install path asks for it.",
       "funcs": [
         "ConsentChange.RequiresReconsent",
         "ConsentDiff",
@@ -119,7 +119,7 @@
     },
     {
       "package": "internal/relay/clocktrust",
-      "reason": "The relay constructs the clock-trust Controller at boot and takes its clock, and then never asks it about trust: reading the state, reporting it, applying a verified time, and accepting a hint are all uncalled, as is peer-certificate validation. The controller tracks state; the consumers that were meant to branch on it \u2014 the ones that refuse or degrade while the clock is untrusted \u2014 are the missing half.",
+      "reason": "The relay constructs the clock-trust Controller at boot and takes its clock, and then never asks it about trust: reading the state, reporting it, applying a verified time, and accepting a hint are all uncalled, as is peer-certificate validation. The controller tracks state; the consumers that were meant to branch on it — the ones that refuse or degrade while the clock is untrusted — are the missing half.",
       "funcs": [
         "ValidatePeerCert",
         "Controller.State",
@@ -146,7 +146,7 @@
     },
     {
       "package": "internal/relay/ecppoll",
-      "reason": "Three constructor options for the ECP poller. Tests pass the client and channel-size ones; WithRegistry has no caller at all \u2014 the poller's registry is set at construction.",
+      "reason": "Three constructor options for the ECP poller. Tests pass the client and channel-size ones; WithRegistry has no caller at all — the poller's registry is set at construction.",
       "funcs": [
         "WithChannelSize",
         "WithHTTPClient",
@@ -162,7 +162,7 @@
     },
     {
       "package": "internal/relay/playerserver",
-      "reason": "Four read-side accessors on the player-facing server \u2014 resolve a channel token, read the last lease ack, read render start/end counts. Each is exercised by this package's own tests; nothing in the relay's serving path or in a driver reads back through them, so the state they expose has no consumer.",
+      "reason": "Four read-side accessors on the player-facing server — resolve a channel token, read the last lease ack, read render start/end counts. Each is exercised by this package's own tests; nothing in the relay's serving path or in a driver reads back through them, so the state they expose has no consumer.",
       "funcs": [
         "Server.LookupChannelToken",
         "Server.LeaseAck",
@@ -179,7 +179,7 @@
     },
     {
       "package": "internal/relay/relayconn",
-      "reason": "Three accessors on the connection supervisor \u2014 the live client, an explicit stop, and a done channel. The feeder owns the supervisor's lifetime through its context and never calls them; the e2e test does.",
+      "reason": "Three accessors on the connection supervisor — the live client, an explicit stop, and a done channel. The feeder owns the supervisor's lifetime through its context and never calls them; the e2e test does.",
       "funcs": [
         "Supervisor.Client",
         "Supervisor.Stop",
@@ -196,7 +196,7 @@
     },
     {
       "package": "internal/rules/clock",
-      "reason": "The injectable fake clock. Production reads time through the relay's real sysClock (internal/relay/automationhost) and, on the app side, through the server's own injected nowMs (internal/app/api's appClock) \u2014 neither of which is this one. It became unreachable when POST /automations/{id}/run stopped driving a throwaway engine on a FakeClock; only unit tests construct one now, which is cause (c) in this file's own taxonomy.",
+      "reason": "The injectable fake clock. Production reads time through the relay's real sysClock (internal/relay/automationhost) and, on the app side, through the server's own injected nowMs (internal/app/api's appClock) — neither of which is this one. It became unreachable when POST /automations/{id}/run stopped driving a throwaway engine on a FakeClock; only unit tests construct one now, which is cause (c) in this file's own taxonomy.",
       "funcs": [
         "NewFakeClock",
         "FakeClock.Advance",
@@ -207,7 +207,7 @@
     },
     {
       "package": "internal/rules/engine",
-      "reason": "What is LEFT of the rules engine's unwired surface, now that the tick loop is driven. The engine's TIME drive \u2014 Tick, and the schedule dispatch, trigger-tick, delay resumption, stabilization release and schedule-floor seed under it \u2014 used to sit here, measured against the contract by rules/1's corpus driver (internal/rules/eval_corpus_test.go) and called by neither binary; cmd/waiveo-relay now drives all of it through automationhost.Host.TickLoop, so those entries are gone from this group rather than explained in it. SetStabilizationWindow remains DELIBERATELY un-opted-in: the RUL-301 gate is off unless a caller sets a window, the contract fixes no binding duration (its own draft-note defers concrete defaults to review), and turning it on delays every newly-eligible trigger's first dispatch \u2014 an owner decision, not a wiring gap. releaseStabilized runs on every tick and simply has nothing armed to release until that decision is made. Load/SeedEntityState/seedTriggerBaseline joined this group when POST /automations/{id}/run stopped synthesizing a device observation through a throwaway engine: a MANUAL run has no trigger history to seed and no generation to load \u2014 it evaluates the rule's conditions and runs its actions directly (internal/app/api/automations_exec.go, which explains why). The relay loads rules through ApplyGeneration, never Load, so the single-rule entry point has no production caller at all, and the relay's ECP poller seeds an entity through its own first self-transition observation rather than through SeedEntityState (internal/relay/ecppoll's own doc says so). They are kept rather than deleted because they are the engine's documented unit-level entry points and its corpus and unit drivers use them.",
+      "reason": "What is LEFT of the rules engine's unwired surface, now that the tick loop is driven. The engine's TIME drive — Tick, and the schedule dispatch, trigger-tick, delay resumption, stabilization release and schedule-floor seed under it — used to sit here, measured against the contract by rules/1's corpus driver (internal/rules/eval_corpus_test.go) and called by neither binary; cmd/waiveo-relay now drives all of it through automationhost.Host.TickLoop, so those entries are gone from this group rather than explained in it. SetStabilizationWindow remains DELIBERATELY un-opted-in: the RUL-301 gate is off unless a caller sets a window, the contract fixes no binding duration (its own draft-note defers concrete defaults to review), and turning it on delays every newly-eligible trigger's first dispatch — an owner decision, not a wiring gap. releaseStabilized runs on every tick and simply has nothing armed to release until that decision is made. Load/SeedEntityState/seedTriggerBaseline joined this group when POST /automations/{id}/run stopped synthesizing a device observation through a throwaway engine: a MANUAL run has no trigger history to seed and no generation to load — it evaluates the rule's conditions and runs its actions directly (internal/app/api/automations_exec.go, which explains why). The relay loads rules through ApplyGeneration, never Load, so the single-rule entry point has no production caller at all, and the relay's ECP poller seeds an entity through its own first self-transition observation rather than through SeedEntityState (internal/relay/ecppoll's own doc says so). They are kept rather than deleted because they are the engine's documented unit-level entry points and its corpus and unit drivers use them.",
       "funcs": [
         "Engine.SetStabilizationWindow",
         "Engine.Load",
@@ -239,7 +239,7 @@
     },
     {
       "package": "internal/shared/apihttp",
-      "reason": "ResolveRef \u2014 resolve an external-id reference to an internal id \u2014 has no caller anywhere: the API's write paths take ids directly, so the field that was meant to accept either form does not exist yet. The rest are two String()/Error() methods on types nothing formats and two idempotency-store introspection helpers.",
+      "reason": "ResolveRef — resolve an external-id reference to an internal id — has no caller anywhere: the API's write paths take ids directly, so the field that was meant to accept either form does not exist yet. The rest are two String()/Error() methods on types nothing formats and two idempotency-store introspection helpers.",
       "funcs": [
         "ResolveRef",
         "IdempotencyStore.len",
@@ -255,7 +255,7 @@
     },
     {
       "package": "internal/virtualplayer",
-      "reason": "The software player's preemption, relocation, and revocation scenarios are driven by this package's own tests (the software first-photon suite), not by a contract driver under conformance/drivers, so nothing in the analysed root set reaches them. They are scenario entry points for a harness, not product code \u2014 but the harness that calls them is a unit test, and this gate deliberately does not count those.",
+      "reason": "The software player's preemption, relocation, and revocation scenarios are driven by this package's own tests (the software first-photon suite), not by a contract driver under conformance/drivers, so nothing in the analysed root set reaches them. They are scenario entry points for a harness, not product code — but the harness that calls them is a unit test, and this gate deliberately does not count those.",
       "funcs": [
         "Preempt",
         "postRenderStart",
@@ -267,7 +267,7 @@
     },
     {
       "package": "internal/app/emergencykit",
-      "reason": "The kit's ISSUANCE half is wired \u2014 a first-boot claim mints one and returns it once (archive/1 ARC-110/113) \u2014 and these four are its REDEMPTION half, which has no surface yet. Verify checks a passphrase an operator transcribed from a printed kit, Current reports which issuance is live, and loadRecord/normalize serve them. What would call them is a recovery flow: the operator has lost their credentials or the hardware, presents the kit, and the platform re-establishes access from it. That flow is not built, and it is a larger question than this package \u2014 it decides what a valid passphrase actually AUTHORIZES, which is a security-model call rather than a wiring one. Deleting them instead would leave a kit that can be issued and never redeemed, which is a printed page that does nothing.",
+      "reason": "The kit's ISSUANCE half is wired — a first-boot claim mints one and returns it once (archive/1 ARC-110/113) — and these four are its REDEMPTION half, which has no surface yet. Verify checks a passphrase an operator transcribed from a printed kit, Current reports which issuance is live, and loadRecord/normalize serve them. What would call them is a recovery flow: the operator has lost their credentials or the hardware, presents the kit, and the platform re-establishes access from it. That flow is not built, and it is a larger question than this package — it decides what a valid passphrase actually AUTHORIZES, which is a security-model call rather than a wiring one. Deleting them instead would leave a kit that can be issued and never redeemed, which is a printed page that does nothing.",
       "funcs": [
         "Verify",
         "Current",
@@ -277,7 +277,7 @@
     },
     {
       "package": "internal/app/restoreswap",
-      "reason": "The boot half (Adopt) and the staging half (Stage) are both wired now \u2014 cmd/waiveo-feeder adopts before it opens the store, and the restore Job stages into it. These two remain uncalled by production: Pending reports whether a swap is waiting and Discard abandons one. What would use them is an operator surface over a staged-but-not-yet-adopted restore \u2014 'a restore is ready, restart to apply, or cancel it' \u2014 which is a console question rather than a wiring one, and is worth answering before a restart becomes the only way to find out a restore landed.",
+      "reason": "The boot half (Adopt) and the staging half (Stage) are both wired now — cmd/waiveo-feeder adopts before it opens the store, and the restore Job stages into it. These two remain uncalled by production: Pending reports whether a swap is waiting and Discard abandons one. What would use them is an operator surface over a staged-but-not-yet-adopted restore — 'a restore is ready, restart to apply, or cancel it' — which is a console question rather than a wiring one, and is worth answering before a restart becomes the only way to find out a restore landed.",
       "funcs": [
         "Discard",
         "Pending"
@@ -287,7 +287,15 @@
   "unimportedPackages": [
     {
       "package": "github.com/maaxton/waiveo-next/examples/packs/backups/cmd/backups",
-      "reason": "the pilot extension's runtime entry (MAN-065): a package main that no root IMPORTS because nothing ever should \u2014 scripts/examplepack compiles it and injects the binary into the signed artifact, and the host reaches it by exec at boot, not by import. The api package's packruntime e2e builds and runs it for real."
+      "reason": "the pilot extension's runtime entry (MAN-065): a package main that no root IMPORTS because nothing ever should — scripts/examplepack compiles it and injects the binary into the signed artifact, and the host reaches it by exec at boot, not by import. The api package's packruntime e2e builds and runs it for real."
+    },
+    {
+      "package": "github.com/maaxton/waiveo-next/extensions",
+      "reason": "the first-party extension bundle assembler: it embeds and zips what this platform SHIPS (waiveo/discovery). No root imports it because installation is not an import — the artifact is assembled and installed through the marketplace/install path, and its own tests are what exercise Zip/File. It is listed here rather than deleted because deleting it would delete the shipped extension."
+    },
+    {
+      "package": "github.com/maaxton/waiveo-next/extensions/discovery/cmd/discovery",
+      "reason": "the Discovery extension's runtime entry (MAN-065): a package main that no root IMPORTS because nothing ever should — it is compiled and injected into the signed artifact, and the host reaches it by exec at boot, not by import. Same shape as the backups pilot's binary above."
     }
   ]
 }

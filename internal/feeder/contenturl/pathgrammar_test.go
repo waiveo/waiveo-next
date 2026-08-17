@@ -138,6 +138,7 @@ var requiredTrees = map[string]int{
 	"internal/virtualplayer": 2,  // 4: the synthetic player, which consumes served urls
 	"internal/tools":         1,  // 3
 	"internal/castbundle":    1,  // 1: the portable .cast bundle writer/reader, which streams content bytes
+	"extensions":             1,  // 2: the first-party extensions this platform ships (waiveo/discovery) and their runtime binaries
 	"internal/slidelive":     1,  // 2: content resolution
 	"internal/packsig":       1,  // 2
 	"api":                    1,  // 2
