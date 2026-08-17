@@ -5,6 +5,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/maaxton/waiveo-next/internal/shared/deviceid"
+	"github.com/maaxton/waiveo-next/internal/shared/macvendor"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
@@ -305,14 +306,25 @@ func checkField(name, value string, maxBytes int, required bool) error {
 }
 
 // candidateName is the row's `name`: the device's own self-reported name when
-// it has one, else its identity tuple spelled out.
+// it has one, else its identity tuple spelled out — and, for a host the network
+// revealed only as a bare MAC, spelled out with the MAC's VENDOR in place of the
+// bare driver token when the OUI is one we recognize.
 //
 // This is the device calling itself something, which IS a discovered fact — as
 // distinct from the display name an operator gives it, which is authored policy
-// on the adopted record (REL-063) and never comes from here.
+// on the adopted record (REL-063) and never comes from here. The vendor is the
+// same kind of fact: it is read out of the MAC the relay already reported, not
+// authored, and it only ever REPLACES the driver token in the fallback — a
+// device that named itself (`c.Name != ""`) keeps its own name untouched, so
+// this can never override a better name a lane already learned (macvendor, and
+// the name-quality merge in relay/hostmdns that chose `c.Name` in the first
+// place).
 func candidateName(c wire.DeviceCandidate) string {
 	if c.Name != "" {
 		return c.Name
+	}
+	if vendor, ok := macvendor.Vendor(c.NativeID); ok {
+		return vendor + " " + c.NativeID
 	}
 	return c.Driver + " " + c.NativeID
 }
