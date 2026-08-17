@@ -114,9 +114,9 @@ describe("AppShell — locked-left responsive shell", () => {
         // appended: Schedules programs Screens, Upload is Media's write half.
         children: ["Casts", "Screens", "Schedules", "Media", "Upload", "Widgets"],
       },
-      { group: "Devices", expanded: true, children: ["All devices", "Roku"] },
-      // Automations became a GROUP when Variables landed beside it — the same
-      // move Devices made for Roku. Two pages that belong together are an area;
+      { group: "Discovery", expanded: true, children: ["All devices"] },
+      // Automations became a GROUP when Variables landed beside it. Two pages
+      // that belong together are an area;
       // admitting a second top-level leaf would make "top level" mean "no
       // obvious home", which is the flat rail this tree replaced.
       { group: "Automations", expanded: true, children: ["Rules", "Variables"] },
@@ -164,10 +164,7 @@ describe("AppShell — locked-left responsive shell", () => {
     for (const had of [
       "Overview",
       "Screens",
-      "Devices",
-      // Reachable as a link — this list checks nothing disappeared, not where it
-      // sits. Roku is a child of Devices; see the placement note in nav-tree.ts.
-      "Roku",
+      "All devices",
       "Schedules",
       "Casts",
       "Upload",
@@ -180,19 +177,16 @@ describe("AppShell — locked-left responsive shell", () => {
       "Backup",
       "Design kit",
     ]) {
-      // Two destinations kept their route and changed their LABEL, because both
-      // became groups with siblings coming: "Devices" now reads "All devices"
-      // (the legacy label, and the one that reads correctly beside the Discovery
-      // and Roku entries joining it), and "Extensions" now reads "Installed"
-      // under an Extensions group — a catalogue browse and a registry-source
-      // list are both recorded ABSENT and will land beside it.
-      // Each of these is a page that KEPT existing but whose rail label changed
-      // when its area gained a sibling — the group took the old name and the page
-      // took a more specific one. "Automations" now names the group; its page is
-      // "Rules", which is what the resource is called in the contract, the
-      // builder and the engine.
+      // Two destinations kept their route and changed their LABEL because their
+      // area became a group: "Extensions" now reads "Installed" under an
+      // Extensions group (a catalogue browse and a registry-source list are both
+      // recorded ABSENT and will land beside it), and "Automations" names the
+      // group whose page is "Rules" — what the resource is called in the
+      // contract, the builder and the engine. The device area was renamed to
+      // "Discovery" (owner, 2026-08-17) and its page stays "All devices"; Roku
+      // is no longer a rail entry (it is an extension's control surface, reached
+      // off-rail from the device it operates).
       const renamed: Record<string, string> = {
-        Devices: "All devices",
         Extensions: "Installed",
         Automations: "Rules",
       };
@@ -214,7 +208,7 @@ describe("AppShell — locked-left responsive shell", () => {
     expect(railNav.tagName).toBe("NAV");
 
     const toggles = within(railNav).getAllByRole("button");
-    expect(toggles.map((b) => b.textContent?.trim())).toEqual(["Slidecast", "Devices", "Automations", "Extensions", "Platform"]);
+    expect(toggles.map((b) => b.textContent?.trim())).toEqual(["Slidecast", "Discovery", "Automations", "Extensions", "Platform"]);
     for (const toggle of toggles) {
       expect(toggle).toHaveAttribute("type", "button");
       expect(toggle).toHaveAttribute("aria-expanded", "true");
@@ -269,7 +263,7 @@ describe("AppShell — locked-left responsive shell", () => {
     expect(within(sidebar2).queryByRole("link", { name: "Casts" })).toBeNull();
     // Only the group that was collapsed — the memory records deviations, not a
     // whole snapshot, so an area nobody touched still ships open.
-    expect(within(sidebar2).getByRole("button", { name: "Devices" })).toHaveAttribute(
+    expect(within(sidebar2).getByRole("button", { name: "Discovery" })).toHaveAttribute(
       "aria-expanded",
       "true",
     );
@@ -315,12 +309,12 @@ describe("AppShell — locked-left responsive shell", () => {
     renderShell();
     // Collapse in the rail...
     const sidebar = document.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
-    await user.click(within(sidebar).getByRole("button", { name: "Devices" }));
+    await user.click(within(sidebar).getByRole("button", { name: "Discovery" }));
     // ...and the drawer opens showing the same thing. Two independent copies of
     // this state would drift the moment a phone and a desktop shared a session.
     await user.click(screen.getByRole("button", { name: /open navigation menu/i }));
     const drawer = await screen.findByRole("dialog");
-    expect(within(drawer).getByRole("button", { name: "Devices" })).toHaveAttribute(
+    expect(within(drawer).getByRole("button", { name: "Discovery" })).toHaveAttribute(
       "aria-expanded",
       "false",
     );

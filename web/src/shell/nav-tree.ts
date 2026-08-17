@@ -14,7 +14,6 @@ import {
   Server,
   Settings,
   KeyRound,
-  Tv,
   Upload,
   Variable,
   Workflow,
@@ -134,38 +133,30 @@ export const NAV_TREE: NavNode[] = [
     ],
   },
 
-  // ── Devices: the hardware plane ─────────────────────────────────────────
-  // What the relays found on the LAN and what has been adopted — a different
-  // resource with a different owner (the relay) from the screens above.
+  // ── Discovery: what is on the network ───────────────────────────────────
+  // The device area is named "Discovery" (owner, 2026-08-17): the console's job
+  // here is finding what is on the LAN, and the relays report the whole segment,
+  // not only the devices this deployment has adopted — "Devices" undersold that
+  // to exactly one operator, and it read as the adopted set rather than the
+  // network. What the relays found and what has been adopted are a different
+  // resource with a different owner (the relay) from the Slidecast screens
+  // above.
   //
-  // Legacy never had this group, and the absence was an accident rather than a
-  // choice: device-discovery and roku-integration were two separate sections
-  // whose `order` values (25/26 and 60/61) were plainly reaching for adjacency,
-  // and the discovery section's heading was the nonsense string "NETWORK SCAN"
-  // — the same missing-title fallback that produced the Slidecast stutter. Its
-  // child label, "All Devices", is legacy's own and is kept.
-  //
-  // It is a GROUP rather than a leaf because that is the shape it takes the
-  // moment the discovery and Roku operator surfaces land beside it (parity rows
-  // 8.5/8.6, in flight on another track): they are siblings of this entry,
-  // added as two more objects in this array and nothing else.
+  // Roku is NOT a child here any more. The owner drew the line: "there should be
+  // no such thing as a Roku console when it comes to devices — Roku is its own
+  // extension, and Discovery is its own extension." A per-driver control surface
+  // is an EXTENSION's contribution, not a fixed rail entry; while Roku is not
+  // yet a pack the /roku page stays reachable from a discovered media player
+  // (OFF_RAIL_ROUTES) but is off the Discovery rail. The second child the owner
+  // asked for — a "Scan" page beside "All devices" — waits on its own backing
+  // (a scan trigger, subnet policy, per-lane engine state), none of which the
+  // relay reports yet; it is a deliberate absence, not an oversight.
   {
     kind: "group",
     id: "devices",
-    label: "Devices",
+    label: "Discovery",
     icon: Radio,
-    children: [
-      { kind: "leaf", to: "/devices", label: "All devices", icon: Radio },
-      // Roku is a SIBLING of All devices, not a top-level entry. The track that
-      // built it argued for top-level, "beside Devices, not inside it: discovering
-      // and OPERATING are different jobs" — true of the two pages, but it was
-      // reasoning against the flat rail, where "inside" did not exist. Under the
-      // area model the rule is the one this file already states: a top-level leaf
-      // is for a page belonging to no area, and a per-driver control surface
-      // plainly belongs to the device area. Filing it loose is the exact thing
-      // Matt objected to ("Screens should be under slide cast, just like CAS").
-      { kind: "leaf", to: "/roku", label: "Roku", icon: Tv },
-    ],
+    children: [{ kind: "leaf", to: "/devices", label: "All devices", icon: Radio }],
   },
 
   // Automations sit at the top level on purpose. A rule's trigger is usually a
@@ -301,6 +292,11 @@ export interface OffRailRoute {
 }
 
 export const OFF_RAIL_ROUTES: OffRailRoute[] = [
+  {
+    to: "/roku",
+    reachedVia:
+      "The 'Roku console' button on the Discovery page, shown when a discovered device is a media player. It is a per-driver control surface, which the owner ruled belongs to a Roku EXTENSION rather than the device rail (\"no Roku console when it comes to devices\"). Until Roku is a pack it stays reachable from the device it operates, but off the rail — a recorded step toward removing it from core entirely.",
+  },
   {
     to: "/*",
     reachedVia:

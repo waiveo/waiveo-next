@@ -348,7 +348,7 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
       <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-4 py-6 lg:px-8">
         <PageHeader
           variant="hero"
-          title="Devices"
+          title="Discovery"
           description="Everything the relays can see on their networks, what this deployment has adopted, and a remote for the ones it can drive."
           actions={
             <div className="flex flex-wrap gap-2">
