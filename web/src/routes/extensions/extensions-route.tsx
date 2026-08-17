@@ -550,7 +550,7 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
           kind: "ok",
           message: enabled
             ? "Enabled. Its pages are being served again."
-            : "Disabled. Its pages are withdrawn; its data, install history and the pack itself are untouched.",
+            : "Disabled. Its pages are withdrawn; its data, install history and the extension itself are untouched.",
         });
         await refresh();
         // The rail lists only enabled packs, so it has to re-resolve.
@@ -698,7 +698,7 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
             Installing happens live
           </h2>
           <p className="text-sm text-muted-foreground">
-            An extension is a <strong>sealed, signed pack</strong>: a manifest, its pages, its
+            An extension is <strong>sealed and signed</strong>: a manifest, its pages, its
             message catalogs and the data collections it declares. Installing one writes those files
             and its collections in a single transaction, and the pack's pages appear in the
             navigation immediately. There is no image rebuild and no reboot in that path. Removing
@@ -725,7 +725,7 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
         ) : null}
 
         <div className="flex flex-wrap gap-4">
-          <StatCard label="Installed" value={String(cards.length)} hint="packs on this box" />
+          <StatCard label="Installed" value={String(cards.length)} hint="extensions on this box" />
           <StatCard
             label="Auto-tracked"
             value={String(autoTracked)}
@@ -741,7 +741,7 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
             value={String(updatesWaiting)}
             hint={
               updatesWaiting === 0
-                ? "every tracked pack is current"
+                ? "every tracked extension is current"
                 : "a newer version is published; nothing applied"
             }
           />
@@ -763,7 +763,7 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
             <div className="flex flex-col gap-3 rounded-card border border-border bg-card p-5 wv-elevation">
               <div className="flex items-center gap-2">
                 <KitIcon icon={Upload} decorative className="size-4 text-muted-foreground" />
-                <h3 className="font-medium">From a pack file</h3>
+                <h3 className="font-medium">From an extension file</h3>
               </div>
               <p className="text-sm text-muted-foreground">
                 A signed <span className="font-mono text-xs">.pack.zip</span>. The box verifies its
@@ -771,7 +771,7 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
                 through the same gate a marketplace install goes through — an unsigned or
                 mis-signed artifact is refused, and nothing lands.
               </p>
-              <FormField label="Pack artifact" help="A signed zip built by the pack's publisher.">
+              <FormField label="Extension artifact" help="A signed zip built by the extension's publisher.">
                 {(control) => (
                   <input
                     {...control}
@@ -788,9 +788,9 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
                   icon={PackagePlus}
                   disabled={!file || busy || gated}
                   onClick={() => void installFile()}
-                  aria-label="Install the chosen pack file"
+                  aria-label="Install the chosen extension file"
                 >
-                  Install pack
+                  Install extension
                 </Button>
               </div>
               <OutcomeBanner outcome={outcomes["install-file"]} />
@@ -806,12 +806,12 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
                 Name a pack and this box resolves it through its configured registry sources, then
                 verifies and installs it through the identical pipeline a file upload takes.{" "}
                 <strong>There is no catalogue to browse here</strong> — this api exposes resolution,
-                not discovery — so the pack id is typed rather than picked. Nothing publishes which
+                not discovery — so the extension id is typed rather than picked. Nothing publishes which
                 registry sources this box trusts either; if it has none configured, it will say so
                 when you ask it to resolve one.
               </p>
               <div className="grid gap-3 sm:grid-cols-2">
-                <FormField label="Pack id" help="Publisher-qualified, e.g. waiveo/menu-board.">
+                <FormField label="Extension id" help="Publisher-qualified, e.g. waiveo/menu-board.">
                   {(control) => (
                     <input
                       {...control}
@@ -997,7 +997,7 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
           ) : cards.length === 0 ? (
             <EmptyState
               title="No extensions installed"
-              description="Install a signed pack file above, or resolve one from a configured registry source. The in-repo example builds with the command below."
+              description="Install a signed extension file above, or resolve one from a configured registry source. The in-repo example builds with the command below."
               action={
                 <code className="rounded-input bg-[color:var(--wv-surface-2)] px-3 py-1.5 font-mono text-xs">
                   {EXAMPLE_PACK_COMMAND}

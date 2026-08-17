@@ -209,8 +209,8 @@ describe("Extensions console — installing", () => {
     const file = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], "menu-board.pack.zip", {
       type: "application/zip",
     });
-    await userEvent.upload(screen.getByLabelText(/Pack artifact/), file);
-    await userEvent.click(screen.getByRole("button", { name: /Install the chosen pack file/ }));
+    await userEvent.upload(screen.getByLabelText(/Extension artifact/), file);
+    await userEvent.click(screen.getByRole("button", { name: /Install the chosen extension file/ }));
 
     // The bytes actually left, as an artifact upload.
     await waitFor(() => expect(bytes).toBe(4));
@@ -234,7 +234,7 @@ describe("Extensions console — installing", () => {
     // A pack id alone is not enough: the channel is required and is never defaulted
     // — choosing one for the operator would be choosing how much review the pack
     // has had (MKT-060a(b)).
-    await userEvent.type(screen.getByLabelText(/Pack id/), PACK_ID);
+    await userEvent.type(screen.getByLabelText(/Extension id/), PACK_ID);
     expect(install).toBeDisabled();
 
     const channel = screen.getByLabelText(/Trust channel/) as HTMLSelectElement;
@@ -259,7 +259,7 @@ describe("Extensions console — installing", () => {
     renderRoute();
     await screen.findByText("No extensions installed");
 
-    await userEvent.type(screen.getByLabelText(/Pack id/), PACK_ID);
+    await userEvent.type(screen.getByLabelText(/Extension id/), PACK_ID);
     await userEvent.selectOptions(screen.getByLabelText(/Trust channel/), "verified");
     await userEvent.type(screen.getByLabelText(/Version/), "1.2.0");
     await userEvent.click(screen.getByRole("button", { name: /Resolve and install this marketplace reference/ }));
@@ -286,10 +286,10 @@ describe("Extensions console — installing", () => {
     await screen.findByText("No extensions installed");
 
     await userEvent.upload(
-      screen.getByLabelText(/Pack artifact/),
+      screen.getByLabelText(/Extension artifact/),
       new File([new Uint8Array([1])], "bad.pack.zip", { type: "application/zip" }),
     );
-    await userEvent.click(screen.getByRole("button", { name: /Install the chosen pack file/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Install the chosen extension file/ }));
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("The pack manifest failed validation.");
@@ -646,10 +646,10 @@ describe("Extensions console — live, in this console", () => {
     expect(screen.queryByRole("navigation", { name: "Extensions" })).not.toBeInTheDocument();
 
     await userEvent.upload(
-      screen.getByLabelText(/Pack artifact/),
+      screen.getByLabelText(/Extension artifact/),
       new File([new Uint8Array([0x50, 0x4b])], "menu-board.pack.zip", { type: "application/zip" }),
     );
-    await userEvent.click(screen.getByRole("button", { name: /Install the chosen pack file/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Install the chosen extension file/ }));
 
     const ext = await screen.findByRole("navigation", { name: "Extensions" });
     expect(within(ext).getByRole("link", { name: "Menu Items" })).toHaveAttribute(
@@ -755,12 +755,12 @@ describe("Extensions console — the real example pack, installed end to end", (
     renderRoute();
     await screen.findByText("No extensions installed");
     await userEvent.upload(
-      screen.getByLabelText(/Pack artifact/),
+      screen.getByLabelText(/Extension artifact/),
       new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], "menu-board.pack.zip", {
         type: "application/zip",
       }),
     );
-    await userEvent.click(screen.getByRole("button", { name: /Install the chosen pack file/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Install the chosen extension file/ }));
 
     const card = await packCard(REAL_ID);
     // The title comes from the pack's OWN catalog, resolved through the same
@@ -845,7 +845,7 @@ it("does not count a withdrawn running version as an available update", async ()
 
   // Nothing is "waiting" — the tally says every tracked pack is current, which
   // is true: there is no newer version, there is a broken one.
-  expect(await screen.findByText(/every tracked pack is current/)).toBeInTheDocument();
+  expect(await screen.findByText(/every tracked extension is current/)).toBeInTheDocument();
   // And the fault gets its own tile, which only renders when there is one.
   expect(await screen.findByText("Withdrawn")).toBeInTheDocument();
 });
@@ -988,7 +988,7 @@ it("turns a pack off through the real control, and says the data survived", asyn
   // The outcome has to say what SURVIVED. "Disabled" alone does not tell an
   // operator whether their rows are gone, and that is the one thing they need
   // before using this instead of uninstalling.
-  expect(await within(card).findByText(/data, install history and the pack itself are untouched/i)).toBeInTheDocument();
+  expect(await within(card).findByText(/data, install history and the extension itself are untouched/i)).toBeInTheDocument();
 });
 
 it("shows a disabled pack as off, and offers to enable it", async () => {
