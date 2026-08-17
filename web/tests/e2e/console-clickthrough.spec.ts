@@ -31,7 +31,7 @@ import { randomUUID } from "node:crypto";
 
 const PACK_ID = "waiveo/menu-board";
 const MENU_PAGE = "/p/waiveo/menu-board/menu-items";
-const ROWS_API = "/api/v1/packs/waiveo/menu-board/data/menu_items";
+const ROWS_API = "/api/v1/extensions/waiveo/menu-board/data/menu_items";
 
 // A distinctive, regex-safe name so a table/row/detail match is unambiguous. The
 // stack is freshly seeded each `make web-e2e` run (an empty store), so a fixed name
@@ -55,13 +55,13 @@ const ITEM_NAME = "E2E Flat White";
 // the CSRF echo the console's api client would normally add.
 async function ensurePackInstalled(page: Page): Promise<void> {
   const api = page.request;
-  const res = await api.get("/api/v1/packs");
+  const res = await api.get("/api/v1/extensions");
   expect(res.ok(), `list packs: ${res.status()}`).toBeTruthy();
   const body = (await res.json()) as { items?: Array<{ id?: string }> };
   if ((body.items ?? []).some((p) => p.id === PACK_ID)) return;
   const zipPath = process.env.PW_PACK_ZIP ?? resolve(process.cwd(), "..", ".dev", "menu-board.pack.zip");
   const zip = readFileSync(zipPath);
-  const installed = await api.post("/api/v1/packs", {
+  const installed = await api.post("/api/v1/extensions", {
     headers: {
       "Content-Type": "application/zip",
       "Idempotency-Key": randomUUID(),

@@ -84,7 +84,7 @@ go run ./scripts/observabilityprobe
 go run ./scripts/webuiprobe
 
 # 9. Declarative pack: install the in-repo example pack (examples/packs/menu-board)
-# through the REAL POST /api/v1/packs — the same manifest engine that gates a third
+# through the REAL POST /api/v1/extensions — the same manifest engine that gates a third
 # party's upload — and assert the install summary (its two pages + the menu_items
 # collection). Proves a declarative extension installs end to end on the live
 # feeder; NOTHING in the pack executes — a pack is data (manifest, page documents,
