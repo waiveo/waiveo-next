@@ -310,10 +310,14 @@ func parseAvahi(out string) []Service {
 	return services
 }
 
-// unescapeAvahi decodes avahi's parseable-format escapes: `\NNN` is one byte
-// given as three decimal digits (a space is `\032`, a UTF-8 apostrophe arrives
-// as `\226\128\153`), and `\\` is a literal backslash. Anything else after a
-// backslash is left as written rather than guessed at.
+// unescapeAvahi decodes avahi's parseable-format escapes. The format has two:
+// `\NNN`, one byte given as three decimal digits (a space is `\032`; a UTF-8
+// codepoint arrives as its bytes, so an apostrophe is `\226\128\153`); and
+// `\X`, a single literal character the format would otherwise read as structure
+// — `\.` (a dot inside one label, as in the streaming brand "onn."), `\\` (a
+// literal backslash), `\;` (a literal field separator). In BOTH forms the
+// backslash is the escape and must be consumed; only a trailing backslash with
+// nothing after it is preserved as written.
 func unescapeAvahi(s string) string {
 	if !strings.Contains(s, `\`) {
 		return s
@@ -325,11 +329,8 @@ func unescapeAvahi(s string) string {
 			b.WriteByte(s[i])
 			continue
 		}
-		if i+1 < len(s) && s[i+1] == '\\' {
-			b.WriteByte('\\')
-			i++
-			continue
-		}
+		// `\NNN`: three decimal digits are one byte. Checked first so a real
+		// digit escape is never mistaken for `\X` swallowing its first digit.
 		if i+3 < len(s) && isDigit(s[i+1]) && isDigit(s[i+2]) && isDigit(s[i+3]) {
 			n := int(s[i+1]-'0')*100 + int(s[i+2]-'0')*10 + int(s[i+3]-'0')
 			if n <= 255 {
@@ -338,6 +339,16 @@ func unescapeAvahi(s string) string {
 				continue
 			}
 		}
+		// `\X`: the character is literal, the backslash is not. This is the case
+		// the first version dropped — it kept the backslash, so `onn\. 4K`
+		// reached an operator as `onn\. 4K` rather than `onn. 4K`. `\\` is just
+		// this case with X a backslash, so it needs no separate branch.
+		if i+1 < len(s) {
+			b.WriteByte(s[i+1])
+			i++
+			continue
+		}
+		// A trailing backslash with nothing to escape: preserve it as written.
 		b.WriteByte('\\')
 	}
 	return b.String()

@@ -53,6 +53,29 @@ func TestParseAvahi(t *testing.T) {
 	}
 }
 
+// TestUnescapeAvahi pins BOTH escape forms avahi's parseable output uses. The
+// `\.`/`\;`/`\X` case is a regression guard: it was dropped once, and reached an
+// operator as a stray backslash in a real device name ("onn\. 4K Streaming Box").
+func TestUnescapeAvahi(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"plain", "plain"},
+		{`The\032Hanger`, "The Hanger"},                     // \NNN space
+		{`Matt\226\128\153s`, "Matt’s"},                     // \NNN UTF-8 (three bytes)
+		{`onn\.`, "onn."},                                   // \X — the bug: an escaped dot
+		{`onn\. 4K Streaming Box`, "onn. 4K Streaming Box"}, // \X in context
+		{`a\\b`, `a\b`},                                     // \\ is just \X with X a backslash
+		{`a\;b`, "a;b"},                                     // \X — an escaped field separator
+		{`X029009JC6LF`, "X029009JC6LF"},                    // no escapes, untouched
+		{`trailing\`, `trailing\`},                          // a lone trailing backslash is kept
+		{`\032`, " "},                                       // a bare escape
+		{`\.\032\.`, ". ."},                                 // adjacent escapes of both forms
+	} {
+		if got := unescapeAvahi(tc.in); got != tc.want {
+			t.Errorf("unescapeAvahi(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // A sweep NAMES a host the neighbour lane already minted: the avahi service
 // merges onto the same MAC candidate (one row) and gives it a real name —
 // even for a device that is SSDP-silent. A service whose address is not in the
