@@ -393,13 +393,13 @@ func (d *Discoverer) WatchCount() int {
 	return len(d.watchSet())
 }
 
-// Run drives the sweep loop and alive monitor until ctx is canceled
-// (REL-110/111): it starts the NOTIFY alive monitor once, sweeps
-// immediately, then sweeps again every Interval. The monitor is always
-// closed before Run returns. Run returns ctx.Err() once ctx is done, or an
-// error starting the alive monitor.
+// Run drives the PASSIVE alive monitor until ctx is canceled (REL-110/111): it
+// starts the NOTIFY monitor once and then simply waits, so a relay at rest
+// originates nothing on the wire. The monitor is always closed before Run
+// returns. Run returns ctx.Err() once ctx is done, or an error starting the
+// alive monitor. The active M-SEARCH half is Scan, called only on demand.
 //
-// Cancellation is honored PROMPTLY even mid-sweep (C1): the production
+// Cancellation is honored PROMPTLY even mid-scan (C1): the production
 // searchFn (defaultSearch) is go-ssdp's ssdp.Search, which takes no
 // context.Context at all and blocks for the entire SearchWait regardless of
 // ctx — so sweep runs each pattern's search in its own goroutine via
@@ -428,18 +428,36 @@ func (d *Discoverer) Run(ctx context.Context) error {
 	}
 	defer mon.Close()
 
-	ticker := time.NewTicker(d.interval)
-	defer ticker.Stop()
+	// PASSIVE ONLY. Run listens for SSDP NOTIFY announcements and originates
+	// NOTHING on the wire — no M-SEARCH sweep and no timer that would start one.
+	//
+	// It used to sweep immediately and then every `interval`, which made this the
+	// one lane that probed the network automatically at boot. The owner's model
+	// (Discovery spec §4, 2026-08-17) puts every active probe behind an explicit
+	// scan: "it shouldn't discover anything using its advanced networking stuff
+	// until you tell it to do a scan." The M-SEARCH half now lives in Scan, which
+	// only the scan path calls, so a relay at rest is silent and a device that
+	// only ANSWERS M-SEARCH (rather than announcing) appears after a scan — which
+	// is the intended trade, not a regression.
+	<-ctx.Done()
+	return ctx.Err()
+}
 
+// Scan runs ONE active SSDP round on demand: an M-SEARCH per configured pattern,
+// with each response Observed into the Store exactly as a passive NOTIFY sighting
+// would be. It is the active half Run deliberately no longer performs.
+//
+// This is the relay's side of the `discovery.scan` command (wire
+// FrameTypeDiscoveryScan). It blocks for the duration of the round — one
+// SearchWait per distinct pattern — so a caller that must answer a request
+// promptly runs it on its own goroutine and reports acceptance rather than
+// findings; the findings travel upward through the ordinary `device.candidates`
+// report, the same path passive sightings take.
+//
+// ctx bounds the round: a canceled scan stops between patterns and no late
+// result is Observed (searchPattern re-checks ctx before every Observe).
+func (d *Discoverer) Scan(ctx context.Context) {
 	d.sweep(ctx)
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			d.sweep(ctx)
-		}
-	}
 }
 
 // sweep runs one SSDP M-SEARCH round: for every distinct configured pattern

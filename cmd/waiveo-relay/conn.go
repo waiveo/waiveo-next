@@ -137,13 +137,14 @@ func ackErrorCode(err error) string {
 // because both handlers are built AFTER the first dial: nudges routes REL-057's
 // state.changed to the live apply path, and commands routes REL-112's
 // device.command to the automation host's command surface.
-func relayDialConfig(cfg config, store *identity.Store, nudges *nudgeSink, commands *deviceCommandSink) relayconn.Config {
+func relayDialConfig(cfg config, store *identity.Store, nudges *nudgeSink, commands *deviceCommandSink, scans *discoveryScanSink) relayconn.Config {
 	return relayconn.Config{
 		URL:                 cfg.feederURL,
 		Store:               store,
 		Declaration:         relayHelloDeclaration(cfg),
 		OnGenerationAdvance: nudges.deliver,
 		OnDeviceCommand:     commands.execute,
+		OnDiscoveryScan:     scans.run,
 	}
 }
 
@@ -411,6 +412,43 @@ func (d *deviceCommandSink) execute(body wire.DeviceCommandBody) wire.DeviceComm
 	if fn == nil {
 		return wire.NewDeviceCommandError("INTERNAL",
 			"this relay's device plane is not up yet; retry once it has finished starting")
+	}
+	return fn(body)
+}
+
+// discoveryScanSink is deviceCommandSink's counterpart for `discovery.scan`,
+// and exists for the same ordering reason: relayconn.Config.OnDiscoveryScan has
+// to be supplied at DIAL time, but the discoverer that performs a scan is not
+// constructed until the discovery block several boot steps later. The sink is
+// handed to every Dial and filled in once discovery is up, so — as with
+// commands — every redial reuses the SAME sink and a reconnect cannot lose the
+// scan capability.
+type discoveryScanSink struct {
+	mu sync.Mutex
+	fn func(wire.DiscoveryScanBody) wire.DiscoveryScanResultBody
+}
+
+func (d *discoveryScanSink) set(fn func(wire.DiscoveryScanBody) wire.DiscoveryScanResultBody) {
+	d.mu.Lock()
+	d.fn = fn
+	d.mu.Unlock()
+}
+
+// run is the relayconn.Config.OnDiscoveryScan callback. It runs on the
+// connection's own per-request goroutine (never the read loop).
+//
+// A scan that arrives before discovery is up — the boot window before the
+// discovery block, or a whole boot with discovery disabled (WAIVEO_RELAY_DISCOVERY
+// off, or a loopback dev relay) — is answered with a typed refusal rather than
+// dropped: "this relay is not running discovery" is a true and actionable thing
+// to say, and silence would leave the operator's request hanging until timeout.
+func (d *discoveryScanSink) run(body wire.DiscoveryScanBody) wire.DiscoveryScanResultBody {
+	d.mu.Lock()
+	fn := d.fn
+	d.mu.Unlock()
+	if fn == nil {
+		return wire.NewDiscoveryScanError("UNAVAILABLE",
+			"this relay is not running discovery, so it cannot scan")
 	}
 	return fn(body)
 }

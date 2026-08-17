@@ -57,6 +57,12 @@ const (
 // any record it produces (REL-006).
 type CommandDispatcher interface {
 	SendDeviceCommand(ctx context.Context, relayID, traceID string, body wire.DeviceCommandBody) (wire.DeviceCommandResultBody, error)
+	// SendDiscoveryScan asks one relay to run a single ACTIVE scan of its own
+	// network and returns that relay's acceptance (`discovery.scan`). It is on
+	// the same interface because it is the same capability — carrying an
+	// operator's action to the relay that can perform it — and internal/feeder/
+	// relayconn.Server satisfies it with the identical signature.
+	SendDiscoveryScan(ctx context.Context, relayID, traceID string, body wire.DiscoveryScanBody) (wire.DiscoveryScanResultBody, error)
 }
 
 // Option configures the api handler beyond its required dependencies.
@@ -87,6 +93,7 @@ func (srv *server) mountDevicePlane(rt *router) {
 	rt.HandleFunc("GET "+apiPrefix+"/entities", srv.listEntities)
 	rt.HandleFunc("POST "+apiPrefix+"/entities/{id}/commands", srv.sendEntityCommand)
 	rt.HandleFunc("GET "+apiPrefix+"/discovery/relays", srv.getDiscoveryRelays)
+	rt.HandleFunc("POST "+apiPrefix+"/discovery/scan", srv.startDiscoveryScan)
 }
 
 // getDiscoveryRelays reports the connected relays to any authenticated operator
@@ -106,6 +113,101 @@ func (srv *server) mountDevicePlane(rt *router) {
 func (srv *server) getDiscoveryRelays(w http.ResponseWriter, r *http.Request) {
 	relays, _ := srv.relayHealth()
 	writeJSONValue(w, http.StatusOK, map[string]any{"relays": relays})
+}
+
+// discoveryScanRequest is the openapi DiscoveryScanRequest body. Every member is
+// optional: the plain "scan the network" the operator presses sends `{}`.
+type discoveryScanRequest struct {
+	RelayID string `json:"relay_id,omitempty"`
+	Subnet  string `json:"subnet,omitempty"`
+}
+
+// startDiscoveryScan handles POST /api/v1/discovery/scan (openapi
+// startDiscoveryScan): it asks the relays to run ONE active scan of their own
+// networks and reports what each answered.
+//
+// This is the operator action the whole passive/active split exists for
+// (Discovery spec §4, owner 2026-08-17): the relay's passive lanes run always
+// and originate nothing, and everything that PROBES — the SSDP M-SEARCH, the
+// identity probe, and the heavier lanes as they land — happens only when this
+// endpoint is called. A scan is therefore an ACT, not a read.
+//
+// The response reports ACCEPTANCE per relay, never findings. A scan runs far
+// longer than an HTTP request should be held open, and its results already have
+// a path: the relay reports sightings through `device.candidates` exactly as it
+// does for passive ones, so they appear in GET /devices as they land.
+//
+// With no relay_id, every connected relay is asked — "scan the network" means
+// every network this deployment can see, and each relay is inherently limited
+// to its own segment. A relay that refuses (its policy forbids the subnet, it is
+// not running discovery) contributes its typed refusal to the list rather than
+// failing the whole call: one unreachable relay must not stop the others from
+// scanning.
+func (srv *server) startDiscoveryScan(w http.ResponseWriter, r *http.Request) {
+	srv.idempotent(w, r, nil, func(w http.ResponseWriter) { srv.startDiscoveryScanExec(w, r) })
+}
+
+func (srv *server) startDiscoveryScanExec(w http.ResponseWriter, r *http.Request) {
+	if srv.dispatch == nil {
+		writeProblem(w, r, http.StatusServiceUnavailable, "UNAVAILABLE", "Service Unavailable",
+			"This deployment has no relay plane, so it cannot scan.")
+		return
+	}
+	raw, ok := readBody(w, r)
+	if !ok {
+		return
+	}
+	var req discoveryScanRequest
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &req); err != nil {
+			writeProblem(w, r, http.StatusBadRequest, "MALFORMED_JSON", "Bad Request", "The request body is not valid JSON.")
+			return
+		}
+	}
+
+	relays, _ := srv.relayHealth()
+	targets := make([]string, 0, len(relays))
+	for _, rl := range relays {
+		if req.RelayID != "" && rl.RelayID != req.RelayID {
+			continue
+		}
+		targets = append(targets, rl.RelayID)
+	}
+	if len(targets) == 0 {
+		// No relay is connected (or the named one is not), so nothing can scan.
+		// A 409 rather than a 404: the request is well-formed and the resource
+		// exists, the deployment is simply not in a state to perform it.
+		writeProblem(w, r, http.StatusConflict, "CONFLICT", "Conflict",
+			"No connected relay can run a scan right now.")
+		return
+	}
+
+	type scanOutcome struct {
+		RelayID string `json:"relay_id"`
+		OK      bool   `json:"ok"`
+		Started bool   `json:"started"`
+		ScanID  string `json:"scan_id,omitempty"`
+		Code    string `json:"code,omitempty"`
+		Message string `json:"message,omitempty"`
+	}
+	out := make([]scanOutcome, 0, len(targets))
+	for _, relayID := range targets {
+		res, err := srv.dispatch.SendDiscoveryScan(r.Context(), relayID, apihttp.TraceID(r), wire.DiscoveryScanBody{
+			Subnet: req.Subnet,
+		})
+		if err != nil {
+			// A transport failure against ONE relay is that relay's outcome, not
+			// the operation's: the others were still asked.
+			out = append(out, scanOutcome{RelayID: relayID, OK: false, Code: "UNAVAILABLE", Message: err.Error()})
+			continue
+		}
+		oc := scanOutcome{RelayID: relayID, OK: res.OK, Started: res.Started, ScanID: res.ScanID}
+		if res.Error != nil {
+			oc.Code, oc.Message = res.Error.Code, res.Error.Message
+		}
+		out = append(out, oc)
+	}
+	writeJSONValue(w, http.StatusOK, map[string]any{"scans": out})
 }
 
 // ---- list -----------------------------------------------------------------

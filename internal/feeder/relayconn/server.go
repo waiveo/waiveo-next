@@ -433,6 +433,71 @@ func (s *Server) SendDeviceCommand(ctx context.Context, relayID, traceID string,
 	}
 }
 
+// SendDiscoveryScan asks one relay to run a single ACTIVE scan of its own
+// network and returns the relay's acceptance (wire `discovery.scan`).
+//
+// It mirrors SendDeviceCommand's transport contract exactly — not-connected and
+// revoked relays are refused the same way, the exchange is correlated by id, and
+// a caller that gives up first reaps its correlation entry — with one deliberate
+// difference in MEANING: the reply is an ACCEPTANCE, not a set of findings. A
+// scan runs far longer than a request/response exchange should be held open, so
+// the relay answers "started, under this scan id" and the sightings arrive
+// afterwards through the ordinary `device.candidates` report, exactly as passive
+// sightings do.
+//
+// `ok:false` is NOT a transport error — it is the relay's own typed refusal (a
+// subnet its policy does not permit, no scan capability wired) and is returned
+// intact for the caller to render.
+func (s *Server) SendDiscoveryScan(ctx context.Context, relayID, traceID string, body wire.DiscoveryScanBody) (wire.DiscoveryScanResultBody, error) {
+	conn, ok := s.connFor(relayID)
+	if !ok {
+		return wire.DiscoveryScanResultBody{}, ErrRelayNotConnected
+	}
+	// REL-016: like a command, a scan is a steady-state frame — a revoked relay
+	// is refused and disconnected rather than asked to probe a network.
+	if s.isRevoked(conn.relayID, conn.serial) {
+		go s.closeRevoked(conn)
+		return wire.DiscoveryScanResultBody{}, ErrRelayNotConnected
+	}
+
+	id := ulid.New()
+	req, err := wire.NewFrame(wire.FrameTypeDiscoveryScan, id, relayID, body)
+	if err != nil {
+		return wire.DiscoveryScanResultBody{}, err
+	}
+	req.TraceID = traceID
+
+	ch, err := conn.register(id)
+	if err != nil {
+		return wire.DiscoveryScanResultBody{}, err
+	}
+	if err := conn.send(req); err != nil {
+		conn.reap(id)
+		return wire.DiscoveryScanResultBody{}, fmt.Errorf("relayconn: SendDiscoveryScan: send: %w", err)
+	}
+
+	select {
+	case reply, open := <-ch:
+		if !open {
+			return wire.DiscoveryScanResultBody{}, ErrRelayNotConnected
+		}
+		if reply.Type == wire.FrameTypeError {
+			return wire.DiscoveryScanResultBody{}, &RefusalError{Code: reply.Code, Message: reply.Message}
+		}
+		if reply.Type != wire.FrameTypeDiscoveryScanResult {
+			return wire.DiscoveryScanResultBody{}, fmt.Errorf("relayconn: SendDiscoveryScan: reply is %q, want %s", reply.Type, wire.FrameTypeDiscoveryScanResult)
+		}
+		var out wire.DiscoveryScanResultBody
+		if err := reply.DecodeBody(&out); err != nil {
+			return wire.DiscoveryScanResultBody{}, fmt.Errorf("relayconn: SendDiscoveryScan: %w", err)
+		}
+		return out, nil
+	case <-ctx.Done():
+		conn.reap(id)
+		return wire.DiscoveryScanResultBody{}, ctx.Err()
+	}
+}
+
 // connFor returns the live connection authenticated as relayID. A relay
 // holds at most one connection at a time in practice; when a reconnect has
 // briefly left two registered, the most recently registered one is

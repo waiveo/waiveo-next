@@ -317,6 +317,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/discovery/scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run an active scan of the relays' networks
+         * @description Asks the connected relays to each run ONE active scan of their own network, and reports what each answered.
+         *
+         *     Discovery runs in three modes. The PASSIVE lanes are always on and originate nothing on the wire — they read the relay host's own kernel neighbour table and mDNS cache and listen for announcements. Everything that PROBES the network — the SSDP `M-SEARCH` query, the per-device identity probe, and the heavier sweep lanes as they land — runs only when this operation is called (or on an operator-set schedule). So a relay at rest is silent, and this is the operator saying "go look".
+         *
+         *     The response reports ACCEPTANCE per relay, never findings: a scan runs far longer than a request should be held open, and its results arrive by the same path passive sightings do — the relay reports them and they appear in `GET /devices`. A relay that refuses (its policy does not permit the requested subnet, or it is not running discovery) contributes its own typed refusal rather than failing the whole call.
+         *
+         *     A mutating POST tagged `mcp:act`, so it accepts `Idempotency-Key`.
+         */
+        post: operations["startDiscoveryScan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/discovery/relays": {
         parameters: {
             query?: never;
@@ -3138,6 +3164,26 @@ export interface components {
         LabelMap: {
             [key: string]: string;
         };
+        /** @description Optional narrowing for an active scan. An empty body means "every connected relay scans its own default scope", which is what the operator's plain "scan the network" sends. */
+        DiscoveryScanRequest: {
+            relay_id?: components["schemas"]["RelayId"];
+            /** @description A CIDR to scan, when the operator wants one segment rather than the relay's default scope. It is REQUESTED, never trusted: a relay refuses a subnet its own policy does not permit and one that is not on an interface it actually has, so naming a CIDR here can never point a relay's probes at a network the operator has not enabled. */
+            subnet?: string;
+        };
+        /** @description What one relay answered when asked to scan. `started` distinguishes a scan this call began from an accepted no-op (a scan was already running under `scan_id`, so the request was a benign repeat). */
+        DiscoveryScanOutcome: {
+            relay_id: components["schemas"]["RelayId"];
+            /** @description Whether the relay accepted the request. */
+            ok: boolean;
+            /** @description Whether THIS call started a scan. False with `ok` true means a scan was already running — an operator double-click must not double the probe traffic on a segment. */
+            started: boolean;
+            /** @description Correlates this run with the relay's scan status while it runs. */
+            scan_id?: string;
+            /** @description The Error-taxonomy code, when the relay refused. */
+            code?: string;
+            /** @description The refusal's human-readable detail. */
+            message?: string;
+        };
         /** @description One physical device a relay has found on its own LAN. Its descriptive members are read-only on this API — a device is DISCOVERED by its relay's device plane (`relay/1` Device plane), not authored here, so this resource carries no `revision` and no optimistic-concurrency envelope. The two decisions this API does make about a device are `adopted`, taken through the `adoptDevice` operation, and `ignored`, taken through `ignoreDevice`. A device exposes one or more entities; commands are addressed to those entities, never to the device. */
         Device: {
             id: components["schemas"]["Ulid"];
@@ -4218,6 +4264,44 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    startDiscoveryScan: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyParam"];
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DiscoveryScanRequest"];
+            };
+        };
+        responses: {
+            /** @description The relays were asked. Each entry reports whether that relay accepted and started a scan, or its refusal. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        scans: components["schemas"]["DiscoveryScanOutcome"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     listDiscoveryRelays: {

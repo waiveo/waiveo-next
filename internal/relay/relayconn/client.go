@@ -128,6 +128,23 @@ type Config struct {
 	// (REL-114) — a handler must not persist or log it.
 	OnDeviceCommand func(wire.DeviceCommandBody) wire.DeviceCommandResultBody
 
+	// OnDiscoveryScan answers an app-initiated `discovery.scan`: the operator
+	// asking this relay to run ONE active scan of its own network (Discovery
+	// spec §4 — the passive lanes run always, everything that probes waits for
+	// this). Like OnDeviceCommand it runs off the read loop, because a scan
+	// takes far longer than a frame exchange should hold the loop.
+	//
+	// The handler must return PROMPTLY with an acceptance, not with findings: it
+	// starts the scan and reports whether it began (and under which scan id),
+	// while the sightings themselves travel up the ordinary `device.candidates`
+	// report exactly as passive ones do.
+	//
+	// Leaving it nil is a relay with no scan capability wired: an arriving scan
+	// is answered {ok:false, INTERNAL} rather than dropped, for the same reason
+	// a command is — a request that draws no answer is indistinguishable from a
+	// dead peer.
+	OnDiscoveryScan func(wire.DiscoveryScanBody) wire.DiscoveryScanResultBody
+
 	// PingInterval / PingTimeout govern the protocol-level heartbeat: a
 	// ping every PingInterval, its pong bounded by PingTimeout; a failed
 	// round-trip closes the connection (dead-peer detection for half-open
@@ -165,6 +182,7 @@ type Client struct {
 	ackBody hello.HelloAckBody
 	observe func(sent bool, f wire.Frame)
 	command func(wire.DeviceCommandBody) wire.DeviceCommandResultBody
+	scan    func(wire.DiscoveryScanBody) wire.DiscoveryScanResultBody
 	mu      sync.Mutex
 	pending map[string]chan wire.Frame
 	done    chan struct{}
@@ -270,6 +288,7 @@ func Dial(cfg Config) (*Client, error) {
 		relayID: id.RelayID,
 		observe: cfg.ObserveFrame,
 		command: cfg.OnDeviceCommand,
+		scan:    cfg.OnDiscoveryScan,
 		pending: map[string]chan wire.Frame{},
 		done:    make(chan struct{}),
 		nudgeCh: make(chan struct{}, 1),
@@ -493,6 +512,12 @@ func (c *Client) readLoop() {
 			go c.handleDeviceCommand(f)
 			continue
 		}
+		if f.Type == wire.FrameTypeDiscoveryScan {
+			// Off the read loop for the same reason, and more so: a scan probes
+			// a whole segment and can run for many seconds.
+			go c.handleDiscoveryScan(f)
+			continue
+		}
 		// Unknown server-initiated frame type: REL-004 additive tolerance —
 		// a newer app peer's new verb is ignored, never a failure.
 	}
@@ -595,6 +620,45 @@ func (c *Client) handleDeviceCommand(req wire.Frame) {
 	}
 
 	reply, err := wire.NewFrame(wire.FrameTypeDeviceCommandResult, req.ID, c.relayID, result)
+	if err != nil {
+		return
+	}
+	reply.TraceID = req.TraceID
+	_ = c.send(reply)
+}
+
+// handleDiscoveryScan answers ONE app-initiated `discovery.scan`: it decodes the
+// body, hands it to the configured handler, and sends the correlated
+// `discovery.scan_result` echoing the request's id and trace_id (REL-006) with
+// this relay's own relay_id (REL-005).
+//
+// It mirrors handleDeviceCommand's contract exactly, including that every
+// arriving scan draws exactly one answer:
+//   - an undecodable body is refused with REL-007's top-level error frame
+//     (MALFORMED_MESSAGE), since there is no well-formed request to answer;
+//   - a relay with no scan capability wired answers {ok:false, INTERNAL};
+//   - otherwise the handler's own result rides back verbatim, including its
+//     typed refusals (a subnet the policy does not allow, a scan already
+//     running) — those travel in the result's own `error` field, never as an
+//     additional error frame.
+//
+// The reply reports ACCEPTANCE, not findings: the handler starts the scan and
+// returns, and the sightings arrive later through `device.candidates` like any
+// passive sighting.
+func (c *Client) handleDiscoveryScan(req wire.Frame) {
+	var body wire.DiscoveryScanBody
+	if err := req.DecodeBody(&body); err != nil {
+		_ = c.send(wire.NewErrorFrame(req.ID, req.TraceID, c.relayID,
+			"MALFORMED_MESSAGE", "discovery.scan body did not decode"))
+		return
+	}
+
+	result := wire.NewDiscoveryScanError("INTERNAL", "this relay has no discovery scan capability wired")
+	if c.scan != nil {
+		result = c.scan(body)
+	}
+
+	reply, err := wire.NewFrame(wire.FrameTypeDiscoveryScanResult, req.ID, c.relayID, result)
 	if err != nil {
 		return
 	}

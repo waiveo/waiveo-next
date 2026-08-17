@@ -47,6 +47,19 @@ type fakeDispatcher struct {
 	calls  []dispatchCall
 	result wire.DeviceCommandResultBody
 	err    error
+
+	// The scan half: every discovery.scan asked of a relay, and the scripted
+	// answer each draws.
+	scans      []scanCall
+	scanResult wire.DiscoveryScanResultBody
+	scanErr    error
+}
+
+// scanCall is one recorded discovery.scan request.
+type scanCall struct {
+	relayID string
+	traceID string
+	body    wire.DiscoveryScanBody
 }
 
 // dispatchCall is one recorded dispatch, including the relay it was routed to
@@ -62,6 +75,21 @@ func (d *fakeDispatcher) SendDeviceCommand(ctx context.Context, relayID, traceID
 	defer d.mu.Unlock()
 	d.calls = append(d.calls, dispatchCall{relayID: relayID, traceID: traceID, body: body})
 	return d.result, d.err
+}
+
+func (d *fakeDispatcher) SendDiscoveryScan(ctx context.Context, relayID, traceID string, body wire.DiscoveryScanBody) (wire.DiscoveryScanResultBody, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.scans = append(d.scans, scanCall{relayID: relayID, traceID: traceID, body: body})
+	return d.scanResult, d.scanErr
+}
+
+func (d *fakeDispatcher) scanned() []scanCall {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]scanCall, len(d.scans))
+	copy(out, d.scans)
+	return out
 }
 
 func (d *fakeDispatcher) dispatched() []dispatchCall {

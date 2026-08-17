@@ -79,6 +79,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/rules/registry"
 	"github.com/maaxton/waiveo-next/internal/rules/state"
 	"github.com/maaxton/waiveo-next/internal/shared/apihttp"
+	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 	"github.com/maaxton/waiveo-next/internal/slidelive"
 )
@@ -678,8 +679,12 @@ func main() {
 	// callback nil in the shipped binary.
 	nudges := &nudgeSink{}
 	commands := &deviceCommandSink{}
+	// scans is the same late-wiring decoupling for the on-demand ACTIVE scan:
+	// OnDiscoveryScan is needed at dial time, the discoverer that performs one
+	// does not exist until the discovery block far below.
+	scans := &discoveryScanSink{}
 	dialConn := func() (*relayconn.Client, error) {
-		return relayconn.Dial(relayDialConfig(cfg, store, nudges, commands))
+		return relayconn.Dial(relayDialConfig(cfg, store, nudges, commands, scans))
 	}
 	client, err := dialWithRetry(dialConn)
 	helloOK := err == nil
@@ -1247,7 +1252,44 @@ func main() {
 					log.Printf("waiveo-relay: discovery ended: %v", err)
 				}
 			}()
-			log.Printf("waiveo-relay SSDP discovery live (builtin %s; pack patterns follow desired state, REL-064)", rokuSearchTarget)
+			// The ACTIVE half is reachable only from here: an operator's
+			// `discovery.scan` runs disc.Scan once. Run itself is passive and
+			// never searches (Discovery spec §4, owner 2026-08-17).
+			//
+			// Single-flight: one scan at a time per relay. A second request while
+			// one is running is answered as an accepted no-op carrying the
+			// RUNNING scan's id rather than starting a concurrent sweep — an
+			// operator double-click must not double the traffic on the segment.
+			// The scan runs on its own goroutine so the handler can answer
+			// immediately with acceptance; findings ride the ordinary
+			// device.candidates report.
+			var scanMu sync.Mutex
+			var scanRunning string
+			scanDisc := disc
+			scans.set(func(body wire.DiscoveryScanBody) wire.DiscoveryScanResultBody {
+				scanMu.Lock()
+				if scanRunning != "" {
+					id := scanRunning
+					scanMu.Unlock()
+					return wire.NewDiscoveryScanBusy(id)
+				}
+				id := ulid.New()
+				scanRunning = id
+				scanMu.Unlock()
+
+				go func() {
+					defer func() {
+						scanMu.Lock()
+						scanRunning = ""
+						scanMu.Unlock()
+					}()
+					log.Printf("waiveo-relay: discovery scan %s starting (operator-requested)", id)
+					scanDisc.Scan(rootCtx)
+					log.Printf("waiveo-relay: discovery scan %s complete", id)
+				}()
+				return wire.NewDiscoveryScanAccepted(id)
+			})
+			log.Printf("waiveo-relay SSDP discovery live — PASSIVE listen only; active M-SEARCH runs on an operator scan (builtin %s; pack patterns follow desired state, REL-064)", rokuSearchTarget)
 		}
 
 		// The mDNS lane stays a deployment OPT-IN (env patterns set), even now

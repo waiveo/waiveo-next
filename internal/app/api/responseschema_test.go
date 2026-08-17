@@ -945,6 +945,13 @@ var probes = map[string]probe{
 		// satisfied by an empty array.
 		return e.do(t, http.MethodGet, "/api/v1/discovery/relays", nil, nil)
 	},
+	"startDiscoveryScan": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// The env's pairing directory wires one connected relay, so the response
+		// carries a DiscoveryScanOutcome item and its shape is verified rather
+		// than trivially satisfied by an empty array. The probe env's dispatcher
+		// answers the scan without any real relay having to run one.
+		return e.do(t, http.MethodPost, "/api/v1/discovery/scan", []byte(`{}`), nil)
+	},
 	"listEntities": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		return e.do(t, http.MethodGet, "/api/v1/entities", nil, nil)
 	},

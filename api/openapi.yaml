@@ -1043,6 +1043,74 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+  /discovery/scan:
+    post:
+      operationId: startDiscoveryScan
+      summary: Run an active scan of the relays' networks
+      description: >-
+        Asks the connected relays to each run ONE active scan of their own
+        network, and reports what each answered.
+
+
+        Discovery runs in three modes. The PASSIVE lanes are always on and
+        originate nothing on the wire — they read the relay host's own kernel
+        neighbour table and mDNS cache and listen for announcements. Everything
+        that PROBES the network — the SSDP `M-SEARCH` query, the per-device
+        identity probe, and the heavier sweep lanes as they land — runs only
+        when this operation is called (or on an operator-set schedule). So a
+        relay at rest is silent, and this is the operator saying "go look".
+
+
+        The response reports ACCEPTANCE per relay, never findings: a scan runs
+        far longer than a request should be held open, and its results arrive by
+        the same path passive sightings do — the relay reports them and they
+        appear in `GET /devices`. A relay that refuses (its policy does not
+        permit the requested subnet, or it is not running discovery) contributes
+        its own typed refusal rather than failing the whole call.
+
+
+        A mutating POST tagged `mcp:act`, so it accepts `Idempotency-Key`.
+      tags: [devices, "mcp:act"]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyParam"
+        - $ref: "#/components/parameters/TraceIdParam"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DiscoveryScanRequest"
+      responses:
+        "200":
+          description: >-
+            The relays were asked. Each entry reports whether that relay
+            accepted and started a scan, or its refusal.
+          headers:
+            Trace-Id:
+              $ref: "#/components/headers/TraceIdResponse"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [scans]
+                properties:
+                  scans:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DiscoveryScanOutcome"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /discovery/relays:
     get:
       operationId: listDiscoveryRelays
@@ -8185,6 +8253,53 @@ components:
       propertyNames:
         pattern: "^([a-z0-9A-Z][a-z0-9A-Z.-]{0,251}/)?[a-z0-9A-Z][a-z0-9A-Z_.-]{0,62}$"
 
+    DiscoveryScanRequest:
+      type: object
+      description: >-
+        Optional narrowing for an active scan. An empty body means "every
+        connected relay scans its own default scope", which is what the
+        operator's plain "scan the network" sends.
+      additionalProperties: false
+      properties:
+        relay_id:
+          $ref: "#/components/schemas/RelayId"
+        subnet:
+          type: string
+          description: >-
+            A CIDR to scan, when the operator wants one segment rather than the
+            relay's default scope. It is REQUESTED, never trusted: a relay
+            refuses a subnet its own policy does not permit and one that is not
+            on an interface it actually has, so naming a CIDR here can never
+            point a relay's probes at a network the operator has not enabled.
+    DiscoveryScanOutcome:
+      type: object
+      description: >-
+        What one relay answered when asked to scan. `started` distinguishes a
+        scan this call began from an accepted no-op (a scan was already
+        running under `scan_id`, so the request was a benign repeat).
+      required: [relay_id, ok, started]
+      additionalProperties: false
+      properties:
+        relay_id:
+          $ref: "#/components/schemas/RelayId"
+        ok:
+          type: boolean
+          description: Whether the relay accepted the request.
+        started:
+          type: boolean
+          description: >-
+            Whether THIS call started a scan. False with `ok` true means a scan
+            was already running — an operator double-click must not double the
+            probe traffic on a segment.
+        scan_id:
+          type: string
+          description: Correlates this run with the relay's scan status while it runs.
+        code:
+          type: string
+          description: The Error-taxonomy code, when the relay refused.
+        message:
+          type: string
+          description: The refusal's human-readable detail.
     Device:
       type: object
       description: >-

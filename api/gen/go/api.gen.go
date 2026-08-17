@@ -1815,6 +1815,36 @@ type DeviceListResponse struct {
 	Items  []Device `json:"items"`
 }
 
+// DiscoveryScanOutcome What one relay answered when asked to scan. `started` distinguishes a scan this call began from an accepted no-op (a scan was already running under `scan_id`, so the request was a benign repeat).
+type DiscoveryScanOutcome struct {
+	// Code The Error-taxonomy code, when the relay refused.
+	Code *string `json:"code,omitempty"`
+
+	// Message The refusal's human-readable detail.
+	Message *string `json:"message,omitempty"`
+
+	// Ok Whether the relay accepted the request.
+	Ok bool `json:"ok"`
+
+	// RelayId A relay's permanent identity, assigned to it by enrollment and unchanged across every later certificate renewal or re-enrollment (`relay/1` REL-012/014). Deliberately NOT typed as a ULID: unlike a resource this API mints, a relay id is issued by the enrollment path and is opaque here — this API reads it, routes a command by it, and never constructs or parses one.
+	RelayId RelayId `json:"relay_id"`
+
+	// ScanId Correlates this run with the relay's scan status while it runs.
+	ScanId *string `json:"scan_id,omitempty"`
+
+	// Started Whether THIS call started a scan. False with `ok` true means a scan was already running — an operator double-click must not double the probe traffic on a segment.
+	Started bool `json:"started"`
+}
+
+// DiscoveryScanRequest Optional narrowing for an active scan. An empty body means "every connected relay scans its own default scope", which is what the operator's plain "scan the network" sends.
+type DiscoveryScanRequest struct {
+	// RelayId A relay's permanent identity, assigned to it by enrollment and unchanged across every later certificate renewal or re-enrollment (`relay/1` REL-012/014). Deliberately NOT typed as a ULID: unlike a resource this API mints, a relay id is issued by the enrollment path and is opaque here — this API reads it, routes a command by it, and never constructs or parses one.
+	RelayId *RelayId `json:"relay_id,omitempty"`
+
+	// Subnet A CIDR to scan, when the operator wants one segment rather than the relay's default scope. It is REQUESTED, never trusted: a relay refuses a subnet its own policy does not permit and one that is not on an interface it actually has, so naming a CIDR here can never point a relay's probes at a network the operator has not enabled.
+	Subnet *string `json:"subnet,omitempty"`
+}
+
 // Entity One addressable object a device exposes — the unit `rules/1` entity references resolve to and the unit a device command is addressed to (`relay/1` REL-112). Read-only on this API for the same reason a Device is, and carries no `revision` for the same reason.
 type Entity struct {
 	// Attributes The driver-observed detail behind `state` (`device-class-registry/1` REG-064; for a Roku `power_mode`, `active_app`, `active_app_id`, `app_type`, `is_screensaver`, `app_version`). `state` answers on/idle/standby/off; an operator looking at a screen that is not showing what it should needs to know it is sitting in another app, which `state` cannot say. Values are strings even where the driver's own value is a boolean — this is display detail crossing a trust boundary from a relay, and a bounded string map is checkable at intake in a way an arbitrary JSON value is not. Absent until the relay has reported some.
@@ -3521,6 +3551,15 @@ type ListDiscoveryRelaysParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// StartDiscoveryScanParams defines parameters for StartDiscoveryScan.
+type StartDiscoveryScanParams struct {
+	// IdempotencyKey Client-generated opaque replay key, scoped to (principal, method, path). Optional; strongly recommended on any POST a client might retry.
+	IdempotencyKey *IdempotencyKeyParam `json:"Idempotency-Key,omitempty"`
+
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // ListEntitiesParams defines parameters for ListEntities.
 type ListEntitiesParams struct {
 	// Cursor Opaque continuation token from a prior response's `cursor` field. Never constructed or parsed by the client.
@@ -4225,6 +4264,9 @@ type CreateDaypartJSONRequestBody = DaypartCreate
 // UpdateDaypartJSONRequestBody defines body for UpdateDaypart for application/json ContentType.
 type UpdateDaypartJSONRequestBody = DaypartUpdate
 
+// StartDiscoveryScanJSONRequestBody defines body for StartDiscoveryScan for application/json ContentType.
+type StartDiscoveryScanJSONRequestBody = DiscoveryScanRequest
+
 // SendEntityCommandJSONRequestBody defines body for SendEntityCommand for application/json ContentType.
 type SendEntityCommandJSONRequestBody = EntityCommandRequest
 
@@ -4555,6 +4597,11 @@ type ClientInterface interface {
 
 	// ListDiscoveryRelays request
 	ListDiscoveryRelays(ctx context.Context, params *ListDiscoveryRelaysParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// StartDiscoveryScanWithBody request with any body
+	StartDiscoveryScanWithBody(ctx context.Context, params *StartDiscoveryScanParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	StartDiscoveryScan(ctx context.Context, params *StartDiscoveryScanParams, body StartDiscoveryScanJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListEntities request
 	ListEntities(ctx context.Context, params *ListEntitiesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5597,6 +5644,30 @@ func (c *Client) IgnoreDevice(ctx context.Context, deviceId Ulid, params *Ignore
 
 func (c *Client) ListDiscoveryRelays(ctx context.Context, params *ListDiscoveryRelaysParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListDiscoveryRelaysRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) StartDiscoveryScanWithBody(ctx context.Context, params *StartDiscoveryScanParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStartDiscoveryScanRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) StartDiscoveryScan(ctx context.Context, params *StartDiscoveryScanParams, body StartDiscoveryScanJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStartDiscoveryScanRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -9641,6 +9712,72 @@ func NewListDiscoveryRelaysRequest(server string, params *ListDiscoveryRelaysPar
 			}
 
 			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewStartDiscoveryScanRequest calls the generic StartDiscoveryScan builder with application/json body
+func NewStartDiscoveryScanRequest(server string, params *StartDiscoveryScanParams, body StartDiscoveryScanJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewStartDiscoveryScanRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewStartDiscoveryScanRequestWithBody generates requests for StartDiscoveryScan with any type of body
+func NewStartDiscoveryScanRequestWithBody(server string, params *StartDiscoveryScanParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/discovery/scan")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+		if params.TraceId != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam1)
 		}
 
 	}
@@ -14687,6 +14824,11 @@ type ClientWithResponsesInterface interface {
 	// ListDiscoveryRelaysWithResponse request
 	ListDiscoveryRelaysWithResponse(ctx context.Context, params *ListDiscoveryRelaysParams, reqEditors ...RequestEditorFn) (*ListDiscoveryRelaysResponse, error)
 
+	// StartDiscoveryScanWithBodyWithResponse request with any body
+	StartDiscoveryScanWithBodyWithResponse(ctx context.Context, params *StartDiscoveryScanParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*StartDiscoveryScanResponse, error)
+
+	StartDiscoveryScanWithResponse(ctx context.Context, params *StartDiscoveryScanParams, body StartDiscoveryScanJSONRequestBody, reqEditors ...RequestEditorFn) (*StartDiscoveryScanResponse, error)
+
 	// ListEntitiesWithResponse request
 	ListEntitiesWithResponse(ctx context.Context, params *ListEntitiesParams, reqEditors ...RequestEditorFn) (*ListEntitiesResponse, error)
 
@@ -16524,6 +16666,44 @@ func (r ListDiscoveryRelaysResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r ListDiscoveryRelaysResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type StartDiscoveryScanResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *struct {
+		Scans []DiscoveryScanOutcome `json:"scans"`
+	}
+	ApplicationproblemJSON400 *BadRequest
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON409 *Conflict
+	ApplicationproblemJSON429 *TooManyRequests
+	ApplicationproblemJSON503 *ServiceUnavailable
+}
+
+// Status returns HTTPResponse.Status
+func (r StartDiscoveryScanResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r StartDiscoveryScanResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r StartDiscoveryScanResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -19520,6 +19700,23 @@ func (c *ClientWithResponses) ListDiscoveryRelaysWithResponse(ctx context.Contex
 		return nil, err
 	}
 	return ParseListDiscoveryRelaysResponse(rsp)
+}
+
+// StartDiscoveryScanWithBodyWithResponse request with arbitrary body returning *StartDiscoveryScanResponse
+func (c *ClientWithResponses) StartDiscoveryScanWithBodyWithResponse(ctx context.Context, params *StartDiscoveryScanParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*StartDiscoveryScanResponse, error) {
+	rsp, err := c.StartDiscoveryScanWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseStartDiscoveryScanResponse(rsp)
+}
+
+func (c *ClientWithResponses) StartDiscoveryScanWithResponse(ctx context.Context, params *StartDiscoveryScanParams, body StartDiscoveryScanJSONRequestBody, reqEditors ...RequestEditorFn) (*StartDiscoveryScanResponse, error) {
+	rsp, err := c.StartDiscoveryScan(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseStartDiscoveryScanResponse(rsp)
 }
 
 // ListEntitiesWithResponse request returning *ListEntitiesResponse
@@ -22724,6 +22921,76 @@ func ParseListDiscoveryRelaysResponse(rsp *http.Response) (*ListDiscoveryRelaysR
 			return nil, err
 		}
 		response.ApplicationproblemJSON429 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseStartDiscoveryScanResponse parses an HTTP response from a StartDiscoveryScanWithResponse call
+func ParseStartDiscoveryScanResponse(rsp *http.Response) (*StartDiscoveryScanResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &StartDiscoveryScanResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest struct {
+			Scans []DiscoveryScanOutcome `json:"scans"`
+		}
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ServiceUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
 
 	}
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -381,14 +382,76 @@ func TestRunStopsPromptlyOnContextCancel(t *testing.T) {
 	}
 }
 
-// TestRunStopsPromptlyDuringSlowSearch is C1's regression test: it proves Run
-// returns promptly on ctx cancellation even while a real, blocking search is
-// still in flight (the earlier TestRunStopsPromptlyOnContextCancel only ever
-// exercised a zero-latency fake search, which could never detect this), AND
-// that the search's eventual late result — which arrives well after Run has
-// already returned — is discarded rather than reaching the Store (the
+// TestRunIsPassiveAndNeverSearches is the owner's rule as a test (Discovery
+// spec §4, 2026-08-17: nothing active "until you tell it to do a scan"). Run
+// starts the NOTIFY monitor and must originate NOTHING on the wire — no
+// M-SEARCH at start, and none however long it runs. Before this, Run swept
+// immediately and then every Interval, which made it the one lane that probed
+// the network automatically at boot.
+//
+// The Interval is set absurdly short so that a reintroduced auto-sweep ticker
+// would fire many times over during the window below; a passive Run fires none.
+func TestRunIsPassiveAndNeverSearches(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	now := func() int64 { return 1000 }
+	pattern := mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`)
+
+	d, err := New(Config{
+		Watches:   []Watch{watchFor(pattern)},
+		Store:     store,
+		NowMillis: now,
+		Interval:  time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	mon := &fakeMonitor{}
+	d.newMonitor = func(onAlive func(aliveNotice)) ssdpMonitor { return mon }
+
+	var searches atomic.Int64
+	d.search = func(st string, wait int) ([]foundService, error) {
+		searches.Add(1)
+		return nil, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+
+	// Long enough that a 1ms auto-sweep ticker would have fired hundreds of times.
+	time.Sleep(150 * time.Millisecond)
+	if n := searches.Load(); n != 0 {
+		t.Errorf("Run issued %d M-SEARCH(es) on its own, want 0 — active probing must wait for a scan", n)
+	}
+	if !mon.started {
+		t.Error("Run did not start the passive alive monitor")
+	}
+
+	// And the active half still works when explicitly asked.
+	d.Scan(ctx)
+	if n := searches.Load(); n == 0 {
+		t.Error("Scan issued no M-SEARCH — the active half must still run on demand")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return promptly after ctx cancel")
+	}
+	if !mon.closed {
+		t.Error("Run did not close the alive monitor before returning")
+	}
+}
+
+// TestScanStopsPromptlyDuringSlowSearch is C1's regression test, now aimed at
+// Scan (the active half that actually searches): it proves a caller is released
+// promptly on ctx cancellation even while a real, blocking search is still in
+// flight, AND that the search's eventual late result — which arrives well after
+// Scan has already returned — is discarded rather than reaching the Store (the
 // Important stray-goroutine finding).
-func TestRunStopsPromptlyDuringSlowSearch(t *testing.T) {
+func TestScanStopsPromptlyDuringSlowSearch(t *testing.T) {
 	store := deviceplane.NewStore("relay-1")
 	now := func() int64 { return 1000 }
 	pattern := mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`)
@@ -417,29 +480,26 @@ func TestRunStopsPromptlyDuringSlowSearch(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	done := make(chan error, 1)
-	go func() { done <- d.Run(ctx) }()
+	done := make(chan struct{})
+	go func() { d.Scan(ctx); close(done) }()
 
-	<-searchStarted // make sure sweep is blocked mid-search before canceling
+	<-searchStarted // make sure the scan is blocked mid-search before canceling
 	cancel()
 
 	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("Run() error = %v, want context.Canceled", err)
-		}
+	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Run() did not return promptly while a search was still blocked")
+		t.Fatal("Scan() did not return promptly while a search was still blocked")
 	}
 
-	// Run has returned while the search goroutine is still blocked. Release
+	// Scan has returned while the search goroutine is still blocked. Release
 	// it now and give it time to (wrongly) reach the Store if the ctx guard
 	// in searchPattern were missing.
 	close(releaseSearch)
 	time.Sleep(100 * time.Millisecond)
 
 	if cands := store.Report().Body.Candidates; len(cands) != 0 {
-		t.Fatalf("got %d candidates after Run returned, want 0 (a late search result must be discarded, not Observed)", len(cands))
+		t.Fatalf("got %d candidates after Scan returned, want 0 (a late search result must be discarded, not Observed)", len(cands))
 	}
 }
 
