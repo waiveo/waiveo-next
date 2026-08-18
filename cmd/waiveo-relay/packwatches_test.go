@@ -11,6 +11,12 @@ import (
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
+// testSSDPTarget is a stand-in search target for exercising the watch
+// machinery. Deliberately NOT a real vendor's: core supplies no discovery
+// pattern, so a real one appearing in this binary — even in a fixture — would
+// blur the property coreisdeviceblind_test.go guards.
+const testSSDPTarget = "urn:example-org:device:thing:1"
+
 // packwatches_test.go covers the REL-064 seam — pack-declared patterns
 // becoming live lane watches. The lanes' own swap behavior is covered in
 // their packages; here the subject is the DERIVATION (manifest shape → lane
@@ -76,13 +82,13 @@ func TestPatternWatchSetsCountsMalformedInsteadOfDying(t *testing.T) {
 
 func TestBuiltinWatchesWinCollisions(t *testing.T) {
 	builtin := []discovery.Watch{{
-		Match:       deviceplane.Match{SSDP: rokuSearchTarget},
+		Match:       deviceplane.Match{SSDP: testSSDPTarget},
 		Driver:      rokuDriver,
 		DeviceClass: mediaPlayerClass,
 		DefaultPort: rokuECPPort,
 	}}
 	derived, _, _, _ := patternWatchSets(rawPatterns(t,
-		`{"deviceClass":"media-player","match":[{"ssdp":"roku:ecp"},{"ssdp":"urn:other:1"}]}`,
+		`{"deviceClass":"media-player","match":[{"ssdp":"`+testSSDPTarget+`"},{"ssdp":"urn:other:1"}]}`,
 	))
 
 	merged := mergeSSDPWatches(builtin, derived)
@@ -93,7 +99,7 @@ func TestBuiltinWatchesWinCollisions(t *testing.T) {
 	// the control driver and default port to a pack declaration would make
 	// installing a pack DEGRADE discovery of the very devices it declares.
 	for _, w := range merged {
-		if w.Match.SSDP == rokuSearchTarget && (w.Driver != rokuDriver || w.DefaultPort != rokuECPPort) {
+		if w.Match.SSDP == testSSDPTarget && (w.Driver != rokuDriver || w.DefaultPort != rokuECPPort) {
 			t.Fatalf("collision lost the builtin facts: %+v", w)
 		}
 	}
@@ -123,7 +129,7 @@ func TestDiscoveryWatchApplierInstallsAndForgets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mdns.New: %v", err)
 	}
-	builtinSSDP := []discovery.Watch{{Match: deviceplane.Match{SSDP: rokuSearchTarget}, Driver: rokuDriver, DeviceClass: mediaPlayerClass}}
+	builtinSSDP := []discovery.Watch{{Match: deviceplane.Match{SSDP: testSSDPTarget}, Driver: rokuDriver, DeviceClass: mediaPlayerClass}}
 
 	apply := discoveryWatchApplier(disc, mdnsL, builtinSSDP, nil)
 

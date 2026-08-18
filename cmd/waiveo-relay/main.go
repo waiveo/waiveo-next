@@ -1152,13 +1152,19 @@ func main() {
 	// declaration is the Discovery programme's D2/D3, and mergeSSDPWatches'
 	// builtin-first precedence is what lets it move without a window where a
 	// colliding pack declaration degrades it.
-	builtinSSDP := []discovery.Watch{{
-		Match:       deviceplane.Match{SSDP: rokuSearchTarget},
-		Driver:      rokuDriver,
-		DeviceClass: mediaPlayerClass,
-		DefaultPort: rokuECPPort,
-		Entities:    []deviceplane.CandidateEntity{{Key: mainEntityKey, DeviceClass: mediaPlayerClass}},
-	}}
+	// CORE SUPPLIES NO SSDP PATTERN. It used to carry one for Roku, which meant
+	// this binary knew what a Roku was — and a deployment that never installed
+	// the Roku extension still classified Rokus, which made the pattern seam
+	// decorative. Recognising a device kind is an EXTENSION's contribution
+	// (owner, 2026-08-17: "the Roku should supply that pattern"), so the watch set
+	// is now exactly what the installed extensions declare, and an uninstalled
+	// Roku extension means Rokus are enumerated like any other host and simply
+	// not classified.
+	//
+	// The slice and the merge stay: they are the seam a core-supplied pattern
+	// would use if one ever had a reason to exist, and builtinMDNS below still
+	// carries the deployment's own env-configured patterns.
+	builtinSSDP := []discovery.Watch{}
 	builtinMDNS := make([]mdns.Watch, len(cfg.mdnsPatterns))
 	for i, svcType := range cfg.mdnsPatterns {
 		builtinMDNS[i] = mdns.Watch{
@@ -1330,7 +1336,7 @@ func main() {
 				}()
 				return wire.NewDiscoveryScanAccepted(id)
 			})
-			log.Printf("waiveo-relay SSDP discovery live — PASSIVE listen only; active M-SEARCH runs on an operator scan (builtin %s; pack patterns follow desired state, REL-064)", rokuSearchTarget)
+			log.Printf("waiveo-relay SSDP discovery live — PASSIVE listen only; active M-SEARCH runs on an operator scan; core supplies NO pattern of its own, so the watch set is whatever the installed extensions declare (REL-064)")
 		}
 
 		// The mDNS lane stays a deployment OPT-IN (env patterns set), even now
@@ -2398,7 +2404,6 @@ func (c loggingController) Dispatch(entityID, command string, params map[string]
 // They stand in for a pack's own device contribution (manifest/1 MAN-070) until
 // installed packs drive the watch set.
 const (
-	rokuSearchTarget = "roku:ecp"
 	rokuDriver       = "roku-ecp"
 	mdnsDriver       = "mdns"
 	mediaPlayerClass = "media-player"

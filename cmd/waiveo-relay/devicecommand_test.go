@@ -87,7 +87,7 @@ func (f *fakeRoku) reset() {
 // sighting is one SSDP observation of a device, as the discovery lane makes it.
 func sighting(nativeID, location string) deviceplane.Observation {
 	return deviceplane.Observation{
-		Match:       deviceplane.Match{SSDP: rokuSearchTarget},
+		Match:       deviceplane.Match{SSDP: testSSDPTarget},
 		Provenance:  deviceplane.ProvenanceDiscovered,
 		Driver:      dcDriver,
 		NativeID:    nativeID,
