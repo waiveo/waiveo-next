@@ -137,6 +137,7 @@ func (m candidateMirror) rowsFor(relayID string, candidates []wire.DeviceCandida
 			NativeID:    c.NativeID,
 			DeviceClass: c.DeviceClass,
 			Name:        c.Name,
+			OpenPorts:   c.OpenPorts,
 			Address:     c.Address,
 			Model:       c.Model,
 			Serial:      c.Serial,
@@ -220,6 +221,7 @@ func restoreDeviceRegistry(ctx context.Context, st *store.Store, registry *devic
 			Address:     d.Address,
 			Model:       d.Model,
 			Serial:      d.Serial,
+			OpenPorts:   d.OpenPorts,
 			Entities:    d.Entities,
 		})
 	}

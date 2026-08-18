@@ -2594,6 +2594,7 @@ func toWireCandidates(cands []deviceplane.Candidate) []wire.DeviceCandidate {
 			Address:      c.Address,
 			Model:        c.Model,
 			Serial:       c.Serial,
+			OpenPorts:    c.OpenPorts,
 			Entities:     ents,
 		})
 	}

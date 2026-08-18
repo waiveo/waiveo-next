@@ -78,7 +78,8 @@ CREATE TABLE IF NOT EXISTS discovered_devices (
 	serial       TEXT NOT NULL DEFAULT '',
 	first_seen   INTEGER NOT NULL,
 	last_seen    INTEGER NOT NULL,
-	entities     TEXT NOT NULL DEFAULT '[]'
+	entities     TEXT NOT NULL DEFAULT '[]',
+	open_ports   TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS discovered_devices_relay ON discovered_devices (relay_id);
 `
@@ -105,7 +106,11 @@ type DiscoveredDevice struct {
 	Serial      string
 	FirstSeen   int64
 	LastSeen    int64
-	Entities    []wire.CandidateEntity
+	// OpenPorts is what an active scan found listening. Mirrored so a restart
+	// does not blank the column until the next scan — the same reason every
+	// other discovered fact is here.
+	OpenPorts []int
+	Entities  []wire.CandidateEntity
 }
 
 // ReplaceDiscoveredDevices makes rows the complete mirrored set for relayID,
@@ -189,7 +194,7 @@ func (s *Store) DiscoveredDevices(ctx context.Context) ([]DiscoveredDevice, erro
 // device_id. Callers hold their own lock (or run inside a transaction).
 func readDiscoveredDevices(ctx context.Context, q queryer, deviceID string) ([]DiscoveredDevice, error) {
 	query := `SELECT device_id, relay_id, scope_node, driver, native_id, device_class,
-	                 name, address, model, serial, first_seen, last_seen, entities
+	                 name, address, model, serial, first_seen, last_seen, entities, open_ports
 	          FROM discovered_devices`
 	args := []any{}
 	if deviceID != "" {
@@ -207,13 +212,16 @@ func readDiscoveredDevices(ctx context.Context, q queryer, deviceID string) ([]D
 	out := []DiscoveredDevice{}
 	for rows.Next() {
 		var d DiscoveredDevice
-		var entities string
+		var entities, ports string
 		if err := rows.Scan(&d.DeviceID, &d.RelayID, &d.ScopeNode, &d.Driver, &d.NativeID, &d.DeviceClass,
-			&d.Name, &d.Address, &d.Model, &d.Serial, &d.FirstSeen, &d.LastSeen, &entities); err != nil {
+			&d.Name, &d.Address, &d.Model, &d.Serial, &d.FirstSeen, &d.LastSeen, &entities, &ports); err != nil {
 			return nil, fmt.Errorf("store: scan discovered device: %w", err)
 		}
 		if err := json.Unmarshal([]byte(entities), &d.Entities); err != nil {
 			return nil, fmt.Errorf("store: decode entities of discovered device %s: %w", d.DeviceID, err)
+		}
+		if err := json.Unmarshal([]byte(ports), &d.OpenPorts); err != nil {
+			return nil, fmt.Errorf("store: decode open_ports of discovered device %s: %w", d.DeviceID, err)
 		}
 		out = append(out, d)
 	}
@@ -224,6 +232,15 @@ func readDiscoveredDevices(ctx context.Context, q queryer, deviceID string) ([]D
 // `[]` rather than `null` — the same no-null discipline every array this store
 // writes follows, and the difference between a decode that yields an empty fan-out
 // and one that yields nil and reads as "unknown".
+// nonNilPorts keeps an absent list from serializing as JSON null, the same rule
+// the entity list follows: a decoder reading the column back must get an array.
+func nonNilPorts(p []int) []int {
+	if p == nil {
+		return []int{}
+	}
+	return p
+}
+
 func nonNilEntities(in []wire.CandidateEntity) []wire.CandidateEntity {
 	if in == nil {
 		return []wire.CandidateEntity{}
