@@ -206,6 +206,7 @@ func schedule(ctx context.Context, client *http.Client, base string, sess sessio
 	defer ticker.Stop()
 
 	var lastRun time.Time
+	var adopted time.Duration
 	warned := ""
 
 	for {
@@ -220,6 +221,10 @@ func schedule(ctx context.Context, client *http.Client, base string, sess sessio
 		if !ok {
 			// Said once per distinct value, not once per minute: a misconfigured
 			// schedule should be visible in the log, not drown it.
+			if adopted != 0 {
+				adopted = 0
+				fmt.Fprintln(os.Stderr, "discovery: no scan schedule in effect; scanning only when asked")
+			}
 			if raw != "" && warned != raw {
 				fmt.Fprintf(os.Stderr, "discovery: schedule %q is not understood; expected \"every 30m\" or \"every 6h\". No scheduled scanning.\n", raw)
 				warned = raw
@@ -229,6 +234,16 @@ func schedule(ctx context.Context, client *http.Client, base string, sess sessio
 		warned = ""
 		if every < minScanInterval {
 			every = minScanInterval
+		}
+		// Said once per distinct schedule, so an operator gets POSITIVE
+		// confirmation their setting took effect. Before this the only evidence a
+		// schedule had been adopted was the absence of a complaint, which is not
+		// evidence — and the scans themselves are logged by the relay as
+		// "operator-requested", because nothing on the wire distinguishes a
+		// scheduled scan from a pressed button.
+		if adopted != every {
+			adopted = every
+			fmt.Fprintf(os.Stderr, "discovery: scanning on a schedule, every %s (from %q)\n", every, raw)
 		}
 		if !lastRun.IsZero() && time.Since(lastRun) < every {
 			continue
