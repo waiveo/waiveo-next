@@ -108,7 +108,29 @@ jobs:
       #
       # `make web-e2e` brings the stack up and down itself and writes only to
       # gitignored paths, so it is safe beside the drift checks above.
-      - name: web — console click-through and pairing (real browser, real stack)
+      # The browsers are CACHED because installing them is the step that has
+      # actually been breaking this lane. `playwright install --with-deps` shells
+      # out to apt-get, and Ubuntu's mirrors stall often enough that two runs in
+      # six died here: seven minutes of silence mid-download, then the JOB
+      # timeout killed everything with `npm exec playwright install` still
+      # orphaned. Nothing about the product or the tests was involved, but it
+      # presents as "e2e hung", which is the worst kind of red — it looks like a
+      # real failure and masks any real failure underneath it.
+      #
+      # Keyed by the pinned Playwright version, so a version bump misses the
+      # cache and reinstalls exactly once rather than silently running the wrong
+      # browser.
+      - name: cache the pinned Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
+      - name: install the pinned Playwright browsers
+        # Bounded so a stalled mirror fails THIS step in five minutes instead of
+        # consuming the job's whole 15-minute budget and cancelling the tests
+        # that had not run yet.
+        timeout-minutes: 5
         run: |
           # Installed from web/, NOT the repo root. There is no @playwright/test
           # at the root, so a root `npx` fetches the LATEST Playwright and
@@ -116,5 +138,16 @@ jobs:
           # web/'s pinned version and cannot find the binary it expects. That
           # exact mismatch turned this lane red on its first run:
           # "Executable doesn't exist at .../chromium_headless_shell-1228".
-          npm --prefix web exec -- playwright install --with-deps chromium
-          make web-e2e
+          #
+          # --with-deps only on a cache MISS: the system libraries it apt-installs
+          # persist in the runner image for this job, and re-running apt on every
+          # build is what stalls. On a hit, the browser binaries are already on
+          # disk and this is a no-op check.
+          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" = "true" ]; then
+            npm --prefix web exec -- playwright install chromium
+          else
+            npm --prefix web exec -- playwright install --with-deps chromium
+          fi
+      - name: web — console click-through and pairing (real browser, real stack)
+        timeout-minutes: 8
+        run: make web-e2e
