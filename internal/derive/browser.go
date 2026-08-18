@@ -42,16 +42,37 @@ import (
 // elimination of every shared-state failure mode above. What is left to guard is
 // the process itself, which is what killTree is.
 //
-// # Determinism
+// # Determinism, and the honest edge of it
 //
-// Content-addressing only dedupes if the same spec yields the same bytes, so the
-// launch flags pin everything that would otherwise vary run to run: colour
-// profile, LCD/subpixel text, font hinting, compositor staging. The PNG is then
+// Content-addressing dedupes better when the same spec yields the same bytes, so
+// the launch flags pin what they CAN: the colour profile, the device scale
+// factor, compositor staging, Skia's SIMD dispatch, and the field-trial groups a
+// fresh profile dir would otherwise re-roll per launch. The PNG is then
 // re-encoded through Go's encoder (png.go) so Chromium's own encoder settings
-// cannot leak in either. Determinism holds for one Chromium build on one
-// machine — the same spec on a different Chromium major may antialias
-// differently, and that is honestly a limit of rasterizing with a browser at
-// all, not something a flag fixes.
+// cannot leak into the digest either.
+//
+// What the flags do NOT pin is glyph rasterization, and the comment here used to
+// claim otherwise. --font-render-hinting and --disable-font-subpixel-positioning
+// are headless-shell switches: they are live when WAIVEO_DERIVE_CHROMIUM points
+// at a headless_shell binary, and --headless=new — what a normal chromium or
+// chrome install runs — does not consume them. Forcing hinting to `full` under
+// --headless=new was measured to produce byte-identical output, which full
+// hinting cannot do if the switch reached the font renderer. On those builds
+// hinting and subpixel glyph positioning come from the host's fontconfig, and
+// the typeface itself comes from the host whenever a spec names no FontFamily.
+//
+// The consequence is measurable and worth stating plainly, because a test used
+// to assert the opposite: two renders of a TEXT spec in two fresh processes can
+// differ. A quarter-pixel difference in glyph origin — the finest wobble this
+// axis can produce — moves ~1% of the pixels on a 96px "Hello" by up to 52/255.
+// It is rare (one CI run in 105) but it is real, and no flag available here
+// closes it.
+//
+// So the property the renderer actually offers is: same spec + same Chromium
+// build + same host font stack -> same bytes, with glyph antialiasing as a
+// residual. Missing it costs one duplicate object in the content store — never
+// correctness, because staleness is keyed on the SPEC digest (wire.DeriveDigest)
+// and never on the pixels, and contentgc reclaims the duplicate.
 
 // BrowserOptions configures the Chromium renderer.
 type BrowserOptions struct {
@@ -176,11 +197,41 @@ func (b *Browser) launch(ctx context.Context, profileDir string, page Page) (*os
 		"--hide-scrollbars",
 		"--mute-audio",
 		// --- determinism ---------------------------------------------------
+		// Colour: without this the capture is converted through whatever
+		// profile the host advertises. Measured live — display-p3 moves the
+		// bytes.
 		"--force-color-profile=srgb",
+		// Rasterization scale. Emulation.setDeviceMetricsOverride pins the
+		// PAGE's device scale factor (see capture), but the LAUNCH-time factor
+		// is a separate raster input and was previously unpinned: forcing it to
+		// 2 changes the pixels while NormalizePNG still measures the expected
+		// geometry, so the mismatch guard would not have caught it.
+		"--force-device-scale-factor=1",
+		// Skia's SIMD dispatch is chosen from the CPU's feature set, so two
+		// machines with different CPUs rasterize the same page differently.
+		// Irrelevant between two renders on ONE host; it is what makes the
+		// output comparable across a fleet.
+		"--disable-skia-runtime-opts",
+		// Each Render gets a fresh --user-data-dir, which mints a fresh
+		// low-entropy source for field-trial assignment — so two launches on one
+		// machine can land in different experiment groups and take different
+		// rendering paths. These stop the trials being rolled at all.
+		"--disable-field-trial-config",
+		"--disable-variations-seed-fetch",
+		// Text antialiasing. Live on headless_shell builds (which
+		// WAIVEO_DERIVE_CHROMIUM may select) and inert under --headless=new,
+		// where hinting comes from the host's fontconfig instead. Kept for the
+		// builds where they work; see the package comment for why they are NOT
+		// a guarantee of glyph stability.
 		"--disable-lcd-text",
 		"--font-render-hinting=none",
 		"--disable-font-subpixel-positioning",
+		// Also headless_shell-only. Its two useful implications for this
+		// renderer are passed explicitly below, so nothing depends on it.
 		"--deterministic-mode",
+		// Compositor staging: draw only once every stage has run, and never
+		// substitute a placeholder frame because content was slow. These are the
+		// switches that actually hold the capture stable on a loaded machine.
 		"--run-all-compositor-stages-before-draw",
 		"--disable-new-content-rendering-timeout",
 		"--disable-background-timer-throttling",

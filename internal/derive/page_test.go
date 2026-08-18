@@ -8,7 +8,9 @@ import (
 )
 
 // page_test.go pins the page builder, which is the half of the rasterizer that
-// decides WHAT is drawn. It needs no browser, so every one of these runs in CI.
+// decides WHAT is drawn. It needs no browser, so every one of these runs
+// everywhere — including on a contributor's machine with no Chromium, where
+// browser_test.go skips.
 
 func gradientTextSpec() *wire.DeriveSpec {
 	return &wire.DeriveSpec{
@@ -23,10 +25,11 @@ func gradientTextSpec() *wire.DeriveSpec {
 // TestBuildPageDrawsTheFiveUnNativeThings is the capability assertion: each of
 // the five things a SceneGraph node cannot draw appears in the page.
 //
-// It asserts on the emitted CSS rather than on pixels because pixels need a
-// browser and CI has none — but a missing declaration here is a missing
-// capability there, and the browser test (browser_test.go) closes the loop when
-// a Chromium is available.
+// It asserts on the emitted CSS rather than on pixels because that is the layer
+// where a missing capability is unambiguous: a declaration is either emitted or
+// it is not, with no antialiasing to argue about. The pixels are checked
+// separately — browser_test.go renders through a real Chromium, which CI does
+// have, and closes the loop there.
 func TestBuildPageDrawsTheFiveUnNativeThings(t *testing.T) {
 	cases := []struct {
 		name string

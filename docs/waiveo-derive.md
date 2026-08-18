@@ -172,23 +172,70 @@ rather than rendering a zero-size box that captures as a blank PNG.
 
 ## Determinism
 
-Same spec + same geometry → **byte-identical PNG**, which is what makes
-content-addressing dedupe, what makes a second `sync` pass over a rendered
-workspace cost nothing, and what lets duplicate layers collapse to one render. It
-is held up by:
+Same spec + same geometry → **byte-identical PNG**, which is what lets
+content-addressing dedupe. It is held up by:
 
 - a pure-Go, deterministic QR encoder (`internal/derive/qr`, golden-tested
   against an independent implementation across all forty versions);
 - a page builder that is a pure function of the job, with integer-only
   arithmetic for anything that reaches the CSS text;
-- Chromium launch flags that pin the colour profile, LCD/subpixel text, font
-  hinting and compositor staging;
+- Chromium launch flags that pin the colour profile, the device scale factor,
+  compositor staging, Skia's SIMD dispatch, and the field-trial groups a fresh
+  profile dir would otherwise re-roll on every launch;
 - re-encoding the capture through Go's PNG encoder, so the browser's own encoder
   settings and metadata cannot reach the digest.
 
-Determinism holds for **one Chromium build**. A different Chromium major may
-antialias differently; pin one with `WAIVEO_DERIVE_CHROMIUM` if byte-stability
-across machines matters.
+### What it is NOT
+
+**Byte-stability is a dedupe property, not a correctness one, and nothing depends
+on it.** Staleness is keyed on the **spec digest** (`wire.DeriveDigest`), never
+on the pixels: `wire.LayerDeriveState` compares a layer's `derived_from` against
+that digest, so a current layer is skipped by `GET /derive/pending` and by `sync`
+and is never re-rendered at all. A second `sync` pass over a rendered workspace
+therefore costs nothing because of the digest — not because the bytes would have
+matched. Duplicate layers within one pass collapse the same way: `sync` groups
+render work by digest and uploads once per digest.
+
+What byte-stability actually buys is that one spec rendered in **two different
+passes, or on two different machines**, stores one object instead of two. Missing
+it costs a duplicate ~25 KB object that `contentgc` later reclaims.
+
+Determinism holds for **one Chromium build on one host font stack**, and there is
+one hole inside even that: **glyph rasterization is not pinned**.
+`--font-render-hinting` and `--disable-font-subpixel-positioning` are
+headless-shell switches that `--headless=new` does not consume, so on an ordinary
+`chromium`/`chrome` install hinting and subpixel glyph origin come from the
+host's fontconfig — and the typeface itself comes from the host whenever a spec
+names no `font_family`. Two renders of a text layer in two fresh processes can
+therefore differ slightly. This is rare (once in 105 CI runs) and costs one
+duplicate object. Pin the browser with `WAIVEO_DERIVE_CHROMIUM`, and set an
+explicit `font_family`/`font_asset_ref`, if cross-machine byte-stability matters.
+
+The tests match that shape rather than overstating it, and they split three ways
+because no single assertion covers all of it:
+
+- the strict `bytes.Equal` assertion runs against a **textless** spec (gradient,
+  blurred shadow, stroked border, rounded corners), where every pixel is a pure
+  function of the device coordinates — measured, that spec renders to the
+  identical 16201-byte PNG under macOS Chrome on arm64 *and* under Chromium 151
+  on Debian bookworm, while the text spec differs between them (25381 vs 26272
+  bytes). It is a **self-comparison** — two renders, one argv, one host — so what
+  it catches is *non-determinism between two launches*; it says nothing about
+  whether a pinned constant is set correctly, because a wrong-but-consistent one
+  lands identically in both captures;
+- **text** is asserted to render *repeatably*: same painted coverage, same ink
+  **extent** (one pixel of slack, for a subpixel glyph origin), and no broad
+  shift across the canvas. The extent is what makes this real — a run
+  translated 2px conserves 99.99% of its coverage and touches under 2% of the
+  canvas, so both percentages stay green while the text is demonstrably set in
+  the wrong place;
+- the **launch flags themselves** are covered by a test that reads the argv the
+  browser process actually receives, because no render comparison can see them:
+  a slipped `--force-device-scale-factor=2` really does change the pixels, but it
+  changes them identically in both captures, so every render test passes.
+  Measured — mutating it, and deleting the whole determinism block, both leave
+  the four render tests green. That test needs no Chromium, so unlike the tests
+  it backstops it also runs on the pre-merge gate image, which has none.
 
 ## The guards, and why each one exists
 
