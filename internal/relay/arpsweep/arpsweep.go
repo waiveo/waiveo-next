@@ -25,10 +25,15 @@
 //     relay must not be able to probe a network the operator never enabled, and
 //     the surest way to guarantee that is to never accept the address from
 //     anywhere it could be influenced.
-//   - SIZE: a hard cap on hosts. A /16 is 65k addresses; sweeping one would be
-//     indistinguishable from an attack and would take the relay off its real
-//     work. A prefix too large is REFUSED, not silently truncated — a partial
-//     sweep reported as a sweep is a lie about what was looked at.
+//   - SIZE: a per-subnet cap on hosts. A /16 is 65k addresses; sweeping one
+//     would be indistinguishable from an attack and would take the relay off its
+//     real work. An oversized subnet is SKIPPED and named in the result, while
+//     the subnets that fit are still swept. Skipping one interface is not the
+//     silent truncation of a sweep — the result says exactly which subnets were
+//     covered and which were not, so nothing is reported as looked-at that was
+//     not. (An appliance typically holds both a LAN /23 and a docker0 /16;
+//     refusing the whole sweep because of the second would mean never sweeping
+//     the first, which hardware taught this lane on its first real run.)
 //   - RATE: bounded concurrency and a per-probe timeout, so the segment sees a
 //     trickle rather than a flood.
 //   - TRIGGER: nothing in this package runs on a timer. It is called by the scan
@@ -67,10 +72,9 @@ const (
 	probePort = 9
 )
 
-// ErrPrefixTooLarge is returned when the relay's own subnet implies more hosts
-// than MaxHosts. It names the count so an operator can see the refusal is about
-// SIZE and not about permission.
-var ErrPrefixTooLarge = errors.New("arpsweep: the relay's subnet implies more hosts than the sweep cap")
+// ErrPrefixTooLarge annotates a subnet skipped for SIZE, so an operator reading
+// Result.Skipped can see the reason is scale and not permission.
+var ErrPrefixTooLarge = errors.New("more hosts than the sweep cap")
 
 // Config configures a sweep.
 type Config struct {
@@ -91,10 +95,15 @@ type Config struct {
 
 // Result reports what a sweep actually did, so a caller can say so rather than
 // assume. Probed counts addresses the sweep attempted; Subnets names the CIDRs
-// it walked.
+// it walked; Skipped names the ones it did not, WITH the reason.
+//
+// Skipped is not decoration. A sweep that quietly ignored an interface would let
+// an operator believe their network had been looked at when part of it never
+// was — the same class of lie as reporting a truncated sweep as a whole one.
 type Result struct {
 	Probed  int
 	Subnets []string
+	Skipped []string
 }
 
 // Sweep probes every host address on the relay's own private subnets, so the
@@ -132,6 +141,7 @@ func Sweep(ctx context.Context, cfg Config) (Result, error) {
 
 	var targets []string
 	var subnets []string
+	var skipped []string
 	for _, a := range found {
 		ipnet, ok := a.(*net.IPNet)
 		if !ok {
@@ -141,20 +151,28 @@ func Sweep(ctx context.Context, cfg Config) (Result, error) {
 		if !ok {
 			continue
 		}
-		// Checked per-subnet BEFORE accumulating: refusing the whole sweep is the
-		// honest answer to "this segment is bigger than the cap", and it must not
-		// depend on which interface happened to be read first.
+		// Checked per-subnet, and a failure here skips THIS subnet rather than the
+		// sweep: an appliance holding a LAN /23 beside a docker0 /16 must still
+		// sweep the /23.
+		// Named by its NETWORK rather than by the interface address that revealed
+		// it: what was skipped is a subnet, and "10.0.0.1/16" would read as an
+		// address to anyone chasing the message.
+		network := (&net.IPNet{IP: ipnet.IP.Mask(ipnet.Mask), Mask: ipnet.Mask}).String()
 		if len(hosts) > maxHosts {
-			return Result{}, fmt.Errorf("%w: %s implies %d hosts, cap is %d", ErrPrefixTooLarge, ipnet.String(), len(hosts), maxHosts)
+			skipped = append(skipped, fmt.Sprintf("%s (%v: %d hosts, cap %d)", network, ErrPrefixTooLarge, len(hosts), maxHosts))
+			continue
 		}
-		subnets = append(subnets, ipnet.String())
+		// The cap is a budget across the whole sweep as well as per subnet, so a
+		// machine on many segments cannot exceed it by addition.
+		if len(targets)+len(hosts) > maxHosts {
+			skipped = append(skipped, fmt.Sprintf("%s (%v: would exceed the %d-host budget already spent on %d address(es))", network, ErrPrefixTooLarge, maxHosts, len(targets)))
+			continue
+		}
+		subnets = append(subnets, network)
 		targets = append(targets, hosts...)
 	}
 	if len(targets) == 0 {
-		return Result{Subnets: subnets}, nil
-	}
-	if len(targets) > maxHosts {
-		return Result{}, fmt.Errorf("%w: %d hosts across %d subnet(s), cap is %d", ErrPrefixTooLarge, len(targets), len(subnets), maxHosts)
+		return Result{Subnets: subnets, Skipped: skipped}, nil
 	}
 
 	var (
@@ -188,7 +206,7 @@ func Sweep(ctx context.Context, cfg Config) (Result, error) {
 	}
 	wg.Wait()
 
-	return Result{Probed: probed, Subnets: subnets}, ctx.Err()
+	return Result{Probed: probed, Subnets: subnets, Skipped: skipped}, ctx.Err()
 }
 
 // sweepableHosts lists the host addresses of an IPv4 private subnet, excluding

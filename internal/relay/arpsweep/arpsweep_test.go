@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -107,35 +108,92 @@ func TestNeverLeavesPrivateSpace(t *testing.T) {
 	}
 }
 
-// TestRefusesAPrefixLargerThanTheCap: a /16 is 65k addresses. Sweeping it would
-// be indistinguishable from an attack, so the sweep is REFUSED rather than
-// quietly truncated — a partial sweep reported as a sweep is a lie about what
-// was looked at.
-func TestRefusesAPrefixLargerThanTheCap(t *testing.T) {
+// TestSkipsAPrefixLargerThanTheCapAndSaysSo: a /16 is 65k addresses. Sweeping it
+// would be indistinguishable from an attack, so it is skipped — and NAMED, so an
+// operator is never told a network was looked at when it was not.
+func TestSkipsAPrefixLargerThanTheCapAndSaysSo(t *testing.T) {
 	probe, seen := recorder()
-	_, err := Sweep(context.Background(), Config{
+	res, err := Sweep(context.Background(), Config{
 		InterfaceAddrs: addrsOf(t, "10.0.0.1/16"),
 		Probe:          probe,
 	})
-	if !errors.Is(err, ErrPrefixTooLarge) {
-		t.Fatalf("err = %v, want ErrPrefixTooLarge", err)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
 	}
 	if n := len(seen()); n != 0 {
-		t.Errorf("a refused sweep still probed %d address(es) — the cap must be checked BEFORE any traffic", n)
+		t.Errorf("a skipped subnet still drew %d probe(s) — the cap must be checked BEFORE any traffic", n)
+	}
+	if len(res.Skipped) != 1 || !strings.Contains(res.Skipped[0], "10.0.0.0/16") {
+		t.Fatalf("Skipped = %v, want the oversized subnet named", res.Skipped)
+	}
+	if len(res.Subnets) != 0 {
+		t.Errorf("Subnets = %v, want nothing reported as swept", res.Subnets)
 	}
 }
 
-// TestHonoursTheHostCap: the cap is configurable, and the refusal is about size
+// TestAnOversizedInterfaceDoesNotBlockTheOthers is the case HARDWARE taught this
+// lane on its first real run: the appliance holds a LAN 192.168.50.12/23 AND a
+// docker0 172.17.0.1/16. Failing the whole sweep on the /16 meant the LAN — the
+// only segment anyone cares about — was never swept, on every box with Docker.
+func TestAnOversizedInterfaceDoesNotBlockTheOthers(t *testing.T) {
+	probe, seen := recorder()
+	res, err := Sweep(context.Background(), Config{
+		InterfaceAddrs: addrsOf(t, "172.17.0.1/16", "192.168.50.12/29"),
+		Probe:          probe,
+	})
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if res.Probed == 0 {
+		t.Fatal("the oversized docker bridge suppressed the LAN sweep — the exact defect the box exposed")
+	}
+	for _, ip := range seen() {
+		if strings.HasPrefix(ip, "172.17.") {
+			t.Errorf("swept %s on the oversized bridge", ip)
+		}
+	}
+	if len(res.Subnets) != 1 || !strings.Contains(res.Subnets[0], "192.168.50") {
+		t.Errorf("Subnets = %v, want only the LAN", res.Subnets)
+	}
+	if len(res.Skipped) != 1 || !strings.Contains(res.Skipped[0], "172.17.0.0/16") {
+		t.Errorf("Skipped = %v, want the bridge named", res.Skipped)
+	}
+}
+
+// TestHonoursTheHostCap: the cap is configurable, and skipping is about size
 // rather than about the particular prefix length.
 func TestHonoursTheHostCap(t *testing.T) {
-	probe, _ := recorder()
-	_, err := Sweep(context.Background(), Config{
+	probe, seen := recorder()
+	res, err := Sweep(context.Background(), Config{
 		InterfaceAddrs: addrsOf(t, "192.168.50.1/24"), // 254 hosts
 		Probe:          probe,
 		MaxHosts:       16,
 	})
-	if !errors.Is(err, ErrPrefixTooLarge) {
-		t.Fatalf("err = %v, want ErrPrefixTooLarge at a cap of 16", err)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if len(seen()) != 0 || len(res.Skipped) != 1 {
+		t.Fatalf("probed %d with Skipped=%v, want none probed and the subnet skipped at a cap of 16", len(seen()), res.Skipped)
+	}
+}
+
+// TestTheCapIsABudgetAcrossSubnets: many small segments must not add up past the
+// cap, or the leash could be evaded by a machine with enough interfaces.
+func TestTheCapIsABudgetAcrossSubnets(t *testing.T) {
+	probe, seen := recorder()
+	res, err := Sweep(context.Background(), Config{
+		InterfaceAddrs: addrsOf(t, "192.168.1.1/29", "192.168.2.1/29", "192.168.3.1/29"),
+		Probe:          probe,
+		MaxHosts:       12, // two /29s (5 hosts each) fit; the third does not
+	})
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if len(seen()) > 12 {
+		t.Errorf("probed %d addresses, over the %d budget", len(seen()), 12)
+	}
+	if len(res.Skipped) == 0 {
+		t.Error("the subnet that did not fit the budget was not reported as skipped")
 	}
 }
 
