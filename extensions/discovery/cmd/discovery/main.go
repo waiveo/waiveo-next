@@ -82,6 +82,13 @@ func main() {
 		_, _ = io.Copy(io.Discard, stdin)
 	}()
 
+	// The schedule is POLICY this extension owns, so this extension enforces it.
+	// Nothing in the platform runs an extension's schedule today — the field
+	// existed in both shipped manifests and was acted on by nothing, which is
+	// worse than having no field: an operator could set "daily at 03:00" and get
+	// silence. Runs beside the invocation loop, on the same process lifetime.
+	go schedule(ctx, client, base, sess)
+
 	if err := serve(ctx, client, base, sess); err != nil {
 		fmt.Fprintf(os.Stderr, "discovery: %v\n", err)
 		os.Exit(1)
@@ -173,6 +180,118 @@ func redeem(client *http.Client, base, code string) (session, error) {
 
 // serve is the work loop: lease, perform, report, forever — until the host
 // closes stdin (ctx) or the session dies (401).
+// Scheduling constants. The floor is the important one: an operator who types
+// "every 1m" gets the floor rather than a relay that never stops probing the
+// segment, and the reason is stated where they can find it (spec §8's rate
+// leash, and §11 H2's "never auto-scheduled until the operator enables it").
+const (
+	scheduleCheckInterval = 60 * time.Second
+	minScanInterval       = 15 * time.Minute
+)
+
+// schedule runs the operator's scan schedule until ctx is done.
+//
+// It re-reads the policy every tick rather than caching it at start, because an
+// operator changing the schedule expects it to take effect without restarting an
+// extension they cannot see. Reading is cheap — one authenticated GET of this
+// extension's own singleton — and a read that fails simply leaves the previous
+// decision standing rather than cancelling scheduled scanning on a blip.
+//
+// The DEFAULT is no schedule at all. An empty or unparseable value schedules
+// nothing and says so once, because a scan is active traffic on someone's
+// network and guessing what "0 3 * * *" meant would be the worst possible way to
+// decide to emit it.
+func schedule(ctx context.Context, client *http.Client, base string, sess session) {
+	ticker := time.NewTicker(scheduleCheckInterval)
+	defer ticker.Stop()
+
+	var lastRun time.Time
+	warned := ""
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		raw := scanSchedule(ctx, client, base, sess)
+		every, ok := parseEvery(raw)
+		if !ok {
+			// Said once per distinct value, not once per minute: a misconfigured
+			// schedule should be visible in the log, not drown it.
+			if raw != "" && warned != raw {
+				fmt.Fprintf(os.Stderr, "discovery: schedule %q is not understood; expected \"every 30m\" or \"every 6h\". No scheduled scanning.\n", raw)
+				warned = raw
+			}
+			continue
+		}
+		warned = ""
+		if every < minScanInterval {
+			every = minScanInterval
+		}
+		if !lastRun.IsZero() && time.Since(lastRun) < every {
+			continue
+		}
+		// The first tick after start does NOT scan: an extension restarting must
+		// not put traffic on the network as a side effect of restarting, which is
+		// also what stops a crash loop from becoming a scan loop.
+		if lastRun.IsZero() {
+			lastRun = time.Now()
+			continue
+		}
+		lastRun = time.Now()
+		if _, code, _ := scanNow(ctx, client, base, sess, invocation{InvocationID: "scheduled-" + lastRun.UTC().Format("20060102T150405Z")}); code != "" {
+			fmt.Fprintf(os.Stderr, "discovery: scheduled scan refused: %s\n", code)
+		}
+	}
+}
+
+// scanSchedule reads the operator's schedule from this extension's own settings.
+// An unreadable policy yields "", which schedules nothing — the safe direction.
+func scanSchedule(ctx context.Context, client *http.Client, base string, sess session) string {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		base+"/api/v1/extensions/"+sess.PackID+"/data/settings", nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Authorization", "Bearer "+sess.Token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return ""
+	}
+	var doc struct {
+		Schedule string `json:"schedule"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&doc); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(doc.Schedule)
+}
+
+// parseEvery understands exactly one schedule grammar: "every <N><m|h>".
+//
+// Deliberately not cron. A scan emits active traffic across a segment, and the
+// cost of misreading a cron field is a network probed on a cadence nobody
+// intended. One unambiguous form that an operator can read back to themselves is
+// worth more here than expressiveness; "never" and "" both mean no scanning.
+func parseEvery(raw string) (time.Duration, bool) {
+	f := strings.Fields(strings.ToLower(strings.TrimSpace(raw)))
+	if len(f) != 2 || f[0] != "every" {
+		return 0, false
+	}
+	d, err := time.ParseDuration(f[1])
+	if err != nil || d <= 0 {
+		return 0, false
+	}
+	return d, true
+}
+
 func serve(ctx context.Context, client *http.Client, base string, sess session) error {
 	backoff := time.Duration(0)
 	for {
