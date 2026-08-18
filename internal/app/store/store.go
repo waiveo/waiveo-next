@@ -371,93 +371,41 @@ func Open(dsn string, nowMs func() int64) (*Store, error) {
 		return nil, &EpochTooNewError{OnDisk: onDiskEpoch, Understood: PlatformSchemaEpoch}
 	}
 
-	if _, err := db.Exec(schema); err != nil {
+	// Additive-column convergence, BEFORE this build's DDL runs (schemamigrate.go).
+	//
+	// The order is load-bearing in both directions. It must run AFTER the epoch
+	// gate, because converging a file a newer build wrote is the downgrade-open
+	// ARC-041 forbids. And it must run BEFORE applySchemaDDL, because that DDL
+	// carries `CREATE INDEX IF NOT EXISTS` statements: an index over a column the
+	// on-disk table is missing does not no-op, it FAILS, which would turn a
+	// silently-drifted store into one that cannot be opened at all. Adding the
+	// columns first is what makes this build's own DDL a no-op rather than an
+	// error.
+	//
+	// A conforming store — every fresh install, and every box from the second
+	// boot after an upgrade — opens no transaction here at all.
+	schemaChanges, err := migrateSchemaColumns(context.Background(), db)
+	if err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("store: migrate meta: %w", err)
+		return nil, err
 	}
-	// The automations table carries the baseline PLUS an execution_class column,
-	// so it is created from its own DDL first; the shared-baseline loop below then
-	// no-ops over it (CREATE TABLE IF NOT EXISTS).
-	if _, err := db.Exec(automationsTableDDL); err != nil {
+	reportSchemaMigration(dsn, schemaChanges)
+
+	if err := applySchemaDDL(db); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("store: migrate automations: %w", err)
-	}
-	// The declarative-packs tables (packs + pack_files + pack_rows) are a
-	// self-contained subsystem with their own dedicated CRUD (packs.go), not a
-	// generic resource Kind, so they are migrated from their own DDL here.
-	if _, err := db.Exec(automationVersionsSchema); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("store: create automation_versions: %w", err)
-	}
-	if _, err := db.Exec(packsSchema); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("store: migrate packs: %w", err)
-	}
-	// The api/1 Job tables (jobs + job_targets) are likewise their own
-	// subsystem with their own CRUD (jobs.go): a Job is an execution record
-	// over other rows, not a resource Kind, so it carries no revision,
-	// external_id or scope_node of its own and never joins the desired-state
-	// projection.
-	if _, err := db.Exec(jobsSchema); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("store: migrate jobs: %w", err)
-	}
-	// The events/1 durable event log (events + event_log_meta) is likewise its
-	// own subsystem with its own reader/writer (eventlog.go): an event is an
-	// immutable record, never updated after it is written, carrying no revision
-	// and no place in the desired-state projection. It rides this store — rather
-	// than a database of its own — so a box has ONE file to back up and one to
-	// restore, and so the audit trail cannot be separated from the authored rows
-	// it describes.
-	if _, err := db.Exec(eventsSchema); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("store: migrate events: %w", err)
-	}
-	// The outbound-webhook delivery state (webhook_delivery_state) is its own
-	// subsystem for the same reason jobs are: it is execution state ABOUT a
-	// resource row rather than a resource row itself, and it holds the sealed
-	// signing secrets that must never appear in a served representation
-	// (webhooks.go).
-	if _, err := db.Exec(webhooksSchema); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("store: migrate webhook delivery state: %w", err)
-	}
-	// The pending pairing-grant records (pairing_grants) are their own
-	// subsystem too: a grant is minted and consumed, never PATCHed, and its
-	// rows join the desired-state projection as relay/1's `pairing_grants`
-	// section rather than as an api/1 resource family (pairinggrants.go).
-	if _, err := db.Exec(pairingGrantsSchema); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("store: migrate pairing grants: %w", err)
-	}
-	// The durable mirror of the relays' device.candidates reports
-	// (discovered_devices). Its own table rather than a resource Kind: nothing
-	// authors a sighting, it carries no revision to condition a write on, and a
-	// relay's report replaces its rows wholesale — none of which the generic CRUD
-	// machinery models (discovereddevices.go).
-	if _, err := db.Exec(discoveredDevicesSchema); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("store: migrate discovered devices: %w", err)
-	}
-	// The operator's IGNORE decisions (ignored_devices). Its own table beside the
-	// mirror rather than a resource Kind for the same reasons: nothing authors it
-	// into desired-state, it carries no revision, and — unlike adoption — it never
-	// reaches a relay, so it must not bump the generation (ignoreddevices.go).
-	if _, err := db.Exec(ignoredDevicesSchema); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("store: migrate ignored devices: %w", err)
-	}
-	// Revoked screens and relay certificates (api/1 API-140, revocations.go).
-	// Their own table rather than a column, so a revocation outlives the row it
-	// concerns — the store hard-deletes, and a revocation lost to a tidy-up is
-	// a relay that stops refusing a credential it should still refuse.
-	if _, err := db.Exec(revocationsDDL); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("store: migrate revocations: %w", err)
+		return nil, err
 	}
 	// CREATE TABLE IF NOT EXISTS is a no-op against a table an earlier build
 	// already created, so a column added since then needs its own step
-	// (migratePairingGrantsSchema's own doc).
+	// (migratePairingGrantsSchema's own doc). migrateSchemaColumns above now
+	// converges EVERY such column generically, which makes these three a no-op
+	// on any store it has already run over.
+	//
+	// They are kept rather than deleted in the same change that adds their
+	// replacement: the generic pass has to prove itself against real boxes
+	// before the hand-written path it supersedes is removed, and each of these
+	// is idempotent by its own PRAGMA read, so running both costs three column
+	// lookups and can never double-apply. Deleting them is a follow-up.
 	if err := migratePairingGrantsSchema(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate pairing grants: %w", err)
@@ -469,12 +417,6 @@ func Open(dsn string, nowMs func() int64) (*Store, error) {
 	if err := migratePackInstallsSchema(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate pack installs: %w", err)
-	}
-	for _, k := range allKinds {
-		if _, err := db.Exec(fmt.Sprintf(resourceTableDDL, string(k))); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("store: migrate %s: %w", k, err)
-		}
 	}
 
 	// Every migration above has run, so the file now holds this build's shape:
@@ -513,6 +455,175 @@ func Open(dsn string, nowMs func() int64) (*Store, error) {
 	// discover from a puzzling write refusal. A clean store logs nothing.
 	s.reportStoredFaults(context.Background())
 	return s, nil
+}
+
+// ErrNoStoreAtPath is returned by OpenReadOnly when there is no store file at
+// the path. A read-only open cannot create one, and a caller that reports on a
+// store an operator named needs to say "there is nothing here yet" rather than
+// invent one — see reportStoreIDs, which is what a fresh path used to do.
+var ErrNoStoreAtPath = errors.New("store: no store file at this path")
+
+// OpenReadOnly opens an EXISTING store for inspection and cannot write to it —
+// not the columns, not the epoch marker, not the file mode, not a sidecar.
+//
+// It exists because `waiveo-feeder -store-check` is documented as a dry run and
+// was not one. Open MIGRATES: it adds missing columns, stamps the schema epoch,
+// chmods the file to 0600 and leaves -wal/-shm sidecars beside it. So a check
+// that opened the store to report on it was, in the same breath, applying the
+// change it had just described in the future tense — and pointed at the one
+// artefact an operator most wants to read without touching (a pre-deploy backup,
+// or the live store under a running feeder), it silently converted that artefact
+// to this build's schema. Asked twice, it gave two different answers, and the
+// second one said the drift had never been there.
+//
+// So the reporting path gets a handle that CANNOT do any of that. The
+// difference from Open is only what is left out: no migration, no DDL, no epoch
+// stamp, no chmod, no fault report. The epoch gate is kept and applied first,
+// because a workspace a newer build wrote is one this build must not interpret,
+// let alone describe (ARC-041/104).
+//
+// Writes through the returned Store fail with SQLite's own read-only refusal.
+// That is the intended behaviour and not a check this package repeats: the
+// database is opened `mode=ro`, so the guarantee is enforced by the file handle
+// rather than by remembering to test a flag at every call site.
+//
+// One honest caveat, stated rather than papered over: SQLite cannot read a
+// WAL-mode database without its shared-memory index, so opening one whose
+// sidecars are absent CREATES a `<db>-shm` and a zero-length `<db>-wal` beside
+// it. The database file itself is not touched — not a byte, not its mode — and
+// an empty write-ahead log holds no frames, so nothing about the store's content
+// changes. They are not removed on close: deleting a `-shm` that another process
+// has mapped is how a live database gets corrupted, and a check must never take
+// that risk with a box that is serving.
+func OpenReadOnly(dsn string, nowMs func() int64) (*Store, error) {
+	if nowMs == nil {
+		return nil, errors.New("store: OpenReadOnly requires a clock (a read-only diagnostic passes store.WallClockMs)")
+	}
+	if dsn == ":memory:" {
+		return nil, errors.New("store: OpenReadOnly needs a file; an in-memory store has nothing to inspect")
+	}
+	if _, err := os.Stat(dsn); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: %s", ErrNoStoreAtPath, dsn)
+		}
+		return nil, fmt.Errorf("store: stat %s: %w", dsn, err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+dsn+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, fmt.Errorf("store: open %s read-only: %w", dsn, err)
+	}
+	db.SetMaxOpenConns(1)
+
+	onDiskEpoch, err := readSchemaEpoch(db)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if onDiskEpoch > PlatformSchemaEpoch {
+		_ = db.Close()
+		return nil, &EpochTooNewError{OnDisk: onDiskEpoch, Understood: PlatformSchemaEpoch}
+	}
+	return &Store{db: db, nowMs: nowMs}, nil
+}
+
+// applySchemaDDL creates every table and index this build declares, over a
+// database that may already hold some, all or none of them. It is the store's
+// ONE inventory of its own shape.
+//
+// Extracted out of Open — where these statements used to sit inline — because
+// something else now has to run them: schemamigrate.go builds a throwaway
+// in-memory database with this exact function and reads the resulting shape
+// back out to learn what a fresh store's columns ARE. That is
+// what makes the expected column set incapable of drifting from the DDL: there
+// is no second list to keep in step, and SQLite rather than a parser of ours
+// decides what the DDL declares. A table created anywhere but here is invisible
+// to that model, which TestDeclaredSchemaMatchesAFreshStore fails on.
+//
+// Every statement is `IF NOT EXISTS`, so this is safe to run at every open and
+// on every store. What it deliberately CANNOT do is change a table that already
+// exists — that is the whole of the defect schemamigrate.go exists to close, and
+// the reason the additive pass runs before this does.
+func applySchemaDDL(db *sql.DB) error {
+	if _, err := db.Exec(schema); err != nil {
+		return fmt.Errorf("store: migrate meta: %w", err)
+	}
+	// The automations table carries the baseline PLUS an execution_class column,
+	// so it is created from its own DDL first; the shared-baseline loop below then
+	// no-ops over it (CREATE TABLE IF NOT EXISTS).
+	if _, err := db.Exec(automationsTableDDL); err != nil {
+		return fmt.Errorf("store: migrate automations: %w", err)
+	}
+	// The declarative-packs tables (packs + pack_files + pack_rows) are a
+	// self-contained subsystem with their own dedicated CRUD (packs.go), not a
+	// generic resource Kind, so they are migrated from their own DDL here.
+	if _, err := db.Exec(automationVersionsSchema); err != nil {
+		return fmt.Errorf("store: create automation_versions: %w", err)
+	}
+	if _, err := db.Exec(packsSchema); err != nil {
+		return fmt.Errorf("store: migrate packs: %w", err)
+	}
+	// The api/1 Job tables (jobs + job_targets) are likewise their own
+	// subsystem with their own CRUD (jobs.go): a Job is an execution record
+	// over other rows, not a resource Kind, so it carries no revision,
+	// external_id or scope_node of its own and never joins the desired-state
+	// projection.
+	if _, err := db.Exec(jobsSchema); err != nil {
+		return fmt.Errorf("store: migrate jobs: %w", err)
+	}
+	// The events/1 durable event log (events + event_log_meta) is likewise its
+	// own subsystem with its own reader/writer (eventlog.go): an event is an
+	// immutable record, never updated after it is written, carrying no revision
+	// and no place in the desired-state projection. It rides this store — rather
+	// than a database of its own — so a box has ONE file to back up and one to
+	// restore, and so the audit trail cannot be separated from the authored rows
+	// it describes.
+	if _, err := db.Exec(eventsSchema); err != nil {
+		return fmt.Errorf("store: migrate events: %w", err)
+	}
+	// The outbound-webhook delivery state (webhook_delivery_state) is its own
+	// subsystem for the same reason jobs are: it is execution state ABOUT a
+	// resource row rather than a resource row itself, and it holds the sealed
+	// signing secrets that must never appear in a served representation
+	// (webhooks.go).
+	if _, err := db.Exec(webhooksSchema); err != nil {
+		return fmt.Errorf("store: migrate webhook delivery state: %w", err)
+	}
+	// The pending pairing-grant records (pairing_grants) are their own
+	// subsystem too: a grant is minted and consumed, never PATCHed, and its
+	// rows join the desired-state projection as relay/1's `pairing_grants`
+	// section rather than as an api/1 resource family (pairinggrants.go).
+	if _, err := db.Exec(pairingGrantsSchema); err != nil {
+		return fmt.Errorf("store: migrate pairing grants: %w", err)
+	}
+	// The durable mirror of the relays' device.candidates reports
+	// (discovered_devices). Its own table rather than a resource Kind: nothing
+	// authors a sighting, it carries no revision to condition a write on, and a
+	// relay's report replaces its rows wholesale — none of which the generic CRUD
+	// machinery models (discovereddevices.go).
+	if _, err := db.Exec(discoveredDevicesSchema); err != nil {
+		return fmt.Errorf("store: migrate discovered devices: %w", err)
+	}
+	// The operator's IGNORE decisions (ignored_devices). Its own table beside the
+	// mirror rather than a resource Kind for the same reasons: nothing authors it
+	// into desired-state, it carries no revision, and — unlike adoption — it never
+	// reaches a relay, so it must not bump the generation (ignoreddevices.go).
+	if _, err := db.Exec(ignoredDevicesSchema); err != nil {
+		return fmt.Errorf("store: migrate ignored devices: %w", err)
+	}
+	// Revoked screens and relay certificates (api/1 API-140, revocations.go).
+	// Their own table rather than a column, so a revocation outlives the row it
+	// concerns — the store hard-deletes, and a revocation lost to a tidy-up is
+	// a relay that stops refusing a credential it should still refuse.
+	if _, err := db.Exec(revocationsDDL); err != nil {
+		return fmt.Errorf("store: migrate revocations: %w", err)
+	}
+	for _, k := range allKinds {
+		if _, err := db.Exec(fmt.Sprintf(resourceTableDDL, string(k))); err != nil {
+			return fmt.Errorf("store: migrate %s: %w", k, err)
+		}
+	}
+	return nil
 }
 
 // Close flushes the WAL (best-effort) and closes the database handle.

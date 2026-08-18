@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -343,5 +346,205 @@ func TestStoreCheckReportsTheDurableEventLog(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("report does not carry %q:\n%s", want, got)
 		}
+	}
+}
+
+// storeFingerprint is everything about a store that must not change when a check
+// merely LOOKS at it: the database file's bytes and its mode.
+//
+// It also folds in the size of the write-ahead log, because that is where a
+// committed change would live if one had been made. What it deliberately does
+// NOT require is the ABSENCE of sidecars: SQLite cannot read a WAL-mode database
+// without its shared-memory index, so any reader — including a strictly
+// read-only one — creates a `-shm` and a zero-length `-wal` if they are not
+// already there. Those carry no content and no change; a non-empty `-wal` would.
+func storeFingerprint(t *testing.T, dsn string) string {
+	t.Helper()
+	body, err := os.ReadFile(dsn)
+	if err != nil {
+		t.Fatalf("read %s: %v", dsn, err)
+	}
+	info, err := os.Stat(dsn)
+	if err != nil {
+		t.Fatalf("stat %s: %v", dsn, err)
+	}
+	sum := sha256.Sum256(body)
+	wal := int64(0)
+	if walInfo, err := os.Stat(dsn + "-wal"); err == nil {
+		wal = walInfo.Size()
+	}
+	journal := "absent"
+	if _, err := os.Stat(dsn + "-journal"); err == nil {
+		journal = "present"
+	}
+	return fmt.Sprintf("sha256=%x size=%d mode=%o wal=%d journal=%s",
+		sum[:8], len(body), info.Mode().Perm(), wal, journal)
+}
+
+// TestStoreCheckNamesAMissingColumnAndChangesNothing is the pre-deploy gate for
+// issue #194's class of defect, and the assertion that keeps it a DRY RUN.
+//
+// An operator restarting a box onto a build that declares a new column has to be
+// able to see that from the outside, before taking the restart. The check used
+// to print the plan in the future tense and then, four lines later, open the
+// store for real — which is what applies it. Pointed at the pre-deploy backup
+// (the obvious thing to compare against, and often the only rollback copy) it
+// converted that backup to this build's schema: column added, epoch stamped,
+// mode forced to 0600, -wal/-shm left beside it. Asked a second time it reported
+// the store as conforming, so the reading could not even be repeated.
+//
+// So the file is fingerprinted before and after — bytes, mode, sidecars — and
+// the check is run TWICE and must answer identically.
+func TestStoreCheckNamesAMissingColumnAndChangesNothing(t *testing.T) {
+	dsn := seedStoreFileForCheck(t)
+
+	// discovered_devices as the build before open_ports created it, on a file
+	// with the mode an older build left (the check must not "tidy" that either —
+	// it is not the process that owns this store).
+	db, err := sql.Open("sqlite", "file:"+dsn)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE discovered_devices DROP COLUMN open_ports`); err != nil {
+		t.Fatalf("forge the pre-open_ports shape: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+	if err := os.Chmod(dsn, 0o644); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	before := storeFingerprint(t, dsn)
+
+	var out bytes.Buffer
+	if code := reportStoreIDs(dsn, &out); code != 0 {
+		t.Fatalf("reportStoreIDs exit code = %d, want 0\n%s", code, out.String())
+	}
+	got := out.String()
+	for _, want := range []string{
+		"1 column(s) are missing",
+		"discovered_devices.open_ports",
+		"existing rows take the column's declared default",
+		"this check has NOT added them",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the check must name the missing column; %q absent from:\n%s", want, got)
+		}
+	}
+
+	if after := storeFingerprint(t, dsn); after != before {
+		t.Fatalf("`-store-check` must not touch the store it is asked about — run against a pre-deploy backup, "+
+			"that is the backup gone.\n  before: %s\n   after: %s", before, after)
+	}
+
+	// A reading that cannot be taken twice is not a reading. The second run must
+	// say exactly what the first did.
+	var again bytes.Buffer
+	if code := reportStoreIDs(dsn, &again); code != 0 {
+		t.Fatalf("second reportStoreIDs exit code = %d, want 0\n%s", code, again.String())
+	}
+	if again.String() != got {
+		t.Fatalf("the check answered differently the second time; the first run changed the store.\n"+
+			"--- first ---\n%s\n--- second ---\n%s", got, again.String())
+	}
+	if after := storeFingerprint(t, dsn); after != before {
+		t.Fatalf("the second run changed the store.\n  before: %s\n   after: %s", before, after)
+	}
+	t.Logf("-store-check output:\n%s", got)
+}
+
+// TestStoreCheckSaysSoWhenEveryColumnIsPresent: the conforming answer has to be
+// stated, not merely implied by silence — "nothing to report" and "the check did
+// not look" must not read the same. And a conforming store is not written to
+// either: no epoch re-stamp, no chmod, no sidecar.
+func TestStoreCheckSaysSoWhenEveryColumnIsPresent(t *testing.T) {
+	dsn := seedStoreFileForCheck(t)
+	before := storeFingerprint(t, dsn)
+
+	var out bytes.Buffer
+	if code := reportStoreIDs(dsn, &out); code != 0 {
+		t.Fatalf("reportStoreIDs exit code = %d, want 0\n%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "every column this build declares is present") {
+		t.Fatalf("report did not state the store's shape conforms:\n%s", out.String())
+	}
+	if after := storeFingerprint(t, dsn); after != before {
+		t.Fatalf("a check over a conforming store must still write nothing.\n  before: %s\n   after: %s", before, after)
+	}
+}
+
+// TestStoreCheckRefusesAWorkspaceANewerBuildWrote: the check must give the same
+// answer the boot would, and give it about the SCHEMA too.
+//
+// Reporting a column plan for a workspace a newer build wrote is worse than
+// reporting nothing: the newer build's columns read as columns "this build no
+// longer declares", which is a written case for hand-dropping a column that
+// build's rows depend on — and the addition it promises will never happen,
+// because the open refuses (ARC-041/104).
+func TestStoreCheckRefusesAWorkspaceANewerBuildWrote(t *testing.T) {
+	dsn := seedStoreFileForCheck(t)
+
+	db, err := sql.Open("sqlite", "file:"+dsn)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE discovered_devices ADD COLUMN link_local TEXT NOT NULL DEFAULT ''`); err != nil {
+		t.Fatalf("forge the newer build's column: %v", err)
+	}
+	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, store.PlatformSchemaEpoch+1)); err != nil {
+		t.Fatalf("stamp the newer epoch: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+	before := storeFingerprint(t, dsn)
+
+	var out bytes.Buffer
+	code := reportStoreIDs(dsn, &out)
+	if code != 1 {
+		t.Fatalf("reportStoreIDs exit code = %d, want 1 for a workspace this build cannot open\n%s", code, out.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "newer than this build understands") {
+		t.Fatalf("the refusal must say why; got:\n%s", got)
+	}
+	for _, mustNotSay := range []string{
+		"will be added when the store is next opened",
+		"no longer declares it",
+	} {
+		if strings.Contains(got, mustNotSay) {
+			t.Fatalf("a workspace this build cannot open must not be described as drift (%q):\n%s", mustNotSay, got)
+		}
+	}
+	if after := storeFingerprint(t, dsn); after != before {
+		t.Fatalf("a refused check must change nothing.\n  before: %s\n   after: %s", before, after)
+	}
+}
+
+// TestStoreCheckOnAPathWithNoStoreCreatesNothing: the check runs against
+// whatever path an operator types, and a typo — or a box before its first boot —
+// must not be answered by CREATING the store and then reporting that the store
+// it just made is in good order.
+func TestStoreCheckOnAPathWithNoStoreCreatesNothing(t *testing.T) {
+	dir := t.TempDir()
+	dsn := filepath.Join(dir, "not-created-yet.db")
+
+	var out bytes.Buffer
+	if code := reportStoreIDs(dsn, &out); code != 0 {
+		t.Fatalf("reportStoreIDs exit code = %d, want 0\n%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "there is no store at") {
+		t.Fatalf("the check must say the path is empty; got:\n%s", out.String())
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read the directory: %v", err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("a check must not create the store it was asked about; found %v", names)
 	}
 }

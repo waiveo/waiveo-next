@@ -1,0 +1,236 @@
+adopted_devices	body	body TEXT NOT NULL
+adopted_devices	created_at	created_at INTEGER NOT NULL
+adopted_devices	external_id	external_id TEXT NOT NULL DEFAULT ''
+adopted_devices	id	id TEXT PRIMARY KEY
+adopted_devices	labels	labels TEXT NOT NULL DEFAULT '{}'
+adopted_devices	revision	revision INTEGER NOT NULL
+adopted_devices	scope_node	scope_node TEXT NOT NULL DEFAULT ''
+adopted_devices	updated_at	updated_at INTEGER NOT NULL
+automation_versions	(table constraint)	PRIMARY KEY (automation_id, revision)
+automation_versions	automation_id	automation_id TEXT NOT NULL
+automation_versions	body	body TEXT NOT NULL
+automation_versions	revision	revision INTEGER NOT NULL
+automation_versions	superseded_at	superseded_at INTEGER NOT NULL
+automations	body	body TEXT NOT NULL
+automations	created_at	created_at INTEGER NOT NULL
+automations	execution_class	execution_class TEXT NOT NULL DEFAULT ''
+automations	external_id	external_id TEXT NOT NULL DEFAULT ''
+automations	id	id TEXT PRIMARY KEY
+automations	labels	labels TEXT NOT NULL DEFAULT '{}'
+automations	revision	revision INTEGER NOT NULL
+automations	scope_node	scope_node TEXT NOT NULL DEFAULT ''
+automations	updated_at	updated_at INTEGER NOT NULL
+casts	body	body TEXT NOT NULL
+casts	created_at	created_at INTEGER NOT NULL
+casts	external_id	external_id TEXT NOT NULL DEFAULT ''
+casts	id	id TEXT PRIMARY KEY
+casts	labels	labels TEXT NOT NULL DEFAULT '{}'
+casts	revision	revision INTEGER NOT NULL
+casts	scope_node	scope_node TEXT NOT NULL DEFAULT ''
+casts	updated_at	updated_at INTEGER NOT NULL
+dayparts	body	body TEXT NOT NULL
+dayparts	created_at	created_at INTEGER NOT NULL
+dayparts	external_id	external_id TEXT NOT NULL DEFAULT ''
+dayparts	id	id TEXT PRIMARY KEY
+dayparts	labels	labels TEXT NOT NULL DEFAULT '{}'
+dayparts	revision	revision INTEGER NOT NULL
+dayparts	scope_node	scope_node TEXT NOT NULL DEFAULT ''
+dayparts	updated_at	updated_at INTEGER NOT NULL
+discovered_devices	address	address TEXT NOT NULL DEFAULT ''
+discovered_devices	device_class	device_class TEXT NOT NULL
+discovered_devices	device_id	device_id TEXT PRIMARY KEY
+discovered_devices	driver	driver TEXT NOT NULL
+discovered_devices	entities	entities TEXT NOT NULL DEFAULT '[]'
+discovered_devices	first_seen	first_seen INTEGER NOT NULL
+discovered_devices	last_seen	last_seen INTEGER NOT NULL
+discovered_devices	model	model TEXT NOT NULL DEFAULT ''
+discovered_devices	name	name TEXT NOT NULL DEFAULT ''
+discovered_devices	native_id	native_id TEXT NOT NULL
+discovered_devices	open_ports	open_ports TEXT NOT NULL DEFAULT '[]'
+discovered_devices	relay_id	relay_id TEXT NOT NULL
+discovered_devices	scope_node	scope_node TEXT NOT NULL
+discovered_devices	serial	serial TEXT NOT NULL DEFAULT ''
+event_log_meta	evicted_through	evicted_through TEXT NOT NULL DEFAULT ''
+event_log_meta	id	id INTEGER PRIMARY KEY CHECK (id = 1)
+events	cost_class	cost_class TEXT NOT NULL DEFAULT ''
+events	id	id TEXT PRIMARY KEY
+events	origin	origin TEXT NOT NULL DEFAULT ''
+events	origin_principal	origin_principal TEXT NOT NULL DEFAULT ''
+events	payload	payload TEXT NOT NULL
+events	retention_class	retention_class TEXT NOT NULL DEFAULT ''
+events	schema	schema TEXT NOT NULL
+events	scope_node	scope_node TEXT NOT NULL DEFAULT ''
+events	trace_id	trace_id TEXT NOT NULL DEFAULT ''
+events	ts	ts INTEGER NOT NULL
+fallbacks	body	body TEXT NOT NULL
+fallbacks	created_at	created_at INTEGER NOT NULL
+fallbacks	external_id	external_id TEXT NOT NULL DEFAULT ''
+fallbacks	id	id TEXT PRIMARY KEY
+fallbacks	labels	labels TEXT NOT NULL DEFAULT '{}'
+fallbacks	revision	revision INTEGER NOT NULL
+fallbacks	scope_node	scope_node TEXT NOT NULL DEFAULT ''
+fallbacks	updated_at	updated_at INTEGER NOT NULL
+ignored_devices	device_id	device_id TEXT PRIMARY KEY
+ignored_devices	ignored_at	ignored_at INTEGER NOT NULL
+job_targets	(table constraint)	PRIMARY KEY (job_id, seq)
+job_targets	err_code	err_code TEXT NOT NULL DEFAULT ''
+job_targets	err_detail	err_detail TEXT NOT NULL DEFAULT ''
+job_targets	job_id	job_id TEXT NOT NULL
+job_targets	scope_node	scope_node TEXT NOT NULL DEFAULT ''
+job_targets	seq	seq INTEGER NOT NULL
+job_targets	state	state TEXT NOT NULL
+job_targets	target_id	target_id TEXT NOT NULL
+jobs	created_at	created_at INTEGER NOT NULL
+jobs	created_by	created_by TEXT NOT NULL
+jobs	id	id TEXT PRIMARY KEY
+jobs	op_kind	op_kind TEXT NOT NULL DEFAULT ''
+jobs	op_payload	op_payload TEXT NOT NULL DEFAULT ''
+jobs	updated_at	updated_at INTEGER NOT NULL
+meta	generation	generation INTEGER NOT NULL
+meta	id	id INTEGER PRIMARY KEY CHECK (id = 1)
+pack_channel_marks	(table constraint)	PRIMARY KEY (pack_id, trust_channel)
+pack_channel_marks	pack_id	pack_id TEXT NOT NULL
+pack_channel_marks	resolved_version	resolved_version TEXT NOT NULL
+pack_channel_marks	trust_channel	trust_channel TEXT NOT NULL
+pack_channel_marks	updated_at	updated_at INTEGER NOT NULL
+pack_files	(table constraint)	PRIMARY KEY (pack_id, file_kind, name)
+pack_files	body	body TEXT NOT NULL
+pack_files	file_kind	file_kind TEXT NOT NULL
+pack_files	name	name TEXT NOT NULL
+pack_files	pack_id	pack_id TEXT NOT NULL
+pack_installs	artifact_digest	artifact_digest TEXT NOT NULL DEFAULT ''
+pack_installs	content_digest	content_digest TEXT NOT NULL
+pack_installs	installed_at	installed_at INTEGER NOT NULL
+pack_installs	key_id	key_id TEXT NOT NULL
+pack_installs	pack_id	pack_id TEXT NOT NULL
+pack_installs	record_id	record_id TEXT PRIMARY KEY
+pack_installs	resolved_version	resolved_version TEXT NOT NULL
+pack_installs	source	source TEXT NOT NULL
+pack_installs	stale_source	stale_source INTEGER NOT NULL DEFAULT 0
+pack_installs	trust_channel	trust_channel TEXT NOT NULL DEFAULT ''
+pack_installs	verifying_key	verifying_key TEXT NOT NULL DEFAULT ''
+pack_invocations	action	action TEXT NOT NULL
+pack_invocations	created_at	created_at INTEGER NOT NULL
+pack_invocations	error_code	error_code TEXT NOT NULL DEFAULT ''
+pack_invocations	error_message	error_message TEXT NOT NULL DEFAULT ''
+pack_invocations	idempotency	idempotency TEXT NOT NULL
+pack_invocations	invocation_id	invocation_id TEXT PRIMARY KEY
+pack_invocations	lease_expires	lease_expires INTEGER NOT NULL DEFAULT 0
+pack_invocations	pack_id	pack_id TEXT NOT NULL
+pack_invocations	params	params TEXT NOT NULL DEFAULT '{}'
+pack_invocations	result	result TEXT NOT NULL DEFAULT ''
+pack_invocations	state	state TEXT NOT NULL
+pack_invocations	trace_id	trace_id TEXT NOT NULL DEFAULT ''
+pack_invocations	updated_at	updated_at INTEGER NOT NULL
+pack_rows	(table constraint)	PRIMARY KEY (pack_id, collection, entity_id)
+pack_rows	body	body TEXT NOT NULL
+pack_rows	collection	collection TEXT NOT NULL
+pack_rows	created_at	created_at INTEGER NOT NULL
+pack_rows	entity_id	entity_id TEXT NOT NULL
+pack_rows	external_id	external_id TEXT NOT NULL DEFAULT ''
+pack_rows	labels	labels TEXT NOT NULL DEFAULT '[]'
+pack_rows	lifecycle_state	lifecycle_state TEXT NOT NULL
+pack_rows	pack_id	pack_id TEXT NOT NULL
+pack_rows	params	params TEXT NOT NULL DEFAULT ''
+pack_rows	revision	revision INTEGER NOT NULL
+pack_rows	scope_node	scope_node TEXT NOT NULL
+pack_rows	template_ref	template_ref TEXT NOT NULL DEFAULT ''
+pack_rows	updated_at	updated_at INTEGER NOT NULL
+packs	created_at	created_at INTEGER NOT NULL
+packs	data_model_version	data_model_version INTEGER NOT NULL
+packs	enabled	enabled INTEGER NOT NULL DEFAULT 1
+packs	id	id TEXT PRIMARY KEY
+packs	manifest	manifest TEXT NOT NULL
+packs	revision	revision INTEGER NOT NULL
+packs	updated_at	updated_at INTEGER NOT NULL
+packs	version	version TEXT NOT NULL
+pairing_grants	grant_id	grant_id TEXT PRIMARY KEY
+pairing_grants	issued_at	issued_at INTEGER NOT NULL
+pairing_grants	issued_via	issued_via TEXT NOT NULL
+pairing_grants	purpose	purpose TEXT NOT NULL
+pairing_grants	redemption_mode	redemption_mode TEXT NOT NULL
+pairing_grants	relay_id	relay_id TEXT NOT NULL DEFAULT ''
+pairing_grants	resulting_principal_kind	resulting_principal_kind TEXT NOT NULL
+pairing_grants	scope_node	scope_node TEXT NOT NULL
+pairing_grants	screen_id	screen_id TEXT NOT NULL
+pairing_grants	ttl_seconds	ttl_seconds INTEGER NOT NULL
+playlists	body	body TEXT NOT NULL
+playlists	created_at	created_at INTEGER NOT NULL
+playlists	external_id	external_id TEXT NOT NULL DEFAULT ''
+playlists	id	id TEXT PRIMARY KEY
+playlists	labels	labels TEXT NOT NULL DEFAULT '{}'
+playlists	revision	revision INTEGER NOT NULL
+playlists	scope_node	scope_node TEXT NOT NULL DEFAULT ''
+playlists	updated_at	updated_at INTEGER NOT NULL
+preset_batches	body	body TEXT NOT NULL
+preset_batches	created_at	created_at INTEGER NOT NULL
+preset_batches	external_id	external_id TEXT NOT NULL DEFAULT ''
+preset_batches	id	id TEXT PRIMARY KEY
+preset_batches	labels	labels TEXT NOT NULL DEFAULT '{}'
+preset_batches	revision	revision INTEGER NOT NULL
+preset_batches	scope_node	scope_node TEXT NOT NULL DEFAULT ''
+preset_batches	updated_at	updated_at INTEGER NOT NULL
+revocations	(table constraint)	PRIMARY KEY (subject_kind, subject_id)
+revocations	actor	actor TEXT NOT NULL DEFAULT ''
+revocations	revoked_at	revoked_at INTEGER NOT NULL
+revocations	subject_id	subject_id TEXT NOT NULL
+revocations	subject_kind	subject_kind TEXT NOT NULL
+schedules	body	body TEXT NOT NULL
+schedules	created_at	created_at INTEGER NOT NULL
+schedules	external_id	external_id TEXT NOT NULL DEFAULT ''
+schedules	id	id TEXT PRIMARY KEY
+schedules	labels	labels TEXT NOT NULL DEFAULT '{}'
+schedules	revision	revision INTEGER NOT NULL
+schedules	scope_node	scope_node TEXT NOT NULL DEFAULT ''
+schedules	updated_at	updated_at INTEGER NOT NULL
+scope_nodes	body	body TEXT NOT NULL
+scope_nodes	created_at	created_at INTEGER NOT NULL
+scope_nodes	external_id	external_id TEXT NOT NULL DEFAULT ''
+scope_nodes	id	id TEXT PRIMARY KEY
+scope_nodes	labels	labels TEXT NOT NULL DEFAULT '{}'
+scope_nodes	revision	revision INTEGER NOT NULL
+scope_nodes	scope_node	scope_node TEXT NOT NULL DEFAULT ''
+scope_nodes	updated_at	updated_at INTEGER NOT NULL
+screens	body	body TEXT NOT NULL
+screens	created_at	created_at INTEGER NOT NULL
+screens	external_id	external_id TEXT NOT NULL DEFAULT ''
+screens	id	id TEXT PRIMARY KEY
+screens	labels	labels TEXT NOT NULL DEFAULT '{}'
+screens	revision	revision INTEGER NOT NULL
+screens	scope_node	scope_node TEXT NOT NULL DEFAULT ''
+screens	updated_at	updated_at INTEGER NOT NULL
+validity_windows	body	body TEXT NOT NULL
+validity_windows	created_at	created_at INTEGER NOT NULL
+validity_windows	external_id	external_id TEXT NOT NULL DEFAULT ''
+validity_windows	id	id TEXT PRIMARY KEY
+validity_windows	labels	labels TEXT NOT NULL DEFAULT '{}'
+validity_windows	revision	revision INTEGER NOT NULL
+validity_windows	scope_node	scope_node TEXT NOT NULL DEFAULT ''
+validity_windows	updated_at	updated_at INTEGER NOT NULL
+variables	body	body TEXT NOT NULL
+variables	created_at	created_at INTEGER NOT NULL
+variables	external_id	external_id TEXT NOT NULL DEFAULT ''
+variables	id	id TEXT PRIMARY KEY
+variables	labels	labels TEXT NOT NULL DEFAULT '{}'
+variables	revision	revision INTEGER NOT NULL
+variables	scope_node	scope_node TEXT NOT NULL DEFAULT ''
+variables	updated_at	updated_at INTEGER NOT NULL
+webhook_delivery_state	attempt	attempt INTEGER NOT NULL DEFAULT 0
+webhook_delivery_state	consecutive_failures	consecutive_failures INTEGER NOT NULL DEFAULT 0
+webhook_delivery_state	delivery_id	delivery_id TEXT NOT NULL DEFAULT ''
+webhook_delivery_state	endpoint_id	endpoint_id TEXT PRIMARY KEY
+webhook_delivery_state	last_delivered_id	last_delivered_id TEXT NOT NULL DEFAULT ''
+webhook_delivery_state	next_attempt_at_ms	next_attempt_at_ms INTEGER NOT NULL DEFAULT 0
+webhook_delivery_state	rotated_at_ms	rotated_at_ms INTEGER NOT NULL DEFAULT 0
+webhook_delivery_state	sealed_prior_secret	sealed_prior_secret TEXT NOT NULL DEFAULT ''
+webhook_delivery_state	sealed_secret	sealed_secret TEXT NOT NULL DEFAULT ''
+webhook_delivery_state	status	status TEXT NOT NULL DEFAULT 'active'
+webhook_delivery_state	updated_at	updated_at INTEGER NOT NULL
+webhook_endpoints	body	body TEXT NOT NULL
+webhook_endpoints	created_at	created_at INTEGER NOT NULL
+webhook_endpoints	external_id	external_id TEXT NOT NULL DEFAULT ''
+webhook_endpoints	id	id TEXT PRIMARY KEY
+webhook_endpoints	labels	labels TEXT NOT NULL DEFAULT '{}'
+webhook_endpoints	revision	revision INTEGER NOT NULL
+webhook_endpoints	scope_node	scope_node TEXT NOT NULL DEFAULT ''
+webhook_endpoints	updated_at	updated_at INTEGER NOT NULL

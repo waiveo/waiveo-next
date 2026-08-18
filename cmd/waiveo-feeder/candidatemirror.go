@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/devices"
@@ -56,6 +57,132 @@ const mirrorCandidatesTimeout = 5 * time.Second
 type candidateMirror struct {
 	registry *devices.Registry
 	st       *store.Store
+	// faults is shared by every copy of this value (it is held as a pointer and
+	// the methods take value receivers), which is what lets the sink recognize
+	// the SECOND failure as related to the first.
+	faults *mirrorFaults
+	// nowMs is the app's persisted monotonic clock floor (SEC-066), the same
+	// reading every row this process stamps comes from — NOT the host clock. It
+	// is only used to say how long a run of failures has lasted, but a duration
+	// an operator will correlate against stored rows and audit events has to be
+	// measured on the clock those were written on.
+	nowMs func() int64
+}
+
+// newCandidateMirror wires a sink with its own failure tracker and the process's
+// one clock.
+func newCandidateMirror(registry *devices.Registry, st *store.Store, nowMs func() int64) candidateMirror {
+	return candidateMirror{registry: registry, st: st, faults: &mirrorFaults{}, nowMs: nowMs}
+}
+
+// mirrorFaults is what a durable write that keeps failing says for itself.
+//
+// # Why it exists
+//
+// The mirror write is deliberately LOGGED rather than returned (see
+// ApplyCandidates), and for a transient disk fault that is right: the next
+// report is along in a minute and re-converges the whole set. But the same
+// handling is applied to a fault that can NEVER re-converge, and there the
+// per-failure log line is the entire escalation ladder. Box .12 spent seven days
+// with a mirror that could not write a single row, and said so 1017 times, one
+// identical line per report, each one carrying the reassurance that it would be
+// "retried on the next report" — which was true and useless, because the retry
+// could not succeed. Nothing counted them, nothing compared the first to the
+// last, and nobody read the thousandth.
+//
+// # What it changes
+//
+// Not the disposition — the write failure is still not returned to the relay,
+// for the reason ApplyCandidates gives. What changes is that a repeating failure
+// stops reading like a fresh one. The first is reported immediately, the count
+// doubles between reports after that, and a continuing fault is never quiet for
+// more than mirrorFaultMaxQuietMs — so box .12's exact outage (1017 failed
+// writes over seven days) produces 33 lines instead of 1017, each carrying how
+// many reports have failed and how long it has been going, and the last of them
+// lands about four hours rather than days before the end. A recovery is too:
+// "no issues" and "the reporting stopped" are different facts, and only one of
+// them deserves silence.
+//
+// A nil *mirrorFaults reports every failure, which is the behaviour this
+// replaced: a sink built without a tracker degrades to noisy rather than silent.
+type mirrorFaults struct {
+	mu           sync.Mutex
+	consecutive  int
+	sinceMs      int64
+	lastReportMs int64
+	nextReport   int
+}
+
+// mirrorFaultMaxQuietMs is the longest a CONTINUING fault may go unmentioned.
+//
+// Doubling alone is not enough on its own: after nine or ten reports the gap
+// grows past a day, so the tail of a long outage looks exactly like a healthy
+// mirror to anyone reading the last day of logs — which is how a fault gets
+// missed twice. Six hours means no window of that length during an outage is
+// ever silent, while a week-long fault still costs a few dozen lines rather than
+// a thousand.
+const mirrorFaultMaxQuietMs = 6 * 60 * 60 * 1000
+
+// failed records one failed durable write and reports whether this one should be
+// logged. It also returns how many consecutive failures there have now been and
+// how long the run has lasted, so the log line can carry both.
+func (f *mirrorFaults) failed(nowMs int64) (report bool, consecutive int, lasted time.Duration) {
+	if f == nil {
+		return true, 0, 0
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.consecutive == 0 {
+		f.sinceMs = nowMs
+		f.lastReportMs = nowMs
+		f.nextReport = 1
+	}
+	f.consecutive++
+	elapsed := time.Duration(nowMs-f.sinceMs) * time.Millisecond
+	// Two rules, and a line goes out when EITHER is met. Doubling on the count
+	// carries the early burst — the first failure is worth a line immediately,
+	// the thousandth is not worth nine hundred more than the hundredth — and the
+	// quiet ceiling carries the tail, where doubling alone would go silent for
+	// longer than anyone's log window.
+	byCount := f.consecutive >= f.nextReport
+	byTime := nowMs-f.lastReportMs >= mirrorFaultMaxQuietMs
+	if !byCount && !byTime {
+		return false, f.consecutive, elapsed
+	}
+	if byCount {
+		f.nextReport *= 2
+	}
+	f.lastReportMs = nowMs
+	return true, f.consecutive, elapsed
+}
+
+// pending reports whether a run of failures is in progress. It exists so the
+// SUCCESS path — every report on every healthy box, forever — can skip the
+// recovery check without reading a clock it has nothing to measure.
+func (f *mirrorFaults) pending() bool {
+	if f == nil {
+		return false
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.consecutive > 0
+}
+
+// recovered clears the run and reports what it was, so a mirror that starts
+// working again says so once. A mirror that was never failing says nothing.
+func (f *mirrorFaults) recovered(nowMs int64) (report bool, consecutive int, lasted time.Duration) {
+	if f == nil {
+		return false, 0, 0
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.consecutive == 0 {
+		return false, 0, 0
+	}
+	consecutive = f.consecutive
+	lasted = time.Duration(nowMs-f.sinceMs) * time.Millisecond
+	f.consecutive, f.nextReport = 0, 0
+	return true, consecutive, lasted
 }
 
 // ApplyCandidates implements feederrelayconn.CandidateSink.
@@ -67,8 +194,14 @@ type candidateMirror struct {
 // A mirror write failure is LOGGED, not returned. Returning it would answer the
 // relay with a typed refusal of a report the read model already accepted, which
 // would be false, and would make a transient disk problem look to the relay like
-// a rejected report it should stop sending. The live view is correct either way;
-// the mirror re-converges on the next report, a minute later.
+// a rejected report it should stop sending. The live view is correct either way.
+//
+// What that reasoning does NOT license is treating every failure as transient.
+// A transient one re-converges on the next report a minute later; a permanent
+// one (a store that cannot be written at all, a column the file does not have)
+// never does, and this call site cannot tell them apart from one error. So the
+// disposition stays and the REPORTING learns to count: mirrorFaults distinguishes
+// the first failure from the thousandth and says how long it has been going.
 func (m candidateMirror) ApplyCandidates(relayID string, candidates []wire.DeviceCandidate) error {
 	if err := m.registry.ApplyCandidates(relayID, candidates); err != nil {
 		return err
@@ -77,7 +210,24 @@ func (m candidateMirror) ApplyCandidates(relayID string, candidates []wire.Devic
 	ctx, cancel := context.WithTimeout(context.Background(), mirrorCandidatesTimeout)
 	defer cancel()
 	if err := m.st.ReplaceDiscoveredDevices(ctx, relayID, m.rowsFor(relayID, candidates)); err != nil {
-		log.Printf("waiveo-feeder: mirroring relay %s's device report failed (the live view is unaffected; retried on the next report): %v", relayID, err)
+		if report, consecutive, lasted := m.faults.failed(m.nowMs()); report {
+			if consecutive <= 1 {
+				log.Printf("waiveo-feeder: mirroring relay %s's device report FAILED; the live view is unaffected, "+
+					"but nothing is being written to the durable mirror and a restart will lose the device list: %v", relayID, err)
+			} else {
+				log.Printf("waiveo-feeder: mirroring relay %s's device report has now failed %d time(s) in a row over %s; "+
+					"this is not re-converging on its own and needs looking at: %v",
+					relayID, consecutive, lasted.Round(time.Second), err)
+			}
+		}
+		return nil
+	}
+	if !m.faults.pending() {
+		return nil
+	}
+	if report, consecutive, lasted := m.faults.recovered(m.nowMs()); report {
+		log.Printf("waiveo-feeder: mirroring relay %s's device report is working again after %d consecutive failure(s) over %s",
+			relayID, consecutive, lasted.Round(time.Second))
 	}
 	return nil
 }

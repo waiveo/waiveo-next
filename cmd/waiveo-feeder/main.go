@@ -14,6 +14,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/maaxton/waiveo-next/internal/app/restoreswap"
@@ -384,13 +385,26 @@ func envOr(env func(string) string, key, def string) string {
 	return def
 }
 
-// reportStoreIDs backs -store-check: it opens the store, reports every row id
-// the next boot would rewrite, and writes nothing. It is what an operator runs
-// against a box BEFORE restarting it onto a build that requires a canonical ULID
-// for every row id, so the restart holds no surprises — an empty report means the
-// store is already conforming, a listed one is exactly what the boot will change,
-// and a refusal means the boot would decline to start and the store needs a look
-// first.
+// reportStoreIDs backs -store-check: it reports every row id the next boot would
+// rewrite, and every column that boot would add, and writes NOTHING. It is what
+// an operator runs against a box BEFORE restarting it onto a new build, so the
+// restart holds no surprises — an empty report means the store is already
+// conforming, a listed one is exactly what the boot will change, and a refusal
+// means the boot would decline to start and the store needs a look first.
+//
+// "Writes nothing" is enforced by the handle, not by intention: the store is
+// opened with store.OpenReadOnly, which cannot migrate a column, stamp the
+// schema epoch, chmod the file or leave a sidecar. That is a correction, not a
+// flourish. This check used to open the store for real, so it APPLIED the schema
+// change it had just printed in the future tense: run against the pre-deploy
+// backup — the obvious thing to compare a live store against, and often the only
+// rollback copy — it quietly converted that backup to this build's schema, and a
+// second run reported the drift had never been there.
+//
+// The SHAPE report comes first because a build can declare a column the file
+// does not have — `CREATE TABLE IF NOT EXISTS` cannot add one to a table that
+// already exists — and until the additive migration landed, the only symptom of
+// that was a runtime SQL error swallowed once per write (issue #194).
 //
 // It also reports what the durable event log is holding, because the same store
 // now carries it and the canonicalization pass reaches into it: a stored event's
@@ -402,18 +416,40 @@ func envOr(env func(string) string, key, def string) string {
 // rewrite would be refused.
 func reportStoreIDs(storePath string, out io.Writer) int {
 	// The HOST clock deliberately, and the only place in this binary that is the
-	// right answer. This subcommand stamps no ROW — it plans and reports, and the
-	// migration planner takes a read lock and writes nothing — so there is no
-	// stamp for a floor to keep consistent with anything, and reaching for the
-	// floor would mean creating the auth-state directory it lives in as a side
-	// effect of a check that runs before the server does.
-	//
-	// "Stamps no row" rather than "writes nothing", because the open itself is
-	// not inert: against a path with no store, store.Open creates the directory
-	// and file and runs every migration, so -store-check on a fresh path reports
-	// a conforming store it just created. That is a surprising-but-harmless
-	// property of the subcommand, not of this clock choice.
-	st, err := store.Open(storePath, store.WallClockMs)
+	// right answer. This subcommand stamps no row — it plans and reports over a
+	// read-only handle — so there is no stamp for a floor to keep consistent with
+	// anything, and reaching for the floor would mean creating the auth-state
+	// directory it lives in as a side effect of a check that must not write.
+	if schema, err := store.InspectSchema(storePath); err != nil {
+		fmt.Fprintf(out, "%s CANNOT be brought up to this build's schema: %v\n", storePath, err)
+		fmt.Fprintf(out, "the feeder will refuse to start against this store; nothing has been changed.\n")
+		return 1
+	} else {
+		if len(schema.Added) == 0 {
+			fmt.Fprintf(out, "%s: every column this build declares is present.\n", storePath)
+		} else {
+			fmt.Fprintf(out, "%s: %d column(s) are missing and will be added when the store is next opened:\n",
+				storePath, len(schema.Added))
+			for _, a := range schema.Added {
+				fmt.Fprintf(out, "  %s.%s: %s\n", a.Table, a.Column, a.Definition)
+			}
+			fmt.Fprintf(out, "adding a column cannot lose a row: existing rows take the column's declared default.\n")
+			fmt.Fprintf(out, "this check has NOT added them: it reads the store read-only, and the next boot is what applies them.\n")
+		}
+		for _, d := range schema.Divergent {
+			fmt.Fprintf(out, "schema drift %s.%s: %s\n", d.Table, d.Column, d.Reason)
+		}
+	}
+
+	st, err := store.OpenReadOnly(storePath, store.WallClockMs)
+	if errors.Is(err, store.ErrNoStoreAtPath) {
+		// Not an error: an operator checking a box before its first boot has
+		// typed a path that is about to exist. Saying so is the honest answer —
+		// the old behaviour was to CREATE the store here and then report that the
+		// store it had just made was conforming.
+		fmt.Fprintf(out, "there is no store at %s yet; the first boot will create one carrying every column this build declares.\n", storePath)
+		return 0
+	}
 	if err != nil {
 		fmt.Fprintf(out, "cannot open %s: %v\n", storePath, err)
 		return 1
@@ -540,7 +576,8 @@ func main() {
 	// The one flag the feeder takes, checked before any state is opened, the
 	// same shape the relay's -version uses. Everything else stays env-only.
 	storeCheck := flag.Bool("store-check", false,
-		"report any stored row id that is not a canonical ULID (and would be rewritten at the next boot), then exit without writing")
+		"report what the next boot would change in the store — missing columns, non-canonical row ids — reading it "+
+			"read-only and writing nothing (safe to run against a live store or a backup)")
 	flag.Parse()
 
 	cfg := loadConfig(os.Getenv)
@@ -1051,7 +1088,16 @@ func main() {
 	// still serves correctly the moment a relay connects, and refusing to boot
 	// over a cache would turn a cosmetic degradation into an outage.
 	if restored, err := restoreDeviceRegistry(context.Background(), st, deviceRegistry); err != nil {
-		log.Printf("waiveo-feeder: restoring the discovered-device mirror failed (the list fills as relays report): %v", err)
+		// Stated in full rather than as "the list fills as relays report", which
+		// is true of the mirrored SIGHTINGS and false of everything else this
+		// function does. restoreDeviceRegistry is also the only boot-time site
+		// that re-applies the operator's ADOPT and IGNORE decisions to the read
+		// model, so a failure here leaves those unprojected for the whole process
+		// lifetime — an ignored device reappears in the list, and no relay can
+		// hand the decision back because no relay was ever told it.
+		log.Printf("waiveo-feeder: restoring the discovered-device mirror FAILED: the device list fills as relays "+
+			"report, but the stored adopt/ignore decisions are NOT applied to the read model until the next "+
+			"successful restart: %v", err)
 	} else if restored > 0 {
 		log.Printf("waiveo-feeder: restored %d discovered device(s) from the last run", restored)
 	}
@@ -1081,7 +1127,7 @@ func main() {
 		// The read model plus its durable mirror, applied in that order: the
 		// live view answers `GET /devices` now, the mirror answers it after a
 		// restart before any relay has reconnected (candidatemirror.go).
-		relayconn.WithCandidateSink(candidateMirror{registry: deviceRegistry, st: st}),
+		relayconn.WithCandidateSink(newCandidateMirror(deviceRegistry, st, nowMs)),
 		// REL-124's upstream redemption report, retiring the reported grant
 		// from later generations (redemptionsink.go). Retirement TRAILS the
 		// redemption and enforces nothing — the site-wide at-most-once

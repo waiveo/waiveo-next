@@ -69,7 +69,7 @@ func TestMirroredDevicesAreListableAfterARestart(t *testing.T) {
 	// --- first run: a relay reports two devices ---
 	first := cmOpenStore(t, path)
 	liveRegistry := devices.New(cmSite, func() int64 { return 10_000 })
-	sink := candidateMirror{registry: liveRegistry, st: first}
+	sink := newCandidateMirror(liveRegistry, first, store.WallClockMs)
 	// The sink must satisfy the connection layer's own interface, or none of
 	// this is reachable from a real relay.
 	var _ feederrelayconn.CandidateSink = sink
@@ -137,7 +137,7 @@ func TestMirrorFollowsTheRegistryOnARefusedReport(t *testing.T) {
 	s := cmOpenStore(t, filepath.Join(t.TempDir(), "app.db"))
 	t.Cleanup(func() { _ = s.Close() })
 	registry := devices.New(cmSite, func() int64 { return 10_000 })
-	sink := candidateMirror{registry: registry, st: s}
+	sink := newCandidateMirror(registry, s, store.WallClockMs)
 
 	if err := sink.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{cmCandidate(cmNativeA, "Lobby TV", "192.168.50.31:8060")}); err != nil {
 		t.Fatalf("seed report: %v", err)
@@ -171,7 +171,7 @@ func TestMirrorDropsWhatIncumbencyDropped(t *testing.T) {
 	s := cmOpenStore(t, filepath.Join(t.TempDir(), "app.db"))
 	t.Cleanup(func() { _ = s.Close() })
 	registry := devices.New(cmSite, func() int64 { return 10_000 })
-	sink := candidateMirror{registry: registry, st: s}
+	sink := newCandidateMirror(registry, s, store.WallClockMs)
 
 	if err := sink.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{cmCandidate(cmNativeA, "Lobby TV", "192.168.50.31:8060")}); err != nil {
 		t.Fatalf("incumbent report: %v", err)
@@ -201,7 +201,7 @@ func TestForgetClearsBothCopies(t *testing.T) {
 	s := cmOpenStore(t, filepath.Join(t.TempDir(), "app.db"))
 	t.Cleanup(func() { _ = s.Close() })
 	registry := devices.New(cmSite, func() int64 { return 10_000 })
-	sink := candidateMirror{registry: registry, st: s}
+	sink := newCandidateMirror(registry, s, store.WallClockMs)
 
 	if err := sink.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{cmCandidate(cmNativeA, "Lobby TV", "192.168.50.31:8060")}); err != nil {
 		t.Fatalf("seed report: %v", err)
@@ -229,7 +229,7 @@ func TestRestoreCarriesAdoptionForward(t *testing.T) {
 
 	first := cmOpenStore(t, path)
 	registry := devices.New(cmSite, func() int64 { return 10_000 })
-	sink := candidateMirror{registry: registry, st: first}
+	sink := newCandidateMirror(registry, first, store.WallClockMs)
 	if err := sink.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{cmCandidate(cmNativeA, "Lobby TV", "192.168.50.31:8060")}); err != nil {
 		t.Fatalf("seed report: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestRestoreDropsARevokedRelaysDevices(t *testing.T) {
 
 	first := cmOpenStore(t, path)
 	registry := devices.New(cmSite, func() int64 { return 10_000 })
-	sink := candidateMirror{registry: registry, st: first}
+	sink := newCandidateMirror(registry, first, store.WallClockMs)
 	if err := sink.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{cmCandidate(cmNativeA, "Lobby TV", "192.168.50.31:8060")}); err != nil {
 		t.Fatalf("seed relay A's report: %v", err)
 	}
