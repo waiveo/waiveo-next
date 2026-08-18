@@ -33,6 +33,7 @@ import (
 
 //go:embed core
 //go:embed discovery
+//go:embed roku
 var extensionFS embed.FS
 
 // ZipWithFiles assembles a first-party extension by directory name into an

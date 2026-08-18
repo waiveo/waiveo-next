@@ -1,0 +1,26 @@
+{
+  "id": "waiveo/roku",
+  "version": "1.0.0",
+  "displayName": "msg:pack.displayName",
+  "icon": "tv",
+  "description": "Teaches this deployment to recognise Roku players. Discovery finds everything on the network without knowing what any of it is; this extension supplies the pattern that says which of those things is a Roku, so the inventory can name it and the platform can drive it. The ECP protocol itself stays in core on the relay — only a relay can reach a LAN — so what ships here is the knowledge, not the driver.",
+  "compat": {
+    "ctx": ">=1.0 <2.0",
+    "renderer": ["settings-form"]
+  },
+  "capabilities": [
+    { "capability": "device.read", "scope": "*", "reason": "msg:cap.read.reason" }
+  ],
+  "egress": [],
+  "resources": { "memory": 32, "cpuWeight": 50, "storageQuota": 4, "maxScheduledTimers": 0 },
+  "devices": [
+    {
+      "deviceClass": "media-player",
+      "match": [
+        { "ssdp": "roku:ecp" }
+      ],
+      "capabilities": ["device.read"]
+    }
+  ],
+  "retention": {}
+}
