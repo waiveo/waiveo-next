@@ -128,6 +128,13 @@ func (l *Lane) Run(ctx context.Context) error {
 	}
 }
 
+// Refresh reads the neighbour table once, immediately, outside the lane's own
+// cadence. It is what an active scan calls after warming the table: the sweep
+// makes the kernel learn hosts that had not spoken, and this is what makes them
+// appear NOW rather than up to a full interval later. Safe to call concurrently
+// with the lane's own loop — a re-read is idempotent and the store dedups.
+func (l *Lane) Refresh() { l.sweep() }
+
 // sweep reads the table once and Observes every usable neighbour.
 //
 // A neighbour is usable when it has a MAC (its identity) AND a dialable LAN

@@ -52,6 +52,7 @@ import (
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/deviceclass"
+	"github.com/maaxton/waiveo-next/internal/relay/arpsweep"
 	"github.com/maaxton/waiveo-next/internal/relay/automation"
 	"github.com/maaxton/waiveo-next/internal/relay/automationhost"
 	"github.com/maaxton/waiveo-next/internal/relay/clocktrust"
@@ -1289,6 +1290,20 @@ func main() {
 						State: wire.DiscoveryScanStateScanning, ScanID: id, StartedAt: startedAt,
 						Candidates: len(candStore.Report().Body.Candidates),
 					})
+					// ACTIVE LANE 1 — the ARP sweep. It mints nothing itself: it
+					// pokes each address on this relay's own private subnet so the
+					// kernel learns hosts that have not spoken recently, and the
+					// PASSIVE neighbour lane then reads them. Refresh() is what
+					// makes them appear now rather than up to a sweep interval
+					// later. A refusal (a segment larger than the cap) is logged
+					// and the scan continues with its other lanes — one lane that
+					// cannot run is not a failed scan.
+					if res, err := arpsweep.Sweep(rootCtx, arpsweep.Config{}); err != nil {
+						log.Printf("waiveo-relay: discovery scan %s: ARP sweep skipped: %v", id, err)
+					} else if res.Probed > 0 {
+						log.Printf("waiveo-relay: discovery scan %s: ARP sweep probed %d address(es) across %v", id, res.Probed, res.Subnets)
+						neighborLane.Refresh()
+					}
 					scanDisc.Scan(rootCtx)
 					log.Printf("waiveo-relay: discovery scan %s complete", id)
 					reportScanStatus(liveConn, wire.DiscoveryScanStatusBody{
