@@ -22,6 +22,7 @@ import (
 type Status struct {
 	RelayID    string `json:"relay_id"`
 	State      string `json:"state"`
+	Reason     string `json:"reason,omitempty"`
 	ScanID     string `json:"scan_id,omitempty"`
 	StartedAt  int64  `json:"started_at,omitempty"`
 	FinishedAt int64  `json:"finished_at,omitempty"`
@@ -56,6 +57,7 @@ func (r *Registry) ApplyDiscoveryScanStatus(relayID string, body wire.DiscoveryS
 	r.by[relayID] = Status{
 		RelayID:    relayID,
 		State:      body.State,
+		Reason:     body.Reason,
 		ScanID:     body.ScanID,
 		StartedAt:  body.StartedAt,
 		FinishedAt: body.FinishedAt,

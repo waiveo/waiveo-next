@@ -3219,6 +3219,11 @@ export interface components {
             relay_id: components["schemas"]["RelayId"];
             /** @enum {string} */
             state: "scanning" | "idle";
+            /**
+             * @description Why the current or last scan ran, so an operator seeing a scan they did not start can tell a schedule from a colleague.
+             * @enum {string}
+             */
+            reason?: "operator" | "scheduled";
             /** @description Correlates with the id `startDiscoveryScan` returned for this run. */
             scan_id?: string;
             /**
@@ -3239,6 +3244,11 @@ export interface components {
         /** @description Optional narrowing for an active scan. An empty body means "every connected relay scans its own default scope", which is what the operator's plain "scan the network" sends. */
         DiscoveryScanRequest: {
             relay_id?: components["schemas"]["RelayId"];
+            /**
+             * @description Why this scan is running. Descriptive only — nothing is permitted or refused on it — and absent means an operator asked, because a caller that says nothing is a person. It exists so a relay's log and the scan status can tell a schedule apart from someone pressing a button.
+             * @enum {string}
+             */
+            reason?: "operator" | "scheduled";
             /** @description A CIDR to scan, when the operator wants one segment rather than the relay's default scope. It is REQUESTED, never trusted: a relay refuses a subnet its own policy does not permit and one that is not on an interface it actually has, so naming a CIDR here can never point a relay's probes at a network the operator has not enabled. */
             subnet?: string;
         };

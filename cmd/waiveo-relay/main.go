@@ -1275,6 +1275,12 @@ func main() {
 			var scanRunning string
 			scanDisc := disc
 			scans.set(func(body wire.DiscoveryScanBody) wire.DiscoveryScanResultBody {
+				// A caller that says nothing is a person: only a schedule
+				// announces itself, so anything unrecognized reads as operator.
+				reason := wire.DiscoveryScanReasonOperator
+				if body.Reason == wire.DiscoveryScanReasonScheduled {
+					reason = wire.DiscoveryScanReasonScheduled
+				}
 				scanMu.Lock()
 				if scanRunning != "" {
 					id := scanRunning
@@ -1292,9 +1298,9 @@ func main() {
 						scanMu.Unlock()
 					}()
 					startedAt := time.Now().UnixMilli()
-					log.Printf("waiveo-relay: discovery scan %s starting (operator-requested)", id)
+					log.Printf("waiveo-relay: discovery scan %s starting (%s)", id, reason)
 					reportScanStatus(liveConn, wire.DiscoveryScanStatusBody{
-						State: wire.DiscoveryScanStateScanning, ScanID: id, StartedAt: startedAt,
+						State: wire.DiscoveryScanStateScanning, ScanID: id, Reason: reason, StartedAt: startedAt,
 						Candidates: len(candStore.Report().Body.Candidates),
 					})
 					// ACTIVE LANE 1 — the ARP sweep. It mints nothing itself: it
@@ -1328,9 +1334,9 @@ func main() {
 							id, len(open), len(hosts), attached)
 					}
 					scanDisc.Scan(rootCtx)
-					log.Printf("waiveo-relay: discovery scan %s complete", id)
+					log.Printf("waiveo-relay: discovery scan %s complete (%s)", id, reason)
 					reportScanStatus(liveConn, wire.DiscoveryScanStatusBody{
-						State: wire.DiscoveryScanStateIdle, ScanID: id, StartedAt: startedAt,
+						State: wire.DiscoveryScanStateIdle, ScanID: id, Reason: reason, StartedAt: startedAt,
 						FinishedAt: time.Now().UnixMilli(), Candidates: len(candStore.Report().Body.Candidates),
 					})
 				}()

@@ -8356,6 +8356,12 @@ components:
         state:
           type: string
           enum: [scanning, idle]
+        reason:
+          type: string
+          enum: [operator, scheduled]
+          description: >-
+            Why the current or last scan ran, so an operator seeing a scan they
+            did not start can tell a schedule from a colleague.
         scan_id:
           type: string
           description: Correlates with the id `startDiscoveryScan` returned for this run.
@@ -8390,6 +8396,14 @@ components:
       properties:
         relay_id:
           $ref: "#/components/schemas/RelayId"
+        reason:
+          type: string
+          enum: [operator, scheduled]
+          description: >-
+            Why this scan is running. Descriptive only — nothing is permitted or
+            refused on it — and absent means an operator asked, because a caller
+            that says nothing is a person. It exists so a relay's log and the scan
+            status can tell a schedule apart from someone pressing a button.
         subnet:
           type: string
           description: >-

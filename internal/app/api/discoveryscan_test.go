@@ -183,3 +183,33 @@ func TestScanReportsAnAlreadyRunningScanAsAcceptedNoOp(t *testing.T) {
 		t.Fatalf("outcome = %+v, want ok=true started=false (a benign repeat)", scans)
 	}
 }
+
+// TestScanCarriesTheReasonToTheRelay: the label has to reach the relay to be of
+// any use — it exists so a relay's log and the scan status can tell a schedule
+// apart from someone pressing a button.
+func TestScanCarriesTheReasonToTheRelay(t *testing.T) {
+	e := newScanEnv(t, scanRelayA)
+
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/discovery/scan",
+		[]byte(`{"reason":"scheduled"}`), nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST scan = %d, want 200 (%s)", resp.StatusCode, raw)
+	}
+	asked := e.dispatcher.scanned()
+	if len(asked) != 1 || asked[0].body.Reason != wire.DiscoveryScanReasonScheduled {
+		t.Fatalf("relay was asked %+v, want reason=scheduled on the wire", asked)
+	}
+}
+
+// A caller that says nothing is a person: the default must reach the relay as an
+// absent reason, which it reads as operator — not as an invented value.
+func TestAScanWithNoReasonSaysNothing(t *testing.T) {
+	e := newScanEnv(t, scanRelayA)
+
+	if resp, raw := e.do(t, http.MethodPost, "/api/v1/discovery/scan", []byte(`{}`), nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST scan = %d, want 200 (%s)", resp.StatusCode, raw)
+	}
+	asked := e.dispatcher.scanned()
+	if len(asked) != 1 || asked[0].body.Reason != "" {
+		t.Fatalf("relay was asked %+v, want an absent reason rather than an invented one", asked)
+	}
+}

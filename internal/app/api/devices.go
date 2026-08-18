@@ -139,6 +139,10 @@ func (srv *server) getDiscoveryScanStatus(w http.ResponseWriter, r *http.Request
 type discoveryScanRequest struct {
 	RelayID string `json:"relay_id,omitempty"`
 	Subnet  string `json:"subnet,omitempty"`
+	// Reason is why this scan is running. Descriptive only — nothing is
+	// permitted or refused on it — and absent means an operator asked, because a
+	// caller that says nothing is a person.
+	Reason string `json:"reason,omitempty"`
 }
 
 // startDiscoveryScan handles POST /api/v1/discovery/scan (openapi
@@ -213,6 +217,7 @@ func (srv *server) startDiscoveryScanExec(w http.ResponseWriter, r *http.Request
 	for _, relayID := range targets {
 		res, err := srv.dispatch.SendDiscoveryScan(r.Context(), relayID, apihttp.TraceID(r), wire.DiscoveryScanBody{
 			Subnet: req.Subnet,
+			Reason: req.Reason,
 		})
 		if err != nil {
 			// A transport failure against ONE relay is that relay's outcome, not

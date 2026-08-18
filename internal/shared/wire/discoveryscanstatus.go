@@ -48,6 +48,10 @@ const (
 type DiscoveryScanStatusBody struct {
 	// State is DiscoveryScanStateScanning or DiscoveryScanStateIdle.
 	State string `json:"state"`
+	// Reason is why the current or last scan ran (operator | scheduled), so a
+	// console can show it beside the timestamps rather than leaving an operator
+	// to guess whether a scan they did not start was a schedule or a colleague.
+	Reason string `json:"reason,omitempty"`
 	// ScanID correlates with the id `discovery.scan_result` returned. Present
 	// while scanning and retained afterwards, so an operator can tell WHICH scan
 	// the last result describes.

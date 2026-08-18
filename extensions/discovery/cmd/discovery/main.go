@@ -256,7 +256,7 @@ func schedule(ctx context.Context, client *http.Client, base string, sess sessio
 			continue
 		}
 		lastRun = time.Now()
-		if _, code, _ := scanNow(ctx, client, base, sess, invocation{InvocationID: "scheduled-" + lastRun.UTC().Format("20060102T150405Z")}); code != "" {
+		if _, code, _ := scanNow(ctx, client, base, sess, invocation{InvocationID: "scheduled-" + lastRun.UTC().Format("20060102T150405Z")}, "scheduled"); code != "" {
 			fmt.Fprintf(os.Stderr, "discovery: scheduled scan refused: %s\n", code)
 		}
 	}
@@ -420,7 +420,7 @@ func lease(ctx context.Context, client *http.Client, base, token string) (invoca
 func perform(ctx context.Context, client *http.Client, base string, sess session, inv invocation) (json.RawMessage, string, string) {
 	switch inv.Action {
 	case "scan-now":
-		return scanNow(ctx, client, base, sess, inv)
+		return scanNow(ctx, client, base, sess, inv, "operator")
 	default:
 		return nil, "UNSUPPORTED_ACTION", fmt.Sprintf("this extension declares no handler for %q", inv.Action)
 	}
@@ -437,16 +437,20 @@ func perform(ctx context.Context, client *http.Client, base string, sess session
 // call, and its results arrive through the ordinary device reporting path. So
 // the result recorded here is what was accepted, which is what a retry of a
 // safe-to-retry action must be able to report identically.
-func scanNow(ctx context.Context, client *http.Client, base string, sess session, inv invocation) (json.RawMessage, string, string) {
+func scanNow(ctx context.Context, client *http.Client, base string, sess session, inv invocation, reason string) (json.RawMessage, string, string) {
 	// The scan is scoped by the policy this extension owns. An empty subnet
 	// means "each relay's own default scope", which is the only scope a relay
 	// can honour without being told about a network it cannot see.
-	body := []byte(`{}`)
+	// The reason is stated so a relay's log and the scan status can tell a
+	// schedule apart from someone pressing a button — the question "why is this
+	// probing my network every 15 minutes" should be answerable from the log.
+	fields := map[string]string{"reason": reason}
 	if subnet := strings.TrimSpace(scanSubnet(ctx, client, base, sess)); subnet != "" {
-		enc, err := json.Marshal(map[string]string{"subnet": subnet})
-		if err == nil {
-			body = enc
-		}
+		fields["subnet"] = subnet
+	}
+	body, err := json.Marshal(fields)
+	if err != nil {
+		return nil, "SCAN_FAILED", err.Error()
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/discovery/scan", bytes.NewReader(body))

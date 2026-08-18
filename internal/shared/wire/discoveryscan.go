@@ -31,6 +31,14 @@
 // progress is read from the relay's scan status, never from this reply.
 package wire
 
+// Why a scan is running. A closed pair: an unrecognized value is treated as
+// operator rather than refused, since a label must never be the thing that stops
+// a scan from happening.
+const (
+	DiscoveryScanReasonOperator  = "operator"
+	DiscoveryScanReasonScheduled = "scheduled"
+)
+
 // Frame type discriminators for the on-demand scan exchange. A relay that does
 // not implement them ignores an unknown server-initiated frame under REL-004
 // additive tolerance, so introducing the pair cannot break an older relay — it
@@ -57,6 +65,17 @@ const (
 // itself: a newer app peer naming a lane this relay has not built yet still gets
 // the lanes it does have.
 type DiscoveryScanBody struct {
+	// Reason is why this scan is happening — DiscoveryScanReasonOperator (someone
+	// pressed a button) or DiscoveryScanReasonScheduled (a schedule came due).
+	// Absent means operator, because a caller that says nothing is a person.
+	//
+	// It is DESCRIPTIVE, not an authorization input: nothing is permitted or
+	// refused on the strength of it, so a caller mislabelling its own scan
+	// mislabels a log line and reaches nothing else. It exists because a relay
+	// that logs every scan identically leaves an operator unable to tell which
+	// scans were theirs — and "why is this thing probing my network every 15
+	// minutes" is exactly the question the label answers.
+	Reason string   `json:"reason,omitempty"`
 	Subnet string   `json:"subnet,omitempty"`
 	Lanes  []string `json:"lanes,omitempty"`
 }

@@ -277,6 +277,42 @@ func (e DeriveSpecValign) Valid() bool {
 	}
 }
 
+// Defines values for DiscoveryScanRequestReason.
+const (
+	DiscoveryScanRequestReasonOperator  DiscoveryScanRequestReason = "operator"
+	DiscoveryScanRequestReasonScheduled DiscoveryScanRequestReason = "scheduled"
+)
+
+// Valid indicates whether the value is a known member of the DiscoveryScanRequestReason enum.
+func (e DiscoveryScanRequestReason) Valid() bool {
+	switch e {
+	case DiscoveryScanRequestReasonOperator:
+		return true
+	case DiscoveryScanRequestReasonScheduled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DiscoveryScanStatusReason.
+const (
+	DiscoveryScanStatusReasonOperator  DiscoveryScanStatusReason = "operator"
+	DiscoveryScanStatusReasonScheduled DiscoveryScanStatusReason = "scheduled"
+)
+
+// Valid indicates whether the value is a known member of the DiscoveryScanStatusReason enum.
+func (e DiscoveryScanStatusReason) Valid() bool {
+	switch e {
+	case DiscoveryScanStatusReasonOperator:
+		return true
+	case DiscoveryScanStatusReasonScheduled:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DiscoveryScanStatusState.
 const (
 	DiscoveryScanStatusStateIdle     DiscoveryScanStatusState = "idle"
@@ -1861,12 +1897,18 @@ type DiscoveryScanOutcome struct {
 
 // DiscoveryScanRequest Optional narrowing for an active scan. An empty body means "every connected relay scans its own default scope", which is what the operator's plain "scan the network" sends.
 type DiscoveryScanRequest struct {
+	// Reason Why this scan is running. Descriptive only — nothing is permitted or refused on it — and absent means an operator asked, because a caller that says nothing is a person. It exists so a relay's log and the scan status can tell a schedule apart from someone pressing a button.
+	Reason *DiscoveryScanRequestReason `json:"reason,omitempty"`
+
 	// RelayId A relay's permanent identity, assigned to it by enrollment and unchanged across every later certificate renewal or re-enrollment (`relay/1` REL-012/014). Deliberately NOT typed as a ULID: unlike a resource this API mints, a relay id is issued by the enrollment path and is opaque here — this API reads it, routes a command by it, and never constructs or parses one.
 	RelayId *RelayId `json:"relay_id,omitempty"`
 
 	// Subnet A CIDR to scan, when the operator wants one segment rather than the relay's default scope. It is REQUESTED, never trusted: a relay refuses a subnet its own policy does not permit and one that is not on an interface it actually has, so naming a CIDR here can never point a relay's probes at a network the operator has not enabled.
 	Subnet *string `json:"subnet,omitempty"`
 }
+
+// DiscoveryScanRequestReason Why this scan is running. Descriptive only — nothing is permitted or refused on it — and absent means an operator asked, because a caller that says nothing is a person. It exists so a relay's log and the scan status can tell a schedule apart from someone pressing a button.
+type DiscoveryScanRequestReason string
 
 // DiscoveryScanStatus One relay's reported scan-engine state. `state` is `scanning` or `idle`; `idle` covers both "finished" and "never scanned", told apart by `finished_at` rather than by a third state a console would have to guess the meaning of.
 type DiscoveryScanStatus struct {
@@ -1879,6 +1921,9 @@ type DiscoveryScanStatus struct {
 	// FinishedAt Epoch ms the last scan ended. Absent while a scan runs and while none has ever run — with `started_at` it is what distinguishes those two.
 	FinishedAt *int64 `json:"finished_at,omitempty"`
 
+	// Reason Why the current or last scan ran, so an operator seeing a scan they did not start can tell a schedule from a colleague.
+	Reason *DiscoveryScanStatusReason `json:"reason,omitempty"`
+
 	// RelayId A relay's permanent identity, assigned to it by enrollment and unchanged across every later certificate renewal or re-enrollment (`relay/1` REL-012/014). Deliberately NOT typed as a ULID: unlike a resource this API mints, a relay id is issued by the enrollment path and is opaque here — this API reads it, routes a command by it, and never constructs or parses one.
 	RelayId RelayId `json:"relay_id"`
 
@@ -1889,6 +1934,9 @@ type DiscoveryScanStatus struct {
 	StartedAt *int64                   `json:"started_at,omitempty"`
 	State     DiscoveryScanStatusState `json:"state"`
 }
+
+// DiscoveryScanStatusReason Why the current or last scan ran, so an operator seeing a scan they did not start can tell a schedule from a colleague.
+type DiscoveryScanStatusReason string
 
 // DiscoveryScanStatusState defines model for DiscoveryScanStatus.State.
 type DiscoveryScanStatusState string
