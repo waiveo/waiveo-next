@@ -1816,6 +1816,11 @@ type Device struct {
 	Model *string `json:"model,omitempty"`
 	Name  string  `json:"name"`
 
+	// OpenPorts The ports an active scan found listening on this device, from the small curated set Discovery probes (a printer answers 9100 or 631, a Roku answers 8060, file storage answers 445). It is the cheapest honest evidence of what a device DOES, for the many hosts that announce nothing over mDNS or SSDP.
+	//
+	// ABSENT until something scanned this device — passive discovery never sets it. Absent and empty are different facts: absent means nobody has looked, empty would mean a scan looked and found nothing open, and only a scan can assert the second.
+	OpenPorts *[]int `json:"open_ports,omitempty"`
+
 	// RelayId A relay's permanent identity, assigned to it by enrollment and unchanged across every later certificate renewal or re-enrollment (`relay/1` REL-012/014). Deliberately NOT typed as a ULID: unlike a resource this API mints, a relay id is issued by the enrollment path and is opaque here — this API reads it, routes a command by it, and never constructs or parses one.
 	RelayId RelayId `json:"relay_id"`
 

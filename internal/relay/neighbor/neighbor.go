@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -126,6 +127,48 @@ func (l *Lane) Run(ctx context.Context) error {
 			l.sweep()
 		}
 	}
+}
+
+// Hosts returns the IP addresses the last sweep resolved — the relay's own view
+// of who is on the segment. It is what the port-scan lane scans: only hosts this
+// relay has actually seen, never a range someone asked for.
+func (l *Lane) Hosts() []string {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	out := make([]string, 0, len(l.ipMAC))
+	for ip := range l.ipMAC {
+		out = append(out, ip)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ObservePorts records what an active port scan found on one host, under the
+// identity that host's MAC already gives it. It is how the port lane feeds the
+// SAME candidate the passive lanes maintain rather than minting a second row.
+//
+// A host whose MAC this lane does not know is skipped: without the MAC there is
+// no stable identity to attach the ports to, and inventing one would create a
+// duplicate row for a device already listed.
+func (l *Lane) ObservePorts(ip string, ports []int, atMs int64) bool {
+	mac, ok := l.MAC(ip)
+	if !ok {
+		return false
+	}
+	driver, nativeID, match, ok := deviceplane.MACIdentity(mac)
+	if !ok {
+		return false
+	}
+	l.store.Observe(deviceplane.Observation{
+		Match:       match,
+		Provenance:  deviceplane.ProvenanceDiscovered,
+		Driver:      driver,
+		NativeID:    nativeID,
+		DeviceClass: ClassUnclassified,
+		Address:     ip,
+		OpenPorts:   ports,
+	}, atMs)
+	return true
 }
 
 // Refresh reads the neighbour table once, immediately, outside the lane's own

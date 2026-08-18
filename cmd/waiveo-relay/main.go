@@ -70,6 +70,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/mdns"
 	"github.com/maaxton/waiveo-next/internal/relay/neighbor"
 	"github.com/maaxton/waiveo-next/internal/relay/playerserver"
+	"github.com/maaxton/waiveo-next/internal/relay/portscan"
 	"github.com/maaxton/waiveo-next/internal/relay/reenroll"
 	"github.com/maaxton/waiveo-next/internal/relay/relayconn"
 	"github.com/maaxton/waiveo-next/internal/relay/schedulehost"
@@ -1303,6 +1304,22 @@ func main() {
 					} else if res.Probed > 0 {
 						log.Printf("waiveo-relay: discovery scan %s: ARP sweep probed %d address(es) across %v", id, res.Probed, res.Subnets)
 						neighborLane.Refresh()
+					}
+					// ACTIVE LANE 2 — the port scan. It runs AFTER the sweep and
+					// its Refresh, so it scans the hosts this relay can actually
+					// see, including the ones the sweep just revealed. The findings
+					// attach to the SAME MAC-keyed candidate the passive lanes
+					// maintain (ObservePorts) rather than minting a second row.
+					if hosts := neighborLane.Hosts(); len(hosts) > 0 {
+						open := portscan.Scan(rootCtx, hosts, portscan.Config{})
+						attached := 0
+						for ip, ports := range open {
+							if neighborLane.ObservePorts(ip, ports, time.Now().UnixMilli()) {
+								attached++
+							}
+						}
+						log.Printf("waiveo-relay: discovery scan %s: port scan found open ports on %d of %d host(s), attached to %d candidate(s)",
+							id, len(open), len(hosts), attached)
 					}
 					scanDisc.Scan(rootCtx)
 					log.Printf("waiveo-relay: discovery scan %s complete", id)

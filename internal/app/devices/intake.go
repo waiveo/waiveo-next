@@ -49,7 +49,12 @@ const (
 	maxEntitiesPerDevice   = 256
 	maxIdentityFieldBytes  = 256
 	maxNameBytes           = 1024
-	maxStateBytes          = 256
+
+	// maxOpenPortsPerCandidate bounds the numeric list a relay may report for one
+	// device. The scanning lane's own cap is smaller; this is the wire's limit on
+	// a report from any relay, trusted to have that lane or not.
+	maxOpenPortsPerCandidate = 32
+	maxStateBytes            = 256
 	// A driver reports a small, fixed set of attributes behind an entity's
 	// state (device-class-registry/1 REG-064 names six for a media player).
 	// This cap is an order of magnitude above that, and it exists for the same
@@ -129,9 +134,10 @@ func (r *Registry) ApplyCandidates(relayID string, candidates []wire.DeviceCandi
 			// an authorization decision reads — so a relay writing them can
 			// mislead an operator's eyes but cannot reach anything the
 			// header's threat argument protects.
-			Address: c.Address,
-			Model:   c.Model,
-			Serial:  c.Serial,
+			Address:   c.Address,
+			Model:     c.Model,
+			Serial:    c.Serial,
+			OpenPorts: c.OpenPorts,
 		}
 		for _, e := range c.Entities {
 			entityRowID := deviceid.Entity(r.site, c.Driver, c.NativeID, e.Key)
@@ -224,6 +230,19 @@ func validateCandidate(c wire.DeviceCandidate) error {
 	}
 	if err := checkField("model", c.Model, maxIdentityFieldBytes, false); err != nil {
 		return err
+	}
+	// Ports are attacker-controlled like every other field off this wire, and
+	// they are the only NUMERIC one — so the bound is on count and range rather
+	// than bytes. A relay claiming 60,000 open ports, or port 0, or a negative
+	// port, is either broken or hostile; either way the report is refused rather
+	// than rendered.
+	if len(c.OpenPorts) > maxOpenPortsPerCandidate {
+		return fmt.Errorf("open_ports: %d ports reported, at most %d are accepted", len(c.OpenPorts), maxOpenPortsPerCandidate)
+	}
+	for _, p := range c.OpenPorts {
+		if p < 1 || p > 65535 {
+			return fmt.Errorf("open_ports: %d is not a port number", p)
+		}
 	}
 	if err := checkField("serial", c.Serial, maxIdentityFieldBytes, false); err != nil {
 		return err

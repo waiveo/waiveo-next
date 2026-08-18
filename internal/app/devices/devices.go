@@ -145,6 +145,10 @@ type Device struct {
 	Serial      string            `json:"serial,omitempty"`
 	Adopted     bool              `json:"adopted"`
 	Ignored     bool              `json:"ignored"`
+	// OpenPorts is what an active scan found listening on this device. Absent
+	// until something scanned it: no port list and an empty port list are
+	// different facts, and only a scan can assert the second.
+	OpenPorts []int `json:"open_ports,omitempty"`
 }
 
 // Entity is one addressable object a device exposes — the openapi Entity schema,

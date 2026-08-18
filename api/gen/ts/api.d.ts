@@ -3273,6 +3273,12 @@ export interface components {
             model?: string;
             /** @description The serial number of the physical unit, as the device reported it. Absent when the probe did not answer. */
             serial?: string;
+            /**
+             * @description The ports an active scan found listening on this device, from the small curated set Discovery probes (a printer answers 9100 or 631, a Roku answers 8060, file storage answers 445). It is the cheapest honest evidence of what a device DOES, for the many hosts that announce nothing over mDNS or SSDP.
+             *
+             *     ABSENT until something scanned this device — passive discovery never sets it. Absent and empty are different facts: absent means nobody has looked, empty would mean a scan looked and found nothing open, and only a scan can assert the second.
+             */
+            open_ports?: number[];
             /** @description Whether an adoption record exists for this device — that is, whether it is under this platform's control and carried in the desired state its relay is sent (`relay/1` REL-063). Discovery alone never sets this; `adoptDevice` does. */
             adopted: boolean;
             /** @description Whether the operator has IGNORED this device — set it aside as something this deployment does not care about. Unlike `adopted`, an ignore reaches no relay: the device is still discovered and still reported, just marked so a console can keep it out of the way. Durable and reversible; `ignoreDevice` sets it and `unignoreDevice` clears it. Discovery alone never sets this. */

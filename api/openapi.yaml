@@ -8476,6 +8476,21 @@ components:
           description: >-
             The serial number of the physical unit, as the device reported
             it. Absent when the probe did not answer.
+        open_ports:
+          type: array
+          items: { type: integer, minimum: 1, maximum: 65535 }
+          description: >-
+            The ports an active scan found listening on this device, from the
+            small curated set Discovery probes (a printer answers 9100 or 631, a
+            Roku answers 8060, file storage answers 445). It is the cheapest
+            honest evidence of what a device DOES, for the many hosts that
+            announce nothing over mDNS or SSDP.
+
+
+            ABSENT until something scanned this device — passive discovery never
+            sets it. Absent and empty are different facts: absent means nobody
+            has looked, empty would mean a scan looked and found nothing open,
+            and only a scan can assert the second.
         adopted:
           type: boolean
           description: >-

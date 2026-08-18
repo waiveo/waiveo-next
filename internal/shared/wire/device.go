@@ -75,6 +75,7 @@ type DeviceCandidate struct {
 	Address      string            `json:"address,omitempty"`
 	Model        string            `json:"model,omitempty"`
 	Serial       string            `json:"serial,omitempty"`
+	OpenPorts    []int             `json:"open_ports,omitempty"`
 	Entities     []CandidateEntity `json:"entities"`
 }
 

@@ -153,7 +153,11 @@ type Observation struct {
 	Address     string
 	Model       string
 	Serial      string
-	Entities    []CandidateEntity
+	// OpenPorts is what an active port scan found listening. Nil means "this
+	// observation did not scan", which is NOT the same as "nothing is open" — see
+	// the merge rule in mergeInto.
+	OpenPorts []int
+	Entities  []CandidateEntity
 }
 
 // identityKey is the store's key: REL-153's `(driver, native_id)` pair under
@@ -197,6 +201,7 @@ type Candidate struct {
 	Address      string            `json:"address,omitempty"`
 	Model        string            `json:"model,omitempty"`
 	Serial       string            `json:"serial,omitempty"`
+	OpenPorts    []int             `json:"open_ports,omitempty"`
 	Entities     []CandidateEntity `json:"entities"`
 }
 
@@ -380,6 +385,15 @@ func (s *Store) Observe(o Observation, atMs int64) {
 		c.Address = orKeep(o.Address, c.Address)
 		c.Model = orKeep(o.Model, c.Model)
 		c.Serial = orKeep(o.Serial, c.Serial)
+		// Ports follow the same rule every LEARNED fact here follows, and the
+		// reason is the one device_class was taught the hard way: the passive
+		// lanes re-observe a device every 30s carrying no ports at all, so
+		// overwriting would blank a scan's findings seconds after it made them.
+		// A scan that DID look replaces the list wholesale (a port that closed
+		// must disappear); an observation that did not look keeps what is known.
+		if o.OpenPorts != nil {
+			c.OpenPorts = o.OpenPorts
+		}
 		return
 	}
 	s.byKey[key] = &Candidate{
@@ -395,6 +409,7 @@ func (s *Store) Observe(o Observation, atMs int64) {
 		Address:     o.Address,
 		Model:       o.Model,
 		Serial:      o.Serial,
+		OpenPorts:   o.OpenPorts,
 		Entities:    append([]CandidateEntity(nil), o.Entities...),
 	}
 	s.order = append(s.order, key)
