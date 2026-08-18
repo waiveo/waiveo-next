@@ -867,6 +867,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/extension-invocations/{invocation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invocation_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Read one invocation's state and outcome
+         * @description Reports an invocation's current state and, once it has finished, what it produced or why it failed.
+         *
+         *     Invoking an action answers 202 with an invocation id, because the work outlives the request. This is what that id is for: without it an operator can start a backup or a scan and never learn whether it succeeded, which makes "it ran" unfalsifiable. The other two invocation operations are both extension-facing — one leases work, one reports a result — and neither answers the person who pressed the button.
+         *
+         *     Readable by any authenticated operator; an extension may read only its OWN invocations, for the same reason it may not answer another extension's — a result is whatever that extension chose to report, and cross-reading it would be a side channel between two things the host otherwise keeps apart.
+         */
+        get: operations["getExtensionInvocation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/extension-invocations/pending": {
         parameters: {
             query?: never;
@@ -5139,6 +5165,32 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["UnprocessableContent"];
+        };
+    };
+    getExtensionInvocation: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                invocation_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The invocation, carrying `state` and — once it has finished — either `result` or `error_code`/`error_message`. Shape stub, matching the rest of this surface. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     leaseExtensionInvocation: {

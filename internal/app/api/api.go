@@ -508,6 +508,7 @@ func (srv *server) mountAll(rt, rootRT *router, authHandlers *auth.Handlers) {
 	// pack's work.
 	rt.HandleFunc("POST "+apiPrefix+"/extensions/{publisher}/{name}/actions/{action}", srv.withDeclaredMembers("PackActionInvokeRequest", srv.invokePackAction))
 	rt.HandleFunc("GET "+apiPrefix+"/extension-invocations/pending", srv.leasePackInvocation)
+	rt.HandleFunc("GET "+apiPrefix+"/extension-invocations/{invocation_id}", srv.getPackInvocation)
 	rt.HandleFunc("POST "+apiPrefix+"/extension-logs", srv.withDeclaredMembers("PackLogAppendRequest", srv.appendPackLog))
 	rt.HandleFunc("POST "+apiPrefix+"/extension-health", srv.withDeclaredMembers("PackHealthReportRequest", srv.reportPackHealth))
 	rt.HandleFunc("POST "+apiPrefix+"/extension-events", srv.withDeclaredMembers("PackEventEmitRequest", srv.emitPackEvent))

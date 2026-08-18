@@ -2206,6 +2206,49 @@ paths:
         "422":
           $ref: "#/components/responses/UnprocessableContent"
 
+  /extension-invocations/{invocation_id}:
+    parameters:
+      - name: invocation_id
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Ulid"
+    get:
+      operationId: getExtensionInvocation
+      summary: Read one invocation's state and outcome
+      description: >-
+        Reports an invocation's current state and, once it has finished, what it
+        produced or why it failed.
+
+
+        Invoking an action answers 202 with an invocation id, because the work
+        outlives the request. This is what that id is for: without it an operator
+        can start a backup or a scan and never learn whether it succeeded, which
+        makes "it ran" unfalsifiable. The other two invocation operations are
+        both extension-facing — one leases work, one reports a result — and
+        neither answers the person who pressed the button.
+
+
+        Readable by any authenticated operator; an extension may read only its
+        OWN invocations, for the same reason it may not answer another
+        extension's — a result is whatever that extension chose to report, and
+        cross-reading it would be a side channel between two things the host
+        otherwise keeps apart.
+      tags: [packs, "mcp:read"]
+      parameters:
+        - $ref: "#/components/parameters/TraceIdParam"
+      responses:
+        "200":
+          description: >-
+            The invocation, carrying `state` and — once it has finished — either
+            `result` or `error_code`/`error_message`. Shape stub, matching the
+            rest of this surface.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /extension-invocations/pending:
     get:
       operationId: leaseExtensionInvocation

@@ -3654,6 +3654,12 @@ type LeaseExtensionInvocationParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// GetExtensionInvocationParams defines parameters for GetExtensionInvocation.
+type GetExtensionInvocationParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // ReportExtensionInvocationResultParams defines parameters for ReportExtensionInvocationResult.
 type ReportExtensionInvocationResultParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
@@ -4675,6 +4681,9 @@ type ClientInterface interface {
 
 	// LeaseExtensionInvocation request
 	LeaseExtensionInvocation(ctx context.Context, params *LeaseExtensionInvocationParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetExtensionInvocation request
+	GetExtensionInvocation(ctx context.Context, invocationId Ulid, params *GetExtensionInvocationParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ReportExtensionInvocationResultWithBody request with any body
 	ReportExtensionInvocationResultWithBody(ctx context.Context, invocationId string, params *ReportExtensionInvocationResultParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5828,6 +5837,18 @@ func (c *Client) ReportExtensionHealth(ctx context.Context, params *ReportExtens
 
 func (c *Client) LeaseExtensionInvocation(ctx context.Context, params *LeaseExtensionInvocationParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewLeaseExtensionInvocationRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetExtensionInvocation(ctx context.Context, invocationId Ulid, params *GetExtensionInvocationParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetExtensionInvocationRequest(c.Server, invocationId, params)
 	if err != nil {
 		return nil, err
 	}
@@ -10211,6 +10232,55 @@ func NewLeaseExtensionInvocationRequest(server string, params *LeaseExtensionInv
 			rawQueryFragments = append(rawQueryFragments, encoded)
 		}
 		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetExtensionInvocationRequest generates requests for GetExtensionInvocation
+func NewGetExtensionInvocationRequest(server string, invocationId Ulid, params *GetExtensionInvocationParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "invocation_id", invocationId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extension-invocations/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
 	}
 
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
@@ -14959,6 +15029,9 @@ type ClientWithResponsesInterface interface {
 	// LeaseExtensionInvocationWithResponse request
 	LeaseExtensionInvocationWithResponse(ctx context.Context, params *LeaseExtensionInvocationParams, reqEditors ...RequestEditorFn) (*LeaseExtensionInvocationResponse, error)
 
+	// GetExtensionInvocationWithResponse request
+	GetExtensionInvocationWithResponse(ctx context.Context, invocationId Ulid, params *GetExtensionInvocationParams, reqEditors ...RequestEditorFn) (*GetExtensionInvocationResponse, error)
+
 	// ReportExtensionInvocationResultWithBodyWithResponse request with any body
 	ReportExtensionInvocationResultWithBodyWithResponse(ctx context.Context, invocationId string, params *ReportExtensionInvocationResultParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ReportExtensionInvocationResultResponse, error)
 
@@ -17014,6 +17087,38 @@ func (r LeaseExtensionInvocationResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r LeaseExtensionInvocationResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetExtensionInvocationResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetExtensionInvocationResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetExtensionInvocationResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetExtensionInvocationResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -19938,6 +20043,15 @@ func (c *ClientWithResponses) LeaseExtensionInvocationWithResponse(ctx context.C
 		return nil, err
 	}
 	return ParseLeaseExtensionInvocationResponse(rsp)
+}
+
+// GetExtensionInvocationWithResponse request returning *GetExtensionInvocationResponse
+func (c *ClientWithResponses) GetExtensionInvocationWithResponse(ctx context.Context, invocationId Ulid, params *GetExtensionInvocationParams, reqEditors ...RequestEditorFn) (*GetExtensionInvocationResponse, error) {
+	rsp, err := c.GetExtensionInvocation(ctx, invocationId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetExtensionInvocationResponse(rsp)
 }
 
 // ReportExtensionInvocationResultWithBodyWithResponse request with arbitrary body returning *ReportExtensionInvocationResultResponse
@@ -23434,6 +23548,46 @@ func ParseLeaseExtensionInvocationResponse(rsp *http.Response) (*LeaseExtensionI
 			return nil, err
 		}
 		response.ApplicationproblemJSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetExtensionInvocationResponse parses an HTTP response from a GetExtensionInvocationWithResponse call
+func ParseGetExtensionInvocationResponse(rsp *http.Response) (*GetExtensionInvocationResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetExtensionInvocationResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
 
 	}
 

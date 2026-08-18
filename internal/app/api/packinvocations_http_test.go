@@ -118,6 +118,78 @@ func TestAnActionIsQueuedLeasedByThePackAndAnswered(t *testing.T) {
 	}
 }
 
+// TestAnOperatorCanReadAnInvocationsOutcome is the loop this surface was missing:
+// invoking answers 202 with an id, and until now that id led nowhere, so an
+// operator could start work and never learn whether it succeeded. This walks the
+// whole thing — pending, then succeeded with the result the extension reported.
+func TestAnOperatorCanReadAnInvocationsOutcome(t *testing.T) {
+	e := newEnv(t)
+	e.seedPlacementNodes(t, rowScopeNodeA, rowScopeNodeB)
+	e.installActionPack(t)
+	token := packSession(t, e, "acme/menu-board")
+
+	_, queued := invokeAction(t, e, "acme/menu-board", "run-backup", map[string]any{})
+	id, _ := queued["invocation_id"].(string)
+	if id == "" {
+		t.Fatalf("queued = %+v, want an invocation id", queued)
+	}
+
+	// Before the extension has taken it: the operator can already see it exists
+	// and is waiting, which is the difference between "queued" and "swallowed".
+	resp, body := e.do(t, http.MethodGet, "/api/v1/extension-invocations/"+id, nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("read pending = %d, want 200 (%s)", resp.StatusCode, body)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["state"] != "pending" || got["action"] != "run-backup" {
+		t.Fatalf("read = %+v, want the pending run-backup", got)
+	}
+
+	// The extension does the work and reports.
+	asPack(t, e, token, http.MethodGet, "/api/v1/extension-invocations/pending", nil)
+	asPack(t, e, token, http.MethodPost, "/api/v1/extension-invocations/"+id+"/result",
+		mustJSON(t, map[string]any{"result": map[string]any{"archive": "a.zip"}}))
+
+	// And now the operator can see the OUTCOME, not merely that it was accepted.
+	resp, body = e.do(t, http.MethodGet, "/api/v1/extension-invocations/"+id, nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("read finished = %d, want 200 (%s)", resp.StatusCode, body)
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["state"] != "succeeded" {
+		t.Fatalf("state = %v, want succeeded", got["state"])
+	}
+	result, _ := got["result"].(map[string]any)
+	if result["archive"] != "a.zip" {
+		t.Fatalf("result = %v, want what the extension reported", got["result"])
+	}
+}
+
+// TestAnExtensionCannotReadAnotherExtensionsInvocation mirrors the rule that one
+// extension may not ANSWER another's: a result is whatever that extension chose
+// to report, so cross-reading it would be a side channel between two things the
+// host otherwise keeps apart. Answered 404, not 403 — the same answer an id that
+// names nothing gets, so the refusal is not an existence oracle either.
+func TestAnExtensionCannotReadAnotherExtensionsInvocation(t *testing.T) {
+	e := newEnv(t)
+	e.seedPlacementNodes(t, rowScopeNodeA, rowScopeNodeB)
+	e.installActionPack(t)
+	other := packSession(t, e, "acme/other")
+
+	_, queued := invokeAction(t, e, "acme/menu-board", "run-backup", map[string]any{})
+	id, _ := queued["invocation_id"].(string)
+
+	resp, body := asPack(t, e, other, http.MethodGet, "/api/v1/extension-invocations/"+id, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("cross-extension read = %d, want 404 (%+v)", resp.StatusCode, body)
+	}
+}
+
 // An empty queue is 204, not an error. A pack polling an idle host is the common
 // case, and an error would make "nothing to do" indistinguishable from a broken
 // queue.

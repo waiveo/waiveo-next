@@ -252,6 +252,56 @@ func declaredAction(raw json.RawMessage, name string) (manifest.Action, bool) {
 	return manifest.Action{}, false
 }
 
+// getPackInvocation reports ONE invocation's current state and, once it has
+// finished, its outcome — the read an operator needs and did not have.
+//
+// # Why this exists
+//
+// Invoking an action answers 202 with an invocation id, because the work
+// outlives the request. Without this route that id led nowhere: an operator
+// could start a backup or a scan and had no way to learn whether it succeeded,
+// which makes "it ran" unfalsifiable. The two invocation routes that existed are
+// both EXTENSION-facing — one leases work, one reports a result — and neither
+// answers the person who pressed the button.
+//
+// # Who may read one
+//
+// Any authenticated operator, and an extension only for its OWN invocations.
+// The isolation matters for the same reason an extension may not ANSWER another
+// extension's invocation: a result is whatever that extension chose to report,
+// and one extension reading another's outcomes is a side channel between two
+// things the host otherwise keeps apart. A human session is not subject to that
+// rule — it is the party the outcome is for.
+//
+// An unknown id is a plain 404. It is not an existence oracle worth protecting:
+// invocation ids are server-minted ULIDs nobody can guess, and an operator who
+// mistypes one is better served by "no such invocation" than by silence.
+func (srv *server) getPackInvocation(w http.ResponseWriter, r *http.Request) {
+	invocationID := r.PathValue("invocation_id")
+
+	inv, err := srv.store.GetPackInvocation(r.Context(), invocationID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No invocation exists with this identifier.")
+			return
+		}
+		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
+		return
+	}
+
+	// If the caller IS an extension, it may only read its own. A human session
+	// resolves to no extension id, which is not an error here — it is the
+	// ordinary case — so this asks WITHOUT writing a refusal.
+	if p, perr := auth.RequirePrincipal(r.Context()); perr == nil {
+		if callerPack, cerr := srv.authn.Store().PackIDForPrincipal(r.Context(), p.ID); cerr == nil && callerPack != inv.PackID {
+			writeProblem(w, r, http.StatusNotFound, "NOT_FOUND", "Not Found", "No invocation exists with this identifier.")
+			return
+		}
+	}
+
+	writeJSONValue(w, http.StatusOK, invocationBody(inv))
+}
+
 // invocationBody renders an invocation for the wire.
 func invocationBody(inv store.PackInvocation) map[string]any {
 	out := map[string]any{
