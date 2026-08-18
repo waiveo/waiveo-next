@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -51,5 +52,32 @@ func TestParseEveryReportsSubMinimumIntervalsForTheCallerToClamp(t *testing.T) {
 	}
 	if got >= minScanInterval {
 		t.Fatalf("the test's premise is wrong: 1m is not below the %v floor", minScanInterval)
+	}
+}
+
+// TestSettingsFieldReadsTheRowOutOfThePage pins the shape that cost a box
+// round-trip: a collection endpoint answers {"items":[…]} even for a collection
+// declared SINGLETON, because a singleton is a collection with room for one row
+// rather than a bare document. Decoding the page as the row yields the zero
+// value for every field — silently — which reads exactly like "the operator
+// configured nothing", so the extension would simply never schedule and never
+// say why.
+func TestSettingsFieldReadsTheRowOutOfThePage(t *testing.T) {
+	page := `{"items":[{"schedule":"every 30m","subnets":"192.168.50.0/24"}],"cursor":null}`
+	if got := settingsField(strings.NewReader(page), "schedule"); got != "every 30m" {
+		t.Errorf("schedule = %q, want it read out of items[0]", got)
+	}
+	if got := settingsField(strings.NewReader(page), "subnets"); got != "192.168.50.0/24" {
+		t.Errorf("subnets = %q, want it read out of items[0]", got)
+	}
+}
+
+// An empty collection is an operator who has configured nothing — which must
+// read as "no schedule", not as an error and not as a guess.
+func TestSettingsFieldOnAnEmptyCollectionIsBlank(t *testing.T) {
+	for _, body := range []string{`{"items":[],"cursor":null}`, `{}`, `not json`} {
+		if got := settingsField(strings.NewReader(body), "schedule"); got != "" {
+			t.Errorf("settingsField(%q) = %q, want blank", body, got)
+		}
 	}
 }

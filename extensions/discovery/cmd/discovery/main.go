@@ -265,13 +265,28 @@ func scanSchedule(ctx context.Context, client *http.Client, base string, sess se
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return ""
 	}
-	var doc struct {
-		Schedule string `json:"schedule"`
+	return strings.TrimSpace(settingsField(resp.Body, "schedule"))
+}
+
+// settingsField reads one field out of this extension's singleton settings row.
+//
+// The shape matters and cost a box round-trip to learn: a collection endpoint
+// answers a PAGE — {"items":[…]} — even when the collection is declared
+// singleton, because a singleton is a collection with room for exactly one row,
+// not a bare document. Decoding the page as the row yields the zero value for
+// every field, silently, which reads exactly like "the operator set nothing".
+func settingsField(body io.Reader, field string) string {
+	var page struct {
+		Items []map[string]any `json:"items"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&doc); err != nil {
+	if err := json.NewDecoder(io.LimitReader(body, 1<<20)).Decode(&page); err != nil {
 		return ""
 	}
-	return strings.TrimSpace(doc.Schedule)
+	if len(page.Items) == 0 {
+		return ""
+	}
+	v, _ := page.Items[0][field].(string)
+	return v
 }
 
 // parseEvery understands exactly one schedule grammar: "every <N><m|h>".
@@ -461,13 +476,7 @@ func scanSubnet(ctx context.Context, client *http.Client, base string, sess sess
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return ""
 	}
-	var doc struct {
-		Subnets string `json:"subnets"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&doc); err != nil {
-		return ""
-	}
-	return doc.Subnets
+	return strings.TrimSpace(settingsField(resp.Body, "subnets"))
 }
 
 func tarGz(name string, data []byte) ([]byte, error) {
