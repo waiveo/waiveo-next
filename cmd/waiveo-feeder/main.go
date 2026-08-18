@@ -2096,7 +2096,22 @@ func certServeHost(listen string) string {
 }
 
 func startPacks(ctx context.Context, st *store.Store, authStore *auth.Store, binDir, apiBaseURL string, apiCACertPEM []byte) *packhost.Supervisor {
-	sup := packhost.New(authStore, packhost.Options{})
+	// A crashed extension used to stay dead until this process restarted, and
+	// said nothing about it — so an operator's queued action sat pending forever
+	// with nothing left to lease it, and an extension that owns a schedule simply
+	// stopped scheduling. Restarting is unbounded in attempts and bounded in
+	// rate: a transient cause recovers with no operator action, a permanent one
+	// keeps announcing itself rather than going quiet.
+	sup := packhost.New(authStore, packhost.Options{
+		RestartBackoff: 2 * time.Second,
+		OnRestart: func(id, version string, attempt int, delay time.Duration, err error) {
+			if err != nil {
+				log.Printf("waiveo-feeder: extension %s %s crashed; restart attempt %d after %s FAILED: %v", id, version, attempt, delay, err)
+				return
+			}
+			log.Printf("waiveo-feeder: extension %s %s crashed and was restarted (attempt %d, after %s)", id, version, attempt, delay)
+		},
+	})
 	// The scope a pack principal's role binding is issued at (SEC-037). The
 	// deployment root, because a pack is installed workspace-wide and carries no
 	// placement of its own — the same node the pack-data surface already treats

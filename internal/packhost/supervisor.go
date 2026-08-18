@@ -139,7 +139,37 @@ type Options struct {
 	// StopGrace is how long a pack has to exit after its stdin closes before it
 	// is killed.
 	StopGrace time.Duration
+
+	// RestartBackoff is the delay before the FIRST restart of a pack that
+	// crashed; each further crash doubles it, capped at RestartBackoffMax. Zero
+	// disables restarting entirely, which is the old behaviour and is what tests
+	// that assert on a single exit want.
+	//
+	// A crashed pack used to stay dead until the host restarted, silently: no log
+	// line, and an operator's queued action sat pending forever because nothing
+	// was left to lease it. That is the failure this exists to end.
+	RestartBackoff time.Duration
+	// RestartBackoffMax caps the growth. Zero takes defaultRestartBackoffMax.
+	RestartBackoffMax time.Duration
+	// RestartHealthy is how long a replacement must survive before its crash
+	// history is forgotten. Without it a pack that crashes once a day would
+	// eventually inherit a minute-long delay it never earned.
+	RestartHealthy time.Duration
+	// OnRestart, when set, is told about every restart — the log line whose
+	// absence made the original failure silent. It runs on the supervisor's
+	// waiter goroutine, so it must not block.
+	OnRestart func(id, version string, attempt int, delay time.Duration, err error)
 }
+
+// Restart policy defaults. Deliberately unbounded in ATTEMPTS but bounded in
+// RATE: a pack whose cause is transient (a peer that was briefly down) must
+// recover on its own, and one that is permanently broken must not be given up on
+// silently either — giving up would restore the exact silence this replaces. The
+// cap is what keeps a crash-loop from becoming a busy-loop.
+const (
+	defaultRestartBackoffMax = 60 * time.Second
+	defaultRestartHealthy    = 60 * time.Second
+)
 
 const (
 	defaultReadyTimeout = 20 * time.Second
@@ -180,6 +210,15 @@ type process struct {
 	cmd       *exec.Cmd
 	stdin     io.WriteCloser
 	startedAt time.Time
+
+	// ctx is the context this pack was Started under. A restart is a
+	// continuation of that Start, not a new one, so it must die with it —
+	// otherwise a supervisor whose owner has gone away keeps relaunching.
+	ctx context.Context
+	// crashes counts consecutive crashes, reset once a replacement survives
+	// RestartHealthy. It is what makes the backoff grow for a pack that is
+	// genuinely broken and stay at zero for one that hiccupped.
+	crashes int
 
 	// exited is closed by the ONE waiter goroutine launch starts. There can only
 	// be one: exec.Cmd.Wait may be called once, so teardown waits on this
@@ -370,7 +409,7 @@ func (s *Supervisor) launch(ctx context.Context, spec Spec) (*process, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("packhost: start %s: %w", spec.ID, err)
 	}
-	p := &process{spec: spec, cmd: cmd, stdin: stdin, startedAt: time.Now(), exited: make(chan struct{})}
+	p := &process{spec: spec, cmd: cmd, stdin: stdin, startedAt: time.Now(), ctx: ctx, exited: make(chan struct{})}
 	// ONE waiter, started here and never anywhere else. It reaps the child the
 	// moment it ends — which is what stops a crashed pack lingering as a zombie
 	// holding its pid — and tells the supervisor, which is what stops Running()
@@ -476,6 +515,77 @@ func (s *Supervisor) watch(p *process) {
 	if len(s.exits) > maxRecordedExits {
 		s.exits = s.exits[len(s.exits)-maxRecordedExits:]
 	}
+
+	// A crash is not the end of the pack. Restarting is scheduled OUTSIDE the
+	// lock (the delay is long and launch does real work), and only when a policy
+	// is configured — zero backoff keeps the old leave-it-dead behaviour for
+	// callers that want it.
+	if s.opts.RestartBackoff > 0 {
+		go s.restart(p)
+	}
+}
+
+// restart brings a crashed pack back after a growing delay.
+//
+// Unbounded in attempts and bounded in RATE, on purpose. A pack whose cause was
+// transient must recover with no operator action; one that is permanently broken
+// must not be silently given up on either, because giving up recreates the exact
+// silence this exists to end — an extension that is simply gone, with nothing
+// saying so. The cap is what stops a crash-loop becoming a busy-loop.
+func (s *Supervisor) restart(dead *process) {
+	healthy := s.opts.RestartHealthy
+	if healthy <= 0 {
+		healthy = defaultRestartHealthy
+	}
+	maxDelay := s.opts.RestartBackoffMax
+	if maxDelay <= 0 {
+		maxDelay = defaultRestartBackoffMax
+	}
+
+	// A replacement that survived the healthy window earns a clean slate; one
+	// that died inside it is still in the same crash-loop and keeps the streak.
+	attempt := dead.crashes + 1
+	if time.Since(dead.startedAt) >= healthy {
+		attempt = 1
+	}
+
+	delay := s.opts.RestartBackoff << uint(min(attempt-1, 16))
+	if delay > maxDelay || delay <= 0 {
+		delay = maxDelay
+	}
+
+	select {
+	case <-dead.ctx.Done():
+		return // the owner is gone; a restart now would outlive its Start
+	case <-time.After(delay):
+	}
+
+	p, err := s.launch(dead.ctx, dead.spec)
+	if s.opts.OnRestart != nil {
+		s.opts.OnRestart(dead.spec.ID, dead.spec.Version, attempt, delay, err)
+	}
+	if err != nil {
+		// The relaunch itself failed. Treat it as another crash so the backoff
+		// keeps growing rather than spinning at this delay forever.
+		dead.crashes = attempt
+		dead.startedAt = time.Now()
+		if dead.ctx.Err() == nil {
+			go s.restart(dead)
+		}
+		return
+	}
+	p.crashes = attempt
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Only claim the slot if nothing took it while we waited: an operator who
+	// installed or swapped this pack during the backoff owns it now, and the
+	// replacement we just built must not displace theirs.
+	if _, taken := s.packs[dead.spec.ID]; taken {
+		go teardown(p, s.opts.StopGrace)
+		return
+	}
+	s.packs[dead.spec.ID] = p
 }
 
 // Exits reports the packs that ended without being asked to, oldest first.
