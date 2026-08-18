@@ -290,6 +290,10 @@
       "reason": "the pilot extension's runtime entry (MAN-065): a package main that no root IMPORTS because nothing ever should — scripts/examplepack compiles it and injects the binary into the signed artifact, and the host reaches it by exec at boot, not by import. The api package's packruntime e2e builds and runs it for real."
     },
     {
+      "package": "github.com/maaxton/waiveo-next/extensions/core/cmd/core",
+      "reason": "waiveo/core's runtime entry (MAN-065): a package main that no root IMPORTS because nothing ever should — it is compiled and injected into the signed artifact, and the host reaches it by exec at boot, not by import. Same shape as the discovery extension's binary."
+    },
+    {
       "package": "github.com/maaxton/waiveo-next/extensions/discovery/cmd/discovery",
       "reason": "the Discovery extension's runtime entry (MAN-065): a package main that no root IMPORTS because nothing ever should — it is compiled and injected into the signed artifact, and the host reaches it by exec at boot, not by import. Same shape as the backups pilot's binary above."
     }
