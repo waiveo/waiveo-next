@@ -657,6 +657,252 @@ func TestMigrateRowIDsRewritesTheAutomationBodyIdentity(t *testing.T) {
 	})
 }
 
+// TestMigrateRowIDsMovesAParentAndItsChildrenTogether is the invariant from the
+// side that must keep working: when a scope node's own row is renamed, every
+// reference to it moves in the same transaction, so the tree that comes out is
+// still a tree. It is the positive half of the pair — the negative half, a
+// reference moving without its row, is below.
+func TestMigrateRowIDsMovesAParentAndItsChildrenTogether(t *testing.T) {
+	ctx := context.Background()
+	dsn := seededStore(t)
+	regressToPreRuleIDs(t, dsn)
+
+	s := openStoreAt(t, dsn)
+	if _, err := s.MigrateRowIDs(ctx); err != nil {
+		t.Fatalf("MigrateRowIDs: %v", err)
+	}
+
+	nodes, err := s.ScopeNodes(ctx)
+	if err != nil {
+		t.Fatalf("ScopeNodes: %v", err)
+	}
+	// The FULL-tree builder, not the subtree-tolerant one: only the full tree
+	// treats an unresolvable parent as the fault it is, so only the full tree can
+	// notice a child left behind by its renamed parent.
+	if _, errs := datamodel.BuildFullScopeTree(nodes); len(errs) != 0 {
+		t.Fatalf("the migrated tree does not validate as a whole tree: %+v", errs)
+	}
+	var sawSite bool
+	for _, n := range nodes {
+		if n.ID != preRuleUnchangedSeedIDs[0] {
+			continue
+		}
+		sawSite = true
+		if n.ParentID == nil || *n.ParentID != "01J8Z0DEM00RGANCEST0RB0VND" {
+			t.Fatalf("the site's parent_id = %v, want the org root's migrated id — a parent and its children must move together", n.ParentID)
+		}
+	}
+	if !sawSite {
+		t.Fatalf("the site scope node %q is gone after migration", preRuleUnchangedSeedIDs[0])
+	}
+}
+
+// TestMigrateRowIDsLeavesADanglingScopeNodeParentAlone is the regression test for
+// the reference invariant: a parent_id naming NO row is reported and left
+// byte-identical, never folded into a canonical-looking spelling.
+//
+// The migration used to rewrite exactly this value, on the reasoning that only
+// its folded form could ever name a real node. What that produced was a store
+// whose broken reference now looked healthy and a boot log whose "canonicalized
+// scope_nodes id …" line was indistinguishable from a real row rename — the line
+// a live box's missing org root was later mis-diagnosed from. The dangle is the
+// missing ROW's problem, and creating that row (HealOrgRoot) is the only repair
+// that makes the reference true.
+func TestMigrateRowIDsLeavesADanglingScopeNodeParentAlone(t *testing.T) {
+	ctx := context.Background()
+	dsn := seededStore(t)
+	regressToPreRuleIDs(t, dsn)
+
+	// The store a box seeded before the demo seed inserted its own root actually
+	// holds: a site pointing at an org ancestor that is not there.
+	const legacyOrgID = "01J8Z0DEMOORGANCESTORBOUND"
+	withRawDB(t, dsn, func(db *sql.DB) {
+		res, err := db.Exec(`DELETE FROM scope_nodes WHERE id = ?`, legacyOrgID)
+		if err != nil {
+			t.Fatalf("delete the org row: %v", err)
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			t.Fatalf("deleted %d org row(s), want 1 — the fixture is not the shape this test needs", n)
+		}
+	})
+
+	s := openStoreAt(t, dsn)
+
+	// The read-only report an operator runs before the restart says the same
+	// thing, and says it without writing.
+	plan, err := s.PlanRowIDMigration(ctx)
+	if err != nil {
+		t.Fatalf("PlanRowIDMigration: %v", err)
+	}
+	assertDangles(t, "PlanRowIDMigration", plan.Dangling, legacyOrgID)
+	for _, rw := range plan.Rewrites {
+		if rw.From == legacyOrgID {
+			t.Fatalf("PlanRowIDMigration plans %+v, which renames a row no table holds", rw)
+		}
+	}
+
+	m, err := s.MigrateRowIDs(ctx)
+	if err != nil {
+		t.Fatalf("MigrateRowIDs: %v", err)
+	}
+	assertDangles(t, "MigrateRowIDs", m.Dangling, legacyOrgID)
+	// Six real rows to rename: the screen node, the schedule, the playlist, the
+	// two dayparts and the preset batch. The seventh entry the planner used to
+	// emit was the phantom parent.
+	if len(m.Rewrites) != len(preRuleSeedIDs)-1 {
+		t.Fatalf("MigrateRowIDs rewrote %d id(s) (%+v), want %d — one per row that exists",
+			len(m.Rewrites), m.Rewrites, len(preRuleSeedIDs)-1)
+	}
+	for _, rw := range m.Rewrites {
+		if rw.From == legacyOrgID {
+			t.Fatalf("the migration rewrote %+v: a reference whose row is not being renamed with it", rw)
+		}
+	}
+
+	// The reference itself: untouched, still visibly broken, still pointing at the
+	// spelling the store was written with.
+	nodes, err := s.ScopeNodes(ctx)
+	if err != nil {
+		t.Fatalf("ScopeNodes: %v", err)
+	}
+	if len(nodes) != 2 {
+		t.Fatalf("scope_nodes holds %d row(s), want 2 — the migration creates and deletes nothing", len(nodes))
+	}
+	for _, n := range nodes {
+		if n.ID != preRuleUnchangedSeedIDs[0] {
+			continue
+		}
+		if n.ParentID == nil || *n.ParentID != legacyOrgID {
+			t.Fatalf("the orphaned site's parent_id = %v, want %q unchanged", n.ParentID, legacyOrgID)
+		}
+	}
+	// And the rows that DO exist were still canonicalized: leaving the dangle
+	// alone must not stop the migration doing its actual job.
+	for _, id := range storedIDs(t, dsn) {
+		if !ulid.Valid(id) {
+			t.Errorf("stored id %q is not a canonical ULID after the migration", id)
+		}
+	}
+}
+
+// TestMigrateRowIDsCarriesADangleThatSharesAnIDWithARow is the other side of the
+// same invariant, and the one a value comparison cannot express: a dangling
+// parent_id whose value is ALSO some other table's row id moves when that row is
+// renamed — legitimately, by that row's own plan entry — and the migration must
+// let it, because the reference was broken before and is exactly as broken
+// after, only re-spelled.
+//
+// The first version of this guard compared the parents that dangle after the
+// rewrite against the values that dangled before, without putting the before-set
+// through the mapping. On this store that reads the carried dangle as newly
+// manufactured, aborts the transaction, and — since the boot treats a failed
+// canonicalization as fatal and nothing about the store changes — leaves a box
+// that used to start unable to ever start again. Nothing here is exotic: it is
+// the #193 shape (no org row, a site naming it) plus one playlist that happens to
+// carry the same identifier.
+func TestMigrateRowIDsCarriesADangleThatSharesAnIDWithARow(t *testing.T) {
+	ctx := context.Background()
+	dsn := seededStore(t)
+	regressToPreRuleIDs(t, dsn)
+
+	const legacyOrgID = "01J8Z0DEMOORGANCESTORBOUND"
+	const foldedOrgID = "01J8Z0DEM00RGANCEST0RB0VND"
+	const siteID = "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"
+	withRawDB(t, dsn, func(db *sql.DB) {
+		if _, err := db.Exec(`DELETE FROM scope_nodes WHERE id = ?`, legacyOrgID); err != nil {
+			t.Fatalf("delete the org row: %v", err)
+		}
+		// The namesake: an ordinary authored playlist that happens to carry the
+		// missing node's identifier. Its rename is real work the migration owes
+		// the store, and it is what drags the dangling parent_id along with it.
+		if _, err := db.Exec(
+			`INSERT INTO playlists (id, revision, external_id, labels, scope_node, created_at, updated_at, body)
+			 VALUES (?, 1, '', '{}', ?, 1, 1, ?)`,
+			legacyOrgID, siteID,
+			`{"id":"`+legacyOrgID+`","scope_node":"`+siteID+`","name":"Namesake",`+
+				`"items":[{"source":"asset","asset_ref":"`+seedAssetRef+`"}],"revision":1,"created_at":1,"updated_at":1}`,
+		); err != nil {
+			t.Fatalf("plant the namesake playlist: %v", err)
+		}
+	})
+
+	s := openStoreAt(t, dsn)
+	m, err := s.MigrateRowIDs(ctx)
+	if err != nil {
+		t.Fatalf("MigrateRowIDs: %v — a pre-existing dangle carried by a legitimate rename is not a manufactured one", err)
+	}
+	// Seven rows: the screen node, the schedule, the seeded playlist, the two
+	// dayparts, the preset batch, and the namesake playlist. The org scope node is
+	// not among them; it is not there to rename.
+	if len(m.Rewrites) != 7 {
+		t.Fatalf("MigrateRowIDs rewrote %d id(s) (%+v), want 7 — one per row that exists", len(m.Rewrites), m.Rewrites)
+	}
+	for _, rw := range m.Rewrites {
+		if rw.Kind == store.KindScopeNode && rw.From == legacyOrgID {
+			t.Fatalf("the migration planned %+v: a scope-node rename for a scope node that is not stored", rw)
+		}
+	}
+	// The dangle is still reported, at the spelling it now carries — moved by the
+	// playlist's rename, not by an entry of its own.
+	assertDangles(t, "MigrateRowIDs", m.Dangling, foldedOrgID)
+
+	nodes, err := s.ScopeNodes(ctx)
+	if err != nil {
+		t.Fatalf("ScopeNodes: %v", err)
+	}
+	for _, n := range nodes {
+		if n.ID == siteID && (n.ParentID == nil || *n.ParentID != foldedOrgID) {
+			t.Fatalf("the orphaned site's parent_id = %v, want %q — it rides the namesake row's rename", n.ParentID, foldedOrgID)
+		}
+	}
+
+	// A second boot over the same file: the migration is idempotent here too. The
+	// broken guard failed identically on every subsequent call, which is what made
+	// it a permanent brick rather than a bad day.
+	second := openStoreAt(t, dsn)
+	again, err := second.MigrateRowIDs(ctx)
+	if err != nil {
+		t.Fatalf("second MigrateRowIDs: %v — a store this migration wrote must be one it can boot on", err)
+	}
+	if len(again.Rewrites) != 0 {
+		t.Fatalf("second MigrateRowIDs rewrote %+v, want nothing left to do", again.Rewrites)
+	}
+	assertDangles(t, "second MigrateRowIDs", again.Dangling, foldedOrgID)
+
+	// And the boot's next step still repairs it: the row the reference names is
+	// created, and the workspace has an identity again. Creating a scope node at an
+	// id a PLAYLIST also carries is not a collision — they are different tables,
+	// and the heal writes one row and rewrites nothing.
+	heal, err := second.HealOrgRoot(ctx)
+	if err != nil {
+		t.Fatalf("HealOrgRoot: %v", err)
+	}
+	if !heal.Healed || heal.OrgID != foldedOrgID {
+		t.Fatalf("HealOrgRoot = %+v, want the root created at %q", heal, foldedOrgID)
+	}
+	if id, _, err := second.WorkspaceRoot(ctx); err != nil || id != foldedOrgID {
+		t.Fatalf("WorkspaceRoot = %q, %v; want %q", id, err, foldedOrgID)
+	}
+}
+
+// assertDangles checks that a report names exactly the parent ids given, and
+// nothing else.
+func assertDangles(t *testing.T, from string, got []store.DanglingParent, wantParents ...string) {
+	t.Helper()
+	var parents []string
+	for _, d := range got {
+		parents = append(parents, d.ParentID)
+		if d.ChildID == "" {
+			t.Errorf("%s reported a dangling parent with no child: %+v", from, d)
+		}
+	}
+	sort.Strings(parents)
+	sort.Strings(wantParents)
+	if strings.Join(parents, " ") != strings.Join(wantParents, " ") {
+		t.Fatalf("%s reported dangling parents %v, want %v", from, parents, wantParents)
+	}
+}
+
 // TestMigrateRowIDsIsIdempotent runs the migration twice over the same store: the
 // second run must find nothing to do and change nothing.
 func TestMigrateRowIDsIsIdempotent(t *testing.T) {

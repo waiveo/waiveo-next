@@ -435,8 +435,53 @@ func reportStoreIDs(storePath string, out io.Writer) int {
 		}
 		fmt.Fprintf(out, "references to them are rewritten in the same transaction; nothing has been changed by this check.\n")
 	}
+	for _, d := range m.Dangling {
+		fmt.Fprintf(out, "scope node %s names parent %s, which is not a stored scope node.\n", d.ChildID, d.ParentID)
+	}
+	reportOrgRoot(st, out, len(m.Rewrites))
 	reportEventLog(st, out)
 	return 0
+}
+
+// reportOrgRoot prints what the next boot would do about a missing org-kind
+// scope node — the row the whole owner-facing api authorizes through, whose
+// absence 404s every owner route while the box otherwise looks healthy.
+//
+// It rides -store-check because that is the one command an operator runs BEFORE
+// a restart, and "the boot will create a scope node" is exactly the kind of
+// surprise that check exists to remove. A failure to read is reported and not
+// fatal, for the same reason the event-log report's is: the subcommand's job is
+// to answer the row-id question, and it should still answer it.
+//
+// pendingRewrites is what keeps the refusal honest about its own footing. This
+// diagnosis reads the store AS IT STANDS, while the boot canonicalizes row ids
+// FIRST and only then heals — and one refusal turns on exactly that difference:
+// the repair declines when the id the tree names is not canonical and is also
+// some row's id, because folding it would rename that row too, and the boot's own
+// canonicalization is what dissolves that (it renames the row on its own account
+// and carries the reference with it, so by the time the heal runs the id is
+// canonical and there is nothing left to fold). Printing a flat "will NOT create
+// one" under a list of pending rewrites would contradict the section above it.
+func reportOrgRoot(st *store.Store, out io.Writer, pendingRewrites int) {
+	heal, err := st.PlanOrgRootHeal(context.Background())
+	if err != nil {
+		fmt.Fprintf(out, "the scope tree could not be read: %v\n", err)
+		return
+	}
+	switch {
+	case heal.Needed && heal.OrgID != heal.ReferencedID:
+		fmt.Fprintf(out, "there is no org-kind scope node; the next boot will create one as %s (named as %s by %d orphaned node(s)) and repoint every reference.\n",
+			heal.OrgID, heal.ReferencedID, len(heal.ChildIDs))
+	case heal.Needed:
+		fmt.Fprintf(out, "there is no org-kind scope node; the next boot will re-create it as %s, the id %d orphaned node(s) already name.\n",
+			heal.OrgID, len(heal.ChildIDs))
+	case heal.Declined != "" && pendingRewrites > 0:
+		fmt.Fprintf(out, "there is no org-kind scope node, and against the store as it stands one cannot be re-created: %s\n"+
+			"    the boot canonicalizes the row ids above BEFORE it heals, which can change that answer; re-run this check after the restart to see where it landed.\n",
+			heal.Declined)
+	case heal.Declined != "":
+		fmt.Fprintf(out, "there is no org-kind scope node and the next boot will NOT create one: %s\n", heal.Declined)
+	}
 }
 
 // reportEventLog prints what the durable event log holds, by retention class. A
@@ -845,14 +890,75 @@ func main() {
 	if m, err := st.MigrateRowIDs(ctx); err != nil {
 		log.Fatalf("waiveo-feeder: canonicalize store row ids: %v\n"+
 			"    run `waiveo-feeder -store-check` to inspect %s; nothing was changed", err, cfg.storePath)
-	} else if len(m.Rewrites) > 0 {
+	} else {
+		// Every rewrite renames a ROW, and its references ride along in the same
+		// transaction, so this count is a count of rows — which it was not while
+		// the planner could also emit a rewrite for a parent pointer with nothing
+		// behind it. That one logged identically to a real rename, and a box's
+		// boot log was later read as proof a node existed when the line recorded
+		// only that something pointed at it.
 		for _, rw := range m.Rewrites {
 			log.Printf("waiveo-feeder: canonicalized %s id %q -> %q", rw.Kind, rw.From, rw.To)
 			if rw.Kind == store.KindScopeNode {
 				renamedScopeNodes[rw.From] = rw.To
 			}
 		}
-		log.Printf("waiveo-feeder: canonicalized %d store row id(s) in %s", len(m.Rewrites), cfg.storePath)
+		if len(m.Rewrites) > 0 {
+			log.Printf("waiveo-feeder: canonicalized %d store row id(s) in %s", len(m.Rewrites), cfg.storePath)
+		}
+		// Reported, never rewritten. A parent_id naming no row is a MISSING ROW,
+		// and the only repair is to create it (below) — folding the pointer into a
+		// canonical-looking spelling would leave the same broken reference wearing
+		// the appearance of a healthy one.
+		//
+		// Bounded for the same reason the store's own fault report is: a store
+		// broken wholesale can hold one of these per node, and a boot log that
+		// scrolls the rest of startup away to say so is a report nobody can use.
+		const shownDangles = 20
+		for i, d := range m.Dangling {
+			if i == shownDangles {
+				log.Printf("waiveo-feeder: … and %d more scope node(s) naming a parent that is not stored", len(m.Dangling)-shownDangles)
+				break
+			}
+			log.Printf("waiveo-feeder: scope node %q names parent %q, which is not a stored scope node", d.ChildID, d.ParentID)
+		}
+	}
+
+	// The store's remaining nodes can name an org root the store does not hold: a
+	// box seeded in the window when the demo seed pointed its site at an org
+	// ancestor it never inserted has exactly that shape, and cannot grow out of it
+	// (the seed runs only at generation 0). The org node is the workspace's own
+	// identity, so without it WorkspaceRoot fails and every owner-gated route
+	// 404s — /system-health with them — while the box keeps serving screens and
+	// looking healthy.
+	//
+	// Repaired here, at boot, for the same reason the canonicalization above is:
+	// a defect an operator can only discover as a puzzling 404 is one the box
+	// should fix on its own start-up. It earns the position the same way, too — a
+	// store with a root is not written to at all, and an empty store is left
+	// strictly alone for the seed below.
+	//
+	// A failure is NOT fatal, and that is the opposite call from the
+	// canonicalization's. That one refuses to start because a store it cannot
+	// migrate is a store that will refuse every write. This one is a repair for a
+	// box that has ALREADY been running in the state it repairs: declining to
+	// start would turn a box with a broken owner surface into a box that is down,
+	// which is a strictly worse answer for the fleet. So it says so at the volume
+	// a fatal would have, and carries on.
+	if heal, err := st.HealOrgRoot(ctx); err != nil {
+		log.Printf("waiveo-feeder: WARNING — could not re-create the missing org scope node: %v\n"+
+			"    the owner-facing api will keep answering 404 until the org node exists; nothing was changed", err)
+	} else if heal.Healed {
+		log.Printf("waiveo-feeder: re-created the missing org scope node %q, which %d orphaned scope node(s) already named (%s)",
+			heal.OrgID, len(heal.ChildIDs), strings.Join(heal.ChildIDs, ", "))
+		if heal.OrgID != heal.ReferencedID {
+			log.Printf("waiveo-feeder: the org root was named as %q, which is not a canonical ULID; it was created as %q and every reference repointed in the same transaction",
+				heal.ReferencedID, heal.OrgID)
+			renamedScopeNodes[heal.ReferencedID] = heal.OrgID
+		}
+	} else if heal.Declined != "" {
+		log.Printf("waiveo-feeder: WARNING — this store has no org-kind scope node and it was NOT re-created: %s\n"+
+			"    the owner-facing api will answer 404 until an org node exists", heal.Declined)
 	}
 
 	// The demo cast's asset refs, in play order — the items the seeded demo

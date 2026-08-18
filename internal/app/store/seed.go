@@ -42,6 +42,7 @@ const (
 	// rejected.
 	SeedScreenID = "01J8Z9DEM0SCREENR0WF1RSTPH"
 
+	seedOrgName            = "Demo Org"
 	seedScreenName         = "Demo Screen"
 	seedPlaylistID         = "01J8Z6DEM0P1AY11STC0NTENT1"
 	seedContentDaypartID   = "01J8Z7DEM0DAYPARTC0NTENT01"
@@ -160,16 +161,11 @@ func (s *Store) SeedDemo(ctx context.Context, assetRefs ...string) error {
 	}{
 		// The org root is a REAL row, not a tolerated boundary: the store
 		// validates the full tree, where DAT-002 demands every parent resolve
-		// and exactly one org-kind node exist. An org carries no geo (DAT-032).
-		// account_state and entitlements are mandatory on an org (DAT-010/013), and
-		// this row carried neither until the validator started saying so — a demo
-		// seed that produces a store its own boot-time check refuses. `active` with
-		// an empty entitlements document is the plainest conforming value: the seed
-		// asserts nothing about tiering, and DAT-013 admits `{}` explicitly.
-		{KindScopeNode, datamodel.ScopeNode{
-			ID: seedOrgAncestorScopeNodeID, Kind: "org", Name: "Demo Org",
-			AccountState: "active", Entitlements: json.RawMessage(`{}`),
-		}},
+		// and exactly one org-kind node exist. Its shape comes from
+		// orgRootScopeNode, the one place an org root is described, so this row
+		// and the one orgroot.go re-creates for a store seeded before this line
+		// existed cannot drift apart.
+		{KindScopeNode, orgRootScopeNode(seedOrgAncestorScopeNodeID, seedOrgName)},
 		{KindScopeNode, datamodel.ScopeNode{
 			ID: seedSiteScopeNodeID, Kind: "site", ParentID: &orgParent, Name: "Demo Site",
 			TZ: &tz, Lat: &lat, Long: &long,
@@ -219,6 +215,29 @@ func (s *Store) SeedDemo(ctx context.Context, assetRefs ...string) error {
 		}
 	}
 	return nil
+}
+
+// orgRootScopeNode is THE shape of an org-kind root row, and the only place it
+// is described.
+//
+// Two writers mint one: SeedDemo, filling an empty store, and orgroot.go,
+// re-creating the root a store seeded by an older build never got. They must
+// produce the same row or a healed box and a fresh box are two different worlds
+// — the same single-template discipline tlsboot keeps between a freshly minted
+// serving certificate and a reissued one, and for the same reason: the repair
+// path is the one that gets exercised least and drifts first.
+//
+// Every field is required of it. An org carries NO geo (DAT-032), a null
+// parent_id (DAT-002), and both account fields (DAT-010/013) — this row carried
+// neither until the validator started saying so, which is how the seed came to
+// produce a store its own boot-time check refused. `active` with an empty
+// entitlements document is the plainest conforming value: it asserts nothing
+// about tiering, and DAT-013 admits `{}` explicitly.
+func orgRootScopeNode(id, name string) datamodel.ScopeNode {
+	return datamodel.ScopeNode{
+		ID: id, Kind: orgNodeKind, Name: name,
+		AccountState: orgAccountStateActive, Entitlements: json.RawMessage(`{}`),
+	}
 }
 
 // demoCountdownTargetMS is the instant the demo slide's countdown widget counts

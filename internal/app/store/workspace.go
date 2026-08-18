@@ -52,6 +52,25 @@ const PlatformSchemaEpoch = 1
 // internal/datamodel/scopetree.go).
 const orgNodeKind = "org"
 
+// The two members of DAT-010's `account_state` vocabulary this package writes
+// ITSELF, named here beside the kind they belong to rather than spelled as a
+// literal at each site. The full closed set — trial, active, suspended, closed,
+// purged — is data-model/1's and is enforced in internal/datamodel; these are
+// only the two the store authors on its own initiative, and naming them is what
+// stops a third being invented by a caller who needed one and typed a word.
+//
+//   - active: an org row the store creates for a live workspace — the make-dev
+//     seed's root (seed.go) and the root orgroot.go re-creates for a store that
+//     never got one. The plainest conforming value, asserting nothing about
+//     tiering.
+//   - purged: DAT-012's terminal state, the tombstone PurgeWorkspace leaves
+//     behind. It says the workspace was destroyed, so it is never the state a
+//     row the store is bringing INTO existence starts in.
+const (
+	orgAccountStateActive = "active"
+	orgAccountStatePurged = "purged"
+)
+
 // ErrNoWorkspace is returned when an operation scoped to the workspace as a
 // whole (API-120) cannot find the org-kind scope node that IS the workspace's
 // identity.
@@ -267,7 +286,7 @@ func reinsertPurgedOrg(ctx context.Context, tx *sql.Tx, orgID string, now int64)
 		"kind":          orgNodeKind,
 		"name":          "Purged Workspace",
 		"parent_id":     nil,
-		"account_state": "purged",
+		"account_state": orgAccountStatePurged,
 		"revision":      1,
 		"created_at":    now,
 		"updated_at":    now,

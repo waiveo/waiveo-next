@@ -83,22 +83,44 @@ func foldToCanonicalULID(id string) (string, bool) {
 
 // IDRewrite is one identifier the migration replaced (or, from
 // PlanRowIDMigration, would replace). Kind names the table the identifier
-// addresses — which for a dangling scope-node parent_id is still scope_nodes,
-// even though no such row is stored. This store can no longer ACCEPT a write
-// that leaves a parent_id unresolved (validateAfterWrite's strict tree), but a
-// store an older build wrote may already hold one on disk, and that is exactly
-// the population this migration exists for: it has to be able to address a
-// reference it would refuse to create.
+// addresses, and — this is the whole of the reference invariant — EVERY rewrite
+// renames a stored ROW. References to that row (a child's parent_id, a
+// daypart's playlist_id, a job target) are carried along by the same entry;
+// there is no entry that moves a reference on its own. Enforced, not merely
+// intended: see assertPlanRenamesStoredRows, which the planner runs over every
+// plan it produces.
 type IDRewrite struct {
 	Kind Kind
 	From string
 	To   string
 }
 
+// DanglingParent is one scope-node parent_id that names no stored scope node —
+// a reference the data model would refuse to create today and that an older
+// build's store can nevertheless be holding (see the "reported, never
+// rewritten" note on planIDRewrites).
+type DanglingParent struct {
+	ChildID  string
+	ParentID string
+}
+
 // IDMigration reports the identifiers a run rewrote. A zero-length Rewrites
 // means the store already conformed and nothing was written.
+//
+// Dangling is a REPORT, never a plan: the parent references pointing at no row,
+// as the store stands when the call returns. Nothing in the migration acts on
+// one — no entry is ever planned to move a reference by itself — though a
+// dangling value CAN change spelling when it happens to name a row in another
+// table that is being renamed, which is why the report is taken after the
+// rewrite rather than before it.
+//
+// It is populated whether or not anything was rewritten, because a store with
+// nothing to canonicalize can still be missing the node its own rows name —
+// which is the state that took every owner-gated route on a box down while the
+// box looked healthy.
 type IDMigration struct {
 	Rewrites []IDRewrite
+	Dangling []DanglingParent
 }
 
 // BlockedID names one identifier the migration refused to rewrite, and why.
@@ -133,29 +155,47 @@ func (e *IDMigrationBlockedError) Error() string {
 // source of the plan for both the read-only report and the migrating write — so
 // what an operator is shown is computed by the same code that later acts.
 //
-// It covers two populations. The first is every row's own id across every
-// resource table (for preset_batches the id column holds the body's preset_id,
-// DAT-005's byte-exact exception, so it is reached the same way). The second is
-// scope-node parent_id values, which are the ONLY reference the data model lets
-// dangle: an absent parent is a subtree boundary, so a parent_id need not appear
-// as a stored row id and would otherwise be missed. Every other reference is
-// required by ValidateRows to resolve to a present row, so its value is already
-// in the first population.
+// The plan is every row's own id across every resource table (for preset_batches
+// the id column holds the body's preset_id, DAT-005's byte-exact exception, so
+// it is reached the same way). Nothing else. A reference is rewritten only
+// because the ROW IT NAMES is being renamed in the same transaction, by the same
+// entry, through applyIDRewrites' mapping — which is what makes "rename a row"
+// and "repoint everything at it" one indivisible act rather than two hopeful
+// ones.
 //
-// A non-canonical parent_id is worth rewriting even though DAT-005a does not
-// govern reference fields: once the rule is enforced, no row can ever again be
-// created with a non-canonical id, so such a reference is permanently
-// unresolvable. Its folded form is the only value that could ever name a real
-// node.
-func planIDRewrites(ctx context.Context, q queryer) ([]IDRewrite, []BlockedID, error) {
+// # Dangling scope-node parents are REPORTED, never rewritten
+//
+// A scope-node parent_id is the ONLY reference the data model lets dangle: an
+// absent parent is a subtree boundary to the subtree-tolerant builder, so a
+// parent_id need not appear as a stored row id. Every other reference is
+// required by ValidateRows to resolve to a present row.
+//
+// This function used to FOLD such a value — rewriting a reference with no row
+// behind it into its canonical spelling, on the reasoning that a non-canonical
+// id can never again name a row anyone could create, so the folded form is the
+// only value that could ever resolve. The reasoning is sound and the act is
+// still wrong, for two reasons that outweigh it. It emits an entry
+// indistinguishable, in the plan and in the boot log, from a real row rename —
+// which is exactly the ambiguity that let a box's boot log be read as proof that
+// a node existed when what the log recorded was a pointer to a node that never
+// had. And it turns a VISIBLE dangle into a canonical-looking one: same broken
+// reference, now wearing the spelling of a healthy id, with nothing left in the
+// log to say the store is missing a row.
+//
+// So a dangle is reported and left byte-identical. Repairing it means CREATING
+// the row it names — the one act that makes the reference true — and that is
+// orgroot.go's job, which mints the row and repoints the reference in a single
+// transaction. Rewriting a reference is legitimate exactly when the row moves
+// with it, which assertPlanRenamesStoredRows holds every plan to before it is
+// either reported or applied.
+func planIDRewrites(ctx context.Context, q queryer) ([]IDRewrite, []BlockedID, []DanglingParent, error) {
 	var plan []IDRewrite
 	var blocked []BlockedID
-	mapped := make(map[string]string)
 
 	for _, kind := range allKinds {
 		ids, err := readIDs(ctx, q, string(kind))
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		// Every id the table already holds, plus every id a rewrite in this
 		// table is about to claim: a fold landing on either would collide on
@@ -178,32 +218,16 @@ func planIDRewrites(ctx context.Context, q queryer) ([]IDRewrite, []BlockedID, e
 				continue
 			}
 			claimed[folded] = true
-			mapped[id] = folded
 			plan = append(plan, IDRewrite{Kind: kind, From: id, To: folded})
 		}
 	}
 
-	// Dangling scope-node parents. A parent that IS a stored row is already in
-	// the plan above under the same From, and the fold is deterministic, so the
-	// two agree by construction; only an unseen value adds an entry.
-	nodes, err := readScopeNodes(ctx, q)
+	dangling, err := danglingScopeNodeParents(ctx, q)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	for _, n := range nodes {
-		if n.ParentID == nil || ulid.Valid(*n.ParentID) {
-			continue
-		}
-		if _, done := mapped[*n.ParentID]; done {
-			continue
-		}
-		folded, ok := foldToCanonicalULID(*n.ParentID)
-		if !ok {
-			blocked = append(blocked, BlockedID{Kind: KindScopeNode, ID: *n.ParentID, Reason: "referenced as a parent_id and cannot be folded into a canonical ULID"})
-			continue
-		}
-		mapped[*n.ParentID] = folded
-		plan = append(plan, IDRewrite{Kind: KindScopeNode, From: *n.ParentID, To: folded})
+	if err := assertPlanRenamesStoredRows(ctx, q, plan); err != nil {
+		return nil, nil, nil, err
 	}
 
 	sort.Slice(plan, func(i, j int) bool {
@@ -218,7 +242,109 @@ func planIDRewrites(ctx context.Context, q queryer) ([]IDRewrite, []BlockedID, e
 		}
 		return blocked[i].ID < blocked[j].ID
 	})
-	return plan, blocked, nil
+	return plan, blocked, dangling, nil
+}
+
+// assertPlanRenamesStoredRows is THE REFERENCE INVARIANT, checked in the one
+// place it is decidable: on the plan, against the store as it still stands.
+//
+// Every entry must rename a row its table actually holds. That is the whole of
+// what makes a rewrite safe — applyIDRewrites moves a row's id and every quoted
+// occurrence of it through ONE flat mapping, so a reference is repointed
+// precisely because the row it names moved with it, in the same transaction. An
+// entry whose From names no row is a reference moving on its own: the store
+// keeps the identical broken pointer in a new spelling, and the boot logs a line
+// no operator can tell from a real row rename. That is the defect this file's
+// planner was changed to stop emitting, and this is the assertion that keeps it
+// from coming back.
+//
+// # Why the plan, and not the state afterwards
+//
+// The obvious alternative — compare the dangling parents before and after, and
+// refuse if the rewrite MANUFACTURED one — cannot be written correctly by value,
+// and by value is the only way the after-state offers. A parent_id that dangles
+// but happens to equal some other table's row id is carried into that row's
+// folded spelling by that table's entirely legitimate entry: the reference was
+// broken before, is broken after, and merely changed spelling, which a value
+// comparison reads as newly stranded and refuses. Refusing there aborts the
+// whole transaction, which at boot is a fatal — turning a store that migrated
+// cleanly into one that can never start.
+//
+// Nor would keying by (child, parent) rescue it, because the after-state simply
+// does not carry the distinction: applyIDRewrites moves an id column and its
+// references from the same mapping, so a reference whose target row was renamed
+// always moves with it, and a post-rewrite dangle is therefore ALWAYS an
+// inherited one. Provenance — did this entry name a row? — is the thing that
+// actually differs, and it is only legible before the rewrite.
+//
+// Being decidable in the plan has a second virtue, and it is not a small one:
+// `waiveo-feeder -store-check` runs this same planner, so an operator's dry run
+// predicts the refusal instead of printing a reassuring plan for a boot that
+// will fatal.
+//
+// The stored ids are re-read here rather than threaded out of the loop above on
+// purpose. An assertion fed the very map it is judging asserts nothing; this one
+// asks the database again, so it still holds if the plan later grows a
+// population built from something other than a table scan.
+func assertPlanRenamesStoredRows(ctx context.Context, q queryer, plan []IDRewrite) error {
+	stored := make(map[Kind]map[string]bool)
+	for _, rw := range plan {
+		ids, ok := stored[rw.Kind]
+		if !ok {
+			got, err := readIDs(ctx, q, string(rw.Kind))
+			if err != nil {
+				return err
+			}
+			ids = make(map[string]bool, len(got))
+			for _, id := range got {
+				ids[id] = true
+			}
+			stored[rw.Kind] = ids
+		}
+		if !ids[rw.From] {
+			return fmt.Errorf("store: the id canonicalization plan would move a reference on its own: planned %s %q -> %q, which renames no stored row", rw.Kind, rw.From, rw.To)
+		}
+	}
+	return nil
+}
+
+// danglingScopeNodeParents reports every scope node whose parent_id names no
+// stored scope-node row, in child-id order.
+//
+// The membership test is against the ID COLUMN of scope_nodes, not against the
+// `id` inside each body: the column is the primary key applyIDRewrites renames
+// and the thing a reference must resolve to. The two are equal by construction
+// (Create takes the column from the body's own identity field and Update never
+// rewrites it), and testing the one that is load-bearing is the cheaper thing to
+// be right about.
+//
+// Canonicality is deliberately NOT part of the test. A parent_id that names a
+// row is fine whether or not it is a canonical ULID — if that row is being
+// renamed, the reference rides along with it — and a parent_id that names
+// nothing is a dangle whether or not it LOOKS like a healthy identifier. The
+// pre-existing dangle on a real box was a perfectly canonical ULID.
+func danglingScopeNodeParents(ctx context.Context, q queryer) ([]DanglingParent, error) {
+	ids, err := readIDs(ctx, q, string(KindScopeNode))
+	if err != nil {
+		return nil, err
+	}
+	stored := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		stored[id] = true
+	}
+	nodes, err := readScopeNodes(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	var out []DanglingParent
+	for _, n := range nodes {
+		if n.ParentID == nil || stored[*n.ParentID] {
+			continue
+		}
+		out = append(out, DanglingParent{ChildID: n.ID, ParentID: *n.ParentID})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ChildID < out[j].ChildID })
+	return out, nil
 }
 
 // rewriteMapping flattens a plan into the old→new lookup the replacement pass
@@ -383,6 +509,12 @@ var idMigrationVerifyKinds = []Kind{KindScopeNode, KindPlaylist, KindAutomation,
 // Re-planning last is the idempotence proof, asserted rather than assumed: the
 // migration's own output must be a store this same planner finds nothing to do
 // on.
+//
+// The reference invariant — no rewrite may move a reference whose row is not
+// moving with it — is NOT re-checked here, because it is not decidable here. It
+// lives in assertPlanRenamesStoredRows, which the planner runs before the
+// rewrite and whose doc comment sets out why the after-state cannot tell an
+// inherited dangle from a caused one.
 func verifyAfterIDRewrite(ctx context.Context, tx *sql.Tx, plan []IDRewrite, prior map[Kind]priorFaults) error {
 	// KindScopeNode selects BuildScopeTree, KindPlaylist selects ValidateRows
 	// over the whole scheduling-core set (not just playlists), KindAutomation
@@ -433,7 +565,7 @@ func verifyAfterIDRewrite(ctx context.Context, tx *sql.Tx, plan []IDRewrite, pri
 		cur.Close()
 	}
 
-	residual, blocked, err := planIDRewrites(ctx, tx)
+	residual, blocked, _, err := planIDRewrites(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -449,18 +581,22 @@ func verifyAfterIDRewrite(ctx context.Context, tx *sql.Tx, plan []IDRewrite, pri
 // restart is a no-op for the store, a non-empty one lists exactly what the next
 // boot will change, and an *IDMigrationBlockedError means the next boot will
 // refuse and the store needs a human before it is restarted.
+//
+// It also reports the parent references that name no row (Dangling), which the
+// migration will NOT touch — a store can be perfectly canonical and still be
+// missing a node the rest of it points at.
 func (s *Store) PlanRowIDMigration(ctx context.Context) (IDMigration, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	plan, blocked, err := planIDRewrites(ctx, s.db)
+	plan, blocked, dangling, err := planIDRewrites(ctx, s.db)
 	if err != nil {
 		return IDMigration{}, err
 	}
 	if len(blocked) > 0 {
 		return IDMigration{}, &IDMigrationBlockedError{Blocked: blocked}
 	}
-	return IDMigration{Rewrites: plan}, nil
+	return IDMigration{Rewrites: plan, Dangling: dangling}, nil
 }
 
 // MigrateRowIDs rewrites every stored identifier that violates DAT-005a, along
@@ -488,14 +624,20 @@ func (s *Store) MigrateRowIDs(ctx context.Context) (IDMigration, error) {
 	}
 
 	var applied []IDRewrite
+	var dangling []DanglingParent
 	if err := s.runWriteTx(ctx, func(tx *sql.Tx) error {
-		plan, blocked, err := planIDRewrites(ctx, tx)
+		plan, blocked, dangles, err := planIDRewrites(ctx, tx)
 		if err != nil {
 			return err
 		}
 		if len(blocked) > 0 {
 			return &IDMigrationBlockedError{Blocked: blocked}
 		}
+		// Reported from the write path's own reading, not from the read-lock plan
+		// above, so what the caller logs is what the transaction actually saw. On
+		// a store with nothing to rewrite this reading is already final; when
+		// there IS a rewrite it is re-taken below, after it.
+		dangling = dangles
 		if len(plan) == 0 {
 			return nil
 		}
@@ -514,6 +656,16 @@ func (s *Store) MigrateRowIDs(ctx context.Context) (IDMigration, error) {
 			return err
 		}
 		if err := verifyAfterIDRewrite(ctx, tx, plan, prior); err != nil {
+			return err
+		}
+		// Re-read, so the report describes the store the transaction is about to
+		// commit rather than the one it opened on. A dangling parent_id that
+		// happens to name a row in another table is carried into that row's new
+		// spelling by that row's own rename, and a child's id can itself be
+		// renamed — so the pre-rewrite reading would print identifiers the store no
+		// longer holds. A log line an operator cannot find in the store is the
+		// exact failure this whole change is about.
+		if dangling, err = danglingScopeNodeParents(ctx, tx); err != nil {
 			return err
 		}
 		if err := bumpGeneration(ctx, tx); err != nil {
@@ -536,5 +688,5 @@ func (s *Store) MigrateRowIDs(ctx context.Context) (IDMigration, error) {
 			hook()
 		}
 	}
-	return IDMigration{Rewrites: applied}, nil
+	return IDMigration{Rewrites: applied, Dangling: dangling}, nil
 }
