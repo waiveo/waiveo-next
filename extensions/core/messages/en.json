@@ -1,0 +1,14 @@
+{
+  "pack.displayName": "Core",
+  "cap.storage.reason": "To record the platform's own policy — today, your backup schedule and retention.",
+  "page.backups.title": "Backups",
+  "backups.schedule.title": "When to run",
+  "backups.schedule": "Schedule",
+  "backups.schedule.placeholder": "daily at 03:00",
+  "backups.retention.title": "How many to keep",
+  "backups.keepLast": "Keep the last N backups",
+  "backups.keepDays": "Keep anything newer than N days",
+  "backups.notify": "Tell me if a backup fails",
+  "backups.save": "Save policy",
+  "backups.run": "Back up now"
+}

@@ -31,6 +31,7 @@ import (
 	"strings"
 )
 
+//go:embed core
 //go:embed discovery
 var extensionFS embed.FS
 

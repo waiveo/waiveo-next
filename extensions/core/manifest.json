@@ -1,0 +1,47 @@
+{
+  "id": "waiveo/core",
+  "version": "1.0.0",
+  "displayName": "msg:pack.displayName",
+  "icon": "shield",
+  "description": "The platform's own functions, shipped as one signed first-party extension rather than a scatter of small ones: an operator sees a single core extension and one place its policy lives. Each function owns a settings page and the actions that belong to it, while the engines behind them — the archive writer, its encryption, the data key — stay in core where they cannot be reached by anything installed.",
+  "compat": {
+    "ctx": ">=1.0 <2.0",
+    "renderer": ["settings-form"]
+  },
+  "capabilities": [
+    { "capability": "storage.write", "scope": "*", "reason": "msg:cap.storage.reason" }
+  ],
+  "runtime": { "entry": "bin/core", "exec": ["$entry"] },
+  "egress": [],
+  "resources": { "memory": 64, "cpuWeight": 100, "storageQuota": 16, "maxScheduledTimers": 0 },
+  "dataModel": {
+    "version": 1,
+    "collections": [
+      {
+        "name": "backups",
+        "singleton": true,
+        "fields": [
+          { "name": "schedule", "type": "string" },
+          { "name": "keep_last", "type": "number" },
+          { "name": "keep_days", "type": "number" },
+          { "name": "notify_on_failure", "type": "boolean" }
+        ]
+      }
+    ]
+  },
+  "retention": {},
+  "ui": {
+    "pages": [
+      { "path": "backups", "pageType": "settings-form", "titleMsg": "msg:page.backups.title" }
+    ]
+  },
+  "actions": [
+    {
+      "name": "run-backup",
+      "paramsSchema": {},
+      "capabilityScope": "storage.write",
+      "auditClass": "write",
+      "idempotencyClass": "safe-to-retry"
+    }
+  ]
+}
