@@ -4,6 +4,8 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+
+	"github.com/maaxton/waiveo-next/internal/app/store"
 )
 
 // ignoreddevices_test.go drives the ignore decision as what it must be: a
@@ -120,5 +122,40 @@ func TestIgnoreDeviceRejectsEmptyID(t *testing.T) {
 	}
 	if _, err := s.UnignoreDevice(ctx, ""); err == nil {
 		t.Fatalf("UnignoreDevice(\"\"): err = nil, want an error")
+	}
+}
+
+// TestOpenPortsSurviveAReopen closes the hole the deadcode gate caught by
+// accident: the column, the SELECT and the decode all landed while the INSERT
+// did not, so ports would have read back as `[]` forever and looked exactly like
+// a device nothing had scanned. Asserted across a REOPEN, which is the only way
+// to tell a value that was stored from one that was merely held in memory.
+func TestOpenPortsSurviveAReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "app.db")
+
+	first := openFileStore(t, path)
+	if err := first.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{{
+		DeviceID: igDeviceA, RelayID: "relay-a", ScopeNode: ddNodeID,
+		Driver: "net", NativeID: "c4:8b:66:68:21:25", DeviceClass: "unclassified",
+		FirstSeen: 1000, LastSeen: 2000, OpenPorts: []int{80, 8060},
+	}}); err != nil {
+		t.Fatalf("ReplaceDiscoveredDevices: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	second := openFileStore(t, path)
+	defer func() { _ = second.Close() }()
+	rows, err := second.DiscoveredDevices(ctx)
+	if err != nil {
+		t.Fatalf("DiscoveredDevices: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if got := rows[0].OpenPorts; len(got) != 2 || got[0] != 80 || got[1] != 8060 {
+		t.Fatalf("open ports after reopen = %v, want [80 8060] — a column written by nothing reads back empty and looks unscanned", got)
 	}
 }

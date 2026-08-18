@@ -143,6 +143,10 @@ func (s *Store) ReplaceDiscoveredDevices(ctx context.Context, relayID string, ro
 			if err != nil {
 				return fmt.Errorf("store: ReplaceDiscoveredDevices: encode entities of %s: %w", d.DeviceID, err)
 			}
+			ports, err := json.Marshal(nonNilPorts(d.OpenPorts))
+			if err != nil {
+				return fmt.Errorf("store: ReplaceDiscoveredDevices: encode open_ports of %s: %w", d.DeviceID, err)
+			}
 			// INSERT OR REPLACE, not INSERT: two relays can legitimately see one
 			// device, and the caller has already applied REL-153 incumbency to
 			// decide which one speaks for it. A raw INSERT would fail the whole
@@ -150,10 +154,10 @@ func (s *Store) ReplaceDiscoveredDevices(ctx context.Context, relayID string, ro
 			if _, err := tx.ExecContext(ctx,
 				`INSERT OR REPLACE INTO discovered_devices
 				   (device_id, relay_id, scope_node, driver, native_id, device_class,
-				    name, address, model, serial, first_seen, last_seen, entities)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				    name, address, model, serial, first_seen, last_seen, entities, open_ports)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				d.DeviceID, relayID, d.ScopeNode, d.Driver, d.NativeID, d.DeviceClass,
-				d.Name, d.Address, d.Model, d.Serial, d.FirstSeen, d.LastSeen, string(entities)); err != nil {
+				d.Name, d.Address, d.Model, d.Serial, d.FirstSeen, d.LastSeen, string(entities), string(ports)); err != nil {
 				return fmt.Errorf("store: ReplaceDiscoveredDevices: insert %s: %w", d.DeviceID, err)
 			}
 		}
