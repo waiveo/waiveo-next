@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/devices"
 	"github.com/maaxton/waiveo-next/internal/app/store"
@@ -53,8 +54,9 @@ func TestStoreCheckReportsAConformingStore(t *testing.T) {
 }
 
 // TestStoreCheckListsThePendingRewrites: against a store an older build wrote,
-// the check names each id and its replacement, exits 0 (the boot can repair it),
-// and — the point of a dry run — leaves the store exactly as it found it.
+// the check names each id and its replacement, exits 2 (work pending — the boot
+// can repair it, and the operator is meant to read the list first), and — the
+// point of a dry run — leaves the store exactly as it found it.
 func TestStoreCheckListsThePendingRewrites(t *testing.T) {
 	dsn := seedStoreFileForCheck(t)
 
@@ -79,8 +81,8 @@ func TestStoreCheckListsThePendingRewrites(t *testing.T) {
 	before := storeGenerationForCheck(t, dsn)
 
 	var out bytes.Buffer
-	if code := reportStoreIDs(dsn, &out); code != 0 {
-		t.Fatalf("reportStoreIDs exit code = %d, want 0\n%s", code, out.String())
+	if code := reportStoreIDs(dsn, &out); code != storeCheckPending {
+		t.Fatalf("reportStoreIDs exit code = %d, want %d (work pending)\n%s", code, storeCheckPending, out.String())
 	}
 	got := out.String()
 	if !strings.Contains(got, legacyScreen) || !strings.Contains(got, currentScreen) {
@@ -111,15 +113,27 @@ func TestStoreCheckRefusesWhatTheBootWouldRefuse(t *testing.T) {
 	db.Close()
 
 	var out bytes.Buffer
-	if code := reportStoreIDs(dsn, &out); code != 1 {
-		t.Fatalf("reportStoreIDs exit code = %d, want 1\n%s", code, out.String())
+	if code := reportStoreIDs(dsn, &out); code != storeCheckIncomplete {
+		t.Fatalf("reportStoreIDs exit code = %d, want %d\n%s", code, storeCheckIncomplete, out.String())
 	}
 	got := out.String()
 	if !strings.Contains(got, "demo-playlist") {
 		t.Fatalf("report does not name the offending id:\n%s", got)
 	}
-	if !strings.Contains(got, "refuse to start") {
+	if !strings.Contains(got, "REFUSE TO START") {
 		t.Fatalf("report does not warn that the boot will refuse:\n%s", got)
+	}
+	// And the sections BELOW the refusal still ran. They used to be suppressed by
+	// the early return, so an operator fixed the one named id, restarted, and met
+	// everything that had been hidden behind it.
+	for _, want := range []string{
+		"org-kind scope node",
+		"device first-seen ledger:",
+		"durable event log:",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("a blocked row id suppressed the section %q that comes after it:\n%s", want, got)
+		}
 	}
 }
 
@@ -149,8 +163,8 @@ func TestStoreCheckReportsAMissingOrgRoot(t *testing.T) {
 	before := storeGenerationForCheck(t, dsn)
 
 	var out bytes.Buffer
-	if code := reportStoreIDs(dsn, &out); code != 0 {
-		t.Fatalf("reportStoreIDs exit code = %d, want 0\n%s", code, out.String())
+	if code := reportStoreIDs(dsn, &out); code != storeCheckPending {
+		t.Fatalf("reportStoreIDs exit code = %d, want %d (work pending)\n%s", code, storeCheckPending, out.String())
 	}
 	got := out.String()
 	for _, want := range []string{
@@ -174,9 +188,10 @@ func TestStoreCheckReportsAMissingOrgRoot(t *testing.T) {
 // automatic repair possible, and an operator who otherwise learns about it as an
 // unexplained 404 on every owner-gated route.
 //
-// It exits 0 in both, deliberately: the row ids are fine, the feeder will start,
-// and the subcommand's exit code answers the question it was asked. What must not
-// happen is silence.
+// It exits 2 in both: the row ids are fine and the feeder will start, so this is
+// not "I could not tell you" — but an owner API that 404s forever is not "nothing
+// to do" either, and 0 is reserved for a store the next boot changes nothing in
+// and that needs nobody. What must not happen is silence, or a pass.
 func TestStoreCheckReportsAWorkspaceNothingCanRestore(t *testing.T) {
 	const orgID = "01J8Z0DEM00RGANCEST0RB0VND"
 	const siteID = "01J8Z2Q1M8H8N4T0V1W2X3Y4Z5"
@@ -217,8 +232,8 @@ func TestStoreCheckReportsAWorkspaceNothingCanRestore(t *testing.T) {
 
 			before := storeGenerationForCheck(t, dsn)
 			var out bytes.Buffer
-			if code := reportStoreIDs(dsn, &out); code != 0 {
-				t.Fatalf("reportStoreIDs exit code = %d, want 0\n%s", code, out.String())
+			if code := reportStoreIDs(dsn, &out); code != storeCheckPending {
+				t.Fatalf("reportStoreIDs exit code = %d, want %d (needs a human)\n%s", code, storeCheckPending, out.String())
 			}
 			got := out.String()
 			for _, want := range tc.wants {
@@ -269,8 +284,8 @@ func TestStoreCheckDoesNotContradictItselfAboutTheOrgRoot(t *testing.T) {
 	db.Close()
 
 	var out bytes.Buffer
-	if code := reportStoreIDs(dsn, &out); code != 0 {
-		t.Fatalf("reportStoreIDs exit code = %d, want 0\n%s", code, out.String())
+	if code := reportStoreIDs(dsn, &out); code != storeCheckPending {
+		t.Fatalf("reportStoreIDs exit code = %d, want %d (work pending)\n%s", code, storeCheckPending, out.String())
 	}
 	got := out.String()
 	if !strings.Contains(got, "will be canonicalized at the next boot") {
@@ -324,6 +339,12 @@ func TestStoreCheckReportsTheDurableEventLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("raw open: %v", err)
 	}
+	// Recorded NOW, not at ts=0. An event stamped at the epoch is past every
+	// retention window this policy configures, so the report would correctly say
+	// the next boot deletes all three — a true statement about a fixture that was
+	// meant to be about what the log HOLDS. See
+	// TestStoreCheckPlansTheEventLogEviction for the eviction half.
+	now := time.Now().UnixMilli()
 	for i, row := range []struct{ id, schema, class string }{
 		{"01J9F00000000000000000000A", "audit.event", "audit-long"},
 		{"01J9F00000000000000000000B", "audit.event", "audit-long"},
@@ -332,7 +353,7 @@ func TestStoreCheckReportsTheDurableEventLog(t *testing.T) {
 		if _, err := db.Exec(
 			`INSERT INTO events (id, schema, ts, scope_node, trace_id, cost_class, retention_class, origin, origin_principal, payload)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			row.id, row.schema, int64(i), "", "", "", row.class, "internal", "", `{}`); err != nil {
+			row.id, row.schema, now-int64(i), "", "", "", row.class, "internal", "", `{}`); err != nil {
 			db.Close()
 			t.Fatalf("insert event %d: %v", i, err)
 		}
@@ -344,7 +365,12 @@ func TestStoreCheckReportsTheDurableEventLog(t *testing.T) {
 		t.Fatalf("reportStoreIDs exit code = %d, want 0\n%s", code, out.String())
 	}
 	got := out.String()
-	for _, want := range []string{"3 event(s) retained", "audit-long=2", "telemetry-standard=1"} {
+	for _, want := range []string{
+		"3 event(s) retained", "audit-long=2", "telemetry-standard=1",
+		// And what the next boot's sweep does with them, which is the half that
+		// let exit 0 promise "the next boot changes nothing".
+		"the next boot's retention sweep retires none of them",
+	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("report does not carry %q:\n%s", want, got)
 		}
@@ -395,8 +421,11 @@ func storeFingerprint(t *testing.T, dsn string) string {
 // mode forced to 0600, -wal/-shm left beside it. Asked a second time it reported
 // the store as conforming, so the reading could not even be repeated.
 //
-// So the file is fingerprinted before and after — bytes, mode, sidecars — and
-// the check is run TWICE and must answer identically.
+// So the file is fingerprinted before and after — bytes, mode, and any WAL
+// CONTENT — and the check is run TWICE and must answer identically. Not
+// "sidecars": storeFingerprint deliberately does not require their absence and
+// cannot see a `-shm` at all, and claiming an assertion this test does not make
+// is how a reader comes to believe the sidecars are checked.
 func TestStoreCheckNamesAMissingColumnAndChangesNothing(t *testing.T) {
 	dsn := seedStoreFileForCheck(t)
 
@@ -419,8 +448,9 @@ func TestStoreCheckNamesAMissingColumnAndChangesNothing(t *testing.T) {
 	before := storeFingerprint(t, dsn)
 
 	var out bytes.Buffer
-	if code := reportStoreIDs(dsn, &out); code != 0 {
-		t.Fatalf("reportStoreIDs exit code = %d, want 0\n%s", code, out.String())
+	if code := reportStoreIDs(dsn, &out); code != storeCheckPending {
+		t.Fatalf("reportStoreIDs exit code = %d, want %d (a column to add is work pending)\n%s",
+			code, storeCheckPending, out.String())
 	}
 	got := out.String()
 	for _, want := range []string{
@@ -440,10 +470,11 @@ func TestStoreCheckNamesAMissingColumnAndChangesNothing(t *testing.T) {
 	}
 
 	// A reading that cannot be taken twice is not a reading. The second run must
-	// say exactly what the first did.
+	// say exactly what the first did — bar the file's mtime line, which is a fact
+	// about the file rather than about the reading and does not change here.
 	var again bytes.Buffer
-	if code := reportStoreIDs(dsn, &again); code != 0 {
-		t.Fatalf("second reportStoreIDs exit code = %d, want 0\n%s", code, again.String())
+	if code := reportStoreIDs(dsn, &again); code != storeCheckPending {
+		t.Fatalf("second reportStoreIDs exit code = %d, want %d\n%s", code, storeCheckPending, again.String())
 	}
 	if again.String() != got {
 		t.Fatalf("the check answered differently the second time; the first run changed the store.\n"+
@@ -510,6 +541,18 @@ func TestStoreCheckRefusesAWorkspaceANewerBuildWrote(t *testing.T) {
 	if !strings.Contains(got, "newer than this build understands") {
 		t.Fatalf("the refusal must say why; got:\n%s", got)
 	}
+	// And it must say what the boot ACTUALLY does. "Refuse to start" and "up,
+	// answering 503s on every route but /healthz" are different incidents with
+	// different first moves, and this refusal is the second one
+	// (cmd/waiveo-feeder/maintenance.go routes both InspectSchema errors there).
+	for _, want := range []string{"MAINTENANCE MODE", "503", "DOWNGRADE"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the report does not say what the next boot does (%q absent):\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "refuse to start") || strings.Contains(got, "REFUSE TO START") {
+		t.Fatalf("the report says the feeder will refuse to start, when it will be up and serving 503s:\n%s", got)
+	}
 	for _, mustNotSay := range []string{
 		"will be added when the store is next opened",
 		"no longer declares it",
@@ -527,16 +570,37 @@ func TestStoreCheckRefusesAWorkspaceANewerBuildWrote(t *testing.T) {
 // whatever path an operator types, and a typo — or a box before its first boot —
 // must not be answered by CREATING the store and then reporting that the store
 // it just made is in good order.
+//
+// # And it must not be answered with a PASS either
+//
+// This exited 0 with "every column this build declares is present." as its first
+// line, and that pairing is the most dangerous output the tool had. The
+// documented pre-deploy invocation carried no path at all, the systemd unit sets
+// no WAIVEO_FEEDER_STORE, and the default is relative to the cwd — so run from
+// anywhere but /opt/waiveo-next (i.e. from the directory an ssh session lands in)
+// the happy-path command printed a positive schema assertion about a file it had
+// never opened, and exited 0 at the exact moment of a deploy decision.
+//
+// A check that looked at nothing is not a check that found nothing wrong. So the
+// affirmative sentence is gone, and the code is 1: "I could not tell you." A box
+// genuinely before its first boot is the one case where that reads as a false
+// alarm, and it is the right trade — the operator of a box that has never run
+// knows it, while the operator holding a mistyped path does not.
 func TestStoreCheckOnAPathWithNoStoreCreatesNothing(t *testing.T) {
 	dir := t.TempDir()
 	dsn := filepath.Join(dir, "not-created-yet.db")
 
 	var out bytes.Buffer
-	if code := reportStoreIDs(dsn, &out); code != 0 {
-		t.Fatalf("reportStoreIDs exit code = %d, want 0\n%s", code, out.String())
+	if code := reportStoreIDs(dsn, &out); code != storeCheckIncomplete {
+		t.Fatalf("reportStoreIDs exit code = %d, want %d — a path holding no store is a question this check "+
+			"could not answer, and a deploy gate must not read it as a pass\n%s", code, storeCheckIncomplete, out.String())
 	}
-	if !strings.Contains(out.String(), "there is no store at") {
-		t.Fatalf("the check must say the path is empty; got:\n%s", out.String())
+	got := out.String()
+	if !strings.Contains(got, "there is NO STORE at") {
+		t.Fatalf("the check must say the path is empty; got:\n%s", got)
+	}
+	if strings.Contains(got, "every column this build declares is present") {
+		t.Fatalf("the check asserted a healthy schema about a file that does not exist:\n%s", got)
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -632,8 +696,9 @@ func TestStoreCheckNamesThePendingTableAndTheSeedItEnables(t *testing.T) {
 	before := storeFingerprint(t, dsn)
 
 	var out bytes.Buffer
-	if code := reportStoreIDs(dsn, &out); code != 0 {
-		t.Fatalf("reportStoreIDs exit code = %d, want 0\n%s", code, out.String())
+	if code := reportStoreIDs(dsn, &out); code != storeCheckPending {
+		t.Fatalf("reportStoreIDs exit code = %d, want %d (a pending table and an irreversible seed are work pending)\n%s",
+			code, storeCheckPending, out.String())
 	}
 	got := out.String()
 	for _, want := range []string{
@@ -721,14 +786,18 @@ func TestStoreCheckNamesThePendingTableAndTheSeedItEnables(t *testing.T) {
 	// And the ledger listing the boot log's truncation referral points at is real:
 	// `-store-check` run AFTER the seed enumerates the rows and their origins.
 	var post bytes.Buffer
-	if code := reportStoreIDs(dsn, &post); code != 0 {
-		t.Fatalf("post-boot reportStoreIDs exit code = %d, want 0\n%s", code, post.String())
+	if code := reportStoreIDs(dsn, &post); code != storeCheckPending {
+		// Still 2 after a successful boot, and correctly so: the refused value is
+		// STILL on the file and that device still has no age, which is a state a
+		// human resolves (a report on a working clock, or a retire) and not one the
+		// next boot clears.
+		t.Fatalf("post-boot reportStoreIDs exit code = %d, want %d\n%s", code, storeCheckPending, post.String())
 	}
 	postOut := post.String()
 	for _, want := range []string{
 		"device first-seen ledger: 1 row(s)",
 		rescuableID + "  first_seen=1787098315675  origin=" + store.FirstSeenAdopted,
-		"1 of those 1 value(s) are NOT instants this deployment observed",
+		"1 of those 1 listed value(s) are NOT instants this deployment observed",
 		// The refusal keeps being named, forever, because the value is still on
 		// the file and the device still has no age.
 		refusedID + "  first_seen=1000000",

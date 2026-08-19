@@ -101,6 +101,15 @@ type OrgRootHeal struct {
 	// and the repair refused to invent it — carrying the reason, in operator
 	// language, because this is the case a human has to resolve.
 	Declined string
+
+	// PresentID is the id of the org node the store ALREADY has, and it is the
+	// conforming answer stated rather than implied. A zero value used to mean
+	// three different things at once — the root is there, or the store has no
+	// scope nodes and is still awaiting its seed, or the read found nothing to
+	// say — so `-store-check`'s org-root section printed NOTHING on a healthy
+	// store, which is the one rule the rest of that report keeps ("nothing to
+	// report" and "the check did not look" must not read the same).
+	PresentID string
 }
 
 // orgRootPlan is the diagnosis: an empty orgID means "do nothing", with declined
@@ -111,6 +120,9 @@ type orgRootPlan struct {
 	referencedID string
 	children     []string
 	declined     string
+	// presentID is the org node the store already has — "nothing to do" with the
+	// reason, so a reader can distinguish it from "nothing to say".
+	presentID string
 }
 
 // diagnoseOrgRoot decides, from the scope-node rows alone, whether the store is
@@ -138,7 +150,7 @@ func diagnoseOrgRoot(nodes []datamodel.ScopeNode) orgRootPlan {
 			// dangling parent somewhere below — is not this repair's business: a
 			// second org row is DAT-002's multiple-org fault, one fault traded
 			// for another. The migration reports the dangle; a human resolves it.
-			return orgRootPlan{}
+			return orgRootPlan{presentID: n.ID}
 		}
 		stored[n.ID] = n
 	}
@@ -329,7 +341,7 @@ func (s *Store) PlanOrgRootHeal(ctx context.Context) (OrgRootHeal, error) {
 // disagree about.
 func (p orgRootPlan) report(healed bool) OrgRootHeal {
 	if p.orgID == "" {
-		return OrgRootHeal{Declined: p.declined}
+		return OrgRootHeal{Declined: p.declined, PresentID: p.presentID}
 	}
 	return OrgRootHeal{
 		Needed: true, Healed: healed,

@@ -16,6 +16,15 @@ Group=waiveo
 # .gitignore). Keep this path stable across restarts or the feeder re-keys.
 WorkingDirectory=/opt/waiveo-next
 ExecStart=/opt/waiveo-next/bin/waiveo-feeder
+# The store, ABSOLUTE and stated, rather than inherited from WorkingDirectory.
+# It resolves to the same file either way; what changes is that the store's
+# identity stops being a function of the process's working directory. That
+# mattered: an operator running `waiveo-feeder -store-check` by hand from any
+# other directory used to be answered about a DIFFERENT file, and told nothing
+# about it (#195). `-store-check` now takes the path as an argument and prints
+# the absolute path it read, and this line is the other half — the unit and the
+# hand-run command name the same store.
+Environment=WAIVEO_FEEDER_STORE=/opt/waiveo-next/.dev/feeder-store.db
 Environment=WAIVEO_FEEDER_LISTEN=0.0.0.0:7420
 Environment=WAIVEO_FEEDER_CONTENT_URL=https://192.0.2.10:7420
 # Pack-provenance trust root. Deliberately OUTSIDE ReadWritePaths: with

@@ -121,6 +121,34 @@ type DanglingParent struct {
 type IDMigration struct {
 	Rewrites []IDRewrite
 	Dangling []DanglingParent
+	// Unreadable names the resource tables the sweep could NOT read, so a plan
+	// taken over a store missing one of them is legible as the partial reading it
+	// is rather than as an authoritative "nothing else to rewrite".
+	//
+	// It is always empty on the write path: MigrateRowIDs refuses to act on a
+	// partial reading (applySchemaDDL has run by then, so a table it cannot read
+	// is a real fault and not a pending create). The read-only planner carries it
+	// because `-store-check`'s whole job is to say what it could and could not
+	// answer — the sweep used to abort at table one of thirteen and report the
+	// result as the complete list of what the boot would rewrite.
+	Unreadable []UnreadableTable
+}
+
+// UnreadableTable names one resource table the row-id sweep could not read, and
+// the error that stopped it.
+//
+// Absent separates the two cases, because they send an operator to opposite
+// places. A table this build declares and the FILE HAS NOT GOT holds no ids to
+// rewrite and is created by the very next open (applySchemaDDL runs before
+// MigrateRowIDs), so it is not a fault at all — the report used to render it as
+// "CANNOT be canonicalized … the feeder will refuse to start", about a store the
+// boot opens cleanly, four lines under its own line saying the boot would create
+// that table. A table that is THERE and cannot be read is a genuine gap in the
+// sweep's answer.
+type UnreadableTable struct {
+	Kind   Kind
+	Absent bool
+	Reason string
 }
 
 // BlockedID names one identifier the migration refused to rewrite, and why.
@@ -188,14 +216,33 @@ func (e *IDMigrationBlockedError) Error() string {
 // transaction. Rewriting a reference is legitimate exactly when the row moves
 // with it, which assertPlanRenamesStoredRows holds every plan to before it is
 // either reported or applied.
-func planIDRewrites(ctx context.Context, q queryer) ([]IDRewrite, []BlockedID, []DanglingParent, error) {
+//
+// # A table it cannot read is recorded, not fatal
+//
+// The sweep walks thirteen tables and used to return the first read error,
+// discarding every table it had already read and every table it had not reached.
+// That is a reporting defect with teeth: run against a store missing one
+// declared table — a shape the boot creates and proceeds from — `-store-check`
+// stopped at table one of thirteen and printed "CANNOT be canonicalized", so a
+// genuinely non-canonical id in table nine was never named. The caller was told
+// the boot would refuse, about a store the boot opens fine.
+//
+// So a per-table failure is recorded in `unreadable` and the sweep continues.
+// The two callers then differ, deliberately: MigrateRowIDs refuses to act on a
+// partial reading (by the time it runs, applySchemaDDL has created every
+// declared table, so a table it cannot read is a fault and not a pending
+// create), while PlanRowIDMigration carries the list out so the report can name
+// the gap AND everything it did manage to read.
+func planIDRewrites(ctx context.Context, q queryer) ([]IDRewrite, []BlockedID, []DanglingParent, []UnreadableTable, error) {
 	var plan []IDRewrite
 	var blocked []BlockedID
+	var unreadable []UnreadableTable
 
 	for _, kind := range allKinds {
 		ids, err := readIDs(ctx, q, string(kind))
 		if err != nil {
-			return nil, nil, nil, err
+			unreadable = append(unreadable, classifyUnreadable(ctx, q, kind, err))
+			continue
 		}
 		// Every id the table already holds, plus every id a rewrite in this
 		// table is about to claim: a fold landing on either would collide on
@@ -222,12 +269,23 @@ func planIDRewrites(ctx context.Context, q queryer) ([]IDRewrite, []BlockedID, [
 		}
 	}
 
+	// The parent sweep is recorded on the same terms as a table read: a store
+	// whose scope_nodes table is absent (or unreadable) must not turn the whole
+	// plan into a refusal, because the boot creates that table and carries on.
 	dangling, err := danglingScopeNodeParents(ctx, q)
 	if err != nil {
-		return nil, nil, nil, err
+		// Recorded ONCE per table: the scope-node sweep and the id sweep fail
+		// together on a store missing that table, and two identical lines in the
+		// report read as two separate faults.
+		if !namesTable(unreadable, KindScopeNode) {
+			unreadable = append(unreadable, classifyUnreadable(ctx, q, KindScopeNode, err))
+		}
+		dangling = nil
 	}
+	// NOT downgraded to `unreadable`: this is the reference invariant, and a plan
+	// that fails it must not be reported OR applied at all (see below).
 	if err := assertPlanRenamesStoredRows(ctx, q, plan); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, unreadable, err
 	}
 
 	sort.Slice(plan, func(i, j int) bool {
@@ -242,7 +300,51 @@ func planIDRewrites(ctx context.Context, q queryer) ([]IDRewrite, []BlockedID, [
 		}
 		return blocked[i].ID < blocked[j].ID
 	})
-	return plan, blocked, dangling, nil
+	return plan, blocked, dangling, unreadable, nil
+}
+
+// namesTable reports whether a table has already been recorded as unreadable.
+func namesTable(unreadable []UnreadableTable, kind Kind) bool {
+	for _, u := range unreadable {
+		if u.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// classifyUnreadable asks the one follow-up question that decides what a failed
+// table read MEANS: is the table missing, or is it there and unreadable? It asks
+// the file rather than parsing the driver's message, so a wording change in
+// modernc.org/sqlite cannot silently reclassify a fault as a pending create.
+//
+// A failure of the follow-up itself is recorded as unreadable-not-absent, which
+// is the conservative direction: it produces a gap in the report rather than a
+// reassuring "the boot creates it".
+func classifyUnreadable(ctx context.Context, q queryer, kind Kind, cause error) UnreadableTable {
+	switch exists, err := tableExists(ctx, q, string(kind)); {
+	case err == nil && !exists:
+		return UnreadableTable{
+			Kind:   kind,
+			Absent: true,
+			Reason: "this build declares the table and the file has not got it",
+		}
+	default:
+		return UnreadableTable{Kind: kind, Reason: cause.Error()}
+	}
+}
+
+// unreadableTablesError renders a partial reading as the refusal the WRITE path
+// owes its caller. Nothing that migrates may act on a sweep that skipped a
+// table: the plan it produced is "every non-canonical id in the tables I could
+// read", which is not the same statement at all.
+func unreadableTablesError(unreadable []UnreadableTable) error {
+	parts := make([]string, 0, len(unreadable))
+	for _, u := range unreadable {
+		parts = append(parts, fmt.Sprintf("%s (%s)", u.Kind, u.Reason))
+	}
+	return fmt.Errorf("store: cannot canonicalize row ids: %d declared table(s) could not be read: %s",
+		len(unreadable), strings.Join(parts, "; "))
 }
 
 // assertPlanRenamesStoredRows is THE REFERENCE INVARIANT, checked in the one
@@ -565,9 +667,12 @@ func verifyAfterIDRewrite(ctx context.Context, tx *sql.Tx, plan []IDRewrite, pri
 		cur.Close()
 	}
 
-	residual, blocked, _, err := planIDRewrites(ctx, tx)
+	residual, blocked, _, unreadable, err := planIDRewrites(ctx, tx)
 	if err != nil {
 		return err
+	}
+	if len(unreadable) > 0 {
+		return unreadableTablesError(unreadable)
 	}
 	if len(residual) > 0 || len(blocked) > 0 {
 		return fmt.Errorf("store: canonicalizing row ids left %d id(s) still non-canonical and %d blocked", len(residual), len(blocked))
@@ -584,19 +689,32 @@ func verifyAfterIDRewrite(ctx context.Context, tx *sql.Tx, plan []IDRewrite, pri
 //
 // It also reports the parent references that name no row (Dangling), which the
 // migration will NOT touch — a store can be perfectly canonical and still be
-// missing a node the rest of it points at.
+// missing a node the rest of it points at — and the tables it could not read
+// (Unreadable), so a partial reading cannot be mistaken for a complete one.
+//
+// # The plan comes back WITH the refusal
+//
+// An *IDMigrationBlockedError is returned alongside a populated IDMigration, not
+// instead of one. It used to be instead, and that cost the report everything a
+// blocked id was not: one unfoldable id discarded every OTHER pending rewrite
+// and every dangling parent already computed, and the caller — which returns as
+// soon as this errors — never ran the org-root, ledger or event-log sections
+// either. An operator fixed the one named id, restarted, and met everything that
+// had been hidden behind it. Callers that ACT on the plan must still check the
+// error first; callers that REPORT can now print both.
 func (s *Store) PlanRowIDMigration(ctx context.Context) (IDMigration, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	plan, blocked, dangling, err := planIDRewrites(ctx, s.db)
+	plan, blocked, dangling, unreadable, err := planIDRewrites(ctx, s.db)
 	if err != nil {
 		return IDMigration{}, err
 	}
+	m := IDMigration{Rewrites: plan, Dangling: dangling, Unreadable: unreadable}
 	if len(blocked) > 0 {
-		return IDMigration{}, &IDMigrationBlockedError{Blocked: blocked}
+		return m, &IDMigrationBlockedError{Blocked: blocked}
 	}
-	return IDMigration{Rewrites: plan, Dangling: dangling}, nil
+	return m, nil
 }
 
 // MigrateRowIDs rewrites every stored identifier that violates DAT-005a, along
@@ -619,16 +737,26 @@ func (s *Store) MigrateRowIDs(ctx context.Context) (IDMigration, error) {
 	// Plan under the read lock first, purely so a conforming store never even
 	// takes the write lock. The write path re-plans under its own lock, so this
 	// is an optimization and not the decision.
-	if m, err := s.PlanRowIDMigration(ctx); err != nil || len(m.Rewrites) == 0 {
+	// A partial reading is a refusal here, not a plan: PlanRowIDMigration reports
+	// the tables it could not read so a DRY RUN can describe them, and acting on
+	// "every non-canonical id in the tables I could read" is exactly the thing
+	// that list exists to stop.
+	if m, err := s.PlanRowIDMigration(ctx); err != nil || len(m.Rewrites) == 0 || len(m.Unreadable) > 0 {
+		if err == nil && len(m.Unreadable) > 0 {
+			return IDMigration{}, unreadableTablesError(m.Unreadable)
+		}
 		return m, err
 	}
 
 	var applied []IDRewrite
 	var dangling []DanglingParent
 	if err := s.runWriteTx(ctx, func(tx *sql.Tx) error {
-		plan, blocked, dangles, err := planIDRewrites(ctx, tx)
+		plan, blocked, dangles, unreadable, err := planIDRewrites(ctx, tx)
 		if err != nil {
 			return err
+		}
+		if len(unreadable) > 0 {
+			return unreadableTablesError(unreadable)
 		}
 		if len(blocked) > 0 {
 			return &IDMigrationBlockedError{Blocked: blocked}

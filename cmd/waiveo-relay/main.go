@@ -603,12 +603,40 @@ const (
 	enrollRetryInterval = 250 * time.Millisecond
 )
 
+// refuseRelayOperands reports (and refuses) an argument this binary cannot have
+// meant. It is cmd/waiveo-feeder's refuseStrayOperands with the relay's own flag
+// in the hint; both exist because a flag placed AFTER an operand is silently
+// unparsed, and in both binaries the silent outcome is "run the thing the
+// operator was trying not to run".
+func refuseRelayOperands(args []string, out io.Writer) bool {
+	if len(args) == 0 {
+		return false
+	}
+	fmt.Fprintf(out, "waiveo-relay: unexpected argument %q — this binary takes flags and no operands.\n", args[0])
+	for _, a := range args {
+		if a == "-version" || a == "--version" {
+			fmt.Fprintf(out, "    `-version` appears AFTER an operand. Go's flag parser stops at the first operand, so the\n"+
+				"    flag was never seen and this would have STARTED THE RELAY. Put the flag first: `waiveo-relay -version`.\n")
+			break
+		}
+	}
+	return true
+}
+
 func main() {
 	versionFlag := flag.Bool("version", false, "print the relay's channel-index/1 build identity (version/channel) and exit")
 	flag.Parse()
 	if *versionFlag {
 		printVersion(os.Stdout, buildVersion, buildChannel)
 		return
+	}
+	// The same shape the feeder refuses, for the same reason and at lower stakes:
+	// Go's flag parser stops at the first non-flag argument, so `waiveo-relay
+	// <operand> -version` never sets the flag and would START THE RELAY instead of
+	// printing a version. This binary takes no operands at all, so any leftover is
+	// a mistyped invocation and must fail loudly rather than run something else.
+	if refuseRelayOperands(flag.Args(), os.Stderr) {
+		os.Exit(1)
 	}
 	log.Printf("waiveo-relay starting: version=%s channel=%s", buildVersion, buildChannel)
 

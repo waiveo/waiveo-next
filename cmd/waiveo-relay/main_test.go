@@ -1900,3 +1900,32 @@ func TestBootPairingCodesFormNoneWithoutADialableAddress(t *testing.T) {
 			"server has nothing connecting it to this box's configuration.\nlog:\n%s", out)
 	}
 }
+
+// TestRelayRefusesAnOperandBeforeItsFlag is cmd/waiveo-feeder's word-order guard
+// in the binary that had the same shape at lower stakes.
+//
+// Go's flag parser stops at the first non-flag argument, so `waiveo-relay
+// <operand> -version` never sets the flag: instead of printing a version the
+// process STARTS THE RELAY — enrolling, opening the identity store and dialling
+// the feeder. A binary that takes no operands must say so rather than do
+// something else.
+func TestRelayRefusesAnOperandBeforeItsFlag(t *testing.T) {
+	var out bytes.Buffer
+	if refuseRelayOperands(nil, &out) {
+		t.Fatal("an ordinary start with no operands was refused")
+	}
+	if out.Len() != 0 {
+		t.Fatalf("a clean start printed %q", out.String())
+	}
+
+	out.Reset()
+	if !refuseRelayOperands([]string{"/etc/waiveo/relay.json", "-version"}, &out) {
+		t.Fatal("`waiveo-relay <operand> -version` was allowed to proceed — that starts the relay instead of printing a version")
+	}
+	got := out.String()
+	for _, want := range []string{"/etc/waiveo/relay.json", "STARTED THE RELAY", "waiveo-relay -version"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the refusal does not explain the slip (%q absent):\n%s", want, got)
+		}
+	}
+}

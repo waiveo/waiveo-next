@@ -23,6 +23,7 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -385,23 +386,182 @@ func envOr(env func(string) string, key, def string) string {
 	return def
 }
 
+// Exit codes for -store-check. They are the contract a deploy gate reads, and
+// they are three because the two the check used to have could not express the
+// answer that matters most.
+//
+// The old pair meant "one of three specific reads threw" (1) and "everything
+// else" (0) — and "everything else" included the wrong file entirely, a path
+// holding no store, an unreadable first-seen ledger, an unopenable event log, an
+// owner API that will 404 forever, and schema drift needing a human. A script
+// gating a deploy on that 0 was told "proceed" by a check that had not managed
+// to look. Meanwhile 1 fired on two shapes the boot handles cleanly.
+//
+// So the three say what an operator's next MOVE is, which is the only thing an
+// exit code is good for (the same reasoning, in the same words, as the operator
+// CLI's exitOK/exitFailure/exitDegraded in cmd/waiveo/main.go):
+//
+//   - 0 NOTHING TO DO. Every section ran, every section answered, and the next
+//     boot changes nothing in this store. Nothing else may return 0.
+//   - 2 WORK PENDING, AND IT IS LISTED. Every section ran and answered; the boot
+//     will change listed things (tables, columns, row ids, the ledger seed) or
+//     something needs a human (drift, a declined org root, refused first-seen
+//     values). Read the report, then deploy.
+//   - 1 I COULD NOT TELL YOU. Any section that failed to produce its answer —
+//     including "there is no store at that path" and an invocation this binary
+//     will not guess at — plus the refusals where the next boot will not serve.
+//
+// The report's LAST line is a one-line verdict naming which of the three it is
+// and why, so the code and the prose cannot drift apart.
+const (
+	storeCheckClean      = 0
+	storeCheckIncomplete = 1
+	storeCheckPending    = 2
+)
+
+// storeCheckReport is the report being built: what it has printed, what it found
+// pending, and — the part that used to be missing — what it could NOT answer.
+//
+// Every section reports through this rather than returning early, because the
+// early return was the defect: one blocked column suppressed the row-id,
+// org-root, ledger and event-log sections entirely, and one unfoldable row id
+// suppressed the three below it. A section that cannot answer must degrade to a
+// named gap, never to silence and never to a suppressed report.
+type storeCheckReport struct {
+	out     io.Writer
+	pending []string
+	gaps    []string
+}
+
+func (r *storeCheckReport) printf(format string, a ...any) {
+	fmt.Fprintf(r.out, format, a...)
+}
+
+// pendingWork records something the next boot will change, or that a human has
+// to decide. It does not print: the section prints its own detail, in its own
+// words, and this is the one-line summary the verdict is built from.
+func (r *storeCheckReport) pendingWork(what string) { r.pending = append(r.pending, what) }
+
+// gap records a question this check could not answer, or a refusal that leaves
+// the box not serving. Either way the operator must not read the exit code as a
+// pass.
+func (r *storeCheckReport) gap(what string) { r.gaps = append(r.gaps, what) }
+
+// verdict prints the last line of the report and returns the process exit code.
+func (r *storeCheckReport) verdict() int {
+	switch {
+	case len(r.gaps) > 0:
+		r.printf("VERDICT: INCOMPLETE (exit %d) — %d question(s) this check could not answer: %s\n",
+			storeCheckIncomplete, len(r.gaps), strings.Join(r.gaps, "; "))
+		r.printf("    do not read this as a pass. A report that could not be produced is not a clean report.\n")
+		return storeCheckIncomplete
+	case len(r.pending) > 0:
+		r.printf("VERDICT: WORK PENDING (exit %d) — %d item(s) the next boot changes or a human decides: %s\n",
+			storeCheckPending, len(r.pending), strings.Join(r.pending, "; "))
+		r.printf("    every section ran and answered; nothing in the store has been changed by this check.\n")
+		return storeCheckPending
+	default:
+		r.printf("VERDICT: NOTHING TO DO (exit %d) — every section ran, every section answered, and the next boot changes nothing in this store.\n",
+			storeCheckClean)
+		return storeCheckClean
+	}
+}
+
+// resolveStoreCheckPath decides WHICH store -store-check reports on, and returns
+// it as an absolute path.
+//
+// Three sources, in order, and the first one is new (#195): the path given on the
+// command line, else $WAIVEO_FEEDER_STORE, else the cwd-relative default. The
+// flag used to be a bare flag.Bool with no operand handling at all — `flag.Args()`
+// appeared nowhere in this binary — so `waiveo-feeder -store-check /opt/waiveo-next/.dev/feeder-store.db`
+// SILENTLY DISCARDED the path and reported on whatever the cwd resolved, while
+// printing that other store's RELATIVE path in a form easy to misread as the one
+// the operator typed. Both directions of that mistake have been walked into: a
+// broken-looking report about an abandoned scratch store, and — the dangerous
+// direction, and the DOCUMENTED invocation — a clean bill of health about a file
+// that was never opened.
+//
+// An extra operand is REFUSED rather than ignored, because silently discarding an
+// argument is the whole defect: an operator who typed two paths does not know
+// which one this answered about.
+//
+// The result runs through absHostFilePath for the reason that function's own
+// doc gives about the pack-configuration documents, which applies with more force
+// here: this is the one config value the whole subcommand is about, and it was
+// the one value that argument had never been applied to.
+func resolveStoreCheckPath(args []string, envPath string) (string, error) {
+	switch len(args) {
+	case 0:
+		return absHostFilePath(envPath), nil
+	case 1:
+		if strings.TrimSpace(args[0]) == "" {
+			return "", errors.New("the store path given is empty; pass a path, or pass none to use $WAIVEO_FEEDER_STORE or " + defaultStorePath)
+		}
+		return absHostFilePath(args[0]), nil
+	default:
+		return "", fmt.Errorf("-store-check reports on ONE store and %d were given (%s); "+
+			"it will not guess which, because a check that answers about a store you did not name is worse than no check",
+			len(args), strings.Join(args, " "))
+	}
+}
+
+// refuseStrayOperands stops an unconsumed operand from reaching the BOOT.
+//
+// Go's flag parser stops at the first non-flag argument, so `waiveo-feeder
+// /opt/waiveo-next/.dev/feeder-store.db -store-check` never sets the flag at all:
+// the word-order slip an operator naturally makes after being told the check
+// takes a path fell straight through into the boot, which opens the store for
+// real, migrates its columns, stamps the epoch, seeds the first-seen ledger
+// irreversibly and binds the port. The one command designed never to write
+// became the one that writes the most.
+//
+// So any leftover operand is a refusal. It is deliberately not clever about
+// which one it is: this process takes its configuration from the environment and
+// (for -store-check) one optional path, so there is no operand a boot can
+// legitimately receive.
+func refuseStrayOperands(args []string, out io.Writer) bool {
+	if len(args) == 0 {
+		return false
+	}
+	fmt.Fprintf(out, "waiveo-feeder: unexpected argument %q — this binary takes flags and no operands.\n", args[0])
+	for _, a := range args {
+		if a == "-store-check" || a == "--store-check" {
+			fmt.Fprintf(out, "    `-store-check` appears AFTER a path. Go's flag parser stops at the first operand, so the\n"+
+				"    flag was never seen and this would have BOOTED THE FEEDER against %s — migrating the store you\n"+
+				"    meant to inspect. Put the flag first: `waiveo-feeder -store-check <store-path>`.\n", args[0])
+			break
+		}
+	}
+	return true
+}
+
 // reportStoreIDs backs -store-check: it reports every row id the next boot would
-// rewrite, and every column that boot would add, and writes NOTHING. It is what
-// an operator runs against a box BEFORE restarting it onto a new build, so the
-// restart holds no surprises — an empty report means the store is already
-// conforming, a listed one is exactly what the boot will change, and a refusal
-// means the boot would decline to start and the store needs a look first.
+// rewrite, every column and table that boot would add, what it would do about a
+// missing org root, what it would seed into the device first-seen ledger, and
+// what the durable event log holds — and it changes NOTHING in the store. It is
+// what an operator runs against a box BEFORE restarting it onto a new build, so
+// the restart holds no surprises.
 //
-// "Writes nothing" is enforced by the handle, not by intention: the store is
-// opened with store.OpenReadOnly, which cannot migrate a column, stamp the
-// schema epoch, chmod the file or leave a sidecar. That is a correction, not a
-// flourish. This check used to open the store for real, so it APPLIED the schema
-// change it had just printed in the future tense: run against the pre-deploy
-// backup — the obvious thing to compare a live store against, and often the only
-// rollback copy — it quietly converted that backup to this build's schema, and a
-// second run reported the drift had never been there.
+// "Changes nothing in the store" is enforced by the handles, not by intention:
+// both halves read through `mode=ro` (store.InspectSchema opens its own, then
+// store.OpenReadOnly), which cannot migrate a column, stamp the schema epoch or
+// chmod the file. The one thing they DO write is BESIDE the store, not to it:
+// reading a WAL database needs its shared-memory index, so a store whose
+// sidecars are absent gains a `<db>-shm` (32 KiB) and a zero-length `<db>-wal`,
+// left in place on close — OpenReadOnly's caveat says why removing them is the
+// dangerous half. The database file itself — bytes, mode, inode — is untouched,
+// which is the property this check exists to hold. It used to open the store for
+// real, so it APPLIED the schema change it had just printed in the future tense:
+// run against the pre-deploy backup — the obvious thing to compare a live store
+// against, and often the only rollback copy — it quietly converted that backup to
+// this build's schema, and a second run reported the drift had never been there.
 //
-// The SHAPE report comes first because a build can declare a column the file
+// The FIRST line names the absolute path it read and the build that read it.
+// Both were missing and both were load-bearing: the report printed a relative
+// path an agent misread as the box's store, and every sentence in it is about
+// "this build's schema" while the build's identity went to stderr.
+//
+// The SHAPE report comes next because a build can declare a column the file
 // does not have — `CREATE TABLE IF NOT EXISTS` cannot add one to a table that
 // already exists — and until the additive migration landed, the only symptom of
 // that was a runtime SQL error swallowed once per write (issue #194).
@@ -411,88 +571,370 @@ func envOr(env func(string) string, key, def string) string {
 // scope_node follows a renamed scope node, so an operator deciding whether to
 // restart should be able to see how much audit history is in scope for that.
 //
-// The return value is the process exit code: 0 when the store is fine or merely
-// needs a rewrite the boot can perform, 1 when it cannot be opened or the
-// rewrite would be refused.
+// The return value is the process exit code; see the storeCheck* constants for
+// what each one commits this check to.
 func reportStoreIDs(storePath string, out io.Writer) int {
+	// Resolved here as well as at the call site, so a caller that passes a
+	// relative path still gets an absolute one in the report rather than the
+	// cwd-dependent string that started #195.
+	path := absHostFilePath(storePath)
+	r := &storeCheckReport{out: out}
+	r.printf("waiveo-feeder %s (channel %s) reading %s\n", buildVersion, buildChannel, path)
+	runStoreCheckSections(r, path)
+	// The verdict is printed LAST, by the one caller that knows every section has
+	// had its say. A section that ends the report early ends it here, not by
+	// printing a code of its own.
+	return r.verdict()
+}
+
+// runStoreCheckSections is reportStoreIDs' body: it prints, records pending work
+// and records gaps, and it decides nothing about the exit code.
+func runStoreCheckSections(r *storeCheckReport, path string) {
+
+	// What is actually AT that path, before anything interprets it as a store.
+	// The check used to answer "every column this build declares is present" for
+	// a path that held nothing at all — a positive schema assertion about a file
+	// it never opened, printed as the report's first line, which is precisely how
+	// a mistyped path reads as a healthy box.
+	switch info, err := os.Stat(path); {
+	case errors.Is(err, fs.ErrNotExist):
+		r.printf("there is NO STORE at %s: nothing exists at that path.\n", path)
+		r.printf("nothing was inspected. If this is a box before its first boot, that boot creates a store carrying every\n" +
+			"column this build declares; if it is not, the path is wrong — and a check that looked at nothing must not\n" +
+			"be read as a check that found nothing wrong.\n")
+		r.gap("there is no store at " + path)
+		return
+	case err != nil:
+		r.printf("%s cannot be examined: %v\n", path, err)
+		r.gap("the path could not be stat'd")
+		return
+	case info.IsDir():
+		r.printf("%s is a DIRECTORY, not a store file. Name the database file itself.\n", path)
+		r.gap("the path is a directory")
+		return
+	case info.Size() == 0:
+		r.printf("%s is ZERO BYTES: it holds no tables, no columns and no rows.\n", path)
+		r.printf("a store this build wrote is never empty, so this is a truncated restore, an interrupted copy, or a file\n" +
+			"a shell redirect created. The next boot would treat it as a fresh install and create everything in it.\n")
+		r.gap("the store file is empty")
+		return
+	default:
+		r.printf("the file is %d byte(s), last modified %s.\n", info.Size(), info.ModTime().UTC().Format(time.RFC3339))
+		// Opened HERE, before the first section reads anything, so the END of the
+		// report can say whether the store moved while it was being described.
+		// Every section is its own unsnapshotted query set — the schema pass opens
+		// and closes its own handle, the rest run on a second one — and the flag's
+		// help invites running this against a live store. A report of a moving file
+		// is legitimate; one that cannot tell the reader it might be is not.
+		//
+		// The deferred call runs AFTER `defer st.Close()` below (defers unwind in
+		// reverse), so the note is the last thing the sections print, immediately
+		// before the verdict.
+		defer noteConcurrentWrites(r, path, openConcurrencyWitness(r, path))
+	}
+
+	// The seam a test writes through to make the store move MID-report, which is
+	// otherwise only reachable by racing a goroutine against the report and
+	// hoping. Nil in every build; nothing sets it outside a test.
+	if reportStoreIDsMidRunHookForTest != nil {
+		reportStoreIDsMidRunHookForTest()
+	}
+
+	if !reportSchema(r, path) {
+		// The epoch gate refused, and every read below goes through the same gate.
+		// Running them would restate one refusal as several, which is how a report
+		// gets read as several faults.
+		return
+	}
 	// The HOST clock deliberately, and the only place in this binary that is the
 	// right answer. This subcommand stamps no row — it plans and reports over a
 	// read-only handle — so there is no stamp for a floor to keep consistent with
 	// anything, and reaching for the floor would mean creating the auth-state
 	// directory it lives in as a side effect of a check that must not write.
-	if schema, err := store.InspectSchema(storePath); err != nil {
-		fmt.Fprintf(out, "%s CANNOT be brought up to this build's schema: %v\n", storePath, err)
-		fmt.Fprintf(out, "the feeder will refuse to start against this store; nothing has been changed.\n")
-		return 1
-	} else {
-		// TABLES first, then columns. A whole table this build declares and the
-		// file has not got is the larger difference of the two, and it is the one
-		// this check used to be structurally unable to state: the column planner
-		// passes over an absent table by design, so run against box .12 it named
-		// the pending relay_last_seen COLUMN and never the pending
-		// device_first_seen TABLE that arrived in the same build.
-		if len(schema.Created) > 0 {
-			fmt.Fprintf(out, "%s: %d table(s) this build declares are missing and will be created when the store is next opened:\n",
-				storePath, len(schema.Created))
-			for _, t := range schema.Created {
-				fmt.Fprintf(out, "  %s\n", t)
-			}
-			fmt.Fprintf(out, "creating a table cannot lose a row: it did not exist to hold one.\n")
-			fmt.Fprintf(out, "this check has NOT created them: it reads the store read-only, and the next boot is what applies them.\n")
-		}
-		if len(schema.Added) == 0 {
-			fmt.Fprintf(out, "%s: every column this build declares is present.\n", storePath)
-		} else {
-			fmt.Fprintf(out, "%s: %d column(s) are missing and will be added when the store is next opened:\n",
-				storePath, len(schema.Added))
-			for _, a := range schema.Added {
-				fmt.Fprintf(out, "  %s.%s: %s\n", a.Table, a.Column, a.Definition)
-			}
-			fmt.Fprintf(out, "adding a column cannot lose a row: existing rows take the column's declared default.\n")
-			fmt.Fprintf(out, "this check has NOT added them: it reads the store read-only, and the next boot is what applies them.\n")
-		}
-		for _, d := range schema.Divergent {
-			fmt.Fprintf(out, "schema drift %s.%s: %s\n", d.Table, d.Column, d.Reason)
-		}
-	}
-
-	st, err := store.OpenReadOnly(storePath, store.WallClockMs)
-	if errors.Is(err, store.ErrNoStoreAtPath) {
-		// Not an error: an operator checking a box before its first boot has
-		// typed a path that is about to exist. Saying so is the honest answer —
-		// the old behaviour was to CREATE the store here and then report that the
-		// store it had just made was conforming.
-		fmt.Fprintf(out, "there is no store at %s yet; the first boot will create one carrying every column this build declares.\n", storePath)
-		return 0
-	}
+	st, err := store.OpenReadOnly(path, store.WallClockMs)
 	if err != nil {
-		fmt.Fprintf(out, "cannot open %s: %v\n", storePath, err)
-		return 1
+		// ErrNoStoreAtPath is handled above and cannot arrive here; anything else
+		// means the file is there and this build cannot read it.
+		r.printf("cannot open %s: %v\n", path, err)
+		r.gap("the store could not be opened, so nothing below could be read")
+		return
 	}
 	defer st.Close()
 
-	m, err := st.PlanRowIDMigration(context.Background())
+	reportRowIDs(r, st, path)
+}
+
+// reportStoreIDsMidRunHookForTest runs once per report, after the concurrency
+// witness has been opened and before the first section reads anything.
+//
+// It exists so the torn-read contract can be driven deterministically: the case
+// that matters is a commit landing INSIDE the report's window, and the only other
+// way to produce one is a goroutine racing the report — which on a loaded machine
+// finishes its first commit after the report has already ended, turning the test
+// into one that quietly stops testing whenever CI is busy.
+var reportStoreIDsMidRunHookForTest func()
+
+// openConcurrencyWitness starts watching the store for writes by anything else,
+// for the length of the report. A witness that cannot be opened is a gap, not a
+// silence: without one this report cannot tell the reader whether it is torn,
+// and "I could not tell" is the whole point of the third exit code.
+func openConcurrencyWitness(r *storeCheckReport, path string) *store.ChangeWitness {
+	w, err := store.OpenChangeWitness(path)
 	if err != nil {
-		fmt.Fprintf(out, "%s CANNOT be canonicalized: %v\n", storePath, err)
-		fmt.Fprintf(out, "the feeder will refuse to start against this store; nothing has been changed.\n")
-		return 1
+		r.printf("whether anything else writes to this store WHILE the report is taken cannot be watched: %v\n", err)
+		r.gap("concurrent writes to the store could not be watched, so this report cannot say whether it is torn")
+		return nil
+	}
+	return w
+}
+
+// noteConcurrentWrites says whether the store MOVED while the report was being
+// taken, and closes the witness.
+//
+// Every section of this check is its own unsnapshotted reading — InspectSchema
+// opens and closes a handle of its own, reportRowIDs opens a second, and each
+// section below it is a separate query set with no enclosing transaction — and
+// the flag's help explicitly invites running it against a live store, as the
+// first-photon runbook does. So the report CAN describe several different states
+// of one file, and the reader could not previously tell.
+//
+// # It watches the commits, not the file
+//
+// This compared `os.Stat` of the database file before and after, which is the
+// one file a WAL-mode writer does not touch: measured, a live handle committing
+// 200 rows leaves the `.db` byte-identical at nanosecond mtime resolution while
+// the `-wal` grows, so the note stayed silent through exactly the live-store
+// invocation it exists for and fired only on a checkpoint — the case that does
+// not need it. store.ChangeWitness watches `PRAGMA data_version`, SQLite's own
+// "another connection committed" counter, and keeps the file signal as a second
+// one (see its doc).
+//
+// # It reaches the VERDICT, because otherwise the report contradicts itself
+//
+// This used to print and change nothing else, so "re-take the report before
+// acting on a line that surprises you" landed three lines above "VERDICT:
+// NOTHING TO DO (exit 0) — … the next boot changes nothing in this store". A
+// human was told to distrust the reading and a deploy gate was told to proceed,
+// by the same report.
+//
+// It is recorded as PENDING (exit 2), not as a gap (exit 1). Every section did
+// answer; what a torn reading costs is the promise exit 0 carries — "the next
+// boot changes nothing in this store" was true of a snapshot that no longer
+// exists, and only a human can decide whether that matters here. Exit 2 says
+// exactly that: read the report, then deploy. A gap would be wrong in the other
+// direction, because a store under a running feeder is the DOCUMENTED
+// invocation: it would fail the runbook's own command on every healthy box.
+func noteConcurrentWrites(r *storeCheckReport, path string, w *store.ChangeWitness) {
+	if w == nil {
+		// openConcurrencyWitness has already printed and recorded the gap.
+		return
+	}
+	defer func() { _ = w.Close() }()
+
+	moved, why, err := w.Moved()
+	if err != nil {
+		r.printf("whether anything wrote to this store while the report was taken could not be re-read: %v\n", err)
+		r.gap("whether the store moved under this report could not be established")
+		return
+	}
+	if !moved {
+		return
+	}
+	r.printf("NOTE: %s CHANGED while this report was being taken — %s.\n", path, why)
+	r.printf("    something is writing to this store — most likely the feeder that is still running. Each section above\n" +
+		"    is its own reading, so they may describe different states of the file, and two lines of this report can\n" +
+		"    disagree with each other. Re-take it against a quiescent store before acting on anything in it.\n")
+	r.pendingWork("the store was written to WHILE this report was being taken, so its sections may describe different states of it; a human decides whether to trust it")
+}
+
+// reportSchema is the shape half: the tables and columns the next boot would
+// add, the drift it cannot fix, and — when this build cannot converge the file
+// at all — what the boot actually does about that.
+//
+// It never returns a code, and it ends the report for exactly ONE refusal. A
+// schema refusal used to end it for all of them, which is how a store headed for
+// maintenance mode became the shape this check said least about: the row-id,
+// org-root, ledger and event-log sections never ran, and the column plan the same
+// pass had already computed was thrown away with the error.
+//
+// The exception is the epoch gate, and it returns false for it: OpenReadOnly
+// applies the same gate, so every section below would restate the one refusal in
+// its own words and a single fault would read as five.
+func reportSchema(r *storeCheckReport, path string) (readable bool) {
+	schema, err := store.InspectSchema(path)
+
+	var epochErr *store.EpochTooNewError
+	var blocked *store.SchemaMigrationBlockedError
+	switch {
+	case errors.As(err, &epochErr):
+		// A downgrade, and the one refusal that must not be followed by a
+		// description: a newer build's columns read here as columns "this build no
+		// longer declares", which is a written case for hand-dropping a column that
+		// build's rows depend on (ARC-041/104).
+		r.printf("%s was written by a NEWER build than this binary understands: %v\n", path, err)
+		r.printf("this is a DOWNGRADE, not drift. The next boot does not serve: it starts in MAINTENANCE MODE —\n" +
+			"/healthz reports maintenance_mode with this reason and every other route answers 503. Roll the binary\n" +
+			"forward, or restore a workspace this build can read.\n")
+		r.printf("nothing else in this store can be described: every read this check makes goes through the same epoch gate.\n")
+		r.gap("the store is at a newer schema epoch than this build")
+		return false
+	case errors.As(err, &blocked):
+		// The plan comes back WITH the refusal now, so the operator sees the whole
+		// shape difference and not only the one column that blocked it. The blocked
+		// list rides along so the affirmative sentence cannot be printed over it: a
+		// store whose ONLY missing column is an unaddable one would otherwise read
+		// "every column this build declares is present" one line above "CANNOT be
+		// brought up to this build's schema".
+		reportSchemaPlan(r, path, schema, blocked.Blocked)
+		r.printf("%s CANNOT be brought up to this build's schema: %v\n", path, err)
+		r.printf("the next boot does not serve: it starts in MAINTENANCE MODE — /healthz reports maintenance_mode with\n" +
+			"this reason and every other route answers 503. The store is intact and unchanged; the column needs a\n" +
+			"DEFAULT, or a table rebuild under a schema epoch.\n")
+		r.gap("this build cannot converge the store's columns")
+		return true
+	case err != nil:
+		// Everything else InspectSchema can fail with is NOT schema drift, and
+		// saying it is sends an operator to the wrong problem: "that file is not a
+		// database", an I/O error and a permissions refusal all arrive here.
+		r.printf("%s could not be read as a SQLite store: %v\n", path, err)
+		r.printf("that is not necessarily a schema problem — a file that is not a database, an I/O error, and a directory\n" +
+			"whose permissions refuse this user all report here.\n")
+		r.gap("the store's schema could not be read")
+		// TRUE: this failure is about the schema read, and the store may still open
+		// — a section that can answer must be allowed to.
+		return true
+	}
+	reportSchemaPlan(r, path, schema, nil)
+	return true
+}
+
+// reportSchemaPlan prints the parts of a schema reading that exist whether or not
+// the reading also carried a refusal. blocked is the columns this build cannot
+// retrofit, empty unless the reading carried a *SchemaMigrationBlockedError.
+func reportSchemaPlan(r *storeCheckReport, path string, schema store.SchemaMigration, blocked []store.SchemaDrift) {
+	// TABLES first, then columns. A whole table this build declares and the
+	// file has not got is the larger difference of the two, and it is the one
+	// this check used to be structurally unable to state: the column planner
+	// passes over an absent table by design, so run against box .12 it named
+	// the pending relay_last_seen COLUMN and never the pending
+	// device_first_seen TABLE that arrived in the same build.
+	if len(schema.Created) > 0 {
+		r.printf("%s: %d table(s) this build declares are missing and will be created when the store is next opened:\n",
+			path, len(schema.Created))
+		for _, t := range schema.Created {
+			r.printf("  %s\n", t)
+		}
+		r.printf("creating a table cannot lose a row: it did not exist to hold one.\n")
+		r.printf("this check has NOT created them: it reads the store read-only, and the next boot is what applies them.\n")
+		r.pendingWork(fmt.Sprintf("%d table(s) to create", len(schema.Created)))
+	}
+	switch {
+	case schema.TablesDeclared > 0 && schema.TablesPresent == 0:
+		// NOT "every column this build declares is present": a file holding none
+		// of the declared tables has no columns to be present. That sentence was
+		// printed over an empty file, over a table-less carcass, and over a path
+		// that did not exist.
+		r.printf("%s holds NONE of the %d tables this build declares, so there are no columns to compare.\n",
+			path, schema.TablesDeclared)
+		r.printf("the next boot would treat this as a fresh install and create everything in it.\n")
+		r.gap("the file holds none of this build's tables")
+	case len(schema.Added) == 0 && len(blocked) == 0:
+		r.printf("%s: every column this build declares is present.\n", path)
+	case len(schema.Added) == 0:
+		// Missing columns exist; they simply cannot be added. Saying "every column
+		// is present" here — which this did, one line above the refusal naming the
+		// missing column — is the report contradicting itself.
+		r.printf("%s: %d column(s) this build declares are missing and CANNOT be added by an ALTER:\n", path, len(blocked))
+	default:
+		r.printf("%s: %d column(s) are missing and will be added when the store is next opened:\n",
+			path, len(schema.Added))
+		for _, a := range schema.Added {
+			r.printf("  %s.%s: %s\n", a.Table, a.Column, a.Definition)
+		}
+		r.printf("adding a column cannot lose a row: existing rows take the column's declared default.\n")
+		r.printf("this check has NOT added them: it reads the store read-only, and the next boot is what applies them.\n")
+		r.pendingWork(fmt.Sprintf("%d column(s) to add", len(schema.Added)))
+	}
+	for _, b := range blocked {
+		r.printf("  %s.%s: %s\n", b.Table, b.Column, b.Reason)
+	}
+	for _, d := range schema.Divergent {
+		r.printf("schema drift %s.%s: %s\n", d.Table, d.Column, d.Reason)
+	}
+	if len(schema.Divergent) > 0 {
+		r.pendingWork(fmt.Sprintf("%d schema drift(s) no column addition can fix", len(schema.Divergent)))
+	}
+}
+
+// reportRowIDs is the canonicalization half, plus the three sections that hang
+// off the same open handle. Every one of them runs, whatever the ones before it
+// found.
+func reportRowIDs(r *storeCheckReport, st *store.Store, path string) {
+	m, err := st.PlanRowIDMigration(context.Background())
+	var idBlocked *store.IDMigrationBlockedError
+	switch {
+	case errors.As(err, &idBlocked):
+		// This one IS fatal to the boot: MigrateRowIDs' failure is a log.Fatalf at
+		// the boot site, not a maintenance-mode degrade. The rest of the plan is
+		// printed below regardless — it used to be discarded with the error, so an
+		// operator fixed the one named id, restarted, and met everything that had
+		// been hidden behind it.
+		r.printf("%s CANNOT be canonicalized: %v\n", path, err)
+		r.printf("the feeder will REFUSE TO START against this store (the boot's canonicalization is fatal on this\n" +
+			"error, not a degrade to maintenance mode); nothing has been changed.\n")
+		r.gap("row ids cannot be canonicalized")
+	case err != nil:
+		r.printf("%s: the row-id plan could not be produced: %v\n", path, err)
+		r.gap("the row-id plan could not be produced")
+	}
+	unreadable := 0
+	for _, u := range m.Unreadable {
+		if u.Absent {
+			// NOT a refusal, and this is the correction: the boot creates the table
+			// (applySchemaDDL runs before MigrateRowIDs) and proceeds. The sweep's
+			// failure to read it used to print "CANNOT be canonicalized … the feeder
+			// will refuse to start" four lines under this report's own statement that
+			// the boot would create it.
+			r.printf("the %s table does not exist on this file, so it holds no row ids to rewrite; the next boot creates it and proceeds.\n", u.Kind)
+			continue
+		}
+		// A table the sweep could not read: the plan below is "every non-canonical
+		// id in the tables I COULD read", which is a different statement and has to
+		// be labelled as one. The sweep used to abort at table one of thirteen and
+		// present the result as the complete list.
+		unreadable++
+		r.printf("the %s table could not be read, so the row-id list below is PARTIAL: %s\n", u.Kind, u.Reason)
+		r.gap(fmt.Sprintf("the %s table could not be swept for row ids", u.Kind))
 	}
 	if len(m.Rewrites) == 0 {
-		fmt.Fprintf(out, "%s: every row id is already a canonical ULID; the next boot will not touch it.\n", storePath)
-	} else {
-		fmt.Fprintf(out, "%s: %d row id(s) will be canonicalized at the next boot:\n", storePath, len(m.Rewrites))
-		for _, rw := range m.Rewrites {
-			fmt.Fprintf(out, "  %-16s %s -> %s\n", rw.Kind, rw.From, rw.To)
+		if unreadable == 0 && err == nil {
+			r.printf("%s: every row id is already a canonical ULID; the next boot will not touch it.\n", path)
 		}
-		fmt.Fprintf(out, "references to them are rewritten in the same transaction; nothing has been changed by this check.\n")
+	} else {
+		r.printf("%s: %d row id(s) will be canonicalized at the next boot:\n", path, len(m.Rewrites))
+		for _, rw := range m.Rewrites {
+			r.printf("  %-16s %s -> %s\n", rw.Kind, rw.From, rw.To)
+		}
+		// True of THIS store, and deliberately explicit that it is not the whole
+		// story: the auth store beside it (cfg.authDir/auth.db) holds role bindings
+		// and grants naming these scope nodes, and they are repointed in a separate
+		// file, in a separate transaction, hundreds of lines later in the boot —
+		// where a failure is fatal. This check does not open that file.
+		r.printf("references to them are rewritten in the same transaction; nothing has been changed by this check.\n")
+		r.printf("the AUTH store (auth.db, beside this one) is a separate file with its own transaction: its role\n" +
+			"bindings and grants naming a renamed scope node are repointed later in the same boot, and a failure\n" +
+			"there is fatal. This check does not open it.\n")
+		r.pendingWork(fmt.Sprintf("%d row id(s) to canonicalize", len(m.Rewrites)))
 	}
 	for _, d := range m.Dangling {
-		fmt.Fprintf(out, "scope node %s names parent %s, which is not a stored scope node.\n", d.ChildID, d.ParentID)
+		r.printf("scope node %s names parent %s, which is not a stored scope node.\n", d.ChildID, d.ParentID)
 	}
-	reportOrgRoot(st, out, len(m.Rewrites))
-	reportDeviceFirstSeen(st, out)
-	reportEventLog(st, out)
-	return 0
+	if len(m.Dangling) > 0 {
+		r.pendingWork(fmt.Sprintf("%d dangling scope-node parent(s)", len(m.Dangling)))
+	}
+	reportOrgRoot(r, st, len(m.Rewrites))
+	reportDeviceFirstSeen(r, st)
+	reportEventLog(r, st)
 }
 
 // reportOrgRoot prints what the next boot would do about a missing org-kind
@@ -514,25 +956,44 @@ func reportStoreIDs(storePath string, out io.Writer) int {
 // and carries the reference with it, so by the time the heal runs the id is
 // canonical and there is nothing left to fold). Printing a flat "will NOT create
 // one" under a list of pending rewrites would contradict the section above it.
-func reportOrgRoot(st *store.Store, out io.Writer, pendingRewrites int) {
+// It states the CONFORMING answer too. It used to have four branches and no
+// positive one, so a store with a healthy org root said nothing about it at all —
+// the one section of this report that broke the rule the rest of it keeps, and
+// that storecheck_test.go states out loud: "nothing to report" and "the check did
+// not look" must not read the same.
+func reportOrgRoot(r *storeCheckReport, st *store.Store, pendingRewrites int) {
 	heal, err := st.PlanOrgRootHeal(context.Background())
 	if err != nil {
-		fmt.Fprintf(out, "the scope tree could not be read: %v\n", err)
+		r.printf("the scope tree could not be read: %v\n", err)
+		r.gap("the scope tree could not be read")
 		return
 	}
 	switch {
 	case heal.Needed && heal.OrgID != heal.ReferencedID:
-		fmt.Fprintf(out, "there is no org-kind scope node; the next boot will create one as %s (named as %s by %d orphaned node(s)) and repoint every reference.\n",
+		r.printf("there is no org-kind scope node; the next boot will create one as %s (named as %s by %d orphaned node(s)) and repoint every reference.\n",
 			heal.OrgID, heal.ReferencedID, len(heal.ChildIDs))
+		r.pendingWork("the boot will create the org root")
 	case heal.Needed:
-		fmt.Fprintf(out, "there is no org-kind scope node; the next boot will re-create it as %s, the id %d orphaned node(s) already name.\n",
+		r.printf("there is no org-kind scope node; the next boot will re-create it as %s, the id %d orphaned node(s) already name.\n",
 			heal.OrgID, len(heal.ChildIDs))
+		r.pendingWork("the boot will create the org root")
 	case heal.Declined != "" && pendingRewrites > 0:
-		fmt.Fprintf(out, "there is no org-kind scope node, and against the store as it stands one cannot be re-created: %s\n"+
+		r.printf("there is no org-kind scope node, and against the store as it stands one cannot be re-created: %s\n"+
 			"    the boot canonicalizes the row ids above BEFORE it heals, which can change that answer; re-run this check after the restart to see where it landed.\n",
 			heal.Declined)
+		r.pendingWork("the org root may or may not be re-created; re-run after the restart")
 	case heal.Declined != "":
-		fmt.Fprintf(out, "there is no org-kind scope node and the next boot will NOT create one: %s\n", heal.Declined)
+		r.printf("there is no org-kind scope node and the next boot will NOT create one: %s\n", heal.Declined)
+		r.printf("    every owner-facing route 404s while this stands, on a box that otherwise looks healthy. This needs a human.\n")
+		r.pendingWork("no org root, and no boot will create one")
+	case heal.PresentID != "":
+		r.printf("org-kind scope node %s is present; the next boot will not touch it.\n", heal.PresentID)
+	default:
+		// Nothing to heal, nothing declined, and no org row: the store holds no
+		// scope nodes at all and is still at generation 0, so it has never been
+		// seeded. The next boot's demo seed is what fills it.
+		r.printf("there is no org-kind scope node and no scope nodes at all; this store has never been seeded, so the next boot's demo seed creates the tree.\n")
+		r.pendingWork("the boot will seed the scope tree")
 	}
 }
 
@@ -550,51 +1011,106 @@ func reportOrgRoot(st *store.Store, out io.Writer, pendingRewrites int) {
 // # It LISTS the ledger, because something else promises that it does
 //
 // The boot log caps its per-device account at twenty lines and then says
-// "`waiveo-feeder -store-check` lists every ledger row and its origin". That
-// sentence has to be true, and it was not: this function printed three counts and
-// the PENDING seed, and after a successful boot there is nothing pending — so an
-// operator following it on box .12, where the seed had just adopted 64 values and
-// named 20 of them, was told the ledger was fully answered and there was nothing
-// to list. The rows now come out in full, each with its origin, which is the fact
-// that decides whether an age may be read as an instant and which row is a
-// candidate for `retireDeviceFirstSeen`.
+// "`waiveo-feeder -store-check <store>` lists every ledger row and its origin".
+// That sentence has to be true, and it was not: this function printed three
+// counts and the PENDING seed, and after a successful boot there is nothing
+// pending — so an operator following it on box .12, where the seed had just
+// adopted 64 values and named 20 of them, was told the ledger was fully answered
+// and there was nothing to list. The rows now come out in full, each with its
+// origin, which is the fact that decides whether an age may be read as an instant
+// and which row is a candidate for `retireDeviceFirstSeen`.
+//
+// It was not true a SECOND way, and that one was worse (#199). On the shape
+// "table present, `origin` column pending" — the exact store an operator inspects
+// before that upgrade — the listing query failed with "no such column: origin",
+// InspectDeviceFirstSeen discarded the entire census with it, this function
+// printed one error line and returned, and the check exited 0.
+//
+// # Nothing here states a number this check did not read
+//
+// The first repair made the listing column-aware and printed "whatever the census
+// carried" beside any error. That is only half of it, because the census carries
+// ZEROES for the parts it could not read and this function printed them as facts.
+// On a store whose pre-ledger `first_seen` column holds a value that will not
+// scan — the realistic pre-upgrade file this tool exists for — the seed plan
+// failed, and the report said:
+//
+//	the device first-seen ledger could not be read in full: … "not-an-instant"
+//	device first-seen ledger: 0 row(s); 3 of 4 mirrored device(s) have a stored first_seen.
+//
+// Three real rows, perfectly readable, reported as zero — one line under a ratio
+// that contradicts it arithmetically, and with not one row listed, which is the
+// boot log's referral failing all over again in the function whose own doc says
+// that sentence has to be true. The same hole stood one branch up: a `tableExists`
+// that ERRORED printed "the table is not on this store yet; the next boot creates
+// it", a positive claim about a table this check had failed to look for.
+//
+// So every number below is gated on the flag that says it was read
+// (store.DeviceFirstSeenLedger), and an unread one is printed as unread. Exit 1
+// already protected a script; this protects the person reading the report, which
+// is the failure mode the whole change exists to close.
 //
 // It also names the ledger when the table itself is still pending, which is what
 // the schema section above cannot do for the store as it is opened here — that
 // section reads the file before any DDL, this one reads it through a handle that
 // still has not created anything.
 //
-// A failure to read is reported and not fatal, the same posture the event-log
-// report takes: this subcommand's job is the row-id question and it should still
-// answer it.
-func reportDeviceFirstSeen(st *store.Store, out io.Writer) {
+// A failure to read does not end the report — the sections after it still run —
+// but it is no longer silent in the exit code either: a census that could not be
+// produced is a gap, and the verdict says so.
+func reportDeviceFirstSeen(r *storeCheckReport, st *store.Store) {
 	ledger, err := st.InspectDeviceFirstSeen(context.Background())
+	printDeviceFirstSeen(r, ledger, err)
+}
+
+// printDeviceFirstSeen is reportDeviceFirstSeen's whole body, split from the
+// query so the PRINT decisions can be driven directly with a census that has
+// gaps in it. Every defect this section has had was a print decision made about a
+// value that was not read — "0 row(s)" over an unlisted ledger, "the table is not
+// on this store yet" over a lookup that failed, "the next boot will seed nothing"
+// over a plan that never ran — and each of those needs a store shape that is
+// awkward or impossible to forge, which is exactly why they shipped.
+func printDeviceFirstSeen(r *storeCheckReport, ledger store.DeviceFirstSeenLedger, err error) {
 	if err != nil {
-		fmt.Fprintf(out, "the device first-seen ledger could not be read: %v\n", err)
-		return
+		r.printf("the device first-seen ledger could not be read in full: %v\n", err)
+		r.printf("    what this check DID read is below, and what it could not is named as unread; treat nothing else as answered.\n")
+		r.gap("the device first-seen ledger could not be read in full")
 	}
-	if !ledger.Present {
-		fmt.Fprintf(out, "device first-seen ledger: the table is not on this store yet; the next boot creates it.\n")
-	} else {
-		fmt.Fprintf(out, "device first-seen ledger: %d row(s); %d of %d mirrored device(s) have a stored first_seen.\n",
-			len(ledger.Rows), ledger.Answered, ledger.Mirrored)
+	switch {
+	case !ledger.PresentKnown:
+		// NOT "the table is not on this store yet". Whether it is there is exactly
+		// what could not be established, and the branch below claims a boot action
+		// ("the next boot creates it") that follows from the answer, not the gap.
+		r.printf("device first-seen ledger: whether the table is even on this store could not be established.\n")
+	case !ledger.Present:
+		r.printf("device first-seen ledger: the table is not on this store yet; the next boot creates it.\n")
+	default:
+		r.printf("device first-seen ledger: %s; %s.\n", ledgerRowCensus(ledger), ledgerMirrorCensus(ledger))
 	}
-	for _, r := range ledger.Rows {
-		fmt.Fprintf(out, "  %s  first_seen=%d  origin=%s\n", r.DeviceID, r.FirstSeen, r.Origin)
+	for _, row := range ledger.Rows {
+		r.printf("  %s  first_seen=%d  origin=%s\n", row.DeviceID, row.FirstSeen, row.Origin)
 	}
 	if ledger.Unverified > 0 {
 		// Said once, after the listing, rather than folded into each line: the
 		// operator's question here is "how much of my inventory's age is
 		// inherited", and a per-row repetition of the same caveat answers it worse
 		// than a count does.
-		fmt.Fprintf(out, "%d of those %d value(s) are NOT instants this deployment observed (origin %s or %s): each was %s.\n",
+		r.printf("%d of those %d listed value(s) are NOT instants this deployment observed (origin %s or %s): each was %s.\n",
 			ledger.Unverified, len(ledger.Rows), store.FirstSeenAdopted, store.FirstSeenUnrecorded,
 			store.UnverifiedFirstSeenSentence)
-		fmt.Fprintf(out, "`retireDeviceFirstSeen` (DELETE /api/v1/devices/{id}/first-seen) is the only way one an operator can show is wrong ever leaves.\n")
+		r.printf("`retireDeviceFirstSeen` (DELETE /api/v1/devices/{id}/first-seen) is the only way one an operator can show is wrong ever leaves.\n")
+	}
+	if !ledger.PendingKnown {
+		// The seed is the single most consequential thing a boot does that cannot
+		// be undone afterwards. An empty plan that was never produced must never
+		// print as "the next boot will seed nothing".
+		r.printf("what the next boot would seed into it could not be planned, so this check cannot say whether the restart\n" +
+			"    will freeze any device's age IRREVERSIBLY. That is the one question this section exists to answer in advance.\n")
+		return
 	}
 	pending := ledger.Pending
 	if len(pending.Adopted) == 0 && len(pending.Refused) == 0 {
-		fmt.Fprintf(out, "the next boot will seed nothing into it: every mirrored device either has a stored first_seen or has no older value to adopt.\n")
+		r.printf("the next boot will seed nothing into it: every mirrored device either has a stored first_seen or has no older value to adopt.\n")
 		return
 	}
 	// The clock this plan was judged against, said out loud because it is NOT the
@@ -602,14 +1118,15 @@ func reportDeviceFirstSeen(st *store.Store, out io.Writer) {
 	// the boot reads the app's own clock (SEC-066) then. The "running ahead"
 	// refusal turns on that comparison, so a value near the boundary can legitimately
 	// be planned one way here and decided the other way at the restart.
-	fmt.Fprintf(out, "judged against this host's clock at %d:\n", pending.AtMs)
+	r.printf("judged against this host's clock at %d:\n", pending.AtMs)
 	if len(pending.Adopted) > 0 {
-		fmt.Fprintf(out, "the next boot will adopt %d value(s) from the pre-ledger column and mark each origin=%s; every one is %s:\n",
+		r.printf("the next boot will adopt %d value(s) from the pre-ledger column and mark each origin=%s; every one is %s:\n",
 			len(pending.Adopted), store.FirstSeenAdopted, store.UnverifiedFirstSeenSentence)
 		for _, a := range pending.Adopted {
-			fmt.Fprintf(out, "  %s  first_seen=%d\n", a.DeviceID, a.FirstSeen)
+			r.printf("  %s  first_seen=%d\n", a.DeviceID, a.FirstSeen)
 		}
-		fmt.Fprintf(out, "once adopted, nothing moves such a value: `retireDeviceFirstSeen` is the only way one an operator can show is wrong ever leaves.\n")
+		r.printf("once adopted, nothing moves such a value: `retireDeviceFirstSeen` is the only way one an operator can show is wrong ever leaves.\n")
+		r.pendingWork(fmt.Sprintf("%d first-seen value(s) the boot will adopt IRREVERSIBLY", len(pending.Adopted)))
 	}
 	if len(pending.Refused) > 0 {
 		// "carry no age" is now literally what those devices do — the store reads a
@@ -617,39 +1134,124 @@ func reportDeviceFirstSeen(st *store.Store, out io.Writer) {
 		// refused value is not served, not restored into the read model and not
 		// drawn. Before that join it was a false sentence printed beside a console
 		// still rendering the refused number.
-		fmt.Fprintf(out, "the next boot will refuse %d value(s) as implausible; those devices carry no age at all until a fresh report plants one, and the refused value stays on the file and is listed here every time:\n",
+		r.printf("the next boot will refuse %d value(s) as implausible; those devices carry no age at all until a fresh report plants one, and the refused value stays on the file and is listed here every time:\n",
 			len(pending.Refused))
-		for _, r := range pending.Refused {
-			fmt.Fprintf(out, "  %s  first_seen=%d: %s\n", r.DeviceID, r.FirstSeen, r.Reason)
+		for _, ref := range pending.Refused {
+			r.printf("  %s  first_seen=%d: %s\n", ref.DeviceID, ref.FirstSeen, ref.Reason)
 		}
+		r.pendingWork(fmt.Sprintf("%d first-seen value(s) the boot will refuse, leaving those devices with no age", len(pending.Refused)))
 	}
-	fmt.Fprintf(out, "this check has NOT seeded anything: it reads the store read-only, and the next boot is what applies it.\n")
+	r.printf("this check has NOT seeded anything: it reads the store read-only, and the next boot is what applies it.\n")
 }
 
-// reportEventLog prints what the durable event log holds, by retention class. A
-// failure to read it is reported and not fatal: this check exists to tell an
-// operator what a restart will do to the ROW IDS, and it should still answer
-// that question if the event tables cannot be read.
-func reportEventLog(st *store.Store, out io.Writer) {
+// ledgerRowCensus says how many rows the listing found, in a form that cannot be
+// misread as a census when it is not one. `len(Rows)` alone cannot distinguish
+// an empty ledger from a listing that failed or stopped partway, and this report
+// stated the first over both.
+func ledgerRowCensus(l store.DeviceFirstSeenLedger) string {
+	switch {
+	case l.RowsComplete:
+		return fmt.Sprintf("%d row(s)", len(l.Rows))
+	case len(l.Rows) == 0:
+		return "its rows could not be listed at all, so how many it holds is UNKNOWN"
+	default:
+		return fmt.Sprintf("%d row(s) were listed before the listing failed, and there may be more", len(l.Rows))
+	}
+}
+
+// ledgerMirrorCensus says how much of the discovered-device mirror the ledger
+// answers for, or that it could not be counted. The two numbers are only ever
+// said together — a ratio with one half missing is not a number an operator can
+// act on — so they are withheld together.
+func ledgerMirrorCensus(l store.DeviceFirstSeenLedger) string {
+	if !l.CountsKnown {
+		return "how much of the mirrored device inventory it answers for could not be counted"
+	}
+	return fmt.Sprintf("%d of %d mirrored device(s) have a stored first_seen", l.Answered, l.Mirrored)
+}
+
+// reportEventLog prints what the durable event log holds, by retention class,
+// AND what the next boot's retention sweep would delete from it. A failure to
+// read it does not end the report — this check exists to tell an operator what a
+// restart will do to the ROW IDS, and it should still answer that question if the
+// event tables cannot be read — but it is recorded as a gap, because "I could not
+// count the audit trail" is not the same answer as "the audit trail is empty" and
+// the exit code used to render them identically.
+//
+// # The sweep is PLANNED, not merely counted around
+//
+// This section reported the retained counts and stopped, which left exit 0 —
+// "every section ran, every section answered, and the next boot changes nothing
+// in this store" — printable over a store the next boot was about to delete rows
+// from. The boot's first act on this log is eventLog.Prune (see main), and on any
+// box that has been up a while it bites: the telemetry tier expires at seven days
+// AND caps at 4096 rows, the configuration tier at ninety days, the audit tier at
+// four hundred. One expired telemetry row is enough to make the verdict false,
+// and a deploy gate reading the exit status was told "proceed, nothing changes"
+// by the one tool whose job is to say what the restart will do.
+//
+// So it asks for the plan, over the same read-only handle, through the same
+// planner the sweep itself applies (store.EventLog.PlanPrune) — and a sweep that
+// would delete anything is pending work, listed by class, with the ids bounded.
+func reportEventLog(r *storeCheckReport, st *store.Store) {
 	log, err := st.EventLog(events.DefaultRetentionPolicy(), nil, func(error) {})
 	if err != nil {
-		fmt.Fprintf(out, "the durable event log could not be opened: %v\n", err)
+		r.printf("the durable event log could not be opened: %v\n", err)
+		r.gap("the durable event log could not be opened")
 		return
 	}
 	total, byClass, err := log.Count()
+	counted := err == nil
+	switch {
+	case !counted:
+		r.printf("the durable event log could not be counted: %v\n", err)
+		r.gap("the durable event log could not be counted")
+		// The sweep plan is still asked for below: "how many are retained" and
+		// "how many the boot retires" are different questions over different
+		// queries, and one failing is not the other going unanswered.
+	case total == 0:
+		r.printf("durable event log: empty.\n")
+	default:
+		r.printf("durable event log: %d event(s) retained", total)
+		for _, class := range sortedClasses(byClass) {
+			r.printf(", %s=%d", class, byClass[class])
+		}
+		r.printf("\n")
+	}
+
+	plan, err := log.PlanPrune()
 	if err != nil {
-		fmt.Fprintf(out, "the durable event log could not be counted: %v\n", err)
+		r.printf("what the next boot's retention sweep would retire from the event log could not be planned: %v\n", err)
+		r.gap("the event log's retention sweep could not be planned")
 		return
 	}
-	if total == 0 {
-		fmt.Fprintf(out, "durable event log: empty.\n")
+	switch {
+	case plan.Rows > 0:
+		// Falls through to the eviction report below.
+	case counted && total == 0:
+		// "empty" already said it; a second sentence adds nothing.
+		return
+	case counted:
+		r.printf("the next boot's retention sweep retires none of them: every event is inside its class's window and row cap.\n")
+		return
+	default:
+		// The count failed, so "none of THEM" has no antecedent.
+		r.printf("the next boot's retention sweep would delete nothing from the event log.\n")
 		return
 	}
-	fmt.Fprintf(out, "durable event log: %d event(s) retained", total)
-	for _, class := range sortedClasses(byClass) {
-		fmt.Fprintf(out, ", %s=%d", class, byClass[class])
+	// The clock, said out loud for the same reason the first-seen seed plan says
+	// its own: this reads the HOST wall clock now, the boot reads the app's own
+	// clock (SEC-066) then, and a record close to its window boundary can be
+	// planned one way here and decided the other way at the restart.
+	r.printf("the next boot's retention sweep DELETES %d of them, judged against this host's clock at %d", plan.Rows, plan.AtMs)
+	for _, class := range sortedClasses(plan.ByClass) {
+		r.printf(", %s=%d", class, plan.ByClass[class])
 	}
-	fmt.Fprintf(out, "\n")
+	r.printf("\n")
+	r.printf("    every id up to and including %s goes, and the eviction watermark moves there; a subscriber resuming\n"+
+		"    from behind it is answered RESUME_FROM_INVALID rather than served a silent gap (EVT-142/143). Deletion is\n"+
+		"    unrecoverable and this check has NOT performed it: the boot's own sweep is what does.\n", plan.EvictsThrough)
+	r.pendingWork(fmt.Sprintf("%d event(s) the boot's retention sweep DELETES", plan.Rows))
 }
 
 // sortedClasses orders a per-class count map so the report is stable run to run.
@@ -678,15 +1280,88 @@ var (
 // why this is bounded and why the bound is published on every response.
 const platformLogCapacity = 4000
 
+// parseArgs reads this binary's command line, returning whether -store-check was
+// asked for and the operands left over.
+//
+// # It owns its own FlagSet, because the default one owns the exit codes
+//
+// `flag.CommandLine` is created with flag.ExitOnError, which calls os.Exit(2) on
+// any malformed flag and os.Exit(0) on -h — before main regains control, with no
+// report and no VERDICT line printed. The store-check contract then in force
+// declares 2 "WORK PENDING — read the report, then deploy" and 0 "NOTHING TO DO —
+// restart normally", and the runbook tells an operator to gate on exactly those.
+// So `waiveo-feeder -store-chek <path>` — one transposed letter, in the flag this
+// whole subcommand is named for — returned the same status as a healthy store
+// with work to do, and a deploy gate written to the documented contract read a
+// typo as a green-ish light. Before the contract existed the same typo landed on
+// an undefined code that any `!= 0` guard stopped on, so the contract made this
+// worse rather than better.
+//
+// A ContinueOnError set hands the error back instead, and every exit from this
+// binary that did not produce a report is storeCheckIncomplete: a bad flag, an
+// unparseable value, and -h alike. That is the honest reading — none of them
+// answered anything about a store — and it is the only one a `case $?` gate
+// cannot mistake for a pass.
+func parseArgs(argv []string, out io.Writer) (storeCheck bool, args []string, err error) {
+	fs := flag.NewFlagSet("waiveo-feeder", flag.ContinueOnError)
+	fs.SetOutput(out)
+	check := fs.Bool("store-check", false,
+		"report what the next boot would change in the store — pending tables and columns, non-canonical row ids, "+
+			"a missing org root, the device first-seen seed, and what the boot's retention sweep deletes from the "+
+			"durable event log — reading the store read-only and changing nothing in it. It does leave the "+
+			"`-shm`/`-wal` sidecars any reader of a WAL database needs. Safe against a live store or a backup, and it "+
+			"says so when the store moved under it. Usage: `waiveo-feeder -store-check [store-path]` — the store is the "+
+			"path given on the command line, else $WAIVEO_FEEDER_STORE, else "+defaultStorePath+" relative to the "+
+			"current directory; the resolved absolute path is printed as the report's first line. Exit 0 nothing to do, "+
+			"2 work pending, 1 a question it could not answer — including any invocation this binary would not parse")
+	if err := fs.Parse(argv); err != nil {
+		return false, nil, err
+	}
+	return *check, fs.Args(), nil
+}
+
 func main() {
-	// The one flag the feeder takes, checked before any state is opened, the
-	// same shape the relay's -version uses. Everything else stays env-only.
-	storeCheck := flag.Bool("store-check", false,
-		"report what the next boot would change in the store — missing columns, non-canonical row ids — reading it "+
-			"read-only and writing nothing (safe to run against a live store or a backup)")
-	flag.Parse()
+	// The one flag the feeder takes, read before any state is opened, the same
+	// shape the relay's -version uses. Everything else stays env-only — except
+	// the store path, which -store-check takes as an optional operand because
+	// the whole point of that subcommand is to answer about a store an operator
+	// NAMES (#195).
+	storeCheck, argv, err := parseArgs(os.Args[1:], os.Stderr)
+	if err != nil {
+		// The FlagSet has already written the error and the usage. All that is
+		// left is to say what the status means, because the store-check contract
+		// is documented and this is not one of its three answers about a store.
+		fmt.Fprintf(os.Stderr, "waiveo-feeder: nothing was inspected and nothing was started (exit %d).\n", storeCheckIncomplete)
+		os.Exit(storeCheckIncomplete)
+	}
+
+	// Any operand that survives the parse and is not -store-check's is a
+	// word-order slip, and the one it is most likely to be would have BOOTED the
+	// feeder against the store the operator was trying to inspect read-only.
+	// Refused here, before the config is read and before anything is opened.
+	if !storeCheck && refuseStrayOperands(argv, os.Stderr) {
+		os.Exit(storeCheckIncomplete)
+	}
 
 	cfg := loadConfig(os.Getenv)
+
+	// -store-check runs BEFORE the diagnostics buffer, the start stamp and the
+	// "starting" line, because it starts nothing: it reads one file and exits,
+	// and a subcommand that announced "waiveo-feeder starting" was announcing
+	// something that never happened. Its report goes to stdout and carries its
+	// own build identity on the first line, so a saved report is attributable to
+	// the binary whose schema every sentence in it is about.
+	if storeCheck {
+		path, err := resolveStoreCheckPath(argv, cfg.storePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "waiveo-feeder -store-check: %v\n", err)
+			// storeCheckIncomplete, not a usage code: a script gating a deploy on
+			// this exit status must read "I could not tell you" here, and 2 already
+			// means "work pending, deploy after reading".
+			os.Exit(storeCheckIncomplete)
+		}
+		os.Exit(reportStoreIDs(path, os.Stdout))
+	}
 
 	// The diagnostics capture, installed as the VERY FIRST thing after the
 	// config is read and before any other subsystem exists, so that every line
@@ -707,10 +1382,6 @@ func main() {
 	// interval an operator is trying to account for.
 	startedAtMs := time.Now().UnixMilli()
 	log.Printf("waiveo-feeder starting: version=%s channel=%s", buildVersion, buildChannel)
-
-	if *storeCheck {
-		os.Exit(reportStoreIDs(cfg.storePath, os.Stdout))
-	}
 
 	// The deployment's required-pack roster (marketplace/1 MKT-093a): which packs
 	// this deployment declares it cannot run without, and the floor version each
@@ -1031,8 +1702,14 @@ func main() {
 	// holds role bindings and grants that name these nodes.
 	renamedScopeNodes := map[string]string{}
 	if m, err := st.MigrateRowIDs(ctx); err != nil {
+		// The command NAMES the store, because the message names it: this line
+		// used to prescribe a check that could not be aimed at the path it had
+		// just printed, so an operator on a box whose unit sets
+		// WAIVEO_FEEDER_STORE — or who simply ran it from another directory —
+		// read a report about a different file (#195).
 		log.Fatalf("waiveo-feeder: canonicalize store row ids: %v\n"+
-			"    run `waiveo-feeder -store-check` to inspect %s; nothing was changed", err, cfg.storePath)
+			"    run `waiveo-feeder -store-check %s` to inspect it; nothing was changed",
+			err, absHostFilePath(cfg.storePath))
 	} else {
 		// Every rewrite renames a ROW, and its references ride along in the same
 		// transaction, so this count is a count of rows — which it was not while

@@ -176,8 +176,13 @@ type hostClockException struct {
 }
 
 var hostClockExceptions = []hostClockException{
-	{"reportStoreIDs", "store.WallClockMs",
-		"a read-only diagnostic subcommand that stamps no row and runs before a serving process exists to have a notion of time"},
+	// runStoreCheckSections is reportStoreIDs' body — the open lives there since
+	// the report grew a verdict its caller prints last.
+	{"runStoreCheckSections", "store.WallClockMs",
+		"a read-only diagnostic subcommand that stamps no row, so there is no stamp for the app's clock floor to keep " +
+			"consistent with — and reaching for the floor would create the auth-state directory it lives in as a side " +
+			"effect of a check that must not write. NOT 'it runs outside a serving process': the first-photon runbook " +
+			"says to run it against a box whose old build is still up"},
 	{"main", "time.Now",
 		"the host reading the clock floor itself is built ON — the floor's whole job is to clamp it, so it has to be able to see it"},
 }

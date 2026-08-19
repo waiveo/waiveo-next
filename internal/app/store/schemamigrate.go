@@ -144,6 +144,19 @@ type SchemaMigration struct {
 	Created   []string
 	Added     []ColumnAddition
 	Divergent []SchemaDrift
+
+	// TablesPresent/TablesDeclared are the CENSUS behind the report, filled in by
+	// InspectSchema only (the migrating path has no reader to keep honest).
+	//
+	// They exist because "no column is missing" is ambiguous on its own and the
+	// ambiguity is dangerous: planSchemaColumns deliberately drops the absent-table
+	// list when the file holds NONE of the declared tables (a fresh install), so an
+	// empty file, a table-less carcass and a fully conforming store all produce the
+	// same empty plan — and `-store-check` rendered all three as "every column this
+	// build declares is present." A reader that can see 0 of 31 tables can say what
+	// it actually found.
+	TablesPresent  int
+	TablesDeclared int
 }
 
 // SchemaMigrationBlockedError is returned when this build CANNOT bring the
@@ -316,6 +329,51 @@ func tableExists(ctx context.Context, q queryer, table string) (bool, error) {
 		return false, fmt.Errorf("store: look for table %s: %w", table, err)
 	}
 	return found, nil
+}
+
+// countDeclaredTablesPresent counts how many of the tables this build declares
+// the file actually holds. It is the census InspectSchema reports alongside its
+// plan, and it is deliberately computed from the file's own table list rather
+// than inferred from an empty plan — see SchemaMigration.TablesPresent for what
+// an empty plan cannot distinguish.
+func countDeclaredTablesPresent(ctx context.Context, q queryer, declared map[string]tableShape) (int, error) {
+	onFile, err := tableNames(ctx, q)
+	if err != nil {
+		return 0, err
+	}
+	present := 0
+	for _, t := range onFile {
+		if _, ok := declared[t]; ok {
+			present++
+		}
+	}
+	return present, nil
+}
+
+// columnExists reports whether a table on this file carries a column by this
+// name, through the SAME PRAGMA reading the convergence pass compares shapes
+// with (readTableColumns, i.e. table_xinfo — so a generated column counts, which
+// table_info cannot see).
+//
+// It is tableExists one level down, and it exists for the same reason: a reader
+// that must survive a store the DDL has not run over yet. `-store-check` opens
+// read-only and adds nothing, so a SELECT naming a column this build declares
+// and the file has not got fails with "no such column" where the honest answer is
+// "not yet, and the next boot adds it". That exact shape — device_first_seen
+// present, its `origin` column pending — is the one an operator inspects
+// immediately before that upgrade, and it blinded the whole ledger section
+// (#199). The boot itself never needs this: the column pass has run by then.
+func columnExists(ctx context.Context, q queryer, table, column string) (bool, error) {
+	cols, err := readTableColumns(ctx, q, table)
+	if err != nil {
+		return false, err
+	}
+	for _, c := range cols {
+		if c.Name == column {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // readShape reads one table's columns in declaration order together with the
@@ -793,7 +851,12 @@ func reportSchemaMigration(dsn string, m SchemaMigration) {
 	const shownDrift = 20
 	for i, d := range m.Divergent {
 		if i == shownDrift {
-			stdlog.Printf("store: … and %d more; `waiveo-feeder -store-check` lists them all", len(m.Divergent)-shownDrift)
+			// The referral NAMES the store, because a referral that does not is
+			// one an operator follows against whatever store their shell's cwd
+			// resolves (#195): the check took no path at all, so the command in
+			// this line used to be unaimable at the file this line is about.
+			stdlog.Printf("store: … and %d more; `waiveo-feeder -store-check %s` lists them all",
+				len(m.Divergent)-shownDrift, dsn)
 			break
 		}
 		stdlog.Printf("store: schema drift: %s.%s: %s", d.Table, d.Column, d.Reason)
@@ -848,8 +911,19 @@ func reportCreatedTables(dsn string, created []string) {
 // with EpochTooNewError is the only honest answer, and it is the same answer the
 // next open will give.
 //
-// An *SchemaMigrationBlockedError here means the next open will REFUSE, and the
-// store needs a human before the feeder is restarted onto this build.
+// An *SchemaMigrationBlockedError here means the next open will NOT serve: the
+// feeder enters maintenance mode on it (cmd/waiveo-feeder/maintenance.go), and
+// the store needs a human before the box serves again.
+//
+// # The plan comes back WITH that refusal
+//
+// The blocked error is returned ALONGSIDE the created/added/divergent lists this
+// call already computed, not instead of them. It used to be instead, and on the
+// one shape where an operator most needs the whole picture — a store headed for
+// maintenance mode — the report collapsed to the single blocked column and named
+// none of the pending tables, pending columns or drift the same pass had just
+// worked out. A caller that ACTS (migrateSchemaColumns) must still treat the
+// error as all-or-nothing; a caller that REPORTS can now print both.
 func InspectSchema(dsn string) (SchemaMigration, error) {
 	if dsn != ":memory:" {
 		if _, err := os.Stat(dsn); errors.Is(err, os.ErrNotExist) {
@@ -860,7 +934,14 @@ func InspectSchema(dsn string) (SchemaMigration, error) {
 	// migration's own ALTERs, which is the property that makes running it against
 	// a live box's store before a restart an honest check rather than a quiet
 	// change.
-	db, err := sql.Open("sqlite", "file:"+dsn+"?mode=ro")
+	//
+	// busy_timeout matches OpenReadOnly's, and the mismatch it corrects had teeth:
+	// this handle had none, and it is the handle whose failure produces the
+	// loudest sentence the check can print ("CANNOT be brought up to this build's
+	// schema"). Running against a LIVE store is exactly what the flag's own help
+	// invites, so transient contention there used to degrade into the most
+	// alarming refusal available rather than into a wait.
+	db, err := sql.Open("sqlite", "file:"+dsn+"?mode=ro&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return SchemaMigration{}, fmt.Errorf("store: inspect schema of %s: %w", dsn, err)
 	}
@@ -884,8 +965,19 @@ func InspectSchema(dsn string) (SchemaMigration, error) {
 	if err != nil {
 		return SchemaMigration{}, fmt.Errorf("store: inspect schema of %s: %w", dsn, err)
 	}
-	if len(blocked) > 0 {
-		return SchemaMigration{}, &SchemaMigrationBlockedError{Blocked: blocked}
+	present, err := countDeclaredTablesPresent(ctx, db, declared)
+	if err != nil {
+		return SchemaMigration{}, fmt.Errorf("store: inspect schema of %s: %w", dsn, err)
 	}
-	return SchemaMigration{Created: created, Added: adds, Divergent: divergent}, nil
+	m := SchemaMigration{
+		Created:        created,
+		Added:          adds,
+		Divergent:      divergent,
+		TablesPresent:  present,
+		TablesDeclared: len(declared),
+	}
+	if len(blocked) > 0 {
+		return m, &SchemaMigrationBlockedError{Blocked: blocked}
+	}
+	return m, nil
 }

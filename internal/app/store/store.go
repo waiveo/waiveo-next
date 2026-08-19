@@ -258,6 +258,12 @@ type Store struct {
 	// lock, and the enforcing check (packsfloor.go) runs inside a write
 	// transaction that already holds the write lock.
 	required RequiredPacks
+
+	// readOnly marks a handle from OpenReadOnly. The database is already opened
+	// `mode=ro`, so this changes nothing SQLite enforces; what it stops is the
+	// one write this package attempts outside a query — Close's WAL checkpoint.
+	// See Close.
+	readOnly bool
 }
 
 // schema creates the scope-node table, one table per scheduling-core kind, and
@@ -291,10 +297,16 @@ CREATE TABLE IF NOT EXISTS %s (
 // WallClockMs reads the host wall clock in epoch milliseconds.
 //
 // It is exported for the callers that genuinely want the HOST's reading: tests,
-// and read-only diagnostics that run outside a serving process (the feeder's
-// -store-check, which opens the store, reports and writes nothing). Naming it
-// makes that a deliberate choice at the call site rather than an unremarkable
-// `func() int64 { return time.Now().UnixMilli() }` nobody reads twice.
+// and read-only diagnostics that stamp no row (the feeder's -store-check, which
+// opens the store read-only and changes nothing in it — it does leave the WAL
+// sidecars any reader of a WAL database creates; see OpenReadOnly). Such a
+// diagnostic is routinely run against a box that IS serving — the first-photon
+// runbook says to run it with the old build still up — so "outside a serving
+// process" would be the wrong justification: the right one is that it writes no
+// row, so there is no stamp for the app's clock floor to keep consistent with.
+// Naming it makes that a deliberate choice at the call site rather than an
+// unremarkable `func() int64 { return time.Now().UnixMilli() }` nobody reads
+// twice.
 //
 // A DEPLOYMENT does not pass this. It passes the app's persisted monotonic clock
 // floor reading (internal/app/auth.ClockFloor.Now), so a row's created_at, the
@@ -488,8 +500,11 @@ func Open(dsn string, nowMs func() int64) (*Store, error) {
 // invent one — see reportStoreIDs, which is what a fresh path used to do.
 var ErrNoStoreAtPath = errors.New("store: no store file at this path")
 
-// OpenReadOnly opens an EXISTING store for inspection and cannot write to it —
-// not the columns, not the epoch marker, not the file mode, not a sidecar.
+// OpenReadOnly opens an EXISTING store for inspection and cannot write to the
+// DATABASE — not the columns, not the epoch marker, not the file mode, not a
+// byte of content. It does create the two WAL sidecars any reader of a WAL
+// database needs; that is the one exception and the caveat below states it in
+// full.
 //
 // It exists because `waiveo-feeder -store-check` is documented as a dry run and
 // was not one. Open MIGRATES: it adds missing columns, stamps the schema epoch,
@@ -514,12 +529,27 @@ var ErrNoStoreAtPath = errors.New("store: no store file at this path")
 //
 // One honest caveat, stated rather than papered over: SQLite cannot read a
 // WAL-mode database without its shared-memory index, so opening one whose
-// sidecars are absent CREATES a `<db>-shm` and a zero-length `<db>-wal` beside
-// it. The database file itself is not touched — not a byte, not its mode — and
-// an empty write-ahead log holds no frames, so nothing about the store's content
-// changes. They are not removed on close: deleting a `-shm` that another process
-// has mapped is how a live database gets corrupted, and a check must never take
-// that risk with a box that is serving.
+// sidecars are absent CREATES a `<db>-shm` (32 KiB) and a zero-length `<db>-wal`
+// beside it. The database file itself is not touched — not a byte, not its mode,
+// not its inode — and an empty write-ahead log holds no frames, so nothing about
+// the store's content changes. They are not removed on close: deleting a `-shm`
+// that another process has mapped is how a live database gets corrupted, and a
+// check must never take that risk with a box that is serving. (Nor is deleting a
+// NON-empty `-wal` safe on any store: those frames are committed data, and a
+// `cp` of a live database is exactly that shape.)
+//
+// Two measured details the caveat used not to carry, both of which have been
+// misread as faults:
+//
+//   - the sidecars take the DATABASE FILE'S OWN mode, because SQLite copies it —
+//     a 0600 store yields 0600 sidecars, a 0644 one yields 0644. This path
+//     deliberately does not call secretfile.TightenSQLiteSidecars the way Open
+//     does: tightening is a WRITE to something beside a store this process does
+//     not own, and an empty `-wal` leaks nothing to tighten.
+//   - the open requires a WRITABLE DIRECTORY, not merely a readable file. A
+//     read-only FILE (0444) in a writable directory is fine; a database inside a
+//     0500 directory fails at the epoch read with "attempt to write a readonly
+//     database (1544)", which reads like a broken store and is not one.
 func OpenReadOnly(dsn string, nowMs func() int64) (*Store, error) {
 	if nowMs == nil {
 		return nil, errors.New("store: OpenReadOnly requires a clock (a read-only diagnostic passes store.WallClockMs)")
@@ -549,7 +579,7 @@ func OpenReadOnly(dsn string, nowMs func() int64) (*Store, error) {
 		_ = db.Close()
 		return nil, &EpochTooNewError{OnDisk: onDiskEpoch, Understood: PlatformSchemaEpoch}
 	}
-	return &Store{db: db, nowMs: nowMs}, nil
+	return &Store{db: db, nowMs: nowMs, readOnly: true}, nil
 }
 
 // applySchemaDDL creates every table and index this build declares, over a
@@ -661,8 +691,20 @@ func applySchemaDDL(db *sql.DB) error {
 }
 
 // Close flushes the WAL (best-effort) and closes the database handle.
+//
+// A handle from OpenReadOnly does NOT checkpoint. That call's whole contract is
+// that it cannot change anything about the store, and a TRUNCATE checkpoint is a
+// write — to the `-wal` of a database this process does not own, potentially
+// while a live feeder is mid-transaction on it. It fails on a `mode=ro` handle
+// and the error is discarded, so it looked harmless; it was not silent, though.
+// Measured, every OpenReadOnly close moved the store's `PRAGMA data_version` on
+// an unrelated connection — the counter that means "somebody committed" — which
+// made `-store-check`'s own torn-read witness accuse the store of moving under a
+// report whose only writer was the report itself.
 func (s *Store) Close() error {
-	_, _ = s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	if !s.readOnly {
+		_, _ = s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	}
 	return s.db.Close()
 }
 

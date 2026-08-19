@@ -897,3 +897,204 @@ func TestTheSeedsTruncationPointsAtSomethingThatExists(t *testing.T) {
 		t.Errorf("%d adoption(s) went unnamed by the log, want exactly the 5 the truncation accounts for", unnamed)
 	}
 }
+
+// TestInspectDeviceFirstSeenReadsALedgerWhoseOriginColumnIsPending is #199 at the
+// store level: the table arrived in one build and `origin` in the next, so there
+// is a real file shape — the exact one an operator inspects immediately BEFORE
+// that upgrade — where the table is there and the column is not.
+//
+// listDeviceFirstSeen selected `origin` unconditionally, so the query failed with
+// "no such column: origin" and this call returned a ZERO ledger: Present,
+// Mirrored, Answered, Unverified and the whole pending seed plan discarded
+// together with the one query that could not run. The report that consumes it
+// printed a single error line and its caller exited 0.
+func TestInspectDeviceFirstSeenReadsALedgerWhoseOriginColumnIsPending(t *testing.T) {
+	ctx := context.Background()
+	path := stagePreLedgerStore(t, fsGoodValue)
+
+	// Boot once so the ledger exists and holds the adopted row...
+	s, err := Open(path, func() int64 { return fsInternalAppNow })
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// ...then take the column away, which is the file an unupgraded box has.
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE device_first_seen DROP COLUMN origin`); err != nil {
+		t.Fatalf("forge the pre-origin shape: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("raw close: %v", err)
+	}
+
+	ro, err := OpenReadOnly(path, func() int64 { return fsInternalAppNow })
+	if err != nil {
+		t.Fatalf("OpenReadOnly: %v", err)
+	}
+	t.Cleanup(func() { _ = ro.Close() })
+
+	ledger, err := ro.InspectDeviceFirstSeen(ctx)
+	if err != nil {
+		t.Fatalf("InspectDeviceFirstSeen went blind on the shape it exists to inspect: %v", err)
+	}
+	if !ledger.Present {
+		t.Fatal("the ledger table is on this store and was reported absent")
+	}
+	if len(ledger.Rows) != 1 {
+		t.Fatalf("rows = %+v, want the one adopted row", ledger.Rows)
+	}
+	if ledger.Rows[0].DeviceID != preLedgerDeviceID {
+		t.Fatalf("row names %q, want %q", ledger.Rows[0].DeviceID, preLedgerDeviceID)
+	}
+	// A store with nowhere to record provenance reads as `unrecorded`, which is
+	// what a blank means everywhere else in this file — not as an observation.
+	if ledger.Rows[0].Origin != FirstSeenUnrecorded {
+		t.Fatalf("origin = %q, want %q for a store whose origin column does not exist yet",
+			ledger.Rows[0].Origin, FirstSeenUnrecorded)
+	}
+	if ledger.Unverified != 1 {
+		t.Fatalf("unverified = %d, want 1: a value with no recorded provenance may not be rendered as an instant",
+			ledger.Unverified)
+	}
+	if ledger.Mirrored != 1 || ledger.Answered != 1 {
+		t.Fatalf("census = %d mirrored / %d answered, want 1/1 — the counts used to be discarded with the listing",
+			ledger.Mirrored, ledger.Answered)
+	}
+}
+
+// TestInspectDeviceFirstSeenReturnsWhatItReadBesideAnError is the posture the
+// early returns cost: a census that fails one query answers with the rest of the
+// census AND the error, so a caller can print a partial answer rather than
+// silence. The fixture breaks only the row SCAN — SQLite keeps a non-numeric
+// string in an INTEGER-affinity column verbatim — so the counts and the seed plan
+// are unaffected and the listing alone fails.
+func TestInspectDeviceFirstSeenReturnsWhatItReadBesideAnError(t *testing.T) {
+	ctx := context.Background()
+	path := stagePreLedgerStore(t, fsGoodValue)
+	s, err := Open(path, func() int64 { return fsInternalAppNow })
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE device_first_seen SET first_seen = 'not-an-instant'`); err != nil {
+		t.Fatalf("plant the unscannable value: %v", err)
+	}
+	ledger, err := s.InspectDeviceFirstSeen(ctx)
+	if err == nil {
+		t.Fatal("a ledger row that cannot be scanned was reported as readable")
+	}
+	if !ledger.Present {
+		t.Fatalf("the census was discarded with the listing error: %+v", ledger)
+	}
+	if ledger.Mirrored != 1 {
+		t.Fatalf("mirrored = %d, want 1 — the counts were read before the listing failed", ledger.Mirrored)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+// TestInspectDeviceFirstSeenKeepsTheListingWhenTheSEEDPLANFails is the direction
+// the "returns what it did read" posture did NOT cover.
+//
+// Reordering the queries so the listing ran LAST did not stop the census losing
+// half of itself; it only chose a different half. On a store whose pre-ledger
+// `first_seen` column holds a value SQLite kept verbatim in an INTEGER-affinity
+// column — an ordinary pre-upgrade file, and the reason this call exists — the
+// SEED PLAN fails, and the early return then threw away the row listing: the half
+// the boot log's truncation referral names ("`waiveo-feeder -store-check <store>`
+// lists every ledger row and its origin"). Three readable rows came back as zero.
+//
+// The fixture breaks the plan and leaves the ledger perfectly readable, which is
+// what makes the assertion sharp: every row must still come back.
+func TestInspectDeviceFirstSeenKeepsTheListingWhenTheSEEDPLANFails(t *testing.T) {
+	ctx := context.Background()
+	path := stagePreLedgerStore(t, fsGoodValue)
+	s, err := Open(path, func() int64 { return fsInternalAppNow })
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	// A second mirror row whose PRE-LEDGER column cannot be scanned. The ledger
+	// itself is untouched.
+	const brokenDevice = "01J9PLANBR3AK1NGD3V1CE001"
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO discovered_devices
+		  (device_id, relay_id, scope_node, driver, native_id, device_class,
+		   name, address, model, serial, first_seen, last_seen, entities, open_ports, relay_last_seen)
+		VALUES (?, 'relay-a', 'site', 'roku-ecp', 'uuid:broken', 'media-player',
+		        'Broken', '192.168.50.99', '', '', 'not-an-instant', 1787098400000, '[]', '[]', 0)`,
+		brokenDevice); err != nil {
+		t.Fatalf("plant the unscannable pre-ledger value: %v", err)
+	}
+
+	ledger, err := s.InspectDeviceFirstSeen(ctx)
+	if err == nil {
+		t.Fatal("a seed plan that could not be produced was reported as produced")
+	}
+	if ledger.PendingKnown {
+		t.Fatal("a seed plan that failed is marked as known; an empty plan would then read as 'the boot seeds nothing'")
+	}
+	if !ledger.RowsComplete {
+		t.Fatalf("the listing is marked incomplete, but only the PLAN failed: %v", err)
+	}
+	if len(ledger.Rows) != 1 || ledger.Rows[0].DeviceID != preLedgerDeviceID {
+		t.Fatalf("rows = %+v, want the one ledger row — a plan failure must not discard the listing", ledger.Rows)
+	}
+	if !ledger.CountsKnown || ledger.Mirrored != 2 || ledger.Answered != 1 {
+		t.Fatalf("census = %d mirrored / %d answered (known=%v), want 1 of 2",
+			ledger.Mirrored, ledger.Answered, ledger.CountsKnown)
+	}
+}
+
+// TestListDeviceFirstSeenKeepsTheRowsItAlreadyRead: the scan loop returned
+// `nil, err` on the first row it could not read, throwing away every row already
+// scanned. A two-hundred-row ledger whose LAST row holds a pre-ledger string
+// listed none of them — the same "lose everything to one bad row" shape as the
+// caller, one level down, and enough to defeat the caller's fix on its own.
+func TestListDeviceFirstSeenKeepsTheRowsItAlreadyRead(t *testing.T) {
+	ctx := context.Background()
+	path := stagePreLedgerStore(t, fsGoodValue)
+	s, err := Open(path, func() int64 { return fsInternalAppNow })
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	// Two readable rows sorting BEFORE the unreadable one (the listing is ordered
+	// by device_id), so a loop that aborts on the bad row has already scanned them.
+	for _, id := range []string{"01J9AAAAREADABLER0W000001", "01J9AAAAREADABLER0W000002"} {
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT INTO device_first_seen (device_id, first_seen, origin) VALUES (?, 1787098315675, 'planted')`,
+			id); err != nil {
+			t.Fatalf("plant %s: %v", id, err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO device_first_seen (device_id, first_seen, origin) VALUES ('01J9ZZZZUNSCANNABLE00001', 'not-an-instant', 'planted')`); err != nil {
+		t.Fatalf("plant the unscannable row: %v", err)
+	}
+
+	rows, err := listDeviceFirstSeen(ctx, s.db)
+	if err == nil {
+		t.Fatal("an unreadable row was reported as read")
+	}
+	if !strings.Contains(err.Error(), "1 row(s) could not be read") {
+		t.Fatalf("the error does not say how many rows were lost: %v", err)
+	}
+	// The two readable rows plus the pre-ledger fixture's own row: everything the
+	// listing COULD read.
+	if len(rows) != 3 {
+		t.Fatalf("listed %d row(s), want 3 — one unreadable row must cost that row and nothing else: %+v", len(rows), rows)
+	}
+	for _, r := range rows {
+		if r.DeviceID == "01J9ZZZZUNSCANNABLE00001" {
+			t.Fatalf("the unreadable row was listed anyway: %+v", r)
+		}
+	}
+}

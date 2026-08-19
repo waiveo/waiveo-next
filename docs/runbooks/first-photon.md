@@ -73,19 +73,64 @@ transaction, touching nothing else, and leaves an already-conforming store
 completely alone. Look before you restart anyway:
 
 ```
-# on the box, as the waiveo user, with the feeder still running the old build
-sudo -u waiveo /opt/waiveo-next/bin/waiveo-feeder -store-check
+# on the box, as the waiveo user, with the feeder still running the old build.
+# PASS THE PATH. The default store path is relative to the working directory and
+# `sudo` does not change directory, so a command with no path reports on whatever
+# `.dev/feeder-store.db` resolves to from wherever you happen to be standing.
+sudo -u waiveo /opt/waiveo-next/bin/waiveo-feeder -store-check /opt/waiveo-next/.dev/feeder-store.db
 ```
 
-It writes nothing. Three outcomes:
+The flag must come BEFORE the path: `waiveo-feeder <path> -store-check` leaves the
+flag unparsed, and the binary refuses rather than starting the feeder against the
+store you meant to inspect.
 
-- *"every row id is already a canonical ULID"* — nothing to do; restart normally.
-- A list of `old -> new` rewrites — that is exactly what the next boot will
-  change, and the ids are derived from the old ones, so they are recognisable.
-  Restart and confirm the same list in `journalctl -u waiveo-feeder`.
-- A refusal (non-zero exit) — **stop.** The feeder will decline to start against
-  this store. Nothing has been changed. Capture the output and the store file
-  before doing anything else.
+**Check the first line of the report.** It names the absolute path that was read
+and the build that read it; if that is not the file you meant, nothing else in
+the report is about your box.
+
+It changes nothing in the store. It does leave `-shm`/`-wal` sidecars beside it,
+which is normal for any reader of a WAL database — do not delete a sidecar you
+did not create, and never delete a non-empty `-wal` (those frames are committed
+data; `pragma integrity_check` answers "ok" on the emptied file afterwards).
+
+Read the last line, `VERDICT:`, and the exit code — they say the same thing:
+
+- **exit 0**, *"VERDICT: NOTHING TO DO"* — every section ran and answered, and
+  the next boot changes nothing. Restart normally.
+- **exit 2**, *"VERDICT: WORK PENDING"* — every section ran and answered, and the
+  report lists what the boot will change (tables, columns, `old -> new` row-id
+  rewrites, the first-seen seed, the events its retention sweep deletes) or what
+  needs a person (schema drift, a declined org root, refused first-seen values, a
+  store that moved while the report was being taken). The rewritten ids are
+  derived from the old ones, so they are recognisable: restart and confirm the
+  same list in `journalctl -u waiveo-feeder`.
+- **exit 1**, *"VERDICT: INCOMPLETE"* — **stop.** Some section could not produce
+  its answer (an unreadable ledger, an unopenable event log, a path holding no
+  store at all), or the next boot will not serve. A missing section is a refusal,
+  not a pass: do not restart until it is understood. Nothing has been changed —
+  capture the output and the store file before doing anything else.
+
+  **A command line this binary would not parse also exits 1** — a misspelled
+  flag, an unknown flag, `-h`. None of them inspected a store, and none of them
+  prints a `VERDICT:` line. If you are gating a deploy on the exit status, the
+  absence of that line is the tell: `-store-chek` used to exit 2 and read as
+  "work pending, deploy after reading".
+
+Two of those readings used to be one: everything that was not one of three
+specific throws exited 0, including a report about a file the check never opened.
+
+**Running it against the LIVE store is supported and is what this step asks for
+— and it now exits 2 rather than 0 on a busy box.** The report is taken section
+by section with no snapshot, so a feeder writing underneath it can leave two
+lines describing different states of the store. The check watches for that and
+says so (`NOTE: … CHANGED while this report was being taken`). That is not a
+fault in the store; it means only a person can decide whether the reading is good
+enough to act on. If you want a clean 0, stop the feeder first:
+
+```
+sudo systemctl stop waiveo-feeder
+sudo -u waiveo /opt/waiveo-next/bin/waiveo-feeder -store-check /opt/waiveo-next/.dev/feeder-store.db
+```
 
 Take a copy of the store first regardless; it is one file and it is the only
 place authored content lives:

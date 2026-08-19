@@ -383,10 +383,42 @@ type Pruned struct {
 	// Rows is the total number of events deleted.
 	Rows int
 	// ByClass counts the deletions per retention_class, so an operator can see
-	// which tier a sweep actually acted on.
+	// which tier a sweep actually acted on. Only classes something was actually
+	// deleted from appear.
 	ByClass map[string]int
 	// EvictedThrough is the watermark after the sweep.
 	EvictedThrough string
+}
+
+// PrunePlan is what a retention sweep WOULD remove, computed without removing
+// anything — the same shape Pruned reports afterwards, in the future tense.
+//
+// It exists for `waiveo-feeder -store-check`, whose whole contract is "what does
+// the next boot change in this store", answered over a `mode=ro` handle. The
+// boot's FIRST act on the event log is Prune (cmd/waiveo-feeder/main.go), so a
+// check that could only learn the sweep's answer by performing it could not
+// answer at all — and did not: it reported the RETAINED counts, recorded no
+// pending work, and let "VERDICT: NOTHING TO DO … the next boot changes nothing
+// in this store" print over a store whose next boot was about to delete rows
+// from it. On any box that has been up for a while that is not an edge case: the
+// telemetry tier has both a seven-day window and a 4096-row cap, and either one
+// fires on an ordinary working store.
+type PrunePlan struct {
+	// Rows is the total number of events the sweep would delete.
+	Rows int
+	// ByClass counts them per retention_class. Only classes something would
+	// actually be deleted from appear.
+	ByClass map[string]int
+	// EvictsThrough is the greatest event id the sweep would delete — the
+	// watermark the sweep would raise the log to.
+	EvictsThrough string
+	// AtMs is the clock reading the plan was judged against. It is the log's own
+	// injected clock, which for a read-only inspection is the HOST wall clock and
+	// not the app clock the boot will judge against (SEC-066) — so a record close
+	// to its window boundary can legitimately be planned one way here and decided
+	// the other way at the restart. Reported rather than hidden, for the same
+	// reason the first-seen seed plan reports its own.
+	AtMs int64
 }
 
 // Prune applies the retention policy: every event whose class window has
@@ -435,6 +467,11 @@ type Pruned struct {
 // (internal/feeder/contentgc) unlinks files: those bytes are returned to the
 // filesystem the instant they are reclaimed, with no compaction step in between.
 // It is the content store, not this one, that was actually growing without bound.
+// It PLANS the sweep and then applies the plan, rather than deleting as it goes,
+// so that `-store-check`'s PlanPrune and this are not two descriptions of the
+// same rules that can drift apart. The plan is recomputed inside this write
+// transaction — it is never carried in from an earlier read — so what is deleted
+// is what the store holds at the moment of the delete.
 func (l *EventLog) Prune() (Pruned, error) {
 	ctx := context.Background()
 	now := l.nowMs()
@@ -442,32 +479,21 @@ func (l *EventLog) Prune() (Pruned, error) {
 
 	var evicted string
 	if err := l.store.runWriteTx(ctx, func(tx *sql.Tx) error {
-		classes, err := storedRetentionClasses(ctx, tx)
+		out = Pruned{ByClass: map[string]int{}}
+		evicted = ""
+		cuts, err := planRetentionSweep(ctx, tx, l.policy, now)
 		if err != nil {
 			return err
 		}
-		for _, class := range classes {
-			rule := l.policy.For(class)
-			if rule.Window > 0 {
-				cutoff := now - rule.Window.Milliseconds()
-				n, high, err := deleteExpired(ctx, tx, class, cutoff)
-				if err != nil {
-					return err
-				}
-				out.Rows += n
-				out.ByClass[class] += n
-				if high > evicted {
-					evicted = high
-				}
-			}
-			n, high, err := enforceRowCap(ctx, tx, class, rule.MaxRows)
+		for _, cut := range cuts {
+			n, err := applyRetentionCut(ctx, tx, cut)
 			if err != nil {
 				return err
 			}
 			out.Rows += n
-			out.ByClass[class] += n
-			if high > evicted {
-				evicted = high
+			out.ByClass[cut.class] += n
+			if cut.high > evicted {
+				evicted = cut.high
 			}
 		}
 		return recordEvicted(ctx, tx, evicted)
@@ -477,6 +503,36 @@ func (l *EventLog) Prune() (Pruned, error) {
 
 	l.advanceWatermark(evicted)
 	out.EvictedThrough = l.EvictedThrough()
+	return out, nil
+}
+
+// PlanPrune reports what Prune would remove, over a read-only handle, removing
+// nothing. It runs the SAME planner Prune applies, so the two cannot describe
+// the same store differently.
+//
+// The one difference from Prune's answer is the clock and the moment: this reads
+// the log's injected clock now, the boot reads the app's clock then, and rows
+// arrive in between. The plan is what the sweep would do to the store AS IT
+// STANDS — which is exactly the question `-store-check` asks of every other
+// section, and the caveat it prints alongside them.
+func (l *EventLog) PlanPrune() (PrunePlan, error) {
+	ctx := context.Background()
+	now := l.nowMs()
+	out := PrunePlan{ByClass: map[string]int{}, AtMs: now}
+
+	l.store.mu.RLock()
+	defer l.store.mu.RUnlock()
+	cuts, err := planRetentionSweep(ctx, l.store.db, l.policy, now)
+	if err != nil {
+		return PrunePlan{}, err
+	}
+	for _, cut := range cuts {
+		out.Rows += cut.rows
+		out.ByClass[cut.class] += cut.rows
+		if cut.high > out.EvictsThrough {
+			out.EvictsThrough = cut.high
+		}
+	}
 	return out, nil
 }
 
@@ -560,10 +616,148 @@ func (l *EventLog) advanceWatermark(high string) {
 	l.mu.Unlock()
 }
 
+// eventQueryer is the read surface the retention planner needs, satisfied by
+// both *sql.DB (the read-only plan) and *sql.Tx (the sweep that applies it) —
+// which is what lets one planner serve both.
+type eventQueryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// retentionCut is ONE deletion a retention sweep performs: the predicate that
+// selects the rows, and what that predicate matches right now.
+//
+// Splitting the sweep into cuts is what makes it plannable. A cut can be counted
+// without being applied, which is how `-store-check` answers "what does the next
+// boot change" about the event log over a `mode=ro` handle, and the same cut is
+// what Prune hands to DELETE — so there is no second implementation of the rules
+// to drift out of step with the first.
+type retentionCut struct {
+	class string
+	// where is the predicate, WITHOUT the `retention_class = ?` term every cut
+	// carries and every consumer prepends.
+	where string
+	args  []any
+	// rows is how many events the cut matches, and high is the greatest id among
+	// them. Both are read BEFORE any delete: once the rows are gone, that id is
+	// the only surviving record that they existed (EVT-143).
+	rows int
+	high string
+}
+
+// planRetentionSweep computes every deletion the policy calls for over the
+// store as it stands, in the order Prune applies them.
+//
+// The ORDER is load-bearing to the arithmetic, not just to the writes. Prune
+// deletes the window's rows first, so the row cap it then enforces sees a table
+// the window pass has already thinned. A plan that ran both passes over the
+// untrimmed table would count the rows BOTH match twice and report an eviction
+// larger than the boot performs — which for the telemetry tier (a seven-day
+// window AND a 4096-row cap) is the ordinary case, not a corner. So each later
+// cut in a class is narrowed to the rows the earlier ones have not claimed.
+func planRetentionSweep(ctx context.Context, q eventQueryer, policy events.RetentionPolicy, now int64) ([]retentionCut, error) {
+	classes, err := storedRetentionClasses(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	var cuts []retentionCut
+	for _, class := range classes {
+		rule := policy.For(class)
+		// survives is the predicate for "not already claimed by an earlier cut in
+		// this class"; empty means nothing has been claimed yet.
+		survives, survivesArgs := "", []any(nil)
+		if rule.Window > 0 {
+			cutoff := now - rule.Window.Milliseconds()
+			cut, err := planRetentionCut(ctx, q, class, `ts < ?`, []any{cutoff})
+			if err != nil {
+				return nil, err
+			}
+			if cut.rows > 0 {
+				cuts = append(cuts, cut)
+			}
+			survives, survivesArgs = `ts >= ?`, []any{cutoff}
+		}
+		cut, ok, err := planRowCapCut(ctx, q, class, rule.MaxRows, survives, survivesArgs)
+		if err != nil {
+			return nil, err
+		}
+		if ok && cut.rows > 0 {
+			cuts = append(cuts, cut)
+		}
+	}
+	return cuts, nil
+}
+
+// planRetentionCut counts what a predicate matches, and the greatest id among
+// them, without touching a row.
+func planRetentionCut(ctx context.Context, q eventQueryer, class, where string, args []any) (retentionCut, error) {
+	cut := retentionCut{class: class, where: where, args: args}
+	var high sql.NullString
+	if err := q.QueryRowContext(ctx,
+		`SELECT COUNT(*), MAX(id) FROM events WHERE retention_class = ? AND `+where,
+		append([]any{class}, args...)...).Scan(&cut.rows, &high); err != nil {
+		return retentionCut{}, fmt.Errorf("store: plan the retention cut for class %q: %w", class, err)
+	}
+	cut.high = high.String
+	return cut, nil
+}
+
+// planRowCapCut computes the cut that trims class to at most maxRows events,
+// oldest-first. A maxRows of 0 (or less) is uncapped and cuts nothing — which is
+// how the audit tier is configured, so an audit record is never evicted to admit
+// another one.
+//
+// The floor is derived as "the oldest id among the maxRows newest", so the cut
+// is a single indexed range under (retention_class, id) rather than a
+// row-count-then-delete pass that could race its own count. survives narrows
+// both halves of that to the rows an earlier cut in the same sweep has not
+// already claimed (see planRetentionSweep).
+func planRowCapCut(ctx context.Context, q eventQueryer, class string, maxRows int, survives string, survivesArgs []any) (retentionCut, bool, error) {
+	if maxRows <= 0 {
+		return retentionCut{}, false, nil
+	}
+	keptWhere := `1`
+	if survives != "" {
+		keptWhere = survives
+	}
+	floorArgs := append(append([]any{class}, survivesArgs...), maxRows)
+	var keepFrom sql.NullString
+	if err := q.QueryRowContext(ctx,
+		`SELECT MIN(id) FROM (SELECT id FROM events WHERE retention_class = ? AND `+keptWhere+` ORDER BY id DESC LIMIT ?)`,
+		floorArgs...).Scan(&keepFrom); err != nil {
+		return retentionCut{}, false, fmt.Errorf("store: find the row-cap floor for class %q: %w", class, err)
+	}
+	if !keepFrom.Valid {
+		return retentionCut{}, false, nil
+	}
+	where, args := `id < ?`, []any{keepFrom.String}
+	if survives != "" {
+		where += ` AND ` + survives
+		args = append(args, survivesArgs...)
+	}
+	cut, err := planRetentionCut(ctx, q, class, where, args)
+	if err != nil {
+		return retentionCut{}, false, err
+	}
+	return cut, true, nil
+}
+
+// applyRetentionCut performs one planned cut, returning how many rows went.
+func applyRetentionCut(ctx context.Context, tx *sql.Tx, cut retentionCut) (int, error) {
+	res, err := tx.ExecContext(ctx,
+		`DELETE FROM events WHERE retention_class = ? AND `+cut.where,
+		append([]any{cut.class}, cut.args...)...)
+	if err != nil {
+		return 0, fmt.Errorf("store: apply the retention cut for class %q: %w", cut.class, err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // storedRetentionClasses lists the retention classes events are actually stored
 // under, ascending.
-func storedRetentionClasses(ctx context.Context, tx *sql.Tx) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT retention_class FROM events ORDER BY retention_class ASC`)
+func storedRetentionClasses(ctx context.Context, q queryer) ([]string, error) {
+	rows, err := q.QueryContext(ctx, `SELECT DISTINCT retention_class FROM events ORDER BY retention_class ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list event retention classes: %w", err)
 	}
@@ -579,64 +773,22 @@ func storedRetentionClasses(ctx context.Context, tx *sql.Tx) ([]string, error) {
 	return out, rows.Err()
 }
 
-// deleteExpired removes every event of class recorded strictly before cutoff,
-// returning how many went and the highest id among them. The highest id is read
-// BEFORE the delete, in the same transaction, because it is the only record that
-// those events ever existed once the rows are gone.
-func deleteExpired(ctx context.Context, tx *sql.Tx, class string, cutoff int64) (int, string, error) {
-	var high sql.NullString
-	if err := tx.QueryRowContext(ctx,
-		`SELECT MAX(id) FROM events WHERE retention_class = ? AND ts < ?`, class, cutoff).Scan(&high); err != nil {
-		return 0, "", fmt.Errorf("store: find expiring events of class %q: %w", class, err)
-	}
-	if !high.Valid {
-		return 0, "", nil
-	}
-	res, err := tx.ExecContext(ctx,
-		`DELETE FROM events WHERE retention_class = ? AND ts < ?`, class, cutoff)
-	if err != nil {
-		return 0, "", fmt.Errorf("store: expire events of class %q: %w", class, err)
-	}
-	n, _ := res.RowsAffected()
-	return int(n), high.String, nil
-}
-
 // enforceRowCap trims class to at most maxRows events, oldest-first, returning
-// the highest id it removed. A maxRows of 0 (or less) is uncapped and removes
-// nothing — which is how the audit tier is configured, so an audit record is
-// never evicted to admit another one.
+// how many went and the highest id among them.
 //
-// The cutoff is derived as "the oldest id among the maxRows newest", so the
-// delete is a single indexed range under (retention_class, id) rather than a
-// row-count-then-delete pass that could race its own count.
+// It is the APPEND path's cap enforcement (one class, no window pass), expressed
+// through the same plan-then-apply pair the sweep uses, so "which rows are over
+// the cap" has exactly one implementation in this file.
 func enforceRowCap(ctx context.Context, tx *sql.Tx, class string, maxRows int) (int, string, error) {
-	if maxRows <= 0 {
-		return 0, "", nil
+	cut, ok, err := planRowCapCut(ctx, tx, class, maxRows, "", nil)
+	if err != nil || !ok || cut.rows == 0 {
+		return 0, "", err
 	}
-	var keepFrom sql.NullString
-	if err := tx.QueryRowContext(ctx,
-		`SELECT MIN(id) FROM (SELECT id FROM events WHERE retention_class = ? ORDER BY id DESC LIMIT ?)`,
-		class, maxRows).Scan(&keepFrom); err != nil {
-		return 0, "", fmt.Errorf("store: find the row-cap floor for class %q: %w", class, err)
-	}
-	if !keepFrom.Valid {
-		return 0, "", nil
-	}
-	var high sql.NullString
-	if err := tx.QueryRowContext(ctx,
-		`SELECT MAX(id) FROM events WHERE retention_class = ? AND id < ?`, class, keepFrom.String).Scan(&high); err != nil {
-		return 0, "", fmt.Errorf("store: find events over the row cap for class %q: %w", class, err)
-	}
-	if !high.Valid {
-		return 0, "", nil
-	}
-	res, err := tx.ExecContext(ctx,
-		`DELETE FROM events WHERE retention_class = ? AND id < ?`, class, keepFrom.String)
+	n, err := applyRetentionCut(ctx, tx, cut)
 	if err != nil {
-		return 0, "", fmt.Errorf("store: trim class %q to its row cap: %w", class, err)
+		return 0, "", err
 	}
-	n, _ := res.RowsAffected()
-	return int(n), high.String, nil
+	return n, cut.high, nil
 }
 
 // recordEvicted raises the PERSISTED eviction watermark to high, in the caller's

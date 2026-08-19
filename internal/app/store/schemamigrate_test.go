@@ -302,8 +302,15 @@ func TestInspectSchemaReportsWhatTheNextOpenWillDo(t *testing.T) {
 }
 
 // TestInspectSchemaOnAPathWithNoStore: `-store-check` runs against whatever path
-// an operator types, and a path with no store yet is not an error — Open will
-// create one already carrying every column.
+// an operator types — which was FALSE when this sentence was written (the flag
+// took no path at all and reported on the cwd-relative default, #195) and is
+// true now — and a path with no store yet is not an error at THIS level: Open
+// would create one already carrying every column.
+//
+// The check one level up is stricter about the same fact, deliberately: it
+// refuses to describe a path that holds nothing, because "every column this
+// build declares is present" printed over a file that does not exist is how a
+// mistyped path reads as a healthy box.
 //
 // The second assertion is the one with teeth: the path must still be EMPTY
 // afterwards. A report that answers by creating the thing it was asked about is

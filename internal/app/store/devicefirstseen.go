@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	stdlog "log"
 )
@@ -343,15 +344,50 @@ type DeviceFirstSeenRow struct {
 // state box .12 was in and which `-store-check` could not name: the column pass
 // deliberately says nothing about an absent TABLE (schemamigrate.go's
 // planSchemaColumns), so the ledger has to report its own pendency.
+//
+// # Every number carries a flag saying whether it was READ
+//
+// This value is returned beside an error rather than instead of one, so a caller
+// printing it is printing a PARTIAL census — and a partial census whose gaps look
+// like zeroes is worse than no census. A false `PresentKnown` and a zero
+// `Present` are the same two bits as "the table is genuinely absent"; a failed
+// listing and an empty ledger are both `len(Rows) == 0`. `-store-check` printed
+// exactly that: "device first-seen ledger: 0 row(s); 3 of 4 mirrored device(s)
+// have a stored first_seen", a fabricated count of a three-row ledger, one line
+// under a ratio that contradicts it arithmetically.
+//
+// So each answer travels with the bit that says it IS an answer. A caller must
+// not state a number whose flag is false — it must say it could not read it.
 type DeviceFirstSeenLedger struct {
-	Present  bool
-	Rows     []DeviceFirstSeenRow
-	Mirrored int
-	Answered int
-	Pending  DeviceFirstSeenBackfill
+	Present bool
+	// PresentKnown is false when this census could not determine whether the
+	// ledger table is on the store at all. Present is then meaningless, and in
+	// particular is NOT "the table is absent".
+	PresentKnown bool
+	Rows         []DeviceFirstSeenRow
+	// RowsComplete is false when the listing failed — either outright, or partway
+	// through, in which case Rows holds the rows read BEFORE the failure and
+	// there may be more. It is never "the ledger holds len(Rows) rows".
+	RowsComplete bool
+	Mirrored     int
+	Answered     int
+	// CountsKnown covers Mirrored AND Answered together, because they are only
+	// ever said together, as a ratio ("N of M mirrored devices have a stored
+	// first_seen"). A ratio with one half missing is not a number an operator can
+	// act on, so one flag gates the pair rather than tempting a caller to print
+	// half of it.
+	CountsKnown bool
+	Pending     DeviceFirstSeenBackfill
+	// PendingKnown is false when the seed the next open would perform could not be
+	// planned. An empty Pending is then NOT "the boot will seed nothing" — it is
+	// "this check does not know what the boot will seed", which is the opposite
+	// reading of the most consequential thing a boot does.
+	PendingKnown bool
 	// Unverified counts the rows whose origin is NOT `planted` — the ones no
 	// surface may render as an exact instant. It is carried rather than recounted
-	// by each caller so the headline number and the listing cannot disagree.
+	// by each caller so the headline number and the listing cannot disagree. It
+	// counts over Rows, so it inherits RowsComplete: a zero under an incomplete
+	// listing means "none among the rows that were read".
 	Unverified int
 }
 
@@ -585,11 +621,16 @@ func reportDeviceFirstSeenBackfill(dsn string, m DeviceFirstSeenBackfill) {
 	// off the screen. Both referrals below name what actually lists the rest —
 	// adoptions are durable rows `-store-check` enumerates, refusals stay pending
 	// forever and are enumerated as pending.
+	//
+	// Every referral below NAMES the store. A referral that does not is one an
+	// operator follows against whatever file their shell's cwd resolves — the
+	// check took no path argument at all until #195 was fixed, so these lines
+	// prescribed a command that could not be aimed at the store they are about.
 	const shown = 20
 	for i, a := range m.Adopted {
 		if i == shown {
 			stdlog.Printf("store: … and %d more adopted, each marked origin=%s in the ledger; `waiveo-feeder "+
-				"-store-check` lists every ledger row and its origin", len(m.Adopted)-shown, FirstSeenAdopted)
+				"-store-check %s` lists every ledger row and its origin", len(m.Adopted)-shown, FirstSeenAdopted, dsn)
 			break
 		}
 		stdlog.Printf("store: adopted first_seen %d for device %s from the pre-ledger column (origin=%s) — %s",
@@ -597,13 +638,13 @@ func reportDeviceFirstSeenBackfill(dsn string, m DeviceFirstSeenBackfill) {
 	}
 	for i, r := range m.Refused {
 		if i == shown {
-			stdlog.Printf("store: … and %d more refused; `waiveo-feeder -store-check` lists them in full",
-				len(m.Refused)-shown)
+			stdlog.Printf("store: … and %d more refused; `waiveo-feeder -store-check %s` lists them in full",
+				len(m.Refused)-shown, dsn)
 			break
 		}
 		stdlog.Printf("store: refused first_seen %d for device %s: %s; the device reads as having NO age — the "+
-			"value stays on the file and is named by every `-store-check` until a report on a working clock "+
-			"plants a real one", r.FirstSeen, r.DeviceID, r.Reason)
+			"value stays on the file and is named by every `waiveo-feeder -store-check %s` until a report on a "+
+			"working clock plants a real one", r.FirstSeen, r.DeviceID, r.Reason, dsn)
 	}
 	stdlog.Printf("store: seeded the device first-seen ledger in %s: %d of %d mirrored device(s) adopted from the "+
 		"pre-ledger column (origin=%s), %d refused as implausible; an adopted value is %s, and nothing moves it "+
@@ -638,19 +679,87 @@ func reportDeviceFirstSeenBackfill(dsn string, m DeviceFirstSeenBackfill) {
 // sentence in the boot log that pointed here promised the rows, and the rows were
 // exactly what an operator needs: `origin` is what says which of them may be
 // rendered as an instant and which are candidates for a retire.
+//
+// # Every query is ASKED, and each answer says whether it arrived (#199)
+//
+// Every failure here used to return `DeviceFirstSeenLedger{}` — Present,
+// Mirrored, Answered, Unverified and the whole PENDING seed plan discarded
+// together with the one query that failed. On the pre-upgrade shape
+// (device_first_seen present, `origin` still pending) that turned the section
+// the boot log's truncation referral points AT into a single error line, and
+// `-store-check` exited 0 over it.
+//
+// Making the listing column-aware fixed that ONE shape. Reordering the queries so
+// the listing ran last did not fix the posture, it only chose a different half to
+// throw away: a store whose pre-ledger `first_seen` column is gone, or holds a
+// value that will not scan, fails the seed PLAN — and the early return then
+// discarded the listing, which is the very half the boot log's referral names
+// ("`waiveo-feeder -store-check <store>` lists every ledger row and its origin").
+// One arrangement lost the irreversible-seed plan, the other lost the rows.
+//
+// So there is no early return left. Every query is attempted, whatever the ones
+// before it did; each answer sets its own `…Known` flag; and the failures come
+// back joined, in one error, naming every gap. Order is now cosmetic — nothing
+// downstream of a failure is skipped — which is the only arrangement under which
+// this call cannot be made to lose a half by choosing the right fixture.
 func (s *Store) InspectDeviceFirstSeen(ctx context.Context) (DeviceFirstSeenLedger, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var out DeviceFirstSeenLedger
-	present, err := tableExists(ctx, s.db, "device_first_seen")
-	if err != nil {
-		return DeviceFirstSeenLedger{}, err
+	var (
+		out  DeviceFirstSeenLedger
+		errs []error
+	)
+	if present, err := tableExists(ctx, s.db, "device_first_seen"); err != nil {
+		errs = append(errs, fmt.Errorf("store: look for the device first-seen ledger table: %w", err))
+	} else {
+		out.Present, out.PresentKnown = present, true
 	}
-	out.Present = present
-	if present {
-		if out.Rows, err = listDeviceFirstSeen(ctx, s.db); err != nil {
-			return DeviceFirstSeenLedger{}, err
+
+	switch mirror, err := tableExists(ctx, s.db, "discovered_devices"); {
+	case err != nil:
+		errs = append(errs, fmt.Errorf("store: look for the discovered-device mirror table: %w", err))
+	case !mirror:
+		// No mirror at all: nothing to answer for, and 0-of-0 IS the answer rather
+		// than a gap.
+		out.CountsKnown = true
+	default:
+		counted := true
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM discovered_devices`).Scan(&out.Mirrored); err != nil {
+			errs = append(errs, fmt.Errorf("store: count the discovered-device mirror: %w", err))
+			counted = false
+		}
+		switch {
+		case !out.PresentKnown:
+			// Whether the ledger table exists is unknown, so how much of the mirror
+			// it answers for is unknowable — a zero here would read as "nothing is
+			// answered", which is a different fact entirely.
+			counted = false
+		case out.Present:
+			if err := s.db.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM discovered_devices d
+				   JOIN device_first_seen l ON l.device_id = d.device_id`).Scan(&out.Answered); err != nil {
+				errs = append(errs, fmt.Errorf("store: count the answered mirror rows: %w", err))
+				counted = false
+			}
+		}
+		out.CountsKnown = counted
+	}
+
+	if pending, err := planDeviceFirstSeenBackfill(ctx, s.db, s.nowMs()); err != nil {
+		errs = append(errs, err)
+	} else {
+		out.Pending, out.PendingKnown = pending, true
+	}
+
+	if out.Present {
+		rows, err := listDeviceFirstSeen(ctx, s.db)
+		out.Rows = rows
+		if err != nil {
+			errs = append(errs, err)
+		} else {
+			out.RowsComplete = true
 		}
 		for _, r := range out.Rows {
 			if !FirstSeenIsObserved(r.Origin) {
@@ -658,55 +767,82 @@ func (s *Store) InspectDeviceFirstSeen(ctx context.Context) (DeviceFirstSeenLedg
 			}
 		}
 	}
-	mirror, err := tableExists(ctx, s.db, "discovered_devices")
-	if err != nil {
-		return DeviceFirstSeenLedger{}, err
-	}
-	if mirror {
-		if err := s.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM discovered_devices`).Scan(&out.Mirrored); err != nil {
-			return DeviceFirstSeenLedger{}, fmt.Errorf("store: count the discovered-device mirror: %w", err)
-		}
-		if present {
-			if err := s.db.QueryRowContext(ctx,
-				`SELECT COUNT(*) FROM discovered_devices d
-				   JOIN device_first_seen l ON l.device_id = d.device_id`).Scan(&out.Answered); err != nil {
-				return DeviceFirstSeenLedger{}, fmt.Errorf("store: count the answered mirror rows: %w", err)
-			}
-		}
-	}
-	out.Pending, err = planDeviceFirstSeenBackfill(ctx, s.db, s.nowMs())
-	if err != nil {
-		return DeviceFirstSeenLedger{}, err
-	}
-	return out, nil
+	return out, errors.Join(errs...)
 }
 
 // listDeviceFirstSeen reads every ledger row in device-id order, so two readings
 // of an unchanged store are byte-identical and an operator can diff them — the
 // same reason planDeviceFirstSeenBackfill sorts.
+//
+// # `origin` is PROBED, not assumed (#199)
+//
+// The column arrived after the table did, so there is a real store shape — the
+// one an operator inspects immediately before that upgrade — where the table is
+// there and the column is not. Selecting `origin` unconditionally made this
+// query fail with "no such column: origin" on exactly that shape, and the
+// failure took the entire ledger section with it while the check still exited 0.
+//
+// A store missing the column reads every row with origin `unrecorded`, which is
+// what a blank means everywhere else in this file (firstSeenOrigin) and is the
+// truthful answer: nothing recorded where those values came from, because the
+// column that records it does not exist yet. The pending column is named by the
+// schema section of the same report, so the operator is told both halves.
+//
+// # One unreadable row costs that row, and nothing else
+//
+// The scan loop used to `return nil, err` on the first row it could not read,
+// which threw away every row already scanned — so a ledger of two hundred rows
+// whose two-hundredth holds a pre-ledger string listed NONE of them. That is the
+// same "lose the whole answer to one bad row" shape the caller was just fixed
+// for, one level down, and it defeats the fix above it: a caller that faithfully
+// prints what it was handed still prints nothing.
+//
+// So a row that will not scan is counted and skipped, the rest are listed, and
+// the returned error names how many were lost. Rows that WERE read are always
+// returned, error or not; the caller is told the listing is incomplete by the
+// error, never by a short slice it cannot distinguish from an empty ledger.
 func listDeviceFirstSeen(ctx context.Context, q queryer) ([]DeviceFirstSeenRow, error) {
+	hasOrigin, err := columnExists(ctx, q, "device_first_seen", "origin")
+	if err != nil {
+		return nil, fmt.Errorf("store: list the device first-seen ledger: %w", err)
+	}
+	originExpr := `''`
+	if hasOrigin {
+		originExpr = `origin`
+	}
 	rows, err := q.QueryContext(ctx,
-		`SELECT device_id, first_seen, origin FROM device_first_seen ORDER BY device_id`)
+		`SELECT device_id, first_seen, `+originExpr+` FROM device_first_seen ORDER BY device_id`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list the device first-seen ledger: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	var out []DeviceFirstSeenRow
+	var (
+		out      []DeviceFirstSeenRow
+		unread   int
+		firstErr error
+	)
 	for rows.Next() {
 		var (
 			r      DeviceFirstSeenRow
 			origin string
 		)
 		if err := rows.Scan(&r.DeviceID, &r.FirstSeen, &origin); err != nil {
-			return nil, fmt.Errorf("store: list the device first-seen ledger: %w", err)
+			unread++
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
 		r.Origin = firstSeenOrigin(origin)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list the device first-seen ledger: %w", err)
+		return out, fmt.Errorf("store: list the device first-seen ledger: %w", err)
+	}
+	if unread > 0 {
+		return out, fmt.Errorf("store: list the device first-seen ledger: %d row(s) could not be read and are missing from the listing; the first: %w",
+			unread, firstErr)
 	}
 	return out, nil
 }
