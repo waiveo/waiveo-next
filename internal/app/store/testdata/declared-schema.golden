@@ -48,6 +48,7 @@ discovered_devices	first_seen	first_seen INTEGER NOT NULL
 discovered_devices	last_seen	last_seen INTEGER NOT NULL
 discovered_devices	model	model TEXT NOT NULL DEFAULT ''
 discovered_devices	name	name TEXT NOT NULL DEFAULT ''
+discovered_devices	name_rank	name_rank TEXT NOT NULL DEFAULT ''
 discovered_devices	native_id	native_id TEXT NOT NULL
 discovered_devices	open_ports	open_ports TEXT NOT NULL DEFAULT '[]'
 discovered_devices	relay_id	relay_id TEXT NOT NULL

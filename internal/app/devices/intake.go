@@ -50,6 +50,13 @@ const (
 	maxIdentityFieldBytes  = 256
 	maxNameBytes           = 1024
 
+	// maxNameRankBytes bounds REL-110c's `name_rank`. It is an ENUM TOKEN, not
+	// free text, and the longest one this build knows is 8 bytes ("friendly") —
+	// so this cap is generous for a token a later minor adds and still far too
+	// small for anything else. It is a byte bound and NOT a vocabulary check on
+	// purpose; the two guards are split, and validateCandidate says why.
+	maxNameRankBytes = 32
+
 	// maxOpenPortsPerCandidate bounds the numeric list a relay may report for one
 	// device. The scanning lane's own cap is smaller; this is the wire's limit on
 	// a report from any relay, trusted to have that lane or not.
@@ -222,6 +229,31 @@ func validateCandidate(c wire.DeviceCandidate) error {
 		return err
 	}
 	if err := checkField("name", c.Name, maxNameBytes, false); err != nil {
+		return err
+	}
+	// `name_rank` (REL-110c) is the first member off this wire that is a LICENCE
+	// TO REFUSE rather than a value to render, and it is the only one whose
+	// effect outlives the report: the durable mirror stores it and consults it on
+	// every later report from every lane. So it gets TWO guards, deliberately
+	// split, because they answer different questions and belong in different
+	// places.
+	//
+	// HERE, the bound on SIZE. Everything else off this wire is bounded before
+	// it is copied anywhere, and a rank is no different — it lands in a durable
+	// column, so an unbounded token would be an unbounded durable write.
+	//
+	// NOT here, the bound on VOCABULARY, and that is the load-bearing decision.
+	// An unrecognised token is NOT a reason to refuse the report. A refusal here
+	// throws away the whole candidate set (see this file's header: a full-set
+	// replace applied by halves is worse than not applied at all), so one
+	// malformed rank from a newer or a hostile relay would blank a site's device
+	// list — a much bigger lever than the one it is defending. The vocabulary is
+	// clamped instead at the layer that ACTS on the rank
+	// (internal/app/store.nameRankFact), where an unknown token reads as the
+	// bottom of the ladder: it can fill a gap and can refuse nothing, which is
+	// the direction that cannot be weaponised. A relay claiming a rank this
+	// build has never heard of therefore gains exactly nothing by it.
+	if err := checkField("name_rank", c.NameRank, maxNameRankBytes, false); err != nil {
 		return err
 	}
 	// The three learned facts are optional but still bounded and still

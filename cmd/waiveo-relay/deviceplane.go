@@ -15,6 +15,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
 	"github.com/maaxton/waiveo-next/internal/relay/devicetargets"
 	"github.com/maaxton/waiveo-next/internal/relay/ecp"
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
 // devicePlane is the relay's assembled device-control stack.
@@ -137,5 +138,35 @@ func ecpNameRank(src ecp.NameSource) deviceplane.NameRank {
 		return deviceplane.NameRankModel
 	default:
 		return deviceplane.NameRankNone
+	}
+}
+
+// nameRankToken projects the plane's ordered merge rank onto REL-110c's wire
+// token — the OTHER half of the same composition-root job ecpNameRank does, and
+// it lives here beside it for the same reason: internal/shared/wire must not
+// import a relay package, and internal/relay/deviceplane must not learn the
+// contract's spelling of its own private ladder.
+//
+// The ordinal deliberately does not travel; see the token block in
+// internal/shared/wire for why REL-004 forbids that. This is the ONE place the
+// two vocabularies meet, so a rank added to the ladder without a token to carry
+// it is a compile-visible gap here rather than a silent downgrade on the wire.
+//
+// The default arm is NameRankNone's own meaning, and it must stay a real token
+// rather than the empty string: an ABSENT `name_rank` means "this relay does not
+// rank names at all" and a consumer is required to read it that way (REL-110c),
+// so a relay that DOES rank names must never report absence — it would be
+// claiming to be an older peer than it is, and would hand its own report a
+// licence to overwrite a better name it had just refused.
+func nameRankToken(r deviceplane.NameRank) string {
+	switch r {
+	case deviceplane.NameRankFriendly:
+		return wire.CandidateNameRankFriendly
+	case deviceplane.NameRankModel:
+		return wire.CandidateNameRankModel
+	case deviceplane.NameRankMachine:
+		return wire.CandidateNameRankMachine
+	default:
+		return wire.CandidateNameRankNone
 	}
 }

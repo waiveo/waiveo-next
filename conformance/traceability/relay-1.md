@@ -106,6 +106,7 @@ implementation behind it, which is what this note exists to prevent.
 | REL-110 | `contracts/relay-1.md#device-plane` | `REL-110-valid-device-candidate-and-command` | covered |
 | REL-110a | `contracts/relay-1.md#device-plane` | `REL-110-valid-device-candidate-and-command`, `REL-110b-valid-derived-identity-across-relays` | covered |
 | REL-110b | `contracts/relay-1.md#device-plane` | `REL-110b-valid-derived-identity-across-relays` | covered |
+| REL-110c | `contracts/relay-1.md#device-plane` | - | TBD-wave1 |
 | REL-111 | `contracts/relay-1.md#device-plane` | `REL-110-valid-device-candidate-and-command` | covered |
 | REL-111a | `contracts/relay-1.md#device-plane` | `REL-110-valid-device-candidate-and-command`, `REL-110b-valid-derived-identity-across-relays` | covered |
 | REL-112 | `contracts/relay-1.md#device-plane` | `REL-110-valid-device-candidate-and-command` | covered |

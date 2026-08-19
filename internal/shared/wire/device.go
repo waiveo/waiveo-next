@@ -53,6 +53,13 @@ type DeviceCandidatesBody struct {
 // MAN-071), which is the relay's own provenance for the sighting, not a member
 // of the device the app peer lists.
 //
+// NameRank is REL-110c: not a fact ABOUT the device but a fact about `name` —
+// which kind of record on the LAN authored it. It exists because the relay's
+// ranked merge lives in a process whose memory is re-minted at every restart,
+// so without it the app peer's durable mirror can only ever ask whether a
+// reported name is non-empty, and a machine-generated label wins by arriving
+// first after a restart and then sticks. See the token block below.
+//
 // Address, Model and Serial are REL-004 additive members beyond REL-110a's own
 // set, and they are what makes a reported candidate actionable rather than
 // merely countable. `native_id` identifies a device; it does not say where the
@@ -72,12 +79,60 @@ type DeviceCandidate struct {
 	NativeID     string            `json:"native_id"`
 	DeviceClass  string            `json:"device_class"`
 	Name         string            `json:"name,omitempty"`
+	NameRank     string            `json:"name_rank,omitempty"`
 	Address      string            `json:"address,omitempty"`
 	Model        string            `json:"model,omitempty"`
 	Serial       string            `json:"serial,omitempty"`
 	OpenPorts    []int             `json:"open_ports,omitempty"`
 	Entities     []CandidateEntity `json:"entities"`
 }
+
+// Candidate name-rank values (REL-110c): which KIND of record authored `name`,
+// so a consumer that outlives the relay's own memory can refuse a worse-sourced
+// name instead of taking whichever report arrived last.
+//
+// # Why a token and not a number
+//
+// The relay ranks names on an ORDERED ladder
+// (internal/relay/deviceplane.NameRank), and putting that ladder's ordinals on
+// the wire would put its ORDERING in the contract. Inserting a rank later would
+// then renumber the existing values, and REL-004 forbids exactly that — "an
+// existing message field's meaning MUST NOT change". A token names the SOURCE
+// and says nothing about where it sits; each peer keeps its own ordering and a
+// new token is an additive change, the same way `status` and `provenance` are
+// already spelled here.
+//
+// # An unrecognised token is the LOWEST rank, never a refusal
+//
+// A consumer meeting a token a newer relay minted MUST read it as the bottom of
+// its own ladder: a rank is a licence to REFUSE, and a value this side cannot
+// interpret must not be honoured as one. That degrades to "this name can fill a
+// gap but cannot displace a better-sourced one", which is what
+// deviceplane.NameRank's own zero value means — the safe direction.
+//
+// # Absent is NOT `none`
+//
+// The member is optional and omitempty: a relay that predates REL-110c sends
+// nothing, and that is "this peer does not rank names", NOT "this name is
+// unranked". A consumer that collapsed the two would assert a statement no relay
+// made — and would leave itself no way to tell an un-upgraded reporter from a
+// genuinely unranked name.
+const (
+	// CandidateNameRankNone is a name the relay has no opinion about: a lane that
+	// ranks nothing, or a value the relay REMEMBERED rather than just observed.
+	CandidateNameRankNone = "none"
+	// CandidateNameRankMachine is a label the device derived mechanically rather
+	// than one anybody chose — an id, a hostname form, or a lossy rewrite of a
+	// chosen name (a Cast instance truncated to 20 characters with a hex tail).
+	CandidateNameRankMachine = "machine"
+	// CandidateNameRankModel is a factory/model string: it identifies the
+	// product, not the unit.
+	CandidateNameRankModel = "model"
+	// CandidateNameRankFriendly is a record whose label IS the name somebody gave
+	// the device — an AirPlay or Android-TV-remote instance, a HomeKit accessory,
+	// a device's own configured display name.
+	CandidateNameRankFriendly = "friendly"
+)
 
 // CandidateEntity is one addressable object a candidate device exposes
 // (REL-110a): the device-native Key the relay addresses it by, the DeviceClass

@@ -2638,6 +2638,7 @@ func toWireCandidates(cands []deviceplane.Candidate) []wire.DeviceCandidate {
 			NativeID:     c.NativeID,
 			DeviceClass:  c.DeviceClass,
 			Name:         c.Name,
+			NameRank:     nameRankToken(c.NameRank),
 			Address:      c.Address,
 			Model:        c.Model,
 			Serial:       c.Serial,

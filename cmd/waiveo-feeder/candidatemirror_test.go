@@ -674,3 +674,81 @@ func assertLayersAgree(t *testing.T, ctx context.Context, registry *devices.Regi
 			live.DeviceClass, live.Address, live.Name, class, address, name)
 	}
 }
+
+// THE NAME'S SOURCE SURVIVES THE RELAY (REL-110c, #202), driven through the real
+// sink so every hop is exercised: the wire member, rowsFor's carry onto the store
+// row, the durable merge, and the restore that rebuilds the registry from it.
+//
+// The two names are the onn box's real ones on the lab LAN. A relay restart wipes
+// the relay's own ranked merge, and the lane that sweeps first is routinely the
+// Machine-ranked Cast record — so before the rank travelled, the truncation
+// landed on disk and stayed there. The address survived the same restart because
+// the mirror ranks IT; this is that fix applied to the field it was missing on.
+func TestTheReportedNameSourceOutlivesTheRelayThatReportedIt(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "app.db")
+
+	const (
+		displayName = "onn. 4K Streaming Box"
+		castName    = "onn.-4K-Streaming-Bo"
+	)
+
+	first := cmOpenStore(t, path)
+	registry := devices.New(cmSite, func() int64 { return 10_000 })
+	sink := newCandidateMirror(registry, first, store.WallClockMs)
+
+	friendly := cmCandidate(cmNativeA, displayName, "192.168.50.63:8060")
+	friendly.NameRank = wire.CandidateNameRankFriendly
+	if err := sink.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{friendly}); err != nil {
+		t.Fatalf("steady-state report: %v", err)
+	}
+	id := deviceid.Device(cmSite, cmDriver, cmNativeA)
+	assertLayersAgree(t, ctx, registry, first, id, "media-player", "192.168.50.63:8060", displayName)
+
+	// THE RELAY RESTARTS. Its map is re-minted, its first sweep finds only the
+	// Cast record, and it reports the truncation honestly — at the rank that
+	// record deserves.
+	machine := cmCandidate(cmNativeA, castName, "192.168.50.63")
+	machine.NameRank = wire.CandidateNameRankMachine
+	if err := sink.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{machine}); err != nil {
+		t.Fatalf("report from the restarted relay: %v", err)
+	}
+	if after := cmDevice(t, registry, id); after.Name != displayName {
+		t.Fatalf("GET /devices would serve %q after a relay restart, want %q — the truncation is a worse-sourced statement of the same name and the durable rank is what refuses it",
+			after.Name, displayName)
+	}
+	assertLayersAgree(t, ctx, registry, first, id, "media-player", "192.168.50.63:8060", displayName)
+
+	// THE FEEDER RESTARTS TOO, with no relay connected: the registry is rebuilt
+	// from the mirror, and the rank has to be on the FILE for any of this to
+	// mean anything after this point.
+	if err := first.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	second := cmOpenStore(t, path)
+	restored := devices.New(cmSite, func() int64 { return 20_000 })
+	if _, err := restoreDeviceRegistry(ctx, second, restored); err != nil {
+		t.Fatalf("restoreDeviceRegistry: %v", err)
+	}
+	assertLayersAgree(t, ctx, restored, second, id, "media-player", "192.168.50.63:8060", displayName)
+
+	// And the refusal is still live in the NEW process, on nothing but what the
+	// file carried across.
+	revived := newCandidateMirror(restored, second, store.WallClockMs)
+	if err := revived.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{machine}); err != nil {
+		t.Fatalf("post-restart report: %v", err)
+	}
+	assertLayersAgree(t, ctx, restored, second, id, "media-player", "192.168.50.63:8060", displayName)
+
+	// A RENAME STILL LANDS through the whole chain — the property that makes the
+	// refusal safe rather than a permanent pin.
+	renamed := cmCandidate(cmNativeA, "Living Room", "192.168.50.63:8060")
+	renamed.NameRank = wire.CandidateNameRankFriendly
+	if err := revived.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{renamed}); err != nil {
+		t.Fatalf("rename report: %v", err)
+	}
+	assertLayersAgree(t, ctx, restored, second, id, "media-player", "192.168.50.63:8060", "Living Room")
+	if err := second.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+}

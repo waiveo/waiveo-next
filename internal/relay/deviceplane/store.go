@@ -443,16 +443,39 @@ type Candidate struct {
 	Serial       string            `json:"serial,omitempty"`
 	OpenPorts    []int             `json:"open_ports,omitempty"`
 	Entities     []CandidateEntity `json:"entities"`
-	// nameRank is how good the source of Name was, remembered so the NEXT
-	// sighting can be refused if it is worse (keepName). Unexported on purpose:
-	// REL-110a fixes the candidate's member set and the frozen corpus is the
-	// oracle for it, so this is relay-local memory that must never reach the
-	// wire. Making a name survive a relay restart would need an additive
-	// REL-110a member and is a contract change, not this one.
-	nameRank NameRank
+	// NameRank is how good the source of Name was, remembered so the NEXT
+	// sighting can be refused if it is worse (keepName).
+	//
+	// It is EXPORTED, and the reason overturns what this comment used to say.
+	// The old reading was that the rank is relay-local memory that must never
+	// reach the wire, because REL-110a fixes the candidate's member set. That
+	// was only ever half true: the member set is fixed for the members REL-110a
+	// NAMES, and REL-004 licenses an additive optional one — which is how
+	// `address`, `model` and `serial` already got here. Keeping the rank local
+	// made the name the one ranked fact that dies at a relay restart: the
+	// process's whole map is re-minted, so the first post-restart report is
+	// whatever lane swept first, and the app peer's durable mirror had no way to
+	// tell that report from a better one. Measured on the lab box, the address
+	// survived two relay restarts (the mirror ranks it) and the name did not.
+	// So the rank now travels — REL-110c — and cmd/waiveo-relay's
+	// toWireCandidates is the one place it is projected onto the wire.
+	//
+	// `json:"-"` all the same, and that is a DELIBERATE DIVERGENCE from
+	// wire.DeviceCandidate rather than an oversight. This type's tags are the
+	// frozen REL-110 corpus's shape (conformance/corpora/relay-1), and the rank
+	// on the wire is a TOKEN whose ordering is deliberately not on the wire
+	// (wire.CandidateNameRank*), while in here it is an ordered int the merge
+	// compares. Encoding the int would put a shape on the corpus oracle that no
+	// peer ever parses; the projection states the token instead, field by field,
+	// which is what that projection is for.
+	NameRank NameRank `json:"-"`
 	// entitySource is the declaration whose fan-out Entities currently holds —
-	// the Observation.EntitySource that last stated it. Unexported for the same
-	// reason nameRank is: relay-local merge memory, never a wire member.
+	// the Observation.EntitySource that last stated it. Still unexported, for
+	// the reason NameRank no longer qualifies under: this is merge memory with
+	// no consumer beyond this process. Nothing downstream can act on it, so
+	// putting it on the wire would be a member the app peer stores and never
+	// reads — the "KNOWN RESIDUAL" mergeEntities documents needs a member saying
+	// a fan-out was WITHDRAWN, which is a different fact than this one.
 	entitySource string
 }
 
@@ -671,7 +694,7 @@ func (s *Store) Observe(o Observation, atMs int64) {
 		// keepName and keepAddress rank those; keepClass ranked the same defect
 		// for the class first, and each of them still refuses an empty value, so
 		// this is a generalisation of orKeep and not a replacement for it.
-		c.Name, c.nameRank = keepName(o.Name, o.NameRank, c.Name, c.nameRank)
+		c.Name, c.NameRank = keepName(o.Name, o.NameRank, c.Name, c.NameRank)
 		c.Address = keepAddress(o.Address, c.Address)
 		// Model and Serial stay presence-only. They have exactly ONE writer today
 		// (the ECP identification probe), so no second lane can undercut them, and
@@ -711,7 +734,7 @@ func (s *Store) Observe(o Observation, atMs int64) {
 		// Remembered from the first sighting so the SECOND one can be ranked
 		// against it. A name with no rank behind it is indistinguishable from one
 		// nothing vouches for, which is what the merge would then have to assume.
-		nameRank: o.NameRank,
+		NameRank: o.NameRank,
 		// Likewise: which declaration authored this fan-out, so RetainDeclarations
 		// can drop it when that declaration goes away. A candidate first seen by a
 		// lane with no watch records no source, which is right — it has no fan-out

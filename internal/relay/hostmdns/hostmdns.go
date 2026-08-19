@@ -26,6 +26,7 @@ package hostmdns
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"os/exec"
 	"strings"
 	"time"
@@ -134,10 +135,11 @@ func (l *Lane) sweep() {
 		return
 	}
 	type host struct {
-		name     string
-		nameRank deviceplane.NameRank
-		addr     string
-		class    string
+		name      string
+		nameRank  deviceplane.NameRank
+		addr      string
+		class     string
+		classAuth int
 	}
 	best := map[string]*host{}
 	for _, s := range services {
@@ -166,11 +168,12 @@ func (l *Lane) sweep() {
 				h.name, h.nameRank = name, rank
 			}
 		}
-		// The most SPECIFIC class its service types imply. A device advertises
-		// several types (a printer answers _printer AND _http); classFor ranks
-		// them so the specific one wins over the generic.
-		if c := classFor(s.Type); classRank(c) > classRank(h.class) {
-			h.class = c
+		// The best-AUTHORITY class its service types imply, decided by betterClass
+		// for exactly the reason betterName decides the name: a device advertises
+		// several types, they disagree, and the answer must be a function of the
+		// cache rather than of the order avahi happened to list it in.
+		if c := classFor(s.Type); betterClass(classAuthority(s.Type), c, h.classAuth, h.class) {
+			h.class, h.classAuth = c, classAuthority(s.Type)
 		}
 	}
 
@@ -211,9 +214,10 @@ func classFor(serviceType string) string {
 	// definitive home-automation signals a device advertises on its own — a Home
 	// Assistant box showed unclassified until this line because it advertises
 	// neither HomeKit nor Matter, only its own service. A device that ALSO
-	// advertises a media type (an ecobee carries `_raop` for its chime) still
-	// classifies by whichever type the sweep reads first — the accepted
-	// generic-guess ambiguity, unchanged here.
+	// advertises a media type (the ecobee at 192.168.39.241 carries `_airplay`
+	// and `_spotify-connect`) no longer classifies by whichever type the sweep
+	// read first: classAuthority ranks the SOURCE, so the thermostat's own
+	// product service outranks the media features bolted onto it.
 	case "_hap._tcp", "_homekit._tcp", "_matter._tcp", "_matterc._tcp", "_hue._tcp",
 		"_home-assistant._tcp", "_ecobee._tcp":
 		return "smart-home"
@@ -329,15 +333,116 @@ func nameRankFor(serviceType string) deviceplane.NameRank {
 	}
 }
 
-// classRank orders classes for the "most specific wins" pick within a host's
-// services. Any real class outranks the generic default; the specific classes
-// are equal rank (a device is not both a printer and a media player, and if two
-// disagree the first parsed simply holds — a rare edge not worth a hierarchy).
-func classRank(class string) int {
-	if class == "" || class == deviceplane.ClassUnclassified {
-		return 0
+// The authority of a service type's CLASS signal: how strongly the fact that a
+// device advertises this type asserts what the device IS.
+//
+// This exists because "most specific wins" was a rank with only two values, so
+// two DIFFERENT specific classes tied and the first one parsed simply held. That
+// was written off as "a rare edge not worth a hierarchy", and while the lane
+// filtered on the avahi transaction it was nearly unreachable. #203 makes it
+// reachable — widening the parse to the records avahi cached on the v6
+// transaction feeds classFor records it never saw before — and the merge below
+// this lane makes it DURABLE: deviceplane.keepClass and the store's
+// keepClassFact both treat one specific class replacing another as a genuine
+// reclassification and take it. An order-dependent pick, taken durably, every 30
+// seconds, is #198's signature on the class field.
+const (
+	classAuthorityNone = iota
+	// A FEATURE any kind of device may implement, including fabric membership.
+	// Every entry is a lab sighting on a device of a different kind:
+	// `_matter._tcp` on 192.168.50.43, a Google speaker (OUI 84:28:59) whose
+	// other service is `_spotify-connect._tcp`; `_hap._tcp` on the ecobee
+	// thermostats at 192.168.39.241/242; `_airplay._tcp` AND
+	// `_spotify-connect._tcp` on that same ecobee at 192.168.39.241, which is the
+	// sighting that refutes ranking media above smart-home outright — the
+	// thermostat really does advertise both, and it is not a media player.
+	// `_smb._tcp` (192.168.51.147) and `_afpovertcp._tcp` (192.168.50.57) are
+	// here on the same principle: any computer shares files.
+	classAuthorityFeature
+	// The device's OWN product service — advertised because of what the device
+	// is, not as a feature bolted onto something else.
+	classAuthorityProduct
+)
+
+// classAuthority says which of the three a service type is. A type classFor does
+// not recognise has no class signal at all; a recognised type defaults to
+// FEATURE, the weaker of the two real levels, so a type added to classFor
+// without a deliberate decision here can never silently outrank an established
+// product signal — the same conservative default nameRankFor takes.
+func classAuthority(serviceType string) int {
+	if classFor(serviceType) == deviceplane.ClassUnclassified {
+		return classAuthorityNone
 	}
-	return 1
+	switch serviceType {
+	// PRODUCT, and every one is a lab sighting: `_ecobee._tcp` (192.168.39.241,
+	// beside the `_airplay`/`_spotify-connect` it must outrank),
+	// `_home-assistant._tcp` (192.168.50.126 "HA-Barn"),
+	// `_androidtvremote2._tcp` and `_googlecast._tcp` (192.168.50.63, the onn
+	// box), and the printer set on 192.168.50.36, a Brother MFC-L2730DW —
+	// nothing that is not a printer answers IPP. `_ipps`/`_uscans` ride with the
+	// sighted `_ipp`/`_uscan` as their TLS spellings.
+	//
+	// `_sonos._tcp`, `_roku._tcp` and `_hue._tcp` are deliberately NOT here
+	// despite being vendor services: none has ever appeared on the lab LAN, and
+	// promoting a type nobody has looked at is what put `_display._tcp` in the
+	// friendly name list. They classify perfectly well at FEATURE — the level
+	// only decides ties.
+	case "_ecobee._tcp", "_home-assistant._tcp",
+		"_androidtvremote2._tcp", "_googlecast._tcp",
+		"_ipp._tcp", "_ipps._tcp", "_printer._tcp", "_pdl-datastream._tcp",
+		"_scanner._tcp", "_uscan._tcp", "_uscans._tcp":
+		return classAuthorityProduct
+	default:
+		return classAuthorityFeature
+	}
+}
+
+// betterClass decides which of two of one host's service types should say what
+// the device is: the higher-authority signal, then the more concrete class.
+//
+// It is betterName's shape, and it is a total order for betterName's reason — a
+// sweep must be a FUNCTION of the cache it read, not of the order it read it in.
+// Both steps are load-bearing on live data:
+//
+//   - AUTHORITY settles the ecobee at 192.168.39.241, which advertises `_ecobee`
+//     (smart-home) and `_airplay` + `_spotify-connect` (media-player). Product
+//     beats feature, so it stays smart-home.
+//   - CONCRETENESS settles 192.168.50.43, a Google speaker advertising `_matter`
+//     (smart-home) and `_spotify-connect` (media-player) — both FEATURE, so
+//     authority ties. Fabric membership is the usual way a smart-home class is
+//     produced at this level, and it says far less about a device than a
+//     concrete media/print/storage function does, so the concrete one wins and
+//     the speaker stays media-player.
+//
+// The second step is a documented policy rather than a lexicographic tiebreak on
+// purpose: alphabetical order would give the same answer here only by accident,
+// and would silently invert if a class token were ever respelled.
+func betterClass(auth int, class string, heldAuth int, held string) bool {
+	if auth == classAuthorityNone {
+		return false
+	}
+	if auth != heldAuth {
+		return auth > heldAuth
+	}
+	if class != held {
+		return classConcreteness(class) > classConcreteness(held)
+	}
+	return false
+}
+
+// classConcreteness ranks how much a class narrows what an operator can DO with
+// a device — device_class governs the command vocabulary (REG-052). A media
+// player, a printer and a storage box each name a concrete function; smart-home
+// is the broad bucket a bare fabric membership lands in.
+func classConcreteness(class string) int {
+	switch class {
+	case "", deviceplane.ClassUnclassified:
+		return 0
+	case "smart-home":
+		return 1
+	default:
+		return 2
+	}
 }
 
 // cleanName turns an mDNS instance name into a display name, or "" when there
@@ -390,9 +495,10 @@ func isHexBlob(s string) bool {
 }
 
 // browseAvahi dumps the host avahi cache via `avahi-browse -a -t -r -p` and
-// parses the resolved (`=`) IPv4 records. `-t` terminates after the cache is
-// dumped (a poll, not a live browse); `-r` resolves each service to an address;
-// `-p` is the stable parseable format.
+// parses the resolved (`=`) records that carry an IPv4 address — whichever
+// transaction the cache happens to hold them on (parseAvahi). `-t` terminates
+// after the cache is dumped (a poll, not a live browse); `-r` resolves each
+// service to an address; `-p` is the stable parseable format.
 func browseAvahi() ([]Service, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), browseTimeout)
 	defer cancel()
@@ -408,20 +514,68 @@ func browseAvahi() ([]Service, error) {
 	return parseAvahi(string(out)), nil
 }
 
-// parseAvahi extracts (name, address) from avahi-browse -p resolved lines.
+// parseAvahi extracts (name, type, address) from avahi-browse -p resolved lines.
 //
 // A resolved line is `=;<iface>;<proto>;<name>;<type>;<domain>;<host>;<addr>;<port>;<txt…>`.
-// Only IPv4 records are taken: an IPv6 mDNS address is link-local, which the
-// neighbour lane deliberately does not carry, so it could never resolve to a
-// MAC anyway. A name containing `@` is skipped — that is avahi's
-// hardware-addressed alias form (`AABBCC@Name`, the AirTunes/RAOP variant), and
-// the clean human name (`Name`) is advertised beside it; keeping the alias
-// would either duplicate the merge or overwrite the real name with a MAC prefix.
+// A name containing `@` is skipped — that is avahi's hardware-addressed alias
+// form (`AABBCC@Name`, the AirTunes/RAOP variant), and the clean human name
+// (`Name`) is advertised beside it; keeping the alias would either duplicate the
+// merge or overwrite the real name with a MAC prefix.
+//
+// # The IPv4 test is on the RESOLVED ADDRESS, never on the transaction
+//
+// The lane must only ever hand an IPv4 address upward: the address is what the
+// sweep gives ResolveMAC to look up in the kernel neighbour table, and the
+// device plane it feeds is IPv4 by contract (SSDP is IPv4-multicast). So the
+// filter is real and stays. What it must ask is which address avahi RESOLVED
+// the service to — field 7 — and that is NOT what `<proto>` in field 2 says.
+//
+// Field 2 is the protocol of the avahi TRANSACTION the cached record arrived
+// on, and avahi caches one service under both when it hears it on both. The two
+// are independent, and BOTH mismatches are live on box .12 in a single
+// `avahi-browse -a -t -r -p -k` dump:
+//
+//	=;eth0;IPv6;onn\.\0324K\032Streaming\032Box;_androidtvremote2._tcp;local;…;192.168.50.63;6466
+//	=;eth0;IPv4;4AB0E26A2FDE09DE-000000000001B669;_matter._tcp;local;…;fe80::e350:1ce0:2528:f37e;33969
+//
+// The first is a perfectly good IPv4 address on the v6 transaction, and the
+// transaction test threw it away wholesale — the name, the class signal and the
+// port with it. That record is the Friendly-ranked source of the onn box's
+// display name (nameRankFor), so discarding it left the Machine-ranked
+// `_googlecast` truncation "onn.-4K-Streaming-Bo" as the best name the lane
+// could offer, and measured runs discarded it 16 dumps out of 16. The second is
+// the mirror image the same test let THROUGH: a link-local v6 address on the v4
+// transaction, handed to ResolveMAC as though it were a v4 host, where it can
+// only ever miss.
+//
+// Reading the address itself refuses exactly the records that cannot be used —
+// the `_googlecast` record resolving to fe80::225f:9d9b:8178:b8e3 in that same
+// dump is still dropped — and admits exactly the ones that can. A v4-mapped
+// v6 literal (`::ffff:192.168.50.63`) is deliberately NOT accepted: the string
+// is used verbatim as the neighbour-table lookup key, so a form the table never
+// spells could not resolve and would be a silent miss rather than a refusal.
+//
+// Admitting both transactions has two consequences for the sweep, and BOTH ride
+// on the picks being total orders rather than on luck.
+//
+// One service can now be parsed twice with the same name, type and address —
+// avahi really does cache one service under both, and 192.168.50.48 carries the
+// same `_matter._tcp` instance on each. A duplicate cannot change the answer
+// because betterName and betterClass both refuse an equal candidate.
+//
+// More importantly the sweep now sees records it never saw before, and the name
+// is not the only thing it decides from them: classFor reads the same widened
+// set. A name could only improve — betterName is a maximum over a total order,
+// so a larger input set cannot make it worse — but the class had no such
+// property until betterClass, because two specific classes used to tie and the
+// first parsed simply held. Widening the input to a first-parsed-wins pick is
+// how a correct parser fix reaches an operator as a device silently changing
+// what it is; see the comment on classAuthority.
 func parseAvahi(out string) []Service {
 	var services []Service
 	for _, line := range strings.Split(out, "\n") {
 		fields := strings.Split(line, ";")
-		if len(fields) < 8 || fields[0] != "=" || fields[2] != "IPv4" {
+		if len(fields) < 8 || fields[0] != "=" {
 			continue
 		}
 		name := unescapeAvahi(fields[3])
@@ -429,12 +583,23 @@ func parseAvahi(out string) []Service {
 			continue
 		}
 		addr := strings.TrimSpace(fields[7])
-		if addr == "" {
+		if !isIPv4(addr) {
 			continue
 		}
 		services = append(services, Service{Name: name, Type: strings.TrimSpace(fields[4]), Address: addr})
 	}
 	return services
+}
+
+// isIPv4 reports whether addr is a dotted-quad IPv4 literal — the only address
+// shape this lane may pass on, for the reasons parseAvahi gives.
+//
+// netip.ParseAddr with Is4 rather than net.ParseIP with To4: To4 also answers
+// yes for a v4-mapped v6 literal, which is not a string the neighbour table is
+// keyed by.
+func isIPv4(addr string) bool {
+	ip, err := netip.ParseAddr(addr)
+	return err == nil && ip.Is4()
 }
 
 // unescapeAvahi decodes avahi's parseable-format escapes. The format has two:

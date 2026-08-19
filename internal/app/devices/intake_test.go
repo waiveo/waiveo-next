@@ -144,8 +144,13 @@ func TestBoundaryRefusals(t *testing.T) {
 		"oversize name":                        mutate(func(c *wire.DeviceCandidate) { c.Name = strings.Repeat("n", maxNameBytes+1) }),
 		"invalid utf-8 native_id":              mutate(func(c *wire.DeviceCandidate) { c.NativeID = "\xc3\x28" }),
 		"invalid utf-8 name":                   mutate(func(c *wire.DeviceCandidate) { c.Name = "\xff\xfe" }),
-		"entity with no key":                   mutate(func(c *wire.DeviceCandidate) { c.Entities = []wire.CandidateEntity{{DeviceClass: classMP}} }),
-		"entity with no class":                 mutate(func(c *wire.DeviceCandidate) { c.Entities = []wire.CandidateEntity{{Key: entityKey}} }),
+		// REL-110c's rank lands in a DURABLE column, so an unbounded token would
+		// be an unbounded durable write. The size bound is here; the vocabulary
+		// clamp deliberately is not — see the pair of cases below.
+		"oversize name_rank":      mutate(func(c *wire.DeviceCandidate) { c.NameRank = strings.Repeat("r", maxNameRankBytes+1) }),
+		"invalid utf-8 name_rank": mutate(func(c *wire.DeviceCandidate) { c.NameRank = "\xff\xfe" }),
+		"entity with no key":      mutate(func(c *wire.DeviceCandidate) { c.Entities = []wire.CandidateEntity{{DeviceClass: classMP}} }),
+		"entity with no class":    mutate(func(c *wire.DeviceCandidate) { c.Entities = []wire.CandidateEntity{{Key: entityKey}} }),
 		"duplicate entity key": mutate(func(c *wire.DeviceCandidate) {
 			c.Entities = []wire.CandidateEntity{{Key: entityKey, DeviceClass: classMP}, {Key: entityKey, DeviceClass: classMP}}
 		}),
@@ -373,5 +378,41 @@ func TestAnIncumbentKeepsItsDeviceAgainstARepeatedlyClaimingRelay(t *testing.T) 
 			t.Errorf("round %d: name = %q — the claimant's view is being materialized even though its routing was "+
 				"refused", i, devs[0].Name)
 		}
+	}
+}
+
+// THE OTHER HALF OF THE name_rank GUARD, stated as a test because it is a
+// decision and the obvious alternative is wrong.
+//
+// A token this build cannot read does NOT refuse the report. Refusing here
+// throws away a full-set replace (this file's header), so one unreadable rank
+// from a newer — or a hostile — relay would blank a site's entire device list:
+// a far bigger lever than the one it would be defending. The vocabulary is
+// clamped where the rank is ACTED on instead (internal/app/store.nameRankFact),
+// where an unknown token reads as the bottom of the ladder and can refuse
+// nothing.
+//
+// Both arms: an absent rank is accepted (the member is optional, and a relay
+// that predates REL-110c omits it), and an unrecognised one is accepted too,
+// with the device still listed under its own name.
+func TestAnUnreadableNameRankDoesNotThrowAwayTheReport(t *testing.T) {
+	for name, rank := range map[string]string{
+		"absent (a relay that does not rank names)": "",
+		"a token a newer relay minted":              "impeccable",
+		"a token an attacker invented":              "absolute-truth",
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := candidate("roku-ecp", "X1")
+			c.Name = "Lobby TV"
+			c.NameRank = rank
+
+			r := New(testSite, func() int64 { return 0 })
+			if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{c}); err != nil {
+				t.Fatalf("name_rank %q refused the whole report (%v) — one candidate the app peer cannot fully interpret must not delete every device on the site", rank, err)
+			}
+			if n := len(r.Devices()); n != 1 {
+				t.Fatalf("the report listed %d devices, want 1", n)
+			}
+		})
 	}
 }

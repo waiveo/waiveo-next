@@ -53,6 +53,249 @@ func TestParseAvahi(t *testing.T) {
 	}
 }
 
+// THE TRANSACTION IS NOT THE ADDRESS FAMILY. Every line below is copied verbatim
+// out of one `avahi-browse -a -t -r -p -k` dump on box .12, and the dump carries
+// BOTH mismatches at once — which is the whole reason the old
+// `fields[2] != "IPv4"` test could not be repaired by loosening it or by
+// deleting it.
+//
+// The two arms must be read together. Keeping the first line while still
+// dropping the third is the only pass: a filter that admits everything passes
+// arm 1 and fails arm 2, and the shipped filter fails arm 1 and passes arm 2.
+func TestParseAvahiFiltersOnTheResolvedAddressNotTheTransaction(t *testing.T) {
+	// Line 1: the Friendly-ranked record that names the onn box, resolved to a
+	// good IPv4 address and cached on the IPv6 transaction. Discarded 16 dumps
+	// out of 16 by the transaction test, which is why the durable mirror could
+	// only ever be offered the Machine-ranked truncation on line 2.
+	// Line 2: the same device's `_googlecast` record on the IPv4 transaction —
+	// the worse name, which was the ONLY one that got through.
+	// Line 3: the same `_googlecast` service on the IPv6 transaction, resolved to
+	// a genuine link-local v6 address. This one must STILL be refused: the device
+	// plane is IPv4, and ResolveMAC keys the neighbour table by a dotted quad.
+	// Line 4: a v6 address on the IPv4 transaction — the mirror-image record the
+	// old test LET THROUGH, handing `fe80::…` to ResolveMAC as though it were a
+	// v4 host.
+	out := `=;eth0;IPv6;onn\.\0324K\032Streaming\032Box;_androidtvremote2._tcp;local;Android_ba8ec90d10bc4ea0b514ad9ddb2b3e86.local;192.168.50.63;6466;"bt=48:5C:2C:31:6E:6F"
+=;eth0;IPv4;onn\.-4K-Streaming-Bo-89edfc7ba2211b500945eaeb2c0265c9;_googlecast._tcp;local;89edfc7b-a221-1b50-0945-eaeb2c0265c9.local;192.168.50.63;8009;"fn=onn. 4K Streaming Box"
+=;eth0;IPv6;onn\.-4K-Streaming-Bo-89edfc7ba2211b500945eaeb2c0265c9;_googlecast._tcp;local;89edfc7b-a221-1b50-0945-eaeb2c0265c9.local;fe80::225f:9d9b:8178:b8e3;8009;"fn=onn. 4K Streaming Box"
+=;eth0;IPv4;4AB0E26A2FDE09DE-000000000001B669;_matter._tcp;local;681DEF40246F.local;fe80::e350:1ce0:2528:f37e;33969;"T=2"
+`
+	got := parseAvahi(out)
+	want := []Service{
+		{Name: "onn. 4K Streaming Box", Type: "_androidtvremote2._tcp", Address: "192.168.50.63"},
+		{Name: "onn.-4K-Streaming-Bo-89edfc7ba2211b500945eaeb2c0265c9", Type: "_googlecast._tcp", Address: "192.168.50.63"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("parsed %d services, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("service %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	for _, s := range got {
+		if !isIPv4(s.Address) {
+			t.Errorf("service %+v carries a non-IPv4 address — ResolveMAC can only look up a dotted quad, and the device plane is IPv4 by contract", s)
+		}
+	}
+}
+
+// The lane's whole job is the NAME, so the filter is proven at the seam an
+// operator actually reads: the same four lines through the whole sweep must put
+// the Friendly display name on the candidate, not the Cast truncation.
+//
+// This is the test that fails on a revert of the parse fix with the exact
+// hardware symptom in the message, rather than with a parser count.
+func TestTheSweepReportsTheFriendlyNameEvenWhenItsRecordIsCachedOnTheIPv6Transaction(t *testing.T) {
+	const mac = "48:5c:2c:31:6e:6e"
+	store := deviceplane.NewStore("relay-1")
+	lane, err := New(Config{
+		Store:     store,
+		NowMillis: func() int64 { return 1000 },
+		ResolveMAC: func(ip string) (string, bool) {
+			if ip == "192.168.50.63" {
+				return mac, true
+			}
+			return "", false
+		},
+		Browse: func() ([]Service, error) {
+			// EXACTLY these two lines, and deliberately no third. The friendly
+			// record exists ONLY on the v6 transaction here, which is what makes
+			// this test fail when the transaction filter comes back — the sweep is
+			// then left with the `_googlecast` truncation and nothing else. Adding
+			// the same service's v4 twin (avahi often caches both, and
+			// TestTheSameServiceCachedOnBothTransactionsMergesOnce uses it) would
+			// hand the old filter a friendly record of its own and quietly turn
+			// this into a test that passes on a revert.
+			return parseAvahi(`=;eth0;IPv6;onn\.\0324K\032Streaming\032Box;_androidtvremote2._tcp;local;Android_ba8ec90d10bc4ea0b514ad9ddb2b3e86.local;192.168.50.63;6466;"bt=48:5C:2C:31:6E:6F"
+=;eth0;IPv4;onn\.-4K-Streaming-Bo-89edfc7ba2211b500945eaeb2c0265c9;_googlecast._tcp;local;89edfc7b-a221-1b50-0945-eaeb2c0265c9.local;192.168.50.63;8009;"fn=onn. 4K Streaming Box"
+`), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	lane.sweep()
+
+	cands := store.Report().Body.Candidates
+	if len(cands) != 1 {
+		t.Fatalf("reported %d candidates, want 1: %+v", len(cands), cands)
+	}
+	if cands[0].Name != "onn. 4K Streaming Box" {
+		t.Fatalf("name = %q, want %q — the record carrying the display name resolved to 192.168.50.63 but was cached on the IPv6 transaction, and dropping it leaves the console showing the Cast truncation",
+			cands[0].Name, "onn. 4K Streaming Box")
+	}
+	if cands[0].NameRank != deviceplane.NameRankFriendly {
+		t.Fatalf("name_rank = %d, want NameRankFriendly (%d) — the name must arrive with the rank of the record that authored it, or the durable mirror has nothing to refuse the truncation with",
+			cands[0].NameRank, deviceplane.NameRankFriendly)
+	}
+}
+
+// Admitting both transactions means avahi's cache can hand the sweep the SAME
+// service twice — same instance name, same type, same resolved address. The
+// parse doc claims that is harmless; this is the test that makes the claim
+// falsifiable, because nothing else in this file feeds the sweep a real
+// duplicate.
+//
+// All three lines are verbatim from one dump: the onn box's
+// `_androidtvremote2._tcp` cached on BOTH transactions, plus its `_googlecast`
+// record. The duplicate must not mint a second candidate and must not change
+// which name or class wins.
+func TestTheSameServiceCachedOnBothTransactionsMergesOnce(t *testing.T) {
+	const mac = "48:5c:2c:31:6e:6e"
+	dump := `=;eth0;IPv6;onn\.\0324K\032Streaming\032Box;_androidtvremote2._tcp;local;Android_ba8ec90d10bc4ea0b514ad9ddb2b3e86.local;192.168.50.63;6466;"bt=48:5C:2C:31:6E:6F"
+=;eth0;IPv4;onn\.-4K-Streaming-Bo-89edfc7ba2211b500945eaeb2c0265c9;_googlecast._tcp;local;89edfc7b-a221-1b50-0945-eaeb2c0265c9.local;192.168.50.63;8009;"fn=onn. 4K Streaming Box"
+=;eth0;IPv4;onn\.\0324K\032Streaming\032Box;_androidtvremote2._tcp;local;Android_ba8ec90d10bc4ea0b514ad9ddb2b3e86.local;192.168.50.63;6466;"bt=48:5C:2C:31:6E:6F"
+`
+	// The duplicate must actually reach the sweep, or the rest proves nothing.
+	svcs := parseAvahi(dump)
+	if len(svcs) != 3 || svcs[0] != svcs[2] {
+		t.Fatalf("fixture no longer carries the same service on both transactions: %+v", svcs)
+	}
+
+	store := deviceplane.NewStore("relay-1")
+	lane, err := New(Config{
+		Store:      store,
+		NowMillis:  func() int64 { return 1000 },
+		ResolveMAC: func(string) (string, bool) { return mac, true },
+		Browse:     func() ([]Service, error) { return svcs, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	lane.sweep()
+
+	cands := store.Report().Body.Candidates
+	if len(cands) != 1 {
+		t.Fatalf("reported %d candidates, want 1 — a service cached on both transactions is one device: %+v", len(cands), cands)
+	}
+	if cands[0].Name != "onn. 4K Streaming Box" {
+		t.Errorf("name = %q, want %q — the duplicate must not change which name wins", cands[0].Name, "onn. 4K Streaming Box")
+	}
+	if cands[0].DeviceClass != "media-player" {
+		t.Errorf("class = %q, want media-player — the duplicate must not change which class wins", cands[0].DeviceClass)
+	}
+}
+
+// sweepClass runs one sweep over the given verbatim avahi lines, with every
+// address resolving to one MAC, and returns the class reported for it.
+func sweepClass(t *testing.T, mac, dump string) string {
+	t.Helper()
+	store := deviceplane.NewStore("relay-1")
+	lane, err := New(Config{
+		Store:      store,
+		NowMillis:  func() int64 { return 1000 },
+		ResolveMAC: func(string) (string, bool) { return mac, true },
+		Browse:     func() ([]Service, error) { return parseAvahi(dump), nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	lane.sweep()
+	cands := store.Report().Body.Candidates
+	if len(cands) != 1 {
+		t.Fatalf("reported %d candidates, want 1: %+v", len(cands), cands)
+	}
+	return cands[0].DeviceClass
+}
+
+// THE CLASS PICK MUST NOT DEPEND ON THE ORDER AVAHI LISTED THE RECORDS IN.
+//
+// Both lines are verbatim from one `avahi-browse -a -t -r -p -k` on box .12, and
+// they are one device: 192.168.50.43, MAC 84:28:59:9f:2f:08 (a Google OUI), a
+// speaker that is also a Matter node. `_matter` says smart-home, and
+// `_spotify-connect` says media-player.
+//
+// This is the case #203 created. While the lane filtered on the avahi
+// TRANSACTION the `_matter` line was discarded — it is cached on the v6
+// transaction — so the only class signal that ever reached the sweep was
+// `_spotify-connect`, and the durable mirror on the box holds media-player for
+// this device today. Admitting the record on its RESOLVED address is correct and
+// necessary for the name, but it hands classFor a competing signal, and the
+// pick it fed was first-parsed-wins between two equally-ranked specific classes.
+// `_matter` is listed first in every dump measured, so the device silently
+// became smart-home — and device_class governs the command vocabulary (REG-052),
+// so it is not a cosmetic field.
+//
+// The reversed arm is the actual invariant: a sweep must be a FUNCTION of the
+// cache it read. Run the same two records the other way round and the answer
+// must not move.
+func TestTheClassPickDoesNotDependOnTheOrderTheRecordsWereListedIn(t *testing.T) {
+	const mac = "84:28:59:9f:2f:08"
+	const matter = `=;eth0;IPv6;D731507D2F318A3E-0598B3A2BC178981;_matter._tcp;local;0EE8BA5E1B55.local;192.168.50.43;5541;"T=6"`
+	const spotify = `=;eth0;IPv4;SpotifyConnect;_spotify-connect._tcp;local;linux.local;192.168.50.43;4070;"CPath=/spotifyConnect"`
+
+	for _, tc := range []struct{ name, dump string }{
+		{"as the cache listed them (_matter first)", matter + "\n" + spotify + "\n"},
+		{"reversed", spotify + "\n" + matter + "\n"},
+	} {
+		if got := sweepClass(t, mac, tc.dump); got != "media-player" {
+			t.Errorf("%s: class = %q, want media-player — a Matter fabric membership must not take a speaker's class away from its `_spotify-connect` service, and the answer must not depend on which record avahi listed first",
+				tc.name, got)
+		}
+	}
+}
+
+// The other half of the ladder, and the reason the tie above is not simply
+// broken in favour of media-player: a device's OWN product service outranks a
+// media feature bolted onto it.
+//
+// All four lines are verbatim from the same dump, for one device — the ecobee
+// thermostat at 192.168.39.241. It advertises `_airplay` and `_spotify-connect`
+// (media-player) and `_ecobee` and `_hap` (smart-home), and in the dump the
+// media records are listed FIRST. It is a thermostat; ranking media above
+// smart-home outright, or breaking the tie alphabetically, would classify it as
+// a media player in dump order.
+//
+// (This device is on another subnet, so the live lane skips it at ResolveMAC —
+// the deferred cross-subnet case in the package doc. The records are real, the
+// rule they pin is the one that decides every device, and the test supplies the
+// MAC the cross-subnet slice will one day supply.)
+func TestADevicesOwnProductServiceOutranksAMediaFeatureBoltedOntoIt(t *testing.T) {
+	const mac = "02:34:65:d0:ce:d4"
+	dump := `=;eth0;IPv4;Upstairs;_airplay._tcp;local;ecobee-ares.local;192.168.39.241;7000;"model=ECB601"
+=;eth0;IPv4;531615707641;_spotify-connect._tcp;local;531615707641.local;192.168.39.241;60597;"CPath=/zc/0"
+=;eth0;IPv4;ecobee-ares;_ecobee._tcp;local;ecobee-ares.local;192.168.39.241;1201;"pv=1.1"
+=;eth0;IPv4;Upstairs;_hap._tcp;local;ecobee-ares.local;192.168.39.241;46577;"md=ECB601"
+`
+	if got := sweepClass(t, mac, dump); got != "smart-home" {
+		t.Errorf("class = %q, want smart-home — `_ecobee` is the thermostat's own product service and must outrank the `_airplay`/`_spotify-connect` features it also carries, whichever avahi listed first", got)
+	}
+}
+
+// A class signal that is the ONLY one a device gives still classifies it. The
+// authority ladder decides ties; it must not turn a lone feature signal into no
+// answer. Both lines are verbatim: one Matter device (192.168.50.48) whose only
+// service is `_matter._tcp`, cached on BOTH transactions.
+func TestALoneFeatureSignalStillClassifies(t *testing.T) {
+	dump := `=;eth0;IPv6;CA580E3802EAF5C2-00000000B0050473;_matter._tcp;local;503DD1E30675.local;192.168.50.48;5540;"T=1"
+=;eth0;IPv4;CA580E3802EAF5C2-00000000B0050473;_matter._tcp;local;503DD1E30675.local;192.168.50.48;5540;"T=1"
+`
+	if got := sweepClass(t, "50:3d:d1:e3:06:75", dump); got != "smart-home" {
+		t.Errorf("class = %q, want smart-home", got)
+	}
+}
+
 // TestUnescapeAvahi pins BOTH escape forms avahi's parseable output uses. The
 // `\.`/`\;`/`\X` case is a regression guard: it was dropped once, and reached an
 // operator as a stray backslash in a real device name ("onn\. 4K Streaming Box").

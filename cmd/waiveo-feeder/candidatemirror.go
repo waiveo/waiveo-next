@@ -313,10 +313,17 @@ func (m candidateMirror) rowsFor(relayID string, candidates []wire.DeviceCandida
 			NativeID:    c.NativeID,
 			DeviceClass: c.DeviceClass,
 			Name:        c.Name,
-			OpenPorts:   c.OpenPorts,
-			Address:     c.Address,
-			Model:       c.Model,
-			Serial:      c.Serial,
+			// REL-110c's rank rides with the name it describes. The store is the
+			// only thing that reads it (mergeDiscovered), and it is the reason a
+			// relay restart can no longer write a machine-generated label over a
+			// display name durably. An absent one stays absent: the store
+			// distinguishes "this relay does not rank names" from "this name is
+			// unranked", and inventing the second here would erase that.
+			NameRank:  c.NameRank,
+			OpenPorts: c.OpenPorts,
+			Address:   c.Address,
+			Model:     c.Model,
+			Serial:    c.Serial,
 			// The relay's `first_seen` is deliberately NOT carried. It is that
 			// relay process's uptime, re-minted from nothing at every restart,
 			// and the store owns this fact on its own clock instead
@@ -386,9 +393,17 @@ func seenFrom(rows []store.DiscoveredDevice) map[string]devices.Seen {
 //
 // Every fact is carried as it stands, INCLUDING an empty one, because empty is
 // already the overlay's "teaches nothing" and the mirror's own merge has already
-// applied the only rule that matters — orKeepFact and keepAddressFact refuse to
-// store a blank over a known value, so a blank here means the mirror genuinely
-// holds none.
+// applied the only rule that matters — keepNameFact, keepAddressFact and
+// keepClassFact refuse to store a worse or blank value over a known one, so a
+// blank here means the mirror genuinely holds none.
+//
+// `name_rank` is deliberately NOT carried, and that is a decision rather than an
+// omission. A rank is MERGE MEMORY, not a rendered fact: it exists so the store
+// can decide which of two names to keep, and the only thing the read model needs
+// out of that decision is the name the store kept — which the overlay already
+// carries and rematerialize already applies. Adding it to devices.Stored would
+// put a value on a surface with no reader, and the moment one appeared it would
+// be a second place the ladder is interpreted.
 //
 // The relay id rides along so the overlay can be refused if the device changes
 // hands (devices.Stored says why).
@@ -493,11 +508,19 @@ func restoreDeviceRegistry(ctx context.Context, st *store.Store, registry *devic
 			NativeID:    d.NativeID,
 			DeviceClass: d.DeviceClass,
 			Name:        d.Name,
-			Address:     d.Address,
-			Model:       d.Model,
-			Serial:      d.Serial,
-			OpenPorts:   d.OpenPorts,
-			Entities:    d.Entities,
+			// Carried so the reconstruction is FAITHFUL rather than merely valid.
+			// Nothing downstream of the intake reads a rank today — the registry
+			// holds no rank and no surface renders one — but a reconstructed
+			// candidate that silently reported the bottom of the ladder would be a
+			// value nothing vouches for wearing the shape of one that does, which
+			// is the exact defect this restore path already argues against for
+			// first_seen two members up.
+			NameRank:  d.NameRank,
+			Address:   d.Address,
+			Model:     d.Model,
+			Serial:    d.Serial,
+			OpenPorts: d.OpenPorts,
+			Entities:  d.Entities,
 		})
 	}
 

@@ -65,6 +65,18 @@ import (
 // device is one row no matter how many relays can see it, and REL-153's
 // incumbency rule (internal/app/devices) has already decided which relay speaks
 // for it by the time a row is written here.
+//
+// `name_rank` is the only column here that is not a fact about the device: it is
+// REL-110c's statement about `name` — which kind of LAN record authored it — and
+// it exists so mergeDiscovered can refuse a worse-sourced name. It is TEXT
+// defaulting to the empty string, for two reasons that both matter. A constant
+// default is what makes the column ADDABLE to a store that already exists
+// (schemamigrate.go's whyNotAddable), and TEXT is what lets the empty string
+// mean UNRECORDED as a value distinct from the recorded-and-weakest `none`. An
+// INTEGER column defaulting to 0 would collapse those two into one number, so
+// every row written before this column existed would silently claim a relay had
+// told us its name was unranked — the #197 defect verbatim, and the reason
+// device_first_seen.origin is spelled the same way one file over.
 const discoveredDevicesSchema = `
 CREATE TABLE IF NOT EXISTS discovered_devices (
 	device_id    TEXT PRIMARY KEY,
@@ -74,6 +86,7 @@ CREATE TABLE IF NOT EXISTS discovered_devices (
 	native_id    TEXT NOT NULL,
 	device_class TEXT NOT NULL,
 	name         TEXT NOT NULL DEFAULT '',
+	name_rank    TEXT NOT NULL DEFAULT '',
 	address      TEXT NOT NULL DEFAULT '',
 	model        TEXT NOT NULL DEFAULT '',
 	serial       TEXT NOT NULL DEFAULT '',
@@ -103,9 +116,17 @@ type DiscoveredDevice struct {
 	NativeID    string
 	DeviceClass string
 	Name        string
-	Address     string
-	Model       string
-	Serial      string
+	// NameRank is REL-110c's rank of whatever authored Name, held for the merge
+	// and for nothing else — no surface renders it, and Stored deliberately does
+	// not carry it (see storedFrom in cmd/waiveo-feeder). It is one of
+	// nameRankNone/Machine/Model/Friendly, or nameRankUnrecorded for a row whose
+	// name arrived before this column existed or from a relay that does not rank
+	// names. Name and NameRank MOVE AS A PAIR through every merge; keepNameFact
+	// is the only thing that may set either.
+	NameRank string
+	Address  string
+	Model    string
+	Serial   string
 	// FirstSeen and LastSeen are on the APP's clock (SEC-066), never the
 	// reporting relay's: when this site first held a report of the device, and
 	// when the relay was last observed to have seen it. devicefirstseen.go says
@@ -326,11 +347,11 @@ func (s *Store) ReplaceDiscoveredDevices(ctx context.Context, relayID string, ro
 			if _, err := tx.ExecContext(ctx,
 				`INSERT OR REPLACE INTO discovered_devices
 				   (device_id, relay_id, scope_node, driver, native_id, device_class,
-				    name, address, model, serial, first_seen, last_seen, entities, open_ports,
+				    name, name_rank, address, model, serial, first_seen, last_seen, entities, open_ports,
 				    relay_last_seen)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				row.DeviceID, row.RelayID, row.ScopeNode, row.Driver, row.NativeID, row.DeviceClass,
-				row.Name, row.Address, row.Model, row.Serial, row.MirroredFirstSeen, row.LastSeen,
+				row.Name, row.NameRank, row.Address, row.Model, row.Serial, row.MirroredFirstSeen, row.LastSeen,
 				string(entities), string(ports), row.RelayLastSeen); err != nil {
 				return fmt.Errorf("store: ReplaceDiscoveredDevices: insert %s: %w", d.DeviceID, err)
 			}
@@ -370,17 +391,28 @@ func (s *Store) ReplaceDiscoveredDevices(ctx context.Context, relayID string, ro
 // written over it.
 func mergeDiscovered(prior, next DiscoveredDevice) DiscoveredDevice {
 	row := next
-	// Name stays presence-only HERE, and that is a limit rather than a choice.
-	// Refusing a worse name needs to know WHICH RECORD authored it — a display
-	// name or a machine-generated mDNS instance label — and REL-110a's candidate
-	// has no member carrying that, so nothing on this side of the wire can tell
-	// the two apart. The ranking therefore lives where the knowledge does, in the
-	// relay's own merge (internal/relay/deviceplane.keepName), and this mirror
-	// inherits the fix by storing what a fixed relay reports. Making a name
-	// survive a RELAY RESTART, which the relay's in-memory store cannot, means
-	// adding that member — an additive contract change, deliberately not smuggled
-	// in here.
-	row.Name = orKeepFact(next.Name, prior.Name)
+	// Name is RANKED here now, and it took the contract change the previous
+	// version of this comment declined to make. The old reading was right about
+	// the mechanics and wrong about the conclusion: the quality of a name really
+	// is not derivable from the string (unlike the address's port and the class's
+	// generic default, both of which the two functions below re-derive app-side),
+	// so ranking it here needed a wire member — and REL-004 licenses exactly
+	// that, which is how `address`, `model` and `serial` already arrived. It is
+	// now REL-110c's `name_rank`.
+	//
+	// Inheriting the relay's fix by "storing what a fixed relay reports" was the
+	// half that does not work, and the box proved it. The relay's ranked merge
+	// lives in a process whose whole candidate map is re-minted at every restart,
+	// so the first post-restart report is whichever lane swept first — and a
+	// presence-only mirror wrote that straight onto disk, where it outlives every
+	// later sweep that knew better. Measured: the address survived two relay
+	// restarts because this mirror ranks it; the name did not, because it did
+	// not. Same commit, same machinery, one field short.
+	//
+	// Name and NameRank move as a PAIR — a held name stamped with a reported
+	// rank, or the reverse, is a corrupted ladder entry and a silent one — so
+	// they are assigned from one call and nothing else here may touch either.
+	row.Name, row.NameRank = keepNameFact(next.Name, next.NameRank, prior.Name, prior.NameRank)
 	// Address is ranked, because unlike the name its quality is IN THE VALUE and
 	// needs no wire member to read: "192.168.50.31:8060" is a strict information
 	// superset of "192.168.50.31". Presence alone let a report from a lane that
@@ -517,6 +549,140 @@ func keepClassFact(reported, held string) string {
 	return reported
 }
 
+// The name-rank vocabulary, restated app-side exactly as classUnclassified is
+// and for the same reason: the app plane deliberately depends on no relay code,
+// so it restates the tokens relay/1 REL-110c publishes
+// (internal/shared/wire.CandidateNameRank*) rather than importing the relay's
+// own ordered ladder. The two are pinned in agreement by a test.
+//
+// nameRankUnrecorded is NOT a token any relay sends. It is the empty string the
+// column carries for a row this build never ranked, and it is deliberately
+// distinct from nameRankNone — see the schema comment, and #197.
+const (
+	nameRankUnrecorded = ""
+	nameRankNone       = "none"
+	nameRankMachine    = "machine"
+	nameRankModel      = "model"
+	nameRankFriendly   = "friendly"
+)
+
+// nameRankOrder places a stored or reported token on this side's ladder.
+//
+// The ORDERING is app-side on purpose and the wire carries only the token
+// (wire's own note: REL-004 forbids renumbering an existing member's meaning, so
+// a ladder shipped as ordinals could never gain a rank in the middle).
+//
+// EVERYTHING UNKNOWN SITS AT THE BOTTOM, and that is the clamp the intake
+// deliberately does not perform. A token a newer — or a hostile — relay minted
+// gets the weakest position rather than a strong one: it can still fill a gap
+// and it can refuse nothing. That is the only safe direction, because a rank is
+// a licence to REFUSE and a durable rank is that licence at DISK lifetime. A
+// relay that could claim a rank above this build's top would pin a name of its
+// choosing past every restart of both peers, which is the mirror image of the
+// permanent pin deviceplane.NameRank's own refreshability constraint exists to
+// prevent inside one process.
+//
+// nameRankUnrecorded lands at the bottom too, which is what makes an upgraded
+// row REFUSE NOTHING: the held name's real quality is unknowable, and a store
+// that guarded it would make a rename impossible on every pre-upgrade row
+// forever.
+func nameRankOrder(token string) int {
+	switch token {
+	case nameRankFriendly:
+		return 3
+	case nameRankModel:
+		return 2
+	case nameRankMachine:
+		return 1
+	default:
+		// nameRankNone, nameRankUnrecorded, and any token this build cannot read.
+		return 0
+	}
+}
+
+// nameRankFact is the vocabulary clamp: what a REPORTED token is allowed to
+// become when it is written to disk.
+//
+// An unreadable token is stored as nameRankNone rather than verbatim and rather
+// than as unrecorded. Verbatim would put an untrusted relay's bytes in a column
+// this store reasons over. Unrecorded would be untrue in the other direction —
+// the relay DID state something, and a row that stays unrecorded forever is a
+// row the ladder can never protect. `none` is the honest floor: a name nothing
+// vouches for.
+func nameRankFact(reported string) string {
+	switch reported {
+	case nameRankFriendly, nameRankModel, nameRankMachine, nameRankNone:
+		return reported
+	case nameRankUnrecorded:
+		return nameRankUnrecorded
+	default:
+		return nameRankNone
+	}
+}
+
+// keepNameFact is deviceplane.keepName at the durable layer — the merge whose
+// absence let a relay restart write a machine-generated label over a display
+// name permanently.
+//
+// It returns the PAIR, because storing one without the other is the failure mode
+// this whole change is about. Four rules, in the order the function applies
+// them:
+//
+//  1. A report carrying NO name is silence, not a retraction — orKeepFact's
+//     existing property, and deviceplane.keepName's — so the held name AND the
+//     held rank both stay. Keeping the name while re-stamping the rank would
+//     leave the ladder describing a statement that was never made.
+//
+//  2. A report carrying a name but NO rank is a relay that does not speak
+//     REL-110c, and it is handled as the contract requires: absent is "this peer
+//     does not rank names", never "this name is unranked". Such a report is
+//     merged EXACTLY as it was before this rule existed — presence wins — and
+//     the row goes back to unrecorded. That is deliberate, and it is the choice
+//     #197 got wrong twice: the alternative is to invent a rank nothing stated,
+//     which would let this store assert a relay's opinion on the relay's behalf.
+//     It also keeps a DOWNGRADE from bricking a device's name: a rank this store
+//     held could otherwise out-rank everything an older relay can ever say, and
+//     the device could never be renamed again.
+//
+//  3. Otherwise the ladder decides, on keepName's own rule: same-or-better rank
+//     wins immediately (a rename is the device restating itself through the
+//     record it always announced, and it MUST land), a strictly worse one is
+//     refused.
+//
+//  4. Whatever lands, lands as a pair, with the reported rank clamped to this
+//     build's vocabulary (nameRankFact).
+//
+// # THE UPGRADE CASE, stated as a decision
+//
+// A row written before this column existed carries nameRankUnrecorded, and the
+// question that has to be answered out loud is what an unrecorded rank REFUSES.
+// The answer is NOTHING: unrecorded sits at the bottom of nameRankOrder, so the
+// first report carrying any name at all wins rule 3 and replaces it. The
+// alternative — treating a held name as good until something better arrives —
+// would pin every pre-upgrade name against every lane on the LAN, at disk
+// lifetime, with no way to tell which rows were affected. A rank the store never
+// recorded is not evidence of quality, and refusing on it would be the store
+// asserting a statement no relay made.
+//
+// The cost of that choice is honest and bounded: the first post-upgrade report
+// may replace a currently-correct name with a worse-sourced one — once. It
+// arrives WITH a rank, the row stops being unrecorded, and the next sweep that
+// carries the better-ranked record takes it back and can then never lose it
+// again. Self-healing, at the price of one report's worth of wrong. The build
+// this replaces is not self-healing at any price, which is the whole point.
+func keepNameFact(reportedName, reportedRank, heldName, heldRank string) (name, rank string) {
+	if reportedName == "" {
+		return heldName, heldRank
+	}
+	if reportedRank == nameRankUnrecorded {
+		return reportedName, nameRankUnrecorded
+	}
+	if nameRankOrder(reportedRank) >= nameRankOrder(heldRank) {
+		return reportedName, nameRankFact(reportedRank)
+	}
+	return heldName, heldRank
+}
+
 // keepAddressFact is deviceplane.keepAddress at the durable layer: a report
 // that carries only a host must not erase a port an earlier one read, but a
 // report naming a DIFFERENT host is a device that moved and lands immediately,
@@ -616,7 +782,7 @@ func (s *Store) DiscoveredDevices(ctx context.Context) ([]DiscoveredDevice, erro
 // MirroredFirstSeen carries the raw column out for the one caller that needs it.
 func readDiscoveredDevices(ctx context.Context, q queryer, deviceID string) ([]DiscoveredDevice, error) {
 	query := `SELECT d.device_id, d.relay_id, d.scope_node, d.driver, d.native_id, d.device_class,
-	                 d.name, d.address, d.model, d.serial, d.first_seen, d.last_seen, d.entities, d.open_ports,
+	                 d.name, d.name_rank, d.address, d.model, d.serial, d.first_seen, d.last_seen, d.entities, d.open_ports,
 	                 d.relay_last_seen,
 	                 COALESCE(l.first_seen, 0), COALESCE(l.origin, '')
 	          FROM discovered_devices d
@@ -639,7 +805,7 @@ func readDiscoveredDevices(ctx context.Context, q queryer, deviceID string) ([]D
 		var d DiscoveredDevice
 		var entities, ports, origin string
 		if err := rows.Scan(&d.DeviceID, &d.RelayID, &d.ScopeNode, &d.Driver, &d.NativeID, &d.DeviceClass,
-			&d.Name, &d.Address, &d.Model, &d.Serial, &d.MirroredFirstSeen, &d.LastSeen, &entities, &ports,
+			&d.Name, &d.NameRank, &d.Address, &d.Model, &d.Serial, &d.MirroredFirstSeen, &d.LastSeen, &entities, &ports,
 			&d.RelayLastSeen, &d.FirstSeen, &origin); err != nil {
 			return nil, fmt.Errorf("store: scan discovered device: %w", err)
 		}
