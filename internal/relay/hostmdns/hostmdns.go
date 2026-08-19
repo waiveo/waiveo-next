@@ -134,9 +134,10 @@ func (l *Lane) sweep() {
 		return
 	}
 	type host struct {
-		name  string
-		addr  string
-		class string
+		name     string
+		nameRank deviceplane.NameRank
+		addr     string
+		class    string
 	}
 	best := map[string]*host{}
 	for _, s := range services {
@@ -152,9 +153,18 @@ func (l *Lane) sweep() {
 			h = &host{class: deviceplane.ClassUnclassified, addr: s.Address}
 			best[mac] = h
 		}
-		// The best NAME across the host's services (a human name beats a UUID).
-		if name := cleanName(s.Name); name != "" && nameScore(name) > nameScore(h.name) {
-			h.name = name
+		// The best NAME across the host's services, ranked by WHICH SERVICE said
+		// it first and only then by how the string looks. Shape alone is what
+		// this used to do, and it is a proxy that inverts on real devices: an
+		// ecobee announces "Upstairs" over HomeKit and "ecobee-ares" over its own
+		// service, and the len+space score prefers the machine name. The service
+		// type is the fact the shape was standing in for, and unlike the shape it
+		// also travels upward, so the store can refuse a worse-sourced name on a
+		// later sweep instead of re-deciding from scratch every 30 seconds.
+		if name := cleanName(s.Name); name != "" {
+			if rank := nameRankFor(s.Type); betterName(rank, name, h.nameRank, h.name) {
+				h.name, h.nameRank = name, rank
+			}
 		}
 		// The most SPECIFIC class its service types imply. A device advertises
 		// several types (a printer answers _printer AND _http); classFor ranks
@@ -177,6 +187,7 @@ func (l *Lane) sweep() {
 			NativeID:    nativeID,
 			DeviceClass: h.class,
 			Name:        h.name,
+			NameRank:    h.nameRank,
 			Address:     h.addr,
 		}, now)
 	}
@@ -208,6 +219,113 @@ func classFor(serviceType string) string {
 		return "smart-home"
 	default:
 		return deviceplane.ClassUnclassified
+	}
+}
+
+// betterName decides which of two of one host's service names this sweep should
+// report: the better-ranked source, then the more human-looking string, then —
+// and this last one is the point — the lexicographically smaller name.
+//
+// The final tiebreak exists because avahi's browse output has no guaranteed
+// order, so without it a host announcing two DIFFERENT equally-ranked,
+// equally-scoring names would report whichever record the dump happened to list
+// first, and could report the other one 30 seconds later. That is #198's
+// signature arriving from a direction the store's merge cannot see: keepName
+// takes an equal-ranked newer name on purpose (it is how a rename lands), so a
+// lane that hands it a coin flip every sweep produces a permanent flap that
+// looks like a permanent rename. A sweep must be a FUNCTION of the cache it
+// read, not of the order it read it in.
+func betterName(rank deviceplane.NameRank, name string, heldRank deviceplane.NameRank, held string) bool {
+	if rank != heldRank {
+		return rank > heldRank
+	}
+	if s, hs := nameScore(name), nameScore(held); s != hs {
+		return s > hs
+	}
+	return name < held
+}
+
+// nameRankFor says how good a name announced under this mDNS service type is —
+// the source half of deviceplane.NameRank, authored here because this is where
+// the knowledge lives, next to classFor which answers the OTHER question about
+// the same record. The two disagree on purpose: `_ecobee._tcp` is a definitive
+// smart-home CLASS signal and a terrible NAME source ("ecobee-ares"), and one
+// table could not say both.
+//
+// EVERY ENTRY BELOW THE DEFAULT IS A SIGHTING ON THE LAB LAN, quoted from one
+// `avahi-browse -a -t -r -p -k` on box .12 — the exact command browseAvahi runs.
+// That bar is not decoration. A friendly entry makes a type's name STICKY (the
+// store will refuse worse-ranked names for the device afterwards), so a type
+// promoted on plausibility rather than evidence is a name that cannot be
+// corrected. The first draft of this table promoted four types nobody had
+// looked at, and the LAN falsified one of them — see `_display._tcp` below.
+//
+//   - FRIENDLY types are the ones whose instance label is a name somebody CHOSE
+//     for the device, INTACT. `_androidtvremote2._tcp | onn. 4K Streaming Box`
+//     against `_googlecast._tcp | onn.-4K-Streaming-Bo-89edfc7ba221…` for one
+//     box (192.168.50.63) is the sighting this whole rank exists for;
+//     `_hap._tcp | Upstairs` against `_ecobee._tcp | ecobee-ares` for one
+//     thermostat (192.168.39.241) is the second; `_airplay._tcp | The Hanger`
+//     (192.168.50.31) and `_companion-link._tcp | Matt’s MacBook Pro`
+//     (192.168.50.35) are the rest.
+//   - MODEL types announce the product, not the unit: `_ipp._tcp`,
+//     `_printer._tcp`, `_pdl-datastream._tcp`, `_scanner._tcp` and `_uscan._tcp`
+//     all announce "Brother MFC-L2730DW series" for 192.168.50.36, whatever its
+//     owner calls it.
+//   - MACHINE is everything else, and it is wider than "an id". It is any label
+//     the device DERIVED rather than any label a person wrote: ids
+//     (`_spotify-connect._tcp | d3b79a8f-0c4e-…`, `_matter._tcp |
+//     D731507D2F318A3E-…`), hostname forms, and LOSSY REWRITES of a chosen name.
+//
+// `_display._tcp` IS THAT LOSSY REWRITE, and it is why this list is now quoted
+// rather than reasoned. It looks like the ideal friendly type — a TV's display
+// name — and on short names it is one (`_display._tcp | The Hanger`). But the
+// same sweep that produced that line also produced these two pairs:
+//
+//	192.168.39.110  _airplay | 43in office downstairs        _display | 43" office downs-0JX
+//	192.168.39.238  _airplay | Office Upstairs small Bedroom  _display | Office Upstairs -6A5
+//
+// It truncates to 20 characters and appends a `-XXX` disambiguator — the same
+// string class as `onn.-4K-Streaming-Bo`, the truncation this rank was created
+// to demote. Ranked friendly it ties with `_airplay`, so a sweep whose browse
+// held `_display` and not `_airplay` reproduced #198 exactly, on a different
+// pair of records, AFTER the fix. Cache presence really does vary that way:
+// three consecutive `-t` dumps 12s apart contained `_googlecast._tcp` for
+// 192.168.50.63 and no `_androidtvremote2._tcp`, which a live browse then
+// surfaced immediately.
+//
+// A hostname is deliberately NOT friendly either, however human it looks. `_ssh`,
+// `_sftp-ssh` and `_smb` advertise readable host names ("MacMiniM4Lab", "NAS"),
+// which is exactly why the temptation is there — but the same Mac announces
+// "Matt’s MacBook Pro" over AirPlay and a hostname form over SSH. A hostname
+// still NAMES a device nothing else names; it just must not displace a chosen
+// one.
+//
+// An UNRECOGNISED type is NameRankMachine, not NameRankNone, and that choice is
+// the conservative one in both directions: a name from a type this table has
+// never heard of still fills an empty slot, competes on shape against other
+// unranked names exactly as it did before this table existed, and can never
+// displace a name a KNOWN-friendly record authored.
+func nameRankFor(serviceType string) deviceplane.NameRank {
+	switch serviceType {
+	case "_airplay._tcp", "_androidtvremote2._tcp", "_hap._tcp",
+		"_home-assistant._tcp", "_companion-link._tcp":
+		return deviceplane.NameRankFriendly
+	case "_ipp._tcp", "_ipps._tcp", "_printer._tcp", "_pdl-datastream._tcp",
+		"_scanner._tcp", "_uscan._tcp", "_uscans._tcp":
+		return deviceplane.NameRankModel
+	default:
+		// Includes every observed derived-label source — `_display._tcp` and
+		// `_googlecast._tcp` (truncations), `_spotify-connect._tcp`,
+		// `_matter._tcp`, `_raop._tcp`, `_ecobee._tcp`, `_sideplay._tcp`,
+		// `_smb._tcp`, `_ssh._tcp`, `_sftp-ssh._tcp`, `_apple-mobdev2._tcp` —
+		// and every type nobody has looked at yet, which are treated alike
+		// because "I have no reason to trust this label" is the honest reading
+		// of both. `_sonos._tcp` and `_roku._tcp` were in the friendly list on
+		// speculation and are here now: neither appears on the lab LAN, and
+		// Roku does not advertise itself over mDNS at all (it is an SSDP/ECP
+		// device, which is why the ECP probe exists).
+		return deviceplane.NameRankMachine
 	}
 }
 

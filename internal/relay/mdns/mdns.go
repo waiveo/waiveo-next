@@ -380,8 +380,27 @@ func (l *Listener) observePTRRecords(resources []dnsmessage.Resource, atMs int64
 			NativeID:    instance,
 			DeviceClass: w.DeviceClass,
 			Name:        instanceLabel(wireInstance, r.Header.Name.String()),
-			Address:     address,
-			Entities:    w.Entities,
+			// A DECLARED watch names one service type a pack asked for by name,
+			// so unlike hostmdns — which reads the WHOLE avahi cache and has to
+			// judge types nobody chose — the declaration is the evidence.
+			//
+			// The rank is also contained: this lane keys candidates by mDNS
+			// INSTANCE, while the neighbour and host-mDNS lanes key theirs by MAC
+			// identity, so no sighting from those lanes ever lands on a key this
+			// one wrote. Today the only thing this rank can outrank is another
+			// sighting of the same instance through the same watch, at the same
+			// rank. If a future change canonicalizes this lane onto the MAC the
+			// way discovery.canonicalize does, this line stops being inert and
+			// needs hostmdns's evidence bar applied to it — `_display._tcp` is
+			// the reminder that a service type can look like a display name and
+			// truncate it.
+			NameRank: deviceplane.NameRankFriendly,
+			Address:  address,
+			Entities: w.Entities,
+			// The declaration behind the fan-out, so an apply that removes this
+			// watch can drop what it declared
+			// (deviceplane.Store.RetainDeclarations).
+			EntitySource: w.Match.Key(),
 		}, atMs)
 	}
 }

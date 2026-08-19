@@ -98,6 +98,222 @@ func keepClass(next, current string) string {
 	return next
 }
 
+// NameRank is how good the SOURCE of a discovered name is — and "source" means
+// the RECORD that authored the string, never the lane that carried it.
+//
+// That distinction is the whole point, and it was learned from a real device.
+// One onn 4K box on the lab LAN alternated between "onn. 4K Streaming Box" and
+// "onn.-4K-Streaming-Bo", and both strings came from ONE lane, ONE sweep, ONE
+// avahi dump: `_androidtvremote2._tcp` announces the box's display name, while
+// `_googlecast._tcp` announces a 20-char truncated hostname form. A rank keyed
+// on the lane scores those identically and the loser still wins by arriving
+// later. The same is true inside the SSDP lane, which returns an owner-set name
+// or a factory model string from one probe depending on the device. So the rank
+// is authored where the knowledge lives — beside the mDNS service-type table in
+// hostmdns, beside the element precedence in ecp — and travels on the
+// Observation to the one place every lane converges.
+//
+// Ranking by the SHAPE of the string instead (a space beats a hyphen, longer
+// beats shorter) was rejected on evidence from the same LAN: an ecobee
+// advertises "Upstairs" and "ecobee-ares", and shape picks the machine name;
+// six of the twelve named hosts on the box have no space in their name at all.
+// Shape is a per-string proxy for a per-source fact, so it also has no memory —
+// two equally-shaped names still flap. It survives only as a tiebreak WITHIN a
+// rank, where hostmdns already uses it.
+//
+// The zero value is the SAFE one. A lane added later that sets a Name and
+// forgets the rank gets NameRankNone, which can fill a gap but can never
+// displace a better-sourced name — the same "the convergence point owns the
+// policy so a later lane inherits it" argument Observe makes for the address
+// check below.
+//
+// # THE LADDER'S HARD CONSTRAINT: EVERY RANK MUST BE REFRESHABLE
+//
+// A rank is a licence to REFUSE other sources, and a held rank is remembered
+// until this process exits. So a rank that a source can CLAIM but that nothing
+// on this relay ever RESTATES is a permanent pin: the first sighting that
+// reaches it freezes the name against every lane that keeps sweeping, and the
+// device can never be renamed. That is the mirror image of #198 and no better —
+// a stale name and a flapping one are both "the console does not show what the
+// device is called".
+//
+// The first draft of this ladder had one, and it took a live probe to see it.
+// The top rank was NameRankOwner, minted only from ECP's `user-device-name`
+// (192.168.50.31 answers `<user-device-name>The Hanger</user-device-name>` —
+// read off the device). But the SSDP lane PROBES only inside an operator's
+// `discovery.scan`: Discoverer.Run is passive-only by owner decision, and
+// identityOf's passive branch replays a cached answer with no TTL check at all.
+// So `Owner` was claimed once, at the first scan, and then nothing could restate
+// it — every 30-second mDNS sweep of a renamed device reported the new name at
+// `Friendly` and was refused, forever.
+//
+// The rule that falls out, and the one to check before adding a rank: A RANK MAY
+// NOT SIT ABOVE ANY RANK A CONTINUOUSLY SWEEPING LANE CAN PRODUCE UNLESS ITS OWN
+// SOURCE SWEEPS TOO. Every rank below is reachable by hostmdns, which re-reads
+// the whole avahi cache every 30 seconds, so every rank can be displaced by a
+// device restating itself. The scan-gated ECP probe therefore contributes at
+// `Friendly` and `Model` — ranks hostmdns also mints — rather than above them.
+type NameRank int
+
+const (
+	// NameRankNone is "this sighting has no opinion about the name" — the
+	// neighbour lane, which sets no name at all; a lane that has not been taught
+	// to rank one; and a value a lane REMEMBERS rather than just observed
+	// (discovery.identityOf's cache replay), which is a name worth keeping and
+	// not a statement worth ranking.
+	NameRankNone NameRank = iota
+	// NameRankMachine is a label the device derived MECHANICALLY rather than one
+	// anybody chose: an id (a Matter node, a Spotify Connect endpoint), a
+	// hostname form, or a LOSSY REWRITE of a chosen name. Google Cast appends a
+	// 32-hex tail to a 20-char truncation of the hostname; `_display._tcp`
+	// truncates to 20 characters and appends a `-XXX` disambiguator. Better than
+	// nothing, worse than the intact name the same device announces elsewhere.
+	NameRankMachine
+	// NameRankModel is a factory/model string — ECP's `default-device-name`, a
+	// printer's IPP instance. It identifies the product, not the unit, so it
+	// loses to a name somebody actually gave the device.
+	NameRankModel
+	// NameRankFriendly is a record whose label IS the name somebody chose for the
+	// device: an AirPlay or Android-TV-remote instance, a HomeKit accessory, and
+	// ECP's `user-device-name`/`friendly-device-name` read from the device's own
+	// configuration. This is the TOP of the ladder on purpose — see the
+	// refreshability constraint above. Adding a rank after this one is the
+	// change that constraint exists to stop; factrank_test.go reads this block
+	// and fails if one appears.
+	NameRankFriendly
+
+	// NOTHING GOES HERE. A rank declared below NameRankFriendly outranks it, and
+	// the only source that could mint one is the scan-gated ECP probe. Read the
+	// refreshability constraint on NameRank before adding one anyway.
+)
+
+// keepName merges a re-sighting's name by ranking WHOSE STATEMENT IT IS, which
+// is keepClass's shape generalised from one field to the fact underneath it:
+// rank decides whose statement counts, recency decides what that source says.
+//
+//   - Same-or-better rank always wins, immediately. A genuine rename is the
+//     device restating itself through the record it always announced — the
+//     owner renames the onn, `_androidtvremote2` says "Living Room" on the next
+//     30s sweep, same rank, and it lands. This is exactly keepClass's "between
+//     two specific classes the newer sighting wins (an actual reclassification)".
+//   - A strictly worse-ranked name never displaces a better-ranked one. That is
+//     the fix: the Cast instance name stops overwriting the display name every
+//     time the remote service happens to be missing from an avahi dump.
+//   - An empty name never wins, which is orKeep's existing property, preserved.
+//
+// A RENAME MUST ALWAYS LAND, and that requirement is what shapes the ladder
+// above rather than this function. Refusal is only ever safe because every rank
+// is one that a lane sweeping every 30 seconds can produce, so the top of the
+// ladder is always being restated: the renamed device says its new name at the
+// same rank as its old one and wins on recency. Take that property away — put a
+// rank at the top that only a scan-gated probe can mint — and this same `>=`
+// silently becomes a permanent pin. The bug is in the ladder; this function just
+// obeys it. Adding a rank means re-reading the refreshability constraint on
+// NameRank, not this comment.
+//
+// Deliberately NOT a time-decay window ("the better source has been quiet for
+// N minutes, let the worse one through"). A decay needs an honest freshness
+// signal and this merge has none: it sees strings, not observation times, and
+// one lane hands it a REMEMBERED value indistinguishable from a fresh one (a
+// passive SSDP sighting replays a cached ECP answer — internal/relay/discovery
+// identityOf). That replay is answered at the source instead, by ranking a
+// recalled name NameRankNone: memory keeps its ability to fill an empty slot and
+// loses its ability to out-shout a lane that just looked. Wanting a real decay
+// means first carrying the OBSERVATION time of the fact up from every lane,
+// which is a separate change with its own evidence to gather.
+func keepName(next string, nextRank NameRank, held string, heldRank NameRank) (string, NameRank) {
+	if next == "" {
+		return held, heldRank
+	}
+	if nextRank >= heldRank {
+		return next, nextRank
+	}
+	return held, heldRank
+}
+
+// keepAddress merges a re-sighting's address without letting a lane that sees
+// only a host overwrite one that saw a host AND a port.
+//
+// This is the same defect as the name, on the field with teeth. The SSDP lane
+// reads a LOCATION and reports "192.168.50.31:8060"; the neighbour and host-mDNS
+// lanes report the bare "192.168.50.31" they read out of the kernel table and
+// the avahi cache. Both are non-empty, so a presence-only merge let the last
+// sweep win and the port was gone within 30 seconds — on the lab box, 61 of 61
+// mirrored rows carried a bare address. It is harmless there only by the
+// accident that a missing port falls through to the Roku driver's own default;
+// a device on a non-standard port, or a driver with no default, is dialed at the
+// wrong place forever.
+//
+// A port is a strict information SUPERSET of the same host without one, so this
+// needs no source table — unlike the name, the ranking fact is in the value.
+// But it ranks only within ONE endpoint: an address naming a DIFFERENT host is a
+// device that moved (DHCP renewed its lease), which is new reachability and must
+// land immediately even when it arrives bare. What is protected is the port, not
+// the address.
+func keepAddress(next, held string) string {
+	if next == "" {
+		return held
+	}
+	if held == "" {
+		return next
+	}
+	nextHost, nextPort, nextOK := lanaddr.Split(next)
+	heldHost, heldPort, heldOK := lanaddr.Split(held)
+	if !nextOK || !heldOK || nextHost != heldHost {
+		// A genuine move (or a shape this package cannot compare): the newest
+		// sighting is the best answer available about where the device is.
+		return next
+	}
+	if nextPort == 0 && heldPort != 0 {
+		return held
+	}
+	return next
+}
+
+// keepMatch merges the sighting's `match` — MAN-071's record of WHICH DECLARED
+// PATTERN found the device — on keepClass's rule rather than last-writer.
+//
+// A MacOui match is not really a pattern that found anything: MACIdentity mints
+// one mechanically for every MAC-resolved sighting, so it is the Match analogue
+// of ClassUnclassified — the generic default every lane stamps when it has
+// nothing more specific to say. An SSDP or mDNS match names an actual declared
+// search target a device answered. Letting the generic one overwrite the
+// specific one on the next neighbour sweep would replace the provenance of the
+// sighting with the provenance of whoever swept last, which is the same shape as
+// the class flicker and is refused the same way.
+//
+// STATED PLAINLY: THIS GUARD HAS NO LIVE INSTANCE TODAY, and saying so is the
+// point. On a MAC-resolvable segment discovery.canonicalize rewrites an SSDP
+// sighting's Match to the MAC form BEFORE it reaches this merge — deliberately,
+// so the sighting lands on the neighbour lane's key — so a specific match never
+// arrives on a key a generic one can also reach. All 61 mirrored rows on box .12
+// are driver `net` + MAC, which is that path. The declared match survives only
+// for a cross-subnet SSDP device, and no MacOui sighting reaches those keys. So
+// this is a rule waiting on a caller (canonicalize keeping the declared match,
+// which is a separate argument), not a fix for something observed. It is kept
+// because it is correct and free, and it is written down as unexercised because
+// a guard nothing authors is how this subsystem keeps shipping half a fix.
+func keepMatch(next, held Match) Match {
+	if matchRank(next) >= matchRank(held) {
+		return next
+	}
+	return held
+}
+
+// matchRank orders the three MAN-071 match forms by how much they say about how
+// a device was found: nothing, the mechanical MAC default, or a declared search
+// target the device actually answered.
+func matchRank(m Match) int {
+	switch {
+	case m.SSDP != "" || m.MDNS != "":
+		return 2
+	case m.MacOui != "":
+		return 1
+	default:
+		return 0
+	}
+}
+
 // candidatesMessageType is the device.candidates envelope type (REL-110).
 const candidatesMessageType = "device.candidates"
 
@@ -150,14 +366,38 @@ type Observation struct {
 	NativeID    string
 	DeviceClass string
 	Name        string
-	Address     string
-	Model       string
-	Serial      string
+	// NameRank says how good the record that authored Name is, so the merge can
+	// refuse a strictly worse statement about the same device (keepName). A lane
+	// that sets Name and leaves this zero gets NameRankNone: its name can fill a
+	// gap and can never displace a better-sourced one.
+	NameRank NameRank
+	Address  string
+	Model    string
+	Serial   string
 	// OpenPorts is what an active port scan found listening. Nil means "this
 	// observation did not scan", which is NOT the same as "nothing is open" — see
 	// the merge rule in mergeInto.
 	OpenPorts []int
 	Entities  []CandidateEntity
+	// EntitySource names the DECLARATION that authored Entities — the declared
+	// watch's Match.Key(), set by the two lanes that sweep for a declared pattern
+	// and left empty by every lane that merely finds hosts.
+	//
+	// It exists because "Entities is empty" is two different sentences and the
+	// merge has to tell them apart. The neighbour, port-scan and host-mDNS lanes
+	// know a host exists and nothing about what it exposes, so they say nothing;
+	// a watch that a pack has narrowed to a smaller fan-out says something, and
+	// it happens to be shorter. Keying the merge on the DECLARATION rather than
+	// on the list's length lets an entity-less sweep leave the fan-out alone
+	// while a re-declaration still replaces it in full, including down to none.
+	//
+	// It is also the handle RetainDeclarations pulls when a pack is REMOVED,
+	// which is the case no sighting can express: the withdrawn watch simply
+	// stops observing, and silence is indistinguishable from a device being
+	// quiet. Nothing here expires a candidate, so without that call a removed
+	// pack's entities would stay reported — and stay command-resolvable — for
+	// the rest of this process's life.
+	EntitySource string
 }
 
 // identityKey is the store's key: REL-153's `(driver, native_id)` pair under
@@ -203,6 +443,17 @@ type Candidate struct {
 	Serial       string            `json:"serial,omitempty"`
 	OpenPorts    []int             `json:"open_ports,omitempty"`
 	Entities     []CandidateEntity `json:"entities"`
+	// nameRank is how good the source of Name was, remembered so the NEXT
+	// sighting can be refused if it is worse (keepName). Unexported on purpose:
+	// REL-110a fixes the candidate's member set and the frozen corpus is the
+	// oracle for it, so this is relay-local memory that must never reach the
+	// wire. Making a name survive a relay restart would need an additive
+	// REL-110a member and is a contract change, not this one.
+	nameRank NameRank
+	// entitySource is the declaration whose fan-out Entities currently holds —
+	// the Observation.EntitySource that last stated it. Unexported for the same
+	// reason nameRank is: relay-local merge memory, never a wire member.
+	entitySource string
 }
 
 // CandidatesBody is the device.candidates message body (REL-110): the full
@@ -332,7 +583,10 @@ func (s *Store) Observe(o Observation, atMs int64) {
 		if atMs > c.LastSeen {
 			c.LastSeen = atMs
 		}
-		c.Match = o.Match
+		// keepMatch, not a bare overwrite: the mechanical MAC default every
+		// MAC-resolved lane stamps must not erase the declared search target a
+		// device actually answered.
+		c.Match = keepMatch(o.Match, c.Match)
 		// keepClass, not a bare overwrite: a specific class one lane learned must
 		// not be downgraded to the generic default by another lane's next sweep.
 		c.DeviceClass = keepClass(o.DeviceClass, c.DeviceClass)
@@ -346,28 +600,55 @@ func (s *Store) Observe(o Observation, atMs int64) {
 		// reported blink back to empty. The state a sighting does not carry is
 		// "not learned here", never "no longer true", so a surviving entity keeps
 		// the state already held unless this sighting states a new one.
-		prevState := make(map[string]string, len(c.Entities))
-		prevAttrs := make(map[string]map[string]string, len(c.Entities))
-		for _, e := range c.Entities {
-			if e.State != "" {
-				prevState[e.Key] = e.State
+		//
+		// And the LIST itself is replaced only by a lane that HAS a DECLARATION.
+		// The entity fan-out comes off the watch a pack declared, so the
+		// neighbour, port-scan and host-mDNS lanes — which know a host exists but
+		// nothing about what it exposes — all build an Observation with no watch
+		// behind it. This used to be an unconditional wholesale replace, so any
+		// one of their sweeps DELETED the SSDP watch's declared fan-out, and with
+		// it every handle the relay addresses the device by: ResolveEntity and
+		// SetEntityObservation both walk this list, so while it was blanked an
+		// inbound command resolved to nothing (COMMAND_UNRESOLVED) and a polled
+		// state had nowhere to land. It also destroyed the poller's work for good
+		// — the carry below is rebuilt from the list, so re-declaring the entity
+		// later brought it back stateless.
+		//
+		// The test is EntitySource, not `len(o.Entities) > 0`, and the difference
+		// is a shrink. Length answers "did this sighting bring entities", which
+		// conflates the lane that has nothing to say with the watch whose pack
+		// narrowed its fan-out to fewer — or to none — so a declared removal could
+		// never land and the list could only ever grow. The declaration answers
+		// "is this sighting entitled to state the fan-out at all", which is the
+		// actual question, and lets a re-declaration replace it in full in both
+		// directions. Withdrawal of the whole declaration is a third case neither
+		// test can see, because a removed watch stops observing rather than
+		// observing nothing; RetainDeclarations handles it from the apply seam.
+		if o.EntitySource != "" {
+			prevState := make(map[string]string, len(c.Entities))
+			prevAttrs := make(map[string]map[string]string, len(c.Entities))
+			for _, e := range c.Entities {
+				if e.State != "" {
+					prevState[e.Key] = e.State
+				}
+				// Attributes are carried across a re-sighting for the identical
+				// reason State is: a discovery packet observes neither, so an
+				// incoming entity list has both blank and replacing the slice
+				// wholesale would delete what the poller learned.
+				if len(e.Attributes) > 0 {
+					prevAttrs[e.Key] = e.Attributes
+				}
 			}
-			// Attributes are carried across a re-sighting for the identical
-			// reason State is: a discovery packet observes neither, so an
-			// incoming entity list has both blank and replacing the slice
-			// wholesale would delete what the poller learned.
-			if len(e.Attributes) > 0 {
-				prevAttrs[e.Key] = e.Attributes
+			c.Entities = append([]CandidateEntity(nil), o.Entities...)
+			for i := range c.Entities {
+				if c.Entities[i].State == "" {
+					c.Entities[i].State = prevState[c.Entities[i].Key]
+				}
+				if len(c.Entities[i].Attributes) == 0 {
+					c.Entities[i].Attributes = prevAttrs[c.Entities[i].Key]
+				}
 			}
-		}
-		c.Entities = append([]CandidateEntity(nil), o.Entities...)
-		for i := range c.Entities {
-			if c.Entities[i].State == "" {
-				c.Entities[i].State = prevState[c.Entities[i].Key]
-			}
-			if len(c.Entities[i].Attributes) == 0 {
-				c.Entities[i].Attributes = prevAttrs[c.Entities[i].Key]
-			}
+			c.entitySource = o.EntitySource
 		}
 		// The four LEARNED facts are refreshed only when the new sighting
 		// actually carries one, unlike the declaration-side facts above which
@@ -381,8 +662,24 @@ func (s *Store) Observe(o Observation, atMs int64) {
 		// command an adopted device — because one packet out of hundreds was
 		// thin. A genuinely changed address (DHCP moved the device) is non-empty
 		// and does overwrite, which is the case that has to keep working.
-		c.Name = orKeep(o.Name, c.Name)
-		c.Address = orKeep(o.Address, c.Address)
+		//
+		// Presence alone turned out to be only half the rule. It defends against
+		// a sighting that learned NOTHING; it does nothing about one that learned
+		// something WORSE, and two of these four have a strictly-worse form that a
+		// live LAN produces constantly — a machine-generated mDNS instance name
+		// where a display name exists, and a bare host where a host:port was read.
+		// keepName and keepAddress rank those; keepClass ranked the same defect
+		// for the class first, and each of them still refuses an empty value, so
+		// this is a generalisation of orKeep and not a replacement for it.
+		c.Name, c.nameRank = keepName(o.Name, o.NameRank, c.Name, c.nameRank)
+		c.Address = keepAddress(o.Address, c.Address)
+		// Model and Serial stay presence-only. They have exactly ONE writer today
+		// (the ECP identification probe), so no second lane can undercut them, and
+		// the only worse-value path is a re-probe of a mid-reboot device answering
+		// `model-number` where the first answered `model-name`. Ranking that means
+		// carrying the ECP element up the same way NameRank is — cheap, but it
+		// would be enforcement with no observed instance to enforce against, so it
+		// waits for one rather than shipping untested by reality.
 		c.Model = orKeep(o.Model, c.Model)
 		c.Serial = orKeep(o.Serial, c.Serial)
 		// Ports follow the same rule every LEARNED fact here follows, and the
@@ -411,8 +708,54 @@ func (s *Store) Observe(o Observation, atMs int64) {
 		Serial:      o.Serial,
 		OpenPorts:   o.OpenPorts,
 		Entities:    append([]CandidateEntity(nil), o.Entities...),
+		// Remembered from the first sighting so the SECOND one can be ranked
+		// against it. A name with no rank behind it is indistinguishable from one
+		// nothing vouches for, which is what the merge would then have to assume.
+		nameRank: o.NameRank,
+		// Likewise: which declaration authored this fan-out, so RetainDeclarations
+		// can drop it when that declaration goes away. A candidate first seen by a
+		// lane with no watch records no source, which is right — it has no fan-out
+		// to attribute.
+		entitySource: o.EntitySource,
 	}
 	s.order = append(s.order, key)
+}
+
+// RetainDeclarations drops every entity fan-out authored by a declaration that
+// is no longer live, and reports how many candidates it cleared.
+//
+// This is the WITHDRAWAL half of the fan-out rule, and it has to be a call
+// rather than a merge because withdrawal has no sighting. Entities are
+// declaration-side: they come off a pack-declared watch, and every signed
+// desired-state apply REPLACES the whole watch set (discovery.SetWatches,
+// mdns.SetWatches). Remove or disable the pack and its watch simply stops
+// observing — which is byte-for-byte what a device being switched off looks
+// like, so no rule reading sightings can tell them apart. Meanwhile the other
+// lanes keep re-observing the same host with no declaration behind them, so the
+// candidate keeps the withdrawn fan-out; nothing here expires a candidate, and
+// the store lives as long as the process. Without this call the relay would go
+// on REPORTING a removed pack's entities and, worse, go on RESOLVING inbound
+// commands to them (ResolveEntity walks this list) until the next restart.
+//
+// live is the set of Match.Key() values the apply just installed, across every
+// lane, so the caller states the whole world once rather than this store trying
+// to guess which lane owns which key. An empty set is meaningful and honest: a
+// generation that declares no watches at all clears every declared fan-out.
+//
+// A candidate with no recorded source is untouched — it never had a declared
+// fan-out to lose.
+func (s *Store) RetainDeclarations(live map[string]bool) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cleared := 0
+	for _, c := range s.byKey {
+		if c.entitySource == "" || live[c.entitySource] {
+			continue
+		}
+		c.Entities, c.entitySource = nil, ""
+		cleared++
+	}
+	return cleared
 }
 
 // orKeep returns next when it carries a value, else the value already held.

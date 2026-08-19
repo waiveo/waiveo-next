@@ -290,3 +290,215 @@ var errBrowse = errorString("browse failed")
 type errorString string
 
 func (e errorString) Error() string { return string(e) }
+
+// THE #198 SIGHTING, end to end through the lane and the store. The lab's onn
+// 4K box advertises its display name over `_androidtvremote2._tcp` and a
+// truncated hostname form over `_googlecast._tcp`. `avahi-browse -t` dumps
+// whatever the cache holds when it is asked — twenty back-to-back runs on a
+// static LAN returned between 59 and 64 resolved records — so a sweep can
+// genuinely see the Cast record and not the remote one. That sweep must not
+// relabel a device the operator already sees named.
+func TestASweepMissingTheFriendlyServiceDoesNotDowngradeTheName(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	now := int64(1000)
+	mac := "48:5c:2c:31:6e:6e"
+	deviceplaneSeed(t, store, mac, now)
+
+	// The two instance names verbatim, as avahi resolved them on box .12.
+	both := []Service{
+		{Name: "onn. 4K Streaming Box", Type: "_androidtvremote2._tcp", Address: "192.168.50.63"},
+		{Name: "onn.-4K-Streaming-Bo-89edfc7ba2211b500945eaeb2c0265c9", Type: "_googlecast._tcp", Address: "192.168.50.63"},
+	}
+	castOnly := both[1:]
+
+	dump := both
+	l, err := New(Config{
+		Store: store, NowMillis: func() int64 { return now },
+		ResolveMAC: func(string) (string, bool) { return mac, true },
+		Browse:     func() ([]Service, error) { return dump, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	l.sweep()
+	if got := hostmdnsName(t, store); got != "onn. 4K Streaming Box" {
+		t.Fatalf("after the full sweep name = %q, want %q", got, "onn. 4K Streaming Box")
+	}
+
+	// The next sweep's dump is missing the remote service.
+	dump = castOnly
+	now = 2000
+	l.sweep()
+	if got := hostmdnsName(t, store); got != "onn. 4K Streaming Box" {
+		t.Fatalf("name = %q, want %q — a sweep that did not SEE the better record has not learned the device was renamed, and must not relabel it", got, "onn. 4K Streaming Box")
+	}
+}
+
+// The pick WITHIN one sweep is ranked by which service said the name, not by
+// how the string looks. The lab ecobee falsifies the shape heuristic outright:
+// it announces "Upstairs" over HomeKit and "ecobee-ares" over its own service,
+// and the len+space score prefers the machine name (11 > 8).
+func TestTheServiceTypeRanksTheNameNotItsShape(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	now := int64(1000)
+	mac := "44:61:32:aa:bb:cc"
+	deviceplaneSeed(t, store, mac, now)
+
+	l, err := New(Config{
+		Store: store, NowMillis: func() int64 { return now },
+		ResolveMAC: func(string) (string, bool) { return mac, true },
+		Browse: func() ([]Service, error) {
+			return []Service{
+				{Name: "ecobee-ares", Type: "_ecobee._tcp", Address: "192.168.39.241"},
+				{Name: "Upstairs", Type: "_hap._tcp", Address: "192.168.39.241"},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	l.sweep()
+
+	if got := hostmdnsName(t, store); got != "Upstairs" {
+		t.Fatalf("name = %q, want %q — HomeKit's instance label is the room the owner typed; the ecobee service's is a machine name that merely scores higher", got, "Upstairs")
+	}
+}
+
+func TestNameRankFor(t *testing.T) {
+	cases := map[string]deviceplane.NameRank{
+		// Announce a display name by convention.
+		"_androidtvremote2._tcp": deviceplane.NameRankFriendly,
+		"_airplay._tcp":          deviceplane.NameRankFriendly,
+		"_hap._tcp":              deviceplane.NameRankFriendly,
+		"_home-assistant._tcp":   deviceplane.NameRankFriendly,
+		// Announce the product, not the unit.
+		"_ipp._tcp":     deviceplane.NameRankModel,
+		"_printer._tcp": deviceplane.NameRankModel,
+		// Announce an id, a hostname form, or a LOSSY REWRITE — the observed
+		// offenders. `_display._tcp` is the one that looks friendly and is not;
+		// see TestATruncatingServiceTypeIsNotAFriendlyOne.
+		"_googlecast._tcp":      deviceplane.NameRankMachine,
+		"_display._tcp":         deviceplane.NameRankMachine,
+		"_spotify-connect._tcp": deviceplane.NameRankMachine,
+		"_ecobee._tcp":          deviceplane.NameRankMachine,
+		"_matter._tcp":          deviceplane.NameRankMachine,
+		// Promoted on speculation once and demoted on evidence: neither appears
+		// on the lab LAN at all, and Roku does not advertise over mDNS.
+		"_sonos._tcp": deviceplane.NameRankMachine,
+		"_roku._tcp":  deviceplane.NameRankMachine,
+		// Unknown types are Machine, not None: still good enough to fill an
+		// empty slot and to compete on shape, never good enough to displace a
+		// name a known-friendly record authored.
+		"_nut._tcp": deviceplane.NameRankMachine,
+		"":          deviceplane.NameRankMachine,
+	}
+	for in, want := range cases {
+		if got := nameRankFor(in); got != want {
+			t.Errorf("nameRankFor(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+// A SERVICE TYPE THAT TRUNCATES IS A MACHINE SOURCE, however friendly it looks.
+//
+// `_display._tcp` announces a TV's display name and was ranked friendly for
+// exactly that reason — a plausible promotion nobody had checked against the
+// LAN. One `avahi-browse -a -t -r -p -k` on box .12 falsifies it: on short names
+// the two records agree (`_display._tcp | The Hanger`), but past ~20 characters
+// `_display` truncates and appends a `-XXX` disambiguator, which is the same
+// string class as `onn.-4K-Streaming-Bo`.
+//
+//	192.168.39.110  _airplay | 43in office downstairs        _display | 43" office downs-0JX
+//	192.168.39.238  _airplay | Office Upstairs small Bedroom  _display | Office Upstairs -6A5
+//
+// Ranked equal to `_airplay` it ties, and a sweep whose cache held one and not
+// the other reproduced #198 on a different pair of records. This is that sweep,
+// with the real strings.
+func TestATruncatingServiceTypeIsNotAFriendlyOne(t *testing.T) {
+	if nameRankFor("_display._tcp") >= nameRankFor("_airplay._tcp") {
+		t.Fatalf("_display._tcp ranks at or above _airplay._tcp — it truncates to 20 characters, so a sweep that saw only _display would relabel the device with a mangled name")
+	}
+
+	const (
+		full      = "Office Upstairs small Bedroom"
+		truncated = "Office Upstairs -6A5"
+	)
+	store := deviceplane.NewStore("relay-1")
+	now := int64(1000)
+	mac := "ac:63:be:11:22:33"
+	deviceplaneSeed(t, store, mac, now)
+
+	dump := []Service{
+		{Name: full, Type: "_airplay._tcp", Address: "192.168.39.238"},
+		{Name: truncated, Type: "_display._tcp", Address: "192.168.39.238"},
+	}
+	l, err := New(Config{
+		Store: store, NowMillis: func() int64 { return now },
+		ResolveMAC: func(string) (string, bool) { return mac, true },
+		Browse:     func() ([]Service, error) { return dump, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	l.sweep()
+	if got := hostmdnsName(t, store); got != full {
+		t.Fatalf("within one sweep name = %q, want %q — the intact name must win the pick", got, full)
+	}
+
+	// The next sweep's cache holds `_display` and not `_airplay`. Per-type
+	// presence really does vary that way: three consecutive `-t` dumps 12s apart
+	// held `_googlecast._tcp` for 192.168.50.63 and no `_androidtvremote2._tcp`.
+	dump = dump[1:]
+	now = 2000
+	l.sweep()
+	if got := hostmdnsName(t, store); got != full {
+		t.Fatalf("name = %q, want %q — a truncating record must not relabel a device across sweeps, which is #198 with different strings", got, full)
+	}
+}
+
+// A SWEEP MUST BE A FUNCTION OF THE CACHE, NOT OF THE ORDER IT WAS READ IN.
+//
+// avahi's browse output has no guaranteed order. Two equally-ranked,
+// equally-scoring names would otherwise resolve to whichever record the dump
+// listed first — and to the other one 30 seconds later. The store cannot save
+// us there: keepName takes an equal-ranked newer name on purpose, because that
+// is how a rename lands, so a lane that hands it a coin flip every sweep
+// produces a permanent flap that is indistinguishable from a permanent rename.
+func TestTheWithinSweepPickDoesNotDependOnBrowseOrder(t *testing.T) {
+	// Same rank (both friendly), same nameScore (same length, one space each).
+	a := Service{Name: "Den TV", Type: "_airplay._tcp", Address: "192.168.50.77"}
+	b := Service{Name: "Bar TV", Type: "_hap._tcp", Address: "192.168.50.77"}
+
+	pick := func(order []Service) string {
+		store := deviceplane.NewStore("relay-1")
+		mac := "aa:bb:cc:dd:ee:ff"
+		deviceplaneSeed(t, store, mac, 1000)
+		l, err := New(Config{
+			Store: store, NowMillis: func() int64 { return 1000 },
+			ResolveMAC: func(string) (string, bool) { return mac, true },
+			Browse:     func() ([]Service, error) { return order, nil },
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		l.sweep()
+		return hostmdnsName(t, store)
+	}
+
+	forward, reverse := pick([]Service{a, b}), pick([]Service{b, a})
+	if forward != reverse {
+		t.Fatalf("the same cache read in two orders named the device %q and %q — a sweep that depends on browse order flaps forever between two names the store is obliged to accept", forward, reverse)
+	}
+}
+
+// hostmdnsName reads the single candidate's name out of the store.
+func hostmdnsName(t *testing.T, store *deviceplane.Store) string {
+	t.Helper()
+	cands := store.Report().Body.Candidates
+	if len(cands) != 1 {
+		t.Fatalf("candidates = %d, want 1 (every service here is one device): %+v", len(cands), cands)
+	}
+	return cands[0].Name
+}

@@ -566,3 +566,111 @@ func TestTheRestoreCountsWhatTheBootLogHasToSayApart(t *testing.T) {
 		}
 	}
 }
+
+// THE TWO LAYERS MUST NOT HOLD DIFFERENT ANSWERS FOR ONE DEVICE.
+//
+// The mirror's merge learned to REFUSE part of a report — a class that has
+// regressed to the generic default, an address that has lost its port — because
+// it is the only layer that remembers a device across a relay restart. The read
+// model has no such memory and takes the report verbatim, so the moment those
+// guards existed the two layers began disagreeing: `GET /devices` served the
+// degraded value the guard was added to prevent, while the durable row held the
+// good one, and the answer SWAPPED OVER at the next feeder restart when the
+// registry was rebuilt from the mirror. Same device, no new information from any
+// relay, two different answers depending on which process restarted last.
+//
+// This drives the real sequence: a steady-state report, then the report a
+// RESTARTED relay actually sends (its in-memory store is empty, so the neighbour
+// lane's bare address and generic class are all it knows for a few seconds), and
+// asserts the two layers agree at every step — including across a feeder
+// restart, which is where the disagreement used to become visible.
+func TestTheReadModelAndTheMirrorAgreeAfterAnIgnorantReport(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "app.db")
+
+	first := cmOpenStore(t, path)
+	registry := devices.New(cmSite, func() int64 { return 10_000 })
+	sink := newCandidateMirror(registry, first, store.WallClockMs)
+
+	if err := sink.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{
+		cmCandidate(cmNativeA, "Lobby TV", "192.168.50.31:8060"),
+	}); err != nil {
+		t.Fatalf("steady-state report: %v", err)
+	}
+	id := deviceid.Device(cmSite, cmDriver, cmNativeA)
+	assertLayersAgree(t, ctx, registry, first, id, "media-player", "192.168.50.31:8060", "Lobby TV")
+
+	// The relay restarts. Its neighbour lane sweeps before host-mDNS and before
+	// any scan, so this report is CORRECT-BUT-IGNORANT: a real sighting of a real
+	// device, carrying everything that lane can see and nothing it cannot.
+	ignorant := cmCandidate(cmNativeA, "", "192.168.50.31")
+	ignorant.DeviceClass = "unclassified"
+	ignorant.Model, ignorant.Serial = "", ""
+	if err := sink.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{ignorant}); err != nil {
+		t.Fatalf("report from the restarted relay: %v", err)
+	}
+
+	after := cmDevice(t, registry, id)
+	if after.DeviceClass != "media-player" || after.Address != "192.168.50.31:8060" {
+		t.Errorf("GET /devices would serve class %q address %q after a restarted relay's report, want media-player / 192.168.50.31:8060 — "+
+			"the durable guard refused this exact degradation and the read model must show what the mirror committed, not what the report said",
+			after.DeviceClass, after.Address)
+	}
+	if after.Name != "Lobby TV" || after.Model != "Roku Ultra" || after.Serial != "X00500ABC123" {
+		t.Errorf("GET /devices would serve name %q model %q serial %q, want the remembered Lobby TV / Roku Ultra / X00500ABC123 — "+
+			"a report that carries no name has not learned one, and the mirror is the only layer that remembers",
+			after.Name, after.Model, after.Serial)
+	}
+	// The entity label is composed from the device's name, so it has to follow it
+	// or the two lists in one API response name one device two ways.
+	entityID := deviceid.Entity(cmSite, cmDriver, cmNativeA, "main")
+	if e, ok := registry.Entity(entityID); !ok || e.Name != "Lobby TV main" {
+		t.Errorf("entity name = %q (found %v), want %q — an entity's label is composed from its device's name and must not disagree with it", e.Name, ok, "Lobby TV main")
+	}
+	assertLayersAgree(t, ctx, registry, first, id, "media-player", "192.168.50.31:8060", "Lobby TV")
+
+	// The feeder restarts with no relay connected: the registry is rebuilt FROM
+	// the mirror. This is where the divergence used to surface — the API's answer
+	// changed with no new information from anywhere.
+	if err := first.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	second := cmOpenStore(t, path)
+	restored := devices.New(cmSite, func() int64 { return 20_000 })
+	if _, err := restoreDeviceRegistry(ctx, second, restored); err != nil {
+		t.Fatalf("restoreDeviceRegistry: %v", err)
+	}
+	assertLayersAgree(t, ctx, restored, second, id, "media-player", "192.168.50.31:8060", "Lobby TV")
+}
+
+// assertLayersAgree checks the read model and the durable mirror describe one
+// device the same way, and that both say what the test expects.
+func assertLayersAgree(t *testing.T, ctx context.Context, registry *devices.Registry, s *store.Store, deviceID, class, address, name string) {
+	t.Helper()
+	live := cmDevice(t, registry, deviceID)
+
+	rows, err := s.DiscoveredDevices(ctx)
+	if err != nil {
+		t.Fatalf("DiscoveredDevices: %v", err)
+	}
+	var row store.DiscoveredDevice
+	found := false
+	for _, r := range rows {
+		if r.DeviceID == deviceID {
+			row, found = r, true
+		}
+	}
+	if !found {
+		t.Fatalf("device %s has no mirrored row", deviceID)
+	}
+
+	if live.DeviceClass != row.DeviceClass || live.Address != row.Address || live.Name != row.Name {
+		t.Fatalf("the two layers disagree about %s: read model {class %q address %q name %q} vs durable row {class %q address %q name %q} — "+
+			"an operator's answer would depend on which process restarted last",
+			deviceID, live.DeviceClass, live.Address, live.Name, row.DeviceClass, row.Address, row.Name)
+	}
+	if live.DeviceClass != class || live.Address != address || live.Name != name {
+		t.Fatalf("both layers agree on {class %q address %q name %q}, want {%q %q %q}",
+			live.DeviceClass, live.Address, live.Name, class, address, name)
+	}
+}

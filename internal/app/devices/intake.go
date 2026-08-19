@@ -153,6 +153,9 @@ func (r *Registry) ApplyCandidates(relayID string, candidates []wire.DeviceCandi
 				// Copied, never aliased: the decoded report is the caller's and
 				// this row outlives the call.
 				Attributes: copyAttributes(e.Attributes),
+				// Kept so the merge can re-compose Name if the device's own name
+				// is overlaid from the durable mirror (Registry.rematerialize).
+				key: e.Key,
 			}
 		}
 	}

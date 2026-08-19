@@ -236,6 +236,18 @@ func (m candidateMirror) ApplyCandidates(relayID string, candidates []wire.Devic
 	if seen := seenFrom(stored); len(seen) > 0 {
 		m.registry.MarkSeen(seen)
 	}
+	// The LEARNED facts, projected for the same reason and at the same seam. The
+	// mirror's merge is the only place that remembers a device across a relay
+	// restart, so it is the only place that can keep a port an SSDP LOCATION once
+	// carried, or a class an mDNS sweep once learned, when the report that just
+	// arrived came from a relay whose memory is empty. Everything it refused is
+	// invisible to `GET /devices` without this line — the API would go on serving
+	// the degraded value the durable guard exists to prevent, and would swap to
+	// the good one at the next feeder restart, when restoreDeviceRegistry rebuilds
+	// the view from these same rows. Two layers, one device, two answers.
+	if facts := storedFrom(stored); len(facts) > 0 {
+		m.registry.MarkStored(facts)
+	}
 	if !m.faults.pending() {
 		return nil
 	}
@@ -367,6 +379,39 @@ func seenFrom(rows []store.DiscoveredDevice) map[string]devices.Seen {
 		}
 	}
 	return seen
+}
+
+// storedFrom projects the committed mirror rows onto the read model's overlay:
+// what the durable merge decided each device's learned facts are.
+//
+// Every fact is carried as it stands, INCLUDING an empty one, because empty is
+// already the overlay's "teaches nothing" and the mirror's own merge has already
+// applied the only rule that matters — orKeepFact and keepAddressFact refuse to
+// store a blank over a known value, so a blank here means the mirror genuinely
+// holds none.
+//
+// The relay id rides along so the overlay can be refused if the device changes
+// hands (devices.Stored says why).
+func storedFrom(rows []store.DiscoveredDevice) map[string]devices.Stored {
+	if len(rows) == 0 {
+		return nil
+	}
+	facts := make(map[string]devices.Stored, len(rows))
+	for _, d := range rows {
+		if d.DeviceID == "" {
+			continue
+		}
+		facts[d.DeviceID] = devices.Stored{
+			RelayID:     d.RelayID,
+			DeviceClass: d.DeviceClass,
+			Name:        d.Name,
+			Address:     d.Address,
+			Model:       d.Model,
+			Serial:      d.Serial,
+			OpenPorts:   d.OpenPorts,
+		}
+	}
+	return facts
 }
 
 // restoreDeviceRegistry loads the mirrored device rows, and the adoption

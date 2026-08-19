@@ -1277,7 +1277,15 @@ func main() {
 					if err != nil {
 						return discovery.Identity{}, false
 					}
-					return discovery.Identity{Name: info.Name, Model: info.Model, Serial: info.SerialNumber}, true
+					return discovery.Identity{
+						Name:  info.Name,
+						Model: info.Model,
+						// WHICH element the name came from rides along, or the
+						// merge one layer up cannot tell an owner-set name from
+						// a factory model string (ecpNameRank).
+						NameRank: ecpNameRank(info.NameSource),
+						Serial:   info.SerialNumber,
+					}, true
 				},
 			})
 			if err != nil {
@@ -1481,7 +1489,7 @@ func main() {
 	// (installInventory) and the discovery watch sets (REL-064). One composed
 	// hook rather than a second rePuller field, so the two can never be
 	// refreshed from different generations.
-	applyDiscoveryWatches := discoveryWatchApplier(disc, mdnsListener, builtinSSDP, builtinMDNS)
+	applyDiscoveryWatches := discoveryWatchApplier(disc, mdnsListener, candStore, builtinSSDP, builtinMDNS)
 	// Boot generation, once, for the log line: the lanes were SEEDED with these
 	// watches at construction (they must not sweep even once without them), so
 	// this re-install is idempotent — its value is the operator-visible count of

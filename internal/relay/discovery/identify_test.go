@@ -296,3 +296,86 @@ func TestNoIdentifierStillYieldsAnAddressableCandidate(t *testing.T) {
 		t.Errorf("model/serial = %q/%q, want both empty — nothing probed, so nothing may be claimed", c.Model, c.Serial)
 	}
 }
+
+// A REPLAYED NAME IS MEMORY, NOT AN OBSERVATION, and the merge one layer up has
+// to be told so.
+//
+// This lane probes only inside an operator's scan: Run is passive-only, and the
+// passive branch of identityOf serves whatever the cache holds with NO TTL check
+// at all — deliberately, because a slightly stale name beats blanking a device
+// the operator has seen named. Handed upward with its original rank, that replay
+// claims a friendly record "just said this", and the candidate merge believes
+// it: keepName takes an equal-ranked NEWER statement, so every passive SSDP
+// packet would restate the OLD name over the one a 30-second mDNS sweep had just
+// read off the LAN, and a renamed device would flap forever instead of settling.
+//
+// So a recalled identity keeps its string and loses its rank. It can still fill
+// an empty name; it can no longer out-shout a lane that actually looked.
+func TestARecalledIdentityCarriesTheNameButNotItsRank(t *testing.T) {
+	probes := 0
+	nowMs := int64(1000)
+	d, err := New(Config{
+		Watches:   []Watch{rokuWatch(t)},
+		Store:     deviceplane.NewStore("relay-1"),
+		NowMillis: func() int64 { return nowMs },
+		Identify: func(context.Context, string) (Identity, bool) {
+			probes++
+			return Identity{Name: "The Hanger", NameRank: deviceplane.NameRankFriendly}, true
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	const usn, addr = "uuid:roku:ecp:X029009JC6LF", "192.168.50.31:8060"
+
+	// The operator's scan probes once. A FRESH probe is a real statement and
+	// keeps its rank — this is the answer that must be able to land.
+	fresh := d.identityOf(context.Background(), usn, addr, true)
+	if probes != 1 || fresh.Name != "The Hanger" || fresh.NameRank != deviceplane.NameRankFriendly {
+		t.Fatalf("fresh probe = %+v after %d probe(s), want the name at its own rank", fresh, probes)
+	}
+
+	// Every passive sighting afterwards is served from the cache — inside the
+	// TTL and, on the passive path, long past it.
+	for _, tc := range []struct {
+		name       string
+		atMs       int64
+		allowProbe bool
+	}{
+		{"a passive sighting inside the TTL", 1000, false},
+		{"a passive sighting hours past the TTL", 1000 + 6*3600_000, false},
+		{"a scan re-served from a live cache entry", 1000, true},
+	} {
+		nowMs = tc.atMs
+		got := d.identityOf(context.Background(), usn, addr, tc.allowProbe)
+		if got.Name != "The Hanger" {
+			t.Errorf("%s: name = %q, want the remembered name still offered — it is what stops a known device blanking", tc.name, got.Name)
+		}
+		if got.NameRank != deviceplane.NameRankNone {
+			t.Errorf("%s: NameRank = %d, want %d — a value this lane REMEMBERED must not claim a record just said it, or it wins the tie against a lane that genuinely re-read the LAN and a renamed device flaps forever",
+				tc.name, got.NameRank, deviceplane.NameRankNone)
+		}
+	}
+	if probes != 1 {
+		t.Fatalf("probes = %d, want 1 — the fixture stopped exercising the cache", probes)
+	}
+}
+
+// The declaration behind an entity fan-out has to reach the store, because the
+// store's merge and its withdrawal path both key on it: without it a watch's
+// sighting looks exactly like a neighbour sweep, so it can neither state the
+// fan-out nor have it retired when the pack goes away.
+//
+// It is read BEFORE canonicalize, which moves Match itself onto the MAC identity
+// — so by the time the observation reaches the store, Match no longer records
+// which pattern declared anything.
+func TestAWatchSightingNamesTheDeclarationBehindItsFanOut(t *testing.T) {
+	w := rokuWatch(t)
+	o := w.observation("uuid:roku:ecp:X1", "192.168.50.31:8060", Identity{})
+	if o.EntitySource == "" {
+		t.Fatalf("observation carries no EntitySource — the store cannot tell this watch's sighting from a neighbour sweep, so it may not state the fan-out and RetainDeclarations can never retire it")
+	}
+	if got, want := o.EntitySource, w.Match.Key(); got != want {
+		t.Fatalf("EntitySource = %q, want %q — it must be keyed exactly as the apply seam keys the live watch set, or a live declaration reads as withdrawn", got, want)
+	}
+}

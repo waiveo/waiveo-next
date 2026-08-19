@@ -8,6 +8,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
 	"github.com/maaxton/waiveo-next/internal/relay/discovery"
 	"github.com/maaxton/waiveo-next/internal/relay/mdns"
+	"github.com/maaxton/waiveo-next/internal/shared/deviceid"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
@@ -131,7 +132,7 @@ func TestDiscoveryWatchApplierInstallsAndForgets(t *testing.T) {
 	}
 	builtinSSDP := []discovery.Watch{{Match: deviceplane.Match{SSDP: testSSDPTarget}, Driver: rokuDriver, DeviceClass: mediaPlayerClass}}
 
-	apply := discoveryWatchApplier(disc, mdnsL, builtinSSDP, nil)
+	apply := discoveryWatchApplier(disc, mdnsL, store, builtinSSDP, nil)
 
 	apply(wire.DeviceInventory{PackMatchPatterns: rawPatterns(t,
 		`{"deviceClass":"tv","match":[{"ssdp":"urn:acme:tv:1"},{"mdns":"_acme._tcp"}]}`,
@@ -156,7 +157,7 @@ func TestDiscoveryWatchApplierInstallsAndForgets(t *testing.T) {
 
 	// Nil lanes (discovery off) must not panic: the applier still runs for
 	// its log line.
-	discoveryWatchApplier(nil, nil, nil, nil)(wire.DeviceInventory{})
+	discoveryWatchApplier(nil, nil, nil, nil, nil)(wire.DeviceInventory{})
 }
 
 // main must WIRE the applier, or all of the above is a tested join nothing
@@ -166,7 +167,7 @@ func TestDiscoveryWatchApplierInstallsAndForgets(t *testing.T) {
 func TestMainWiresTheDiscoveryWatchApplier(t *testing.T) {
 	mainFn := parseRelayMainFunc(t)
 
-	wantArgs := []string{"disc", "mdnsListener", "builtinSSDP", "builtinMDNS"}
+	wantArgs := []string{"disc", "mdnsListener", "candStore", "builtinSSDP", "builtinMDNS"}
 	constructed := 0
 	bootApplies := 0
 	ast.Inspect(mainFn, func(n ast.Node) bool {
@@ -197,5 +198,67 @@ func TestMainWiresTheDiscoveryWatchApplier(t *testing.T) {
 	}
 	if bootApplies < 2 {
 		t.Fatalf("func main calls applyDiscoveryWatches %d time(s), want >=2: once at boot (the boot generation's log line) and once inside the rePuller applyInventory hook (live applies) — missing either leaves half the lifecycle unwired", bootApplies)
+	}
+}
+
+// AN APPLY MUST RETIRE WHAT THE PREVIOUS GENERATION DECLARED, not only install
+// what this one does.
+//
+// Installing the new watch set is the visible half. The other half has no
+// sighting behind it: a removed pack's watch stops observing, which is
+// byte-for-byte what a device going quiet looks like, so no rule reading
+// sightings can distinguish them — while the neighbour and host-mDNS lanes keep
+// re-observing the same host with nothing to say about its fan-out. Nothing
+// expires a candidate and the relay's store lives as long as the process, so
+// without this the removed pack's entities stay REPORTED and stay
+// COMMAND-RESOLVABLE until the next restart.
+func TestAnApplyRetiresTheFanOutOfAWatchItNoLongerDeclares(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	store.SetSite(dcSite)
+	now := func() int64 { return 1000 }
+	disc, err := discovery.New(discovery.Config{Store: store, NowMillis: now})
+	if err != nil {
+		t.Fatalf("discovery.New: %v", err)
+	}
+	apply := discoveryWatchApplier(disc, nil, store, nil, nil)
+
+	// A pack declares an SSDP watch with a fan-out, and the lane observes a
+	// device through it.
+	apply(wire.DeviceInventory{PackMatchPatterns: rawPatterns(t,
+		`{"deviceClass":"media-player","match":[{"ssdp":"urn:acme:tv:1"}]}`,
+	)})
+	w := discovery.Watch{
+		Match:       deviceplane.Match{SSDP: "urn:acme:tv:1"},
+		Driver:      rokuDriver,
+		DeviceClass: mediaPlayerClass,
+		Entities:    []deviceplane.CandidateEntity{{Key: "main", DeviceClass: mediaPlayerClass}},
+	}
+	store.Observe(deviceplane.Observation{
+		Match: w.Match, Provenance: deviceplane.ProvenanceDiscovered,
+		Driver: w.Driver, NativeID: "uuid:acme:tv:1", DeviceClass: w.DeviceClass,
+		Address: "192.168.50.31:8060", Entities: w.Entities, EntitySource: w.Match.Key(),
+	}, 1000)
+
+	entityID := deviceid.Entity(dcSite, rokuDriver, "uuid:acme:tv:1", "main")
+	if _, _, ok := store.ResolveEntity(entityID); !ok {
+		t.Fatalf("ResolveEntity(%q) failed while the pack is installed — the fixture is wrong before the apply is exercised", entityID)
+	}
+
+	// Re-applying the SAME generation must not disturb anything: applies are
+	// idempotent and happen on every desired-state refresh.
+	apply(wire.DeviceInventory{PackMatchPatterns: rawPatterns(t,
+		`{"deviceClass":"media-player","match":[{"ssdp":"urn:acme:tv:1"}]}`,
+	)})
+	if _, _, ok := store.ResolveEntity(entityID); !ok {
+		t.Fatalf("ResolveEntity(%q) failed after re-applying the SAME generation — an idempotent apply has retired a live declaration", entityID)
+	}
+
+	// The pack is uninstalled.
+	apply(wire.DeviceInventory{})
+	if _, _, ok := store.ResolveEntity(entityID); ok {
+		t.Fatalf("ResolveEntity(%q) still resolves after the declaring pack was removed — the relay would execute an inbound command against a device no installed pack claims", entityID)
+	}
+	if ents := store.Report().Body.Candidates[0].Entities; len(ents) != 0 {
+		t.Fatalf("candidate still reports %+v — a removed pack's entity fan-out must stop being reported, not linger until the relay restarts", ents)
 	}
 }

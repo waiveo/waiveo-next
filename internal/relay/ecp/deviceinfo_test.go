@@ -196,3 +196,62 @@ func TestQueryDeviceInfoRefusesUnreachableAndMissingInputs(t *testing.T) {
 		t.Error("QueryDeviceInfo with a canceled context = nil error, want a refusal")
 	}
 }
+
+// The name's SOURCE rides out beside the name, because a merge one layer up
+// cannot otherwise tell "Lobby TV", which an owner typed, from
+// "Roku Ultra - X00500ABC123", which a factory printed. The precedence used to
+// be resolved and thrown away, and every downstream fact was equally trustworthy
+// as a result (internal/relay/deviceplane.NameRank).
+func TestQueryDeviceInfoReportsWhichElementNamedTheDevice(t *testing.T) {
+	cases := []struct {
+		name       string
+		doc        string
+		wantName   string
+		wantSource NameSource
+	}{
+		{
+			name:       "the owner's own name",
+			doc:        rokuDeviceInfoXML,
+			wantName:   "Lobby TV",
+			wantSource: NameSourceUser,
+		},
+		{
+			name:       "the vendor's friendly name",
+			doc:        `<device-info><friendly-device-name>Roku Ultra - Bar</friendly-device-name><default-device-name>Roku Ultra - X1</default-device-name></device-info>`,
+			wantName:   "Roku Ultra - Bar",
+			wantSource: NameSourceFriendly,
+		},
+		{
+			name:       "the factory default, which is a model string wearing a name's clothes",
+			doc:        `<device-info><default-device-name>Roku Ultra - X1</default-device-name></device-info>`,
+			wantName:   "Roku Ultra - X1",
+			wantSource: NameSourceDefault,
+		},
+		{
+			name:       "no name at all",
+			doc:        `<device-info><serial-number>X1</serial-number></device-info>`,
+			wantName:   "",
+			wantSource: NameSourceNone,
+		},
+		{
+			// The source must follow the value through the fall-through rules,
+			// not be re-derived from which elements are merely PRESENT.
+			name:       "an empty element falls through and the source follows",
+			doc:        `<device-info><user-device-name>  </user-device-name><friendly-device-name>Roku Ultra - Bar</friendly-device-name></device-info>`,
+			wantName:   "Roku Ultra - Bar",
+			wantSource: NameSourceFriendly,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			addr := serveDeviceInfo(t, http.StatusOK, tc.doc)
+			info, err := QueryDeviceInfo(context.Background(), NewIdentifyClient(), addr)
+			if err != nil {
+				t.Fatalf("QueryDeviceInfo: %v", err)
+			}
+			if info.Name != tc.wantName || info.NameSource != tc.wantSource {
+				t.Fatalf("(Name, NameSource) = (%q, %d), want (%q, %d)", info.Name, info.NameSource, tc.wantName, tc.wantSource)
+			}
+		})
+	}
+}

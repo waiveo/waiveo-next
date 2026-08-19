@@ -75,6 +75,13 @@ type DeviceInfo struct {
 	// UI prefers: the name the owner set, then the vendor's friendly name,
 	// then the factory default.
 	Name string
+	// NameSource says WHICH of those three elements Name came from. The
+	// precedence used to be resolved and then thrown away, which made an
+	// owner-set name and a factory model string indistinguishable one layer up —
+	// and a merge that cannot tell them apart cannot refuse the worse one
+	// (internal/relay/deviceplane.NameRank). It is NameSourceNone exactly when
+	// Name is empty.
+	NameSource NameSource
 	// Model is the human-readable model name when the device reports one, else
 	// its model number — a number is a worse label than a name but a much
 	// better one than nothing.
@@ -157,11 +164,54 @@ func QueryDeviceInfo(ctx context.Context, client *http.Client, addr string) (Dev
 		return DeviceInfo{}, fmt.Errorf("ecp: QueryDeviceInfo: %s did not return a device-info document: %w", addr, err)
 	}
 
+	// The name and WHICH element supplied it are read together, because they are
+	// one answer: "The Hanger" set by an owner and "Roku Streaming Stick" printed
+	// at a factory arrive through the same field and only their source tells them
+	// apart.
+	name, which := pickField(doc.UserDeviceName, doc.FriendlyDeviceName, doc.DefaultDeviceName)
 	return DeviceInfo{
-		Name:         infoField(doc.UserDeviceName, doc.FriendlyDeviceName, doc.DefaultDeviceName),
+		Name:         name,
+		NameSource:   nameSourceAt(which),
 		Model:        infoField(doc.ModelName, doc.ModelNumber),
 		SerialNumber: infoField(doc.SerialNumber),
 	}, nil
+}
+
+// NameSource names the `<device-info>` element a resolved Name came from.
+//
+// It is ECP's own vocabulary and deliberately not the device plane's rank type:
+// this package speaks one vendor's protocol and should not import the plane's
+// merge policy to describe its own document. The composition root maps the two
+// (cmd/waiveo-relay/deviceplane.go), which is the same seam the Identify probe
+// is already wired through.
+type NameSource int
+
+const (
+	// NameSourceNone is "the document carried no usable name at all".
+	NameSourceNone NameSource = iota
+	// NameSourceDefault is `default-device-name`, the factory string — a model
+	// label on a device nobody has renamed.
+	NameSourceDefault
+	// NameSourceFriendly is `friendly-device-name`, the vendor's display name.
+	NameSourceFriendly
+	// NameSourceUser is `user-device-name`, the name the owner typed in.
+	NameSourceUser
+)
+
+// nameSourceAt maps pickField's candidate index — the ORDER QueryDeviceInfo
+// passes them in — onto the source it stands for. Kept beside that call so the
+// two lists cannot drift apart silently.
+func nameSourceAt(which int) NameSource {
+	switch which {
+	case 0:
+		return NameSourceUser
+	case 1:
+		return NameSourceFriendly
+	case 2:
+		return NameSourceDefault
+	default:
+		return NameSourceNone
+	}
 }
 
 // infoField returns the first candidate that carries a usable value, trimmed and
@@ -174,12 +224,22 @@ func QueryDeviceInfo(ctx context.Context, client *http.Client, addr string) (Dev
 // as a real one. Falling through to the next candidate (or to empty) is the
 // honest answer.
 func infoField(candidates ...string) string {
-	for _, c := range candidates {
+	v, _ := pickField(candidates...)
+	return v
+}
+
+// pickField is infoField plus the answer to "which one won" — the index of the
+// candidate that supplied the value, or -1 when none did. A caller that needs
+// only the string uses infoField; a caller that must RANK the value needs to
+// know which element it came from, and re-deriving that at the call site would
+// duplicate the trim-and-cap rules that decide it.
+func pickField(candidates ...string) (string, int) {
+	for i, c := range candidates {
 		v := strings.TrimSpace(c)
 		if v == "" || len(v) > maxDeviceInfoFieldBytes {
 			continue
 		}
-		return v
+		return v, i
 	}
-	return ""
+	return "", -1
 }

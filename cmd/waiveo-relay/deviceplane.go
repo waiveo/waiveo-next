@@ -101,3 +101,41 @@ func newDevicePlane(overrides map[string]ecp.Target, candStore *deviceplane.Stor
 		resolve:    resolve,
 	}
 }
+
+// ecpNameRank maps what the ECP probe read a device's name OUT OF onto the
+// device plane's merge rank. It lives here, at the composition root, for the
+// same reason the Identify closure does: internal/relay/discovery is the generic
+// SSDP control point and must not know about one vendor's document, while
+// internal/relay/ecp speaks that document and should not import the plane's
+// merge policy to describe it. This is the one place that already knows both.
+//
+// The mapping is a JUDGEMENT and worth stating twice over.
+//
+// A Roku's `default-device-name` is a factory string ("onn•Roku TV -
+// X029009JC6LF", read off 192.168.50.31), so it ranks BELOW a friendly mDNS
+// instance name for the same device — a box nobody has renamed should show the
+// name its AirPlay record announces, not its product label.
+//
+// `user-device-name` and `friendly-device-name` map to the SAME rank as a
+// friendly mDNS label, NOT above it, and that is the correction of a real
+// defect rather than a nicety. An owner-set name is unarguably the best
+// statement about what a device is called — but this relay only ever hears it
+// during an operator's `discovery.scan` (Discoverer.Run is passive-only), so a
+// rank above mDNS would be one nothing could ever restate, and the candidate
+// store remembers a rank until the process exits. 192.168.50.31 answers BOTH
+// `<user-device-name>The Hanger</user-device-name>` over ECP and
+// `_airplay._tcp | The Hanger` over mDNS: they are one fact through two records,
+// and the record that repeats itself every 30 seconds is the one that has to be
+// able to carry a rename. Ranking them equal makes recency decide between two
+// statements of the same quality, which is exactly deviceplane.keepClass's rule
+// for two specific classes.
+func ecpNameRank(src ecp.NameSource) deviceplane.NameRank {
+	switch src {
+	case ecp.NameSourceUser, ecp.NameSourceFriendly:
+		return deviceplane.NameRankFriendly
+	case ecp.NameSourceDefault:
+		return deviceplane.NameRankModel
+	default:
+		return deviceplane.NameRankNone
+	}
+}

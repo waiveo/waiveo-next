@@ -24,16 +24,22 @@ const (
 )
 
 // rokuSighting is one SSDP sighting of a Roku exposing a single "main" entity.
+//
+// EntitySource is set because a real watch-derived sighting carries one — it is
+// how the merge knows this observation is ENTITLED to state the fan-out
+// (Observation.EntitySource). A fixture that left it blank would silently be
+// testing the entity-less lanes instead.
 func rokuSighting(address string) Observation {
 	return Observation{
-		Match:       Match{SSDP: "roku:ecp"},
-		Provenance:  ProvenanceDiscovered,
-		Driver:      testDriver,
-		NativeID:    testNativeID,
-		DeviceClass: "media-player",
-		Name:        "Hanger TV",
-		Entities:    []CandidateEntity{{Key: "main", DeviceClass: "media-player"}},
-		Address:     address,
+		Match:        Match{SSDP: "roku:ecp"},
+		Provenance:   ProvenanceDiscovered,
+		Driver:       testDriver,
+		NativeID:     testNativeID,
+		DeviceClass:  "media-player",
+		Name:         "Hanger TV",
+		Entities:     []CandidateEntity{{Key: "main", DeviceClass: "media-player"}},
+		EntitySource: "ssdp:roku:ecp",
+		Address:      address,
 	}
 }
 

@@ -87,6 +87,14 @@ type Identity struct {
 	Name   string
 	Model  string
 	Serial string
+	// NameRank is how good the record the probe read Name out of is. One probe
+	// of one device returns an owner-set name or a factory model string
+	// depending on how that device was set up, so the rank cannot be a property
+	// of this LANE — it belongs to the answer, and only the driver that parsed
+	// the answer knows it. A probe that leaves it zero contributes a name that
+	// can fill a gap and never displace a better-sourced one
+	// (deviceplane.NameRank).
+	NameRank deviceplane.NameRank
 }
 
 // IdentifyFunc probes a discovered address over the driver's own protocol and
@@ -219,10 +227,18 @@ func (w Watch) observation(usn, address string, id Identity) deviceplane.Observa
 		NativeID:    usn,
 		DeviceClass: w.DeviceClass,
 		Name:        id.Name,
+		NameRank:    id.NameRank,
 		Address:     address,
 		Model:       id.Model,
 		Serial:      id.Serial,
 		Entities:    w.Entities,
+		// The DECLARATION behind the fan-out, named so the store can tell a
+		// watch that narrowed its entity list from a lane that has no watch at
+		// all, and so an apply that REMOVES this watch can drop what it declared
+		// (deviceplane.Store.RetainDeclarations). Taken before canonicalize,
+		// which moves Match itself onto the MAC identity and would otherwise
+		// erase the only record of which pattern declared this.
+		EntitySource: w.Match.Key(),
 	}
 }
 
@@ -611,7 +627,7 @@ func (d *Discoverer) identityOf(ctx context.Context, usn, address string, allowP
 			ttl = identifyTTL
 		}
 		if now-cached.atMs < ttl.Milliseconds() {
-			return cached.id
+			return recalled(cached.id)
 		}
 	}
 
@@ -625,7 +641,7 @@ func (d *Discoverer) identityOf(ctx context.Context, usn, address string, allowP
 	// serial until a scan fills them in, which is the intended trade.
 	if !allowProbe {
 		if hit && cached.address == address {
-			return cached.id
+			return recalled(cached.id)
 		}
 		return Identity{}
 	}
@@ -660,6 +676,33 @@ func (d *Discoverer) identityOf(ctx context.Context, usn, address string, allowP
 		d.identities[usn] = identityEntry{address: address, atMs: now, ok: ok, id: id}
 	}
 	d.idMu.Unlock()
+	return id
+}
+
+// recalled strips the NAME AUTHORITY off an identity this lane is REMEMBERING
+// rather than observing, leaving everything else (including the name string)
+// intact.
+//
+// Every cache read above is memory. The entry may be minutes or hours old — the
+// passive branch deliberately serves it with no TTL check at all, because a
+// slightly stale name beats blanking a device the operator has already seen
+// named — and this lane cannot re-probe on its own to find out whether it is
+// still true (Run is passive-only; only an operator's scan probes). Handing that
+// upward with its original rank tells the candidate merge "a friendly record
+// just said this", which is false, and the merge acts on it: the remembered name
+// wins the tie against a lane that genuinely re-read the LAN 5 seconds ago, so a
+// renamed device flaps back to its old name on every SSDP packet and never
+// settles on the new one.
+//
+// NameRankNone is exactly the right thing to say instead. Its documented meaning
+// is "this sighting has no OPINION about the name", which is the truth about a
+// replay: the string is still offered, so a candidate with no name at all is
+// still filled in (the reason the replay exists), and it can no longer displace
+// a name some lane actually just observed. Model and serial ride along
+// unchanged: they are presence-only merges with a single writer, so a stale one
+// can only ever fill a gap in the first place.
+func recalled(id Identity) Identity {
+	id.NameRank = deviceplane.NameRankNone
 	return id
 }
 

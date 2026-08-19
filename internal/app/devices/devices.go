@@ -214,6 +214,14 @@ type Entity struct {
 	// reported some — an operator sees "this screen is on" from State and
 	// "…showing Netflix" only from here.
 	Attributes map[string]string `json:"attributes,omitempty"`
+
+	// key is the relay's entity key ("main"), kept so rematerialize can
+	// RE-compose Name from whatever the device row ends up named. Name is
+	// "<device name> <key>", and the device name can be overlaid from the
+	// durable mirror after intake composed it, so the key has to survive the
+	// composition. Unexported: it is derivable from the report and this struct's
+	// exported members are api/1's, not a place to add a field.
+	key string
 }
 
 // relayView is one relay's CURRENT reported set, plus the sequence number of
@@ -294,9 +302,53 @@ type Registry struct {
 	// MarkSeen teaches it here.
 	seen map[string]Seen
 
+	// stored is what the DURABLE mirror committed for each device's learned
+	// facts, held beside the views for the fourth time in this struct and, again,
+	// for the same reason: a relay's report replaces its whole view.
+	//
+	// It closes a split that opened the moment the mirror's merge learned to
+	// REFUSE part of a report. Both layers see the same reports, but only the
+	// mirror remembers across a relay restart, so only the mirror can tell "the
+	// relay has not learned this yet" from "it is no longer true" — a restarted
+	// relay reports `unclassified` for a device its mDNS sweep has not reached,
+	// and a bare host for one whose port only an SSDP LOCATION carries. The
+	// mirror keeps the better answer (internal/app/store mergeDiscovered); before
+	// this map the read model took the degraded one, so `GET /devices` served the
+	// exact value the durable guard existed to prevent, and the two layers
+	// disagreed until a feeder restart rebuilt the view FROM the mirror and
+	// silently swapped the answer over with no new information from any relay.
+	//
+	// This is MarkSeen's shape, for MarkSeen's reason: the store merges, commits,
+	// and returns what stands, and the caller teaches it here.
+	stored map[string]Stored
+
 	// Merged view, rebuilt from views on every write. Reads never touch views.
 	devices  map[string]Device
 	entities map[string]Entity
+}
+
+// Stored is the durable mirror's committed answer for one device's LEARNED
+// facts — the ones a report can be silent or ignorant about — plus the relay
+// they were committed under.
+//
+// RelayID is not decoration. These values are keyed by device id, which is
+// derived from (site, driver, native_id) and is therefore guessable by any
+// enrolled relay; REL-153 incumbency decides which relay actually speaks for a
+// device, and it can hand a device over. An overlay taken under relay A must not
+// be stamped onto relay B's row afterwards, or A's remembered address would
+// silently describe a device B now routes.
+//
+// An empty member teaches nothing rather than blanking what the report carried,
+// exactly as a zero instant does in MarkSeen: the mirror is a memory, and a
+// memory that has nothing to say is not a retraction.
+type Stored struct {
+	RelayID     string
+	DeviceClass string
+	Name        string
+	Address     string
+	Model       string
+	Serial      string
+	OpenPorts   []int
 }
 
 // Seen is a device's age as this site knows it: when the site first held a
@@ -351,8 +403,41 @@ func New(siteScopeNode string, nowMs func() int64) *Registry {
 		adopted:    map[string]bool{},
 		ignored:    map[string]bool{},
 		seen:       map[string]Seen{},
+		stored:     map[string]Stored{},
 		nowMs:      nowMs,
 	}
+}
+
+// MarkStored teaches the read model what the durable mirror committed for a
+// batch of devices' learned facts (see Registry.stored) — the projection that
+// keeps `GET /devices` and the mirror from answering differently about one
+// device.
+//
+// A PROJECTION, exactly as MarkSeen is, and it runs at the same seam for the
+// same reason: the mirror merges the report onto what it already held, commits,
+// and returns the rows that now stand; this carries those rows into what an
+// operator reads. Without it the mirror's merge is invisible to the API while
+// any relay is connected and visible only after a feeder restart, which is the
+// worst of both — the same device answering two different ways depending on
+// which process restarted last.
+//
+// A device the mirror did not return keeps whatever the report gave it, so a
+// report covering half a site does not disturb the other half. An empty member
+// likewise teaches nothing: the mirror knowing no model is not a claim that the
+// device has none.
+func (r *Registry) MarkStored(stored map[string]Stored) {
+	if len(stored) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, s := range stored {
+		if id == "" {
+			continue
+		}
+		r.stored[id] = s
+	}
+	r.rematerialize()
 }
 
 // MarkSeen teaches the read model what the durable first/last-seen ledger holds
@@ -617,6 +702,15 @@ func (r *Registry) viewFor(relayID string) *relayView {
 //
 // Forgetting an unknown relay is a no-op, so a caller may call it without first
 // asking whether the relay ever reported.
+//
+// The mirror overlay this relay contributed goes with the view. Its caller is
+// deleting the relay's durable rows in the same breath (candidateMirror.Forget),
+// so keeping the overlay would leave the process holding a revoked relay's
+// remembered addresses and names — ready to be stamped back onto its rows if the
+// same relay id ever enrolls again. The ages in `seen` are deliberately NOT
+// dropped alongside: they are the SITE's record of how long a device has been
+// here, not a relay's description of it, and they survive a relay being replaced
+// on purpose.
 func (r *Registry) Forget(relayID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -624,6 +718,11 @@ func (r *Registry) Forget(relayID string) {
 		return
 	}
 	delete(r.views, relayID)
+	for id, s := range r.stored {
+		if s.RelayID == relayID {
+			delete(r.stored, id)
+		}
+	}
 	r.rematerialize()
 }
 
@@ -668,16 +767,52 @@ func (r *Registry) rematerialize() {
 			seen := r.seen[id]
 			d.FirstSeen, d.LastSeen = seen.FirstMs, seen.LastMs
 			d.FirstSeenOrigin = seen.FirstOrigin
+			// And the LEARNED facts, which is the same move once more: the
+			// mirror merged this report onto what it already held and committed
+			// an answer, and that answer — not the raw report — is what this row
+			// must show, or the API and the mirror describe one device two ways.
+			// Guarded by relay id because a device can change hands (REL-153).
+			if s, ok := r.stored[id]; ok && s.RelayID == d.RelayID {
+				d.DeviceClass = orKeepStored(s.DeviceClass, d.DeviceClass)
+				d.Name = orKeepStored(s.Name, d.Name)
+				d.Address = orKeepStored(s.Address, d.Address)
+				d.Model = orKeepStored(s.Model, d.Model)
+				d.Serial = orKeepStored(s.Serial, d.Serial)
+				if len(s.OpenPorts) > 0 {
+					d.OpenPorts = s.OpenPorts
+				}
+			}
 			devs[id] = d
 		}
 		for id, e := range v.entities {
 			if held, ok := r.incumbency[e.DeviceID]; ok && held.relayID != e.RelayID {
 				continue
 			}
+			// An entity's display label is COMPOSED from its device's name at
+			// intake, so overlaying the device's name above and leaving this
+			// alone would put "onn. 4K Streaming Box" in the device list and
+			// "onn Inc 48:5c:2c:31:6e:6e main" beside it in the entity list, for
+			// the same device, in the same response set. Recomposed from the row
+			// that was just built rather than from the view's, which is a no-op
+			// whenever there is no overlay to apply.
+			if d, ok := devs[e.DeviceID]; ok && e.key != "" {
+				e.Name = d.Name + " " + e.key
+			}
 			ents[id] = e
 		}
 	}
 	r.devices, r.entities = devs, ents
+}
+
+// orKeepStored takes the mirror's committed value when it has one, else leaves
+// the reported value in place. The mirror having nothing to say about a fact is
+// not a claim that the device has none — the same sentence orKeepFact writes on
+// the durable side and MarkSeen's zero-instant rule writes for the ages.
+func orKeepStored(stored, reported string) string {
+	if stored != "" {
+		return stored
+	}
+	return reported
 }
 
 // Devices returns every device in id order — the stable keyset order api/1's

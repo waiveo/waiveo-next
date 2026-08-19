@@ -142,15 +142,54 @@ func foldMDNSKey(w mdns.Watch) string {
 // sets, and every live apply lands here via rePuller.applyInventory — and a
 // full replace per apply is idempotent, so re-applying an unchanged
 // generation is harmless (REL-070 suppresses the re-run anyway).
-func discoveryWatchApplier(disc *discovery.Discoverer, mdnsL *mdns.Listener, builtinSSDP []discovery.Watch, builtinMDNS []mdns.Watch) func(wire.DeviceInventory) {
+//
+// # IT ALSO RETIRES WHAT THE PREVIOUS GENERATION DECLARED
+//
+// Installing the new watch set is only half of applying it. A watch that is GONE
+// stops observing, and a lane going quiet is indistinguishable from a device
+// going quiet, so the candidate store cannot learn about a removed pack from
+// sightings — it would keep reporting and command-resolving that pack's entity
+// fan-out until the relay restarted. This hook is the one place that knows the
+// whole live set at the moment it changes, so it tells the store, which drops
+// every fan-out no live declaration still authors.
+//
+// candStore may be nil in tests that only exercise the watch merge.
+func discoveryWatchApplier(disc *discovery.Discoverer, mdnsL *mdns.Listener, candStore *deviceplane.Store, builtinSSDP []discovery.Watch, builtinMDNS []mdns.Watch) func(wire.DeviceInventory) {
 	return func(inv wire.DeviceInventory) {
 		ssdpW, mdnsW, macOui, malformed := patternWatchSets(inv.PackMatchPatterns)
 		nSSDP, nMDNS := 0, 0
+		liveSSDP := mergeSSDPWatches(builtinSSDP, ssdpW)
+		liveMDNS := mergeMDNSWatches(builtinMDNS, mdnsW)
 		if disc != nil {
-			nSSDP = disc.SetWatches(mergeSSDPWatches(builtinSSDP, ssdpW))
+			nSSDP = disc.SetWatches(liveSSDP)
 		}
 		if mdnsL != nil {
-			nMDNS = mdnsL.SetWatches(mergeMDNSWatches(builtinMDNS, mdnsW))
+			nMDNS = mdnsL.SetWatches(liveMDNS)
+		}
+		// Built from the SAME slices handed to the lanes above, keyed the same
+		// way the observations key themselves (Match.Key()), so a declaration
+		// cannot be live in one place and unknown in the other.
+		//
+		// A lane that is switched OFF contributes no keys, which is correct
+		// rather than merely convenient: with the lane gone nothing re-declares
+		// its fan-outs either, so retaining them would pin whatever the last
+		// generation happened to leave behind.
+		if candStore != nil {
+			live := make(map[string]bool, len(liveSSDP)+len(liveMDNS))
+			if disc != nil {
+				for _, w := range liveSSDP {
+					live[w.Match.Key()] = true
+				}
+			}
+			if mdnsL != nil {
+				for _, w := range liveMDNS {
+					live[w.Match.Key()] = true
+				}
+			}
+			if cleared := candStore.RetainDeclarations(live); cleared > 0 {
+				log.Printf("waiveo-relay discovery watches: dropped the entity fan-out of %d candidate(s) whose declaring "+
+					"watch this generation no longer declares — they are no longer reported or command-resolvable", cleared)
+			}
 		}
 		// Undeliverable declarations are SAID, not absorbed: a pack may declare
 		// an mDNS match on a deployment that never opted into the 5353 bind

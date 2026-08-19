@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
 	"github.com/maaxton/waiveo-next/internal/shared/deviceid"
@@ -351,23 +352,55 @@ func (s *Store) ReplaceDiscoveredDevices(ctx context.Context, relayID string, ro
 // degrade to "take what was reported" with no special case: a blank held fact is
 // exactly as unhelpful as a blank reported one.
 //
-// The identity half of a row — scope node, driver, native id, and the class the
-// report states — is taken as reported, because a report always carries it in
-// full and it is what the id was derived from. Everything below is a LEARNED
-// fact, and a report that does not carry one is saying "I did not learn it",
-// never "it is no longer true". That distinction is the whole content of this
-// function, and it is the same one deviceplane.Store.Observe draws for the same
-// four strings inside a single relay process.
+// The identity half of a row — scope node, driver and native id — is taken as
+// reported, because a report always carries it in full and it is what the id was
+// derived from. Everything below is a LEARNED fact, and a report that does not
+// carry one is saying "I did not learn it", never "it is no longer true". That
+// distinction is the whole content of this function, and it is the same one
+// deviceplane.Store.Observe draws for the same strings inside a single relay
+// process.
+//
+// It turned out to be only half the rule, in both planes. Presence defends
+// against a report that learned NOTHING; it says nothing about one that learned
+// something WORSE, and a report can be worse in two ways this mirror sees every
+// minute — a class that has regressed to the generic default, and an address
+// that has lost its port. Those are ranked below rather than taken. The rule is
+// the same one deviceplane.keepClass has enforced in relay memory all along,
+// carried to the layer whose lifetime actually outlives the ignorance being
+// written over it.
 func mergeDiscovered(prior, next DiscoveredDevice) DiscoveredDevice {
 	row := next
+	// Name stays presence-only HERE, and that is a limit rather than a choice.
+	// Refusing a worse name needs to know WHICH RECORD authored it — a display
+	// name or a machine-generated mDNS instance label — and REL-110a's candidate
+	// has no member carrying that, so nothing on this side of the wire can tell
+	// the two apart. The ranking therefore lives where the knowledge does, in the
+	// relay's own merge (internal/relay/deviceplane.keepName), and this mirror
+	// inherits the fix by storing what a fixed relay reports. Making a name
+	// survive a RELAY RESTART, which the relay's in-memory store cannot, means
+	// adding that member — an additive contract change, deliberately not smuggled
+	// in here.
 	row.Name = orKeepFact(next.Name, prior.Name)
-	// Address included deliberately, and it is the one with teeth: it is where a
-	// command to an adopted device is sent, so blanking it on a thin report costs
-	// control of the device. A genuinely changed address (DHCP moved it) is
-	// non-empty and does overwrite, which is the case that has to keep working.
-	row.Address = orKeepFact(next.Address, prior.Address)
+	// Address is ranked, because unlike the name its quality is IN THE VALUE and
+	// needs no wire member to read: "192.168.50.31:8060" is a strict information
+	// superset of "192.168.50.31". Presence alone let a report from a lane that
+	// sees only hosts overwrite one that saw a host and a port — on the lab box,
+	// 61 of 61 mirrored rows had lost their port that way. This is the same rule
+	// the relay applies in memory (deviceplane.keepAddress) and the reason the two
+	// layers must agree: whichever one is presence-only decides the answer.
+	row.Address = keepAddressFact(next.Address, prior.Address)
 	row.Model = orKeepFact(next.Model, prior.Model)
 	row.Serial = orKeepFact(next.Serial, prior.Serial)
+	// The class the report states is NOT simply taken as reported, though this
+	// function's header used to say it was. It is stated in full by every report,
+	// which makes it look declaration-side; but the relay mints the generic
+	// default for a host no lane has recognised yet, so a restarted relay reports
+	// `unclassified` for a device it will classify seconds later once its mDNS
+	// sweep lands — and a blind take wrote that over a learned class DURABLY,
+	// which is worse than the in-memory flicker the relay already fixed. Same
+	// rule, same reason: a specific class wins, the newer of two specific ones
+	// wins (an actual reclassification), the generic default only fills a gap.
+	row.DeviceClass = keepClassFact(next.DeviceClass, prior.DeviceClass)
 
 	// Ports: only an active scan can assert this list, and only a deployment
 	// carrying the scanning pack runs one at all — every passive re-sighting in
@@ -405,6 +438,26 @@ func mergeDiscovered(prior, next DiscoveredDevice) DiscoveredDevice {
 // not yet learned the fan-out, and a device that mirrors as entity-less is a
 // device that ADOPTS as entity-less — permanently, since nothing re-derives an
 // adopted row's entity list afterwards.
+//
+// # KNOWN RESIDUAL: a WITHDRAWN fan-out is not mirrored as withdrawn
+//
+// Removing a pack retires its entity fan-out on the relay, which stops reporting
+// and stops resolving it (deviceplane.Store.RetainDeclarations). What arrives
+// here afterwards is a candidate with an empty entity list — byte-for-byte what
+// a relay that has not learned the fan-out YET sends, which is common and which
+// the rule above exists for, since SSDP is passive-and-scan-gated and a restarted
+// relay can go a long time before a watch re-declares. The two are
+// indistinguishable at this seam: REL-110a's candidate has no member saying "I
+// have no declaration for this device" as opposed to "I have not heard from one".
+//
+// So the durable row keeps the retired entity. The LIVE view is correct
+// throughout — the registry takes the report verbatim, so the entity leaves
+// `GET /entities` on the very next report, and the relay refuses any command
+// against it — but a feeder restart re-materializes it from here for the seconds
+// until the first report lands. This is pre-existing rather than new (the
+// pre-guard relay blanked fan-outs on every neighbour sweep, so the same held
+// list survived the same way) and closing it means an additive REL-110a member,
+// which is a contract change with its own corpus.
 func mergeEntities(prior, next []wire.CandidateEntity) []wire.CandidateEntity {
 	if len(next) == 0 {
 		return prior
@@ -441,6 +494,66 @@ func orKeepFact(reported, held string) string {
 		return reported
 	}
 	return held
+}
+
+// classUnclassified is the generic device_class every relay lane mints for a
+// host nothing has recognised yet — REL-110a requires a non-empty class, so
+// "not yet learned" has to be spelled as a value. It is the literal
+// internal/relay/deviceplane.ClassUnclassified puts on the wire; this side
+// restates it rather than importing the relay's package, because the app plane
+// deliberately depends on no relay code.
+const classUnclassified = "unclassified"
+
+// keepClassFact is deviceplane.keepClass at the durable layer: the generic
+// default never erases a class some lane already learned, while a genuine
+// reclassification (one specific class to another) lands on the newer report.
+func keepClassFact(reported, held string) string {
+	if reported != "" && reported != classUnclassified {
+		return reported
+	}
+	if held != "" && held != classUnclassified {
+		return held
+	}
+	return reported
+}
+
+// keepAddressFact is deviceplane.keepAddress at the durable layer: a report
+// that carries only a host must not erase a port an earlier one read, but a
+// report naming a DIFFERENT host is a device that moved and lands immediately,
+// bare or not. What is protected is the port, not the address.
+//
+// The port is read with net.SplitHostPort rather than the relay's richer
+// lanaddr.Split (an app package depends on no relay package), so a URL-shaped
+// address — which the relay's own lanes can produce from an SSDP LOCATION —
+// reads here as an uncomparable whole and simply takes the newer value, exactly
+// as it did before this rule existed. The rule only ever protects a port it can
+// actually see, which is the safe direction to be imprecise in.
+func keepAddressFact(reported, held string) string {
+	if reported == "" {
+		return held
+	}
+	if held == "" {
+		return reported
+	}
+	reportedHost, reportedPort := splitAddressFact(reported)
+	heldHost, heldPort := splitAddressFact(held)
+	if reportedHost != heldHost {
+		return reported
+	}
+	if reportedPort == "" && heldPort != "" {
+		return held
+	}
+	return reported
+}
+
+// splitAddressFact splits a mirrored address into host and port, treating
+// anything net.SplitHostPort cannot parse as a bare host with no port.
+func splitAddressFact(addr string) (host, port string) {
+	h, p, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr, ""
+	}
+	return h, p
 }
 
 // ForgetDiscoveredDevices drops every mirrored row a relay reported.
