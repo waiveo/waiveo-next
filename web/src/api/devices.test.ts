@@ -187,8 +187,10 @@ describe("adopt — the one decision this API makes about a discovered device", 
  * and a fixture that carried explicit undefineds would describe a body no server
  * sends. */
 function ageless(d: Device): Device {
-  const { first_seen: _first, first_seen_origin: _origin, ...rest } = d;
-  return rest as Device;
+  const rest: Device = { ...d };
+  delete rest.first_seen;
+  delete rest.first_seen_origin;
+  return rest;
 }
 
 describe("retireFirstSeen — the only correction path for a device's age", () => {
