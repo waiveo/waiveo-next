@@ -1,22 +1,11 @@
 import {
   Activity,
-  CalendarClock,
-  DatabaseBackup,
-  Film,
   HeartPulse,
   LayoutDashboard,
-  LayoutGrid,
-  LayoutTemplate,
-  MonitorPlay,
-  Palette,
-  Presentation,
   Radio,
   Server,
   Settings,
   KeyRound,
-  Upload,
-  Variable,
-  Workflow,
   type LucideIcon,
   Puzzle,
 } from "lucide-react";
@@ -27,19 +16,64 @@ import {
  * # Why this file exists
  *
  * The rail used to be thirteen flat siblings, and the owner named the cost of
- * that exactly: *"you've got CASTS over here, but CASTS should be under slide
- * casts... Screens should be under slide cast, just like CASTS."* A flat list
- * of thirteen tells an operator nothing about what belongs to what — `Casts`
- * sat as a peer of `Backup`, and the product's flagship surface (Slidecast: the
- * casts, the screens they play on, the media they draw from, the widgets they
- * carry) was scattered across the alphabet of unrelated platform pages.
- *
- * So the grouping is a TREE, and the tree is a value — not markup. The shell
- * renders whatever is here; adding a destination is adding a node, and nobody
- * has to touch a component to do it. That matters beyond tidiness: parallel
- * tracks add pages to this console (an Extensions/Marketplace surface, a Roku
- * operator page, a discovery page), and a data edit is a one-line merge where a
+ * that exactly: `Casts` sat as a peer of `Backup`, and the product's flagship
+ * surface was scattered across the alphabet of unrelated platform pages. So the
+ * grouping is a TREE, and the tree is a value — not markup. The shell renders
+ * whatever is here; adding a destination is adding a node, and nobody has to
+ * touch a component to do it. That matters beyond tidiness: parallel tracks add
+ * pages to this console, and a data edit is a one-line merge where a
  * hand-written `<NavLink>` block is a conflict.
+ *
+ * # What this rail carries, and why it is short (2026-08-19)
+ *
+ * Almost every product area that used to be here has LEFT core. The owner's rule
+ * is that the product ships as packs: of the nine ship targets — automation,
+ * marketplace, backups, system, comms, slidecast, roku-integration,
+ * device-discovery, device-widgets — only device-discovery is installed on the
+ * box, and core stopped carrying the other eight's console surfaces rather than
+ * carrying them until each pack was ready. The Slidecast group (Casts, Screens,
+ * Schedules, Media, Upload, Widgets), the Automations group (Rules, Variables)
+ * and Platform's Backup entry were deleted with their routes.
+ *
+ * TWO authorities did that, not one, and the difference matters if anyone wants
+ * to reverse a piece of it:
+ *
+ *   - plans/2026-08-11-capability-ownership-map.md attributes Rules, Variables,
+ *     Widgets, Backup and the Roku console to packs (§3.1 Bucket A; §2.2 group
+ *     E puts the variables UI in `waiveo/system`). For those, the map IS the
+ *     authority and the strip is executing a decision already taken.
+ *   - Casts, Screens, Schedules, Media and Upload are the map's §3.3 **Bucket C**,
+ *     which it deliberately does NOT decide: "This needs an owner decision; I am
+ *     not guessing it" (§3.3), "I have not picked a side" (§6.2). Its §2.2 group
+ *     A row goes further and says core KEEPS `/casts`, `/playlists`,
+ *     `/schedules`, `/screens`. So the map does not sanction these five — it
+ *     argues the other way. **The OWNER decided them, on 2026-08-19**, by naming
+ *     the Slidecast rail group directly. Do not read the citation above as
+ *     covering them.
+ *
+ * The map's sixth Bucket-C row, `web/src/api/casts.ts` (651 lines), was KEPT on
+ * purpose. The owner's instruction was about this rail — the console surface —
+ * and the API that module types is still core and live (`/casts`, `/screens`,
+ * `/schedules`, `/playlists` in api/openapi.yaml, `internal/app/api/casts.go`
+ * and siblings), which is exactly what §2.2 group A says core keeps. It is
+ * therefore a live typed client with no console consumer at present, still
+ * exported from `api/index.ts` and wired into `api/resources.ts`.
+ *
+ * What is left divides in three, and the division is the whole IA now:
+ *
+ *   Overview     the front door, belonging to no area because it summarizes the
+ *                box rather than any one resource family
+ *   Discovery    device-discovery's surface — the ONE ship target installed
+ *   Extensions   the pack lifecycle, which is how Discovery got here
+ *   Platform     the box itself: what it is configured as, what it has done,
+ *                whether it is healthy
+ *
+ * A pack contributes its own rail entries live: the shell resolves an installed
+ * pack's declared pages into a separate "Extensions" landmark
+ * (routes/packs/use-installed-packs.ts), so waiveo/discovery's settings page
+ * appears without being written down here. That is the mechanism the eight
+ * departed areas are expected to come back through — as pack contributions, not
+ * as nodes in this array.
  *
  * # The shape of the model
  *
@@ -50,6 +84,15 @@ import {
  * when a group and its first child would both be current. Groups do not nest
  * further; a third level is a menu, not a rail, and this console has no product
  * area deep enough to earn one.
+ *
+ * A one-child group is not a mistake here. Discovery and Extensions each hold a
+ * single leaf today and each is a genuine area with named absent siblings (a
+ * Scan page beside All devices; a catalogue browse and a registry-source list
+ * beside Installed) — a group gives those somewhere to land instead of forcing
+ * another restructure when they arrive. The rail also reserves TOP-LEVEL slots
+ * for pages belonging to no area, of which Overview is the only one; promoting
+ * either of these to a loose leaf would make "top level" mean "no obvious home",
+ * which is the flat rail this tree replaced.
  *
  * # Every route is accounted for, or the build fails
  *
@@ -88,69 +131,28 @@ export type NavNode = NavLeaf | NavGroup;
 
 export const NAV_TREE: NavNode[] = [
   // The console's front door stays a top-level destination. It belongs to no
-  // product area — it summarizes all of them.
+  // product area — it summarizes the box.
   { kind: "leaf", to: "/", label: "Overview", icon: LayoutDashboard, end: true },
-
-  // ── Slidecast: the flagship product area ────────────────────────────────
-  // Everything an operator touches to answer "what is on the walls, and when".
-  //
-  // This IS the legacy grouping, restored. Legacy slidecast declared exactly one
-  // section with four entries (slidecast/index.js `nav:`, order 70–73):
-  //
-  //     SLIDECAST → Slidecast · Screens · Media · Widgets
-  //
-  // and that first entry, confusingly labelled with the section's own name, was
-  // the CASTS list (its page reads "Your Casts"). The stutter came from a real
-  // legacy bug — the section title fell back to the first item's label because
-  // no extension ever declared a title — so the group label here is explicit and
-  // the entry is called what the owner calls it: "Casts".
-  //
-  // The relative order of the four legacy members is preserved. The two members
-  // legacy did not have are slotted where they belong rather than appended:
-  // Schedules follows Screens (it programs them; legacy had no scheduling at
-  // all), and Upload follows Media (they are the write and read halves of one
-  // content origin — legacy had only the one page).
-  //
-  //   Casts     the slide documents themselves (the Studio edits one)
-  //   Screens   the displays a cast is assigned to — not "devices": a screen is
-  //             a content destination, a device is a box on the LAN
-  //   Schedules the week those casts play on, daypart by daypart
-  //   Media     the read half of the content origin, addressed by digest
-  //   Upload    the write half — bytes onto the box
-  //   Widgets   what a slide can carry that draws itself from live data
-  {
-    kind: "group",
-    id: "slidecast",
-    label: "Slidecast",
-    icon: Presentation,
-    children: [
-      { kind: "leaf", to: "/casts", label: "Casts", icon: LayoutTemplate },
-      { kind: "leaf", to: "/screens", label: "Screens", icon: MonitorPlay },
-      { kind: "leaf", to: "/schedules", label: "Schedules", icon: CalendarClock },
-      { kind: "leaf", to: "/media", label: "Media", icon: Film },
-      { kind: "leaf", to: "/upload", label: "Upload", icon: Upload },
-      { kind: "leaf", to: "/widgets", label: "Widgets", icon: LayoutGrid },
-    ],
-  },
 
   // ── Discovery: what is on the network ───────────────────────────────────
   // The device area is named "Discovery" (owner, 2026-08-17): the console's job
   // here is finding what is on the LAN, and the relays report the whole segment,
   // not only the devices this deployment has adopted — "Devices" undersold that
   // to exactly one operator, and it read as the adopted set rather than the
-  // network. What the relays found and what has been adopted are a different
-  // resource with a different owner (the relay) from the Slidecast screens
-  // above.
+  // network.
   //
-  // Roku is NOT a child here any more. The owner drew the line: "there should be
-  // no such thing as a Roku console when it comes to devices — Roku is its own
-  // extension, and Discovery is its own extension." A per-driver control surface
-  // is an EXTENSION's contribution, not a fixed rail entry; while Roku is not
-  // yet a pack the /roku page stays reachable from a discovered media player
-  // (OFF_RAIL_ROUTES) but is off the Discovery rail. The second child the owner
-  // asked for — a "Scan" page beside "All devices" — waits on its own backing
-  // (a scan trigger, subnet policy, per-lane engine state), none of which the
-  // relay reports yet; it is a deliberate absence, not an oversight.
+  // This is the device-discovery ship target's surface and the one the owner is
+  // keeping working while the other eight are stripped. There is no Roku child
+  // and no per-device remote here any more: the owner drew that line first
+  // ("there should be no such thing as a Roku console when it comes to devices —
+  // Roku is its own extension, and Discovery is its own extension"), and the
+  // strip finished it by deleting /roku and the remote outright. Adopted Rokus
+  // are unclassified until waiveo/roku exists, which the owner accepted.
+  //
+  // The second child the owner asked for — a "Scan" page beside "All devices" —
+  // waits on its own backing (a scan trigger, subnet policy, per-lane engine
+  // state), none of which the relay reports yet; it is a deliberate absence, not
+  // an oversight.
   {
     kind: "group",
     id: "devices",
@@ -159,54 +161,21 @@ export const NAV_TREE: NavNode[] = [
     children: [{ kind: "leaf", to: "/devices", label: "All devices", icon: Radio }],
   },
 
-  // Automations sit at the top level on purpose. A rule's trigger is usually a
-  // device and its action is usually a screen, so filing it under either one
-  // hides it from the other half of its own job.
-  // ── Automations: rules and the state they share ─────────────────────────
-  // This was a top-level leaf while it was one page, and became a GROUP the
-  // moment a second page belonged with it — the same move Devices made when the
-  // Roku surface landed beside All devices, and for the same stated reason.
+  // ── Extensions: the pack lifecycle ──────────────────────────────────────
+  // Its own GROUP, not a leaf and not a Platform child. The owner calls the
+  // extension platform a core pillar — "as much as we can, everything should be
+  // in an extension, edited in its extension, and updated through its extension
+  // marketplace" — and filing it beside Activity and System would rank it as
+  // housekeeping. Legacy gave the marketplace its own section for the same
+  // reason.
   //
-  // The variables track argued for leaving Variables loose at the top level, on
-  // the grounds that it belongs to no *product* area. The adjacency half of that
-  // is right and is why it sits here: a variable exists for exactly one reason —
-  // a rule reads it in a condition (RUL-150) and writes it in an action
-  // (RUL-220) — so an operator reaches for it holding a rule, not doing
-  // housekeeping, and filing it under Platform beside Backup and Design kit
-  // would rank shared rule state as chores. But two pages that belong together
-  // ARE an area; that is the only thing a group means here. Admitting a second
-  // top-level leaf would have made "top level" mean "no obvious home", which is
-  // the flat rail this tree replaced.
-  //
-  // The children are "Rules" and "Variables" rather than "Automations" and
-  // "Variables" deliberately: a group whose label repeats its first child's is
-  // the exact stutter this file documents as a legacy bug. "Rules" is also what
-  // the resource is called everywhere else — the contract is `rules/1`, the page
-  // builds a rule, and the engine evaluates one.
-  {
-    kind: "group",
-    id: "automations",
-    label: "Automations",
-    icon: Workflow,
-    children: [
-      { kind: "leaf", to: "/automations", label: "Rules", icon: Workflow },
-      { kind: "leaf", to: "/variables", label: "Variables", icon: Variable },
-    ],
-  },
-
-  // Extensions is its own GROUP, not a leaf and not a Platform child.
-  //
-  // Not a Platform child: the owner calls the extension platform a core pillar —
-  // "as much as we can, everything should be in an extension, edited in its
-  // extension, and updated through its extension marketplace". Filing it beside
-  // Backup and Design kit would rank it as housekeeping, and legacy gave the
-  // marketplace its own section for the same reason.
-  //
-  // Not a top-level leaf: this rail reserves those for pages belonging to no
-  // area (Overview, Automations). A group keeps that rule intact and gives the
-  // two known-missing siblings — a catalogue browse and a registry-source list,
-  // both recorded as ABSENT with no route today — a home to land in rather than
-  // forcing another restructure when they arrive.
+  // Marketplace is itself one of the nine, so by the strip's own rule this entry
+  // should have gone with Slidecast and Automations. It stayed on the ownership
+  // map's own grounds (§1.3): an optional pack that is the only way to install
+  // packs is a bricking hazard, and this page is how waiveo/discovery — the one
+  // pack that IS installed — is installed and updated. Deleting it would leave
+  // the CLI and api/1 as the only path, and would point the shell's "extensions
+  // need attention" badge at nothing.
   {
     kind: "group",
     id: "extensions",
@@ -216,10 +185,12 @@ export const NAV_TREE: NavNode[] = [
   },
 
   // ── Platform: the box itself, not the product ───────────────────────────
-  // These answer "is the box healthy", "what just happened", "is my work safe"
-  // — questions about the machine, asked on a different day and in a different
-  // mood from "what is on the walls". Grouping them apart is the other half of
-  // the owner's complaint: they were interleaved with the product pages.
+  // These answer "what is this box configured as", "what just happened" and "is
+  // it healthy" — questions about the machine. They were interleaved with the
+  // product pages once, which was the other half of the owner's complaint; with
+  // the product pages gone they are most of what is left, and the grouping still
+  // earns itself by keeping the front door and the network view out of the
+  // machine's business.
   //
   // Legacy kept these flat in a "CORE" section (Logs, Backups, Settings, Jobs,
   // Isolation). One thing to respect from that history: core nav DID try two
@@ -230,9 +201,17 @@ export const NAV_TREE: NavNode[] = [
   // nothing. That is the specific failure this tree must not repeat, and it is
   // why every group here collapses, remembers, and reveals the active route.
   //
-  // Pages and Design kit are the platform's own reference surfaces (the
-  // ui-schema/1 renderer and the widget kit gallery) — they belong with the
-  // machine, not with the signage.
+  // Backup is NOT here any more: the ownership map attributes it to
+  // waiveo/backups, and waiveo/core already ships the schedule/retention half as
+  // a settings-form. Export, download and restore left with the route and have
+  // no console path until that pack exists.
+  //
+  // Pages and Design kit are not here either. They are developer reference
+  // rather than operator surfaces — the ui-schema/1 conformance documents drawn
+  // through the real renderer, and the Horizon kit gallery — so they moved to
+  // OFF_RAIL_ROUTES with the door they are reached through, rather than being
+  // deleted: the renderer's shop window is worth keeping addressable while packs
+  // are being authored against it.
   {
     kind: "group",
     id: "platform",
@@ -245,19 +224,10 @@ export const NAV_TREE: NavNode[] = [
       // Not top-level: this rail reserves those for pages belonging to no area
       // (Overview), and Settings plainly belongs with the machine — it edits
       // where the box is and what local time it keeps, which is the same
-      // subject Activity, System and Backup report on. Two tracks have already
-      // filed a page loose at the top level (Roku, Variables) and both were
-      // corrected on merge, for the reason this file states: admitting a second
-      // top-level leaf makes "top level" mean "no obvious home".
-      //
-      // Not under Slidecast, which is the other plausible home, because a
-      // site's clock is not a property of the signage — it is what the box
-      // resolves every schedule, sunrise rule and forecast against, product
-      // area or not.
+      // subject Activity and System report on.
       //
       // First within the group because it is the only member that CONFIGURES.
-      // Activity and System report on a box, and Backup acts on one; all three
-      // are reading or acting on a deployment that this page describes. Legacy
+      // Activity and System report on a box that this page describes. Legacy
       // buried Settings third in a flat CORE list between Backups and Jobs,
       // which is exactly the interleaving the owner objected to.
       { kind: "leaf", to: "/settings", label: "Settings", icon: Settings },
@@ -267,9 +237,6 @@ export const NAV_TREE: NavNode[] = [
       { kind: "leaf", to: "/api-keys", label: "API keys", icon: KeyRound },
       { kind: "leaf", to: "/activity", label: "Activity", icon: Activity },
       { kind: "leaf", to: "/system", label: "System", icon: HeartPulse },
-      { kind: "leaf", to: "/backup", label: "Backup", icon: DatabaseBackup },
-      { kind: "leaf", to: "/pages", label: "Pages", icon: LayoutTemplate },
-      { kind: "leaf", to: "/design", label: "Design kit", icon: Palette },
     ],
   },
 ];
@@ -280,7 +247,7 @@ export const NAV_TREE: NavNode[] = [
  *
  * This is not a test fixture; it is the other half of the IA. Some pages are
  * genuinely not rail destinations (a sign-in page behind a sign-in requirement,
- * an editor opened on the thing it edits), and the reachability guard has to
+ * a reference surface reached by address), and the reachability guard has to
  * tell those apart from a page somebody forgot. Declaring the door here is what
  * makes that difference machine-checkable: a new route is either a node in
  * NAV_TREE or an entry here, and there is no third option that compiles.
@@ -292,11 +259,6 @@ export interface OffRailRoute {
 }
 
 export const OFF_RAIL_ROUTES: OffRailRoute[] = [
-  {
-    to: "/roku",
-    reachedVia:
-      "The 'Roku console' button on the Discovery page, shown when a discovered device is a media player. It is a per-driver control surface, which the owner ruled belongs to a Roku EXTENSION rather than the device rail (\"no Roku console when it comes to devices\"). Until Roku is a pack it stays reachable from the device it operates, but off the rail — a recorded step toward removing it from core entirely.",
-  },
   {
     to: "/*",
     reachedVia:
@@ -313,24 +275,24 @@ export const OFF_RAIL_ROUTES: OffRailRoute[] = [
       "First-boot claim (SEC-120). Reached from the setup code the feeder prints on an unclaimed boot; outside the shell for the same reason /login is.",
   },
   {
-    to: "/studio",
-    reachedVia:
-      "Opened on a cast from the Casts library (`/studio?id=…`). It is a tool applied to a cast, not a destination — a rail entry would open it on nothing. It is also the one route mounted OUTSIDE this shell while still inside the session gate: a full-screen editor whose canvas and four docked panels want the whole viewport, and whose own header carries the door back (a 'Back to casts' that asks before discarding unsaved work). The rail would be dead weight there — every one of its destinations abandons the cast being edited.",
-  },
-  {
-    to: "/preview",
-    reachedVia:
-      "The Preview button in the Studio's header, and the Preview action on a row of the Casts library — both open it on a cast (`/preview?id=…`). It is a tool applied to a cast exactly as the Studio is, so a rail entry would open it on nothing; and like the Studio it is mounted OUTSIDE the shell while still inside the session gate, because a 1920×1080 stage, a transport and a fidelity panel want the whole viewport and every rail destination abandons the thing being watched. Its own header carries the door back. Note the Studio ALSO hosts this player as an overlay over its unsaved document — that is not this route, and it is not reachable by URL: a navigation would discard the edits being previewed.",
-  },
-  {
     to: "/security",
     reachedVia:
       "The header's account link. It acts on the signed-in principal rather than on a console resource, so it does not belong beside the resource families.",
   },
   {
+    to: "/pages",
+    reachedVia:
+      "By address, as developer reference: the four frozen ui-schema/1 conformance documents drawn through the REAL renderer. It is the reference a pack author checks a page document against, not something an operator has a reason to open, so it left the Platform group when the rail was cut back to what the box actually runs. Kept addressable rather than deleted because it is the renderer's only shop window and packs are being authored against that contract now.",
+  },
+  {
+    to: "/design",
+    reachedVia:
+      "By address, as developer reference: the Horizon kit gallery — every primitive under both themes, on one page. Off the rail for the same reason /pages is, and kept for the same reason: it is how a widget or page author sees what the kit already provides before reinventing it.",
+  },
+  {
     to: "/p/:publisher/:name/*",
     reachedVia:
-      "An installed pack's own page. The shell resolves these live from the installed-pack list into the separate 'Extensions' nav landmark, so they are navigable without being declared here.",
+      "An installed pack's own page. The shell resolves these live from the installed-pack list into the separate 'Extensions' nav landmark, so they are navigable without being declared here. This is the door the eight stripped product areas are expected to come back through.",
   },
 ];
 
@@ -341,8 +303,8 @@ export function navLeaves(tree: NavNode[] = NAV_TREE): NavLeaf[] {
 
 /** The id of the group that owns `pathname`, or undefined when the active route
  * is a top-level leaf, an off-rail route, or a pack page. Used by the shell to
- * REVEAL the active route's parent: an operator who collapsed Slidecast and then
- * lands on /casts must still be able to see where they are. */
+ * REVEAL the active route's parent: an operator who collapsed Platform and then
+ * lands on /system must still be able to see where they are. */
 export function groupOwning(pathname: string, tree: NavNode[] = NAV_TREE): string | undefined {
   return tree.find(
     (node): node is NavGroup =>

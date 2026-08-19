@@ -62,18 +62,19 @@ import { timeZoneOptions } from "./timezones";
  * and DAT-032 forbids the org node (the workspace's own identity row) from
  * carrying a tz at all. Local time comes from a SITE, and from nowhere else.
  *
- * The gap was that a site's tz was **write-once**. The scope-tree panel on
- * /screens creates a site with tz/lat/long (DAT-031 makes all three mandatory)
- * and then has no edit path — it says so in its own docstring, on the grounds
- * that "the screens page below already edits a screen node's own name and time
- * zone". That is true of SCREEN-kind nodes, and the screens list is filtered to
- * `kind=screen`, so a site's clock could be set exactly once, at creation, and
- * never corrected. A box installed in the wrong zone stayed there.
+ * The gap was that a site's tz was **write-once**. The scope-tree panel on the
+ * old /screens page created a site with tz/lat/long (DAT-031 makes all three
+ * mandatory) and then had no edit path, so a site's clock could be set exactly
+ * once, at creation, and never corrected. A box installed in the wrong zone
+ * stayed there.
  *
- * That is also why editing lives HERE rather than being bolted onto the tree
- * panel: this console's established division is that the tree panel authors the
- * SHAPE (create a node, delete an empty one) and a separate surface edits a
- * node's own fields. Screens already had that surface. Sites did not.
+ * That is also why editing lives HERE rather than beside the tree: the console's
+ * established division is that a tree panel authors the SHAPE (create a node,
+ * delete an empty one) and a separate surface edits a node's own fields. That
+ * matters more since the 2026-08-19 strip, not less — /screens and its scope
+ * tree left core with the slidecast ship target, so this page is now the ONLY
+ * console surface that writes a scope node's location or clock at all. Creating
+ * one is api/1 or CLI work until a pack brings the tree panel back.
  *
  * # The log-timestamp cascade, answered
  *
@@ -371,12 +372,10 @@ export default function SettingsRoute({ api }: { api?: WaiveoApi }) {
 
       {sites !== null && sites.length === 0 ? (
         <p className="rounded-card border border-border bg-card p-4 text-sm text-muted-foreground">
-          This workspace has no sites yet. A site is created with the rest of the scope tree on the{" "}
-          <Link className="underline underline-offset-2" to="/screens">
-            Screens
-          </Link>{" "}
-          page — a site needs a place in the hierarchy, which is a tree decision. Once one exists, its
-          location and local time are edited here.
+          This workspace has no sites yet, and this console cannot create one: a site needs a place
+          in the hierarchy, and the scope-tree panel that authored that shape left core with the
+          Screens page. Until an extension brings one back, create a site over api/1 or the CLI.
+          Once one exists, its location and local time are edited here.
         </p>
       ) : null}
 
@@ -450,15 +449,10 @@ export default function SettingsRoute({ api }: { api?: WaiveoApi }) {
           need one.
         </p>
         <p>
-          Values automation rules read and write live on{" "}
-          <Link className="underline underline-offset-2" to="/variables">
-            Variables
-          </Link>
-          . A screen's own time-zone override lives with the screen, on{" "}
-          <Link className="underline underline-offset-2" to="/screens">
-            Screens
-          </Link>
-          .
+          Two settings that used to be linked from here have no console home at present: the values
+          automation rules read and write (they left with the Variables page), and a screen's own
+          time-zone override (it left with the Screens page). Both are still api/1 resources; the
+          surfaces return with the packs that own them.
         </p>
       </section>
     </div>

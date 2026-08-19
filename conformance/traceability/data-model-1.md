@@ -30,9 +30,43 @@ NOT do, and the case for it is two variables set at different depths, which
 proves today's implementation separates them rather than that no future one
 couples them. DAT-138 forbids storing secrets as variables and no case can
 observe a rule about what an operator ought not to put in a field; it is
-enforceable only by a review of what the platform itself writes there, plus the
-warning the Variables console page carries where an operator would type one
-(`web/src/routes/variables/variables-route.tsx`).
+enforceable only by a review of what the platform itself writes there, plus a
+warning wherever an operator would type one.
+
+**DAT-138 lost its only operator-facing warning on 2026-08-19, and the write
+paths it warns about are all still live.** Recorded here because the honest
+state of this row is worse than "TBD-wave1" implies. The warning used to sit on
+the Variables console page — a DAT-138-tagged panel reading *"Don't put
+passwords, API keys or tokens here. A variable is readable by every automation,
+is published in full on the activity feed each time it changes, and is visible
+to anyone who can see the scope node it sits at."* That page
+(`web/src/routes/variables/`) was deleted with the console strip that moved the
+variables UI toward the `waiveo/system` pack
+(`plans/2026-08-11-capability-ownership-map.md` §2.2 group E). **Do not go
+looking for that file; it is gone.** What was NOT deleted is anything it
+mitigated:
+
+- `/variables` and `/variables/{variable_id}` remain a full api/1 CRUD family
+  (`api/openapi.yaml`, `internal/app/api/variables.go`, mounted at
+  `internal/app/api/api.go:378`), and the console's typed module is still wired
+  (`web/src/api/resources.ts`).
+- `rules/1` `variable_write` (RUL-220) is LIVE on the app peer, not a no-op —
+  `internal/rules/eval/action.go` dispatches it through `VariableSink`, and its
+  own comment records that it was removed from the no-op default arm precisely
+  so the app peer performs it.
+- The store is unencrypted and the value is republished on `variable.changed`
+  (DAT-137), so the disclosure the warning described is unchanged.
+
+So DAT-138 currently has **zero enforcement of any kind** — no corpus case, no
+driver, no schema check, and now no warning on any surface. The prohibition is
+stated only in `contracts/data-model-1.md` and in the api/1 spec commentary for
+the variables family. Re-authoring the operator-facing half belongs to whichever
+surface owns variables next (the `waiveo/system` pack per the map, or any core
+page that reintroduces the family); the api/1 `description` fields for
+`createVariable`/`updateVariable` are the other candidate and are deliberately
+untouched here, because editing them regenerates `api/gen/ts/api.d.ts` and the
+Go client and would have to clear the codegen drift gate in the same change.
+Whoever closes this row should close that gap first, not merely add a case.
 
 **Where the three VARIABLE_* codes are raised, and where they are not.** Same
 shape as the DEVICE_IDENTITY_INCOMPLETE note below, and recorded for the same

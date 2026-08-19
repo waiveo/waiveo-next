@@ -23,13 +23,24 @@ import { KitIcon } from "./kit-icon";
  * instead of streamed to disk, and the whole thing stops working if scripting is
  * blocked or the JS throws. None of that is recoverable by styling.
  *
- * # Two shapes, because there are two real call sites
+ * # Two shapes, because there were two real call sites
  *
  * `inline` is a text link in prose or beside a panel. `icon` renders through the
  * kit `Button` with `asChild`, so an export action sitting in a row of icon
  * buttons is byte-for-byte the same ghost square as its neighbours — the reason
  * the casts row had a hand-rolled copy of the button's utility string in the
  * first place.
+ *
+ * # It has NO route consumer today, deliberately
+ *
+ * Both call sites left core in the 2026-08-19 console strip: /casts went with
+ * the slidecast ship target and /backup with waiveo/backups. This primitive was
+ * kept rather than deleted with them, because the capability-ownership map
+ * records that waiveo/backups will need exactly this affordance and that the
+ * ui-schema/1 widget catalog does not have one — a pack authoring an export
+ * action reaches for this, or hand-rolls the third copy of the anchor. Its own
+ * suite and the kit gallery are what keep it honest in the meantime; if a pack
+ * is ever given a download widget instead, delete this with it.
  *
  * # The name is required at the type level
  *

@@ -1,28 +1,46 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router";
-import { CalendarClock, Images, MonitorPlay, Wand2, type LucideIcon } from "lucide-react";
+import { Cpu, Puzzle, Radio, ShieldCheck, type LucideIcon } from "lucide-react";
 import { PageHeader, StatCard } from "@/components/kit";
-import { ApiError, createApi, type WaiveoApi } from "@/api";
+import { ApiError, collectPages, createApi, type Pack, type WaiveoApi } from "@/api";
 
 /**
- * The Overview route ("/") — the console's home. It reports live counts of the
- * things the operator manages — screens, schedules, automations, and the media
- * assets in play — read straight from the api/1 store. There is no server-side
- * "counts" endpoint (api/1 lists are keyset-paginated, no totals, API-030), so
- * each figure is a real walk of that resource's cursors; the four run
- * independently, so a slow or failing family degrades only its own card, never
- * the page. Each card carries a graceful zero-state (nothing yet → a calm next
- * step) and a graceful error-state (couldn't load → the Problem detail), so an
- * empty or partly-degraded backend still renders a coherent home.
+ * The Overview route ("/") — the console's home.
  *
- * "Assets" has no resource of its own — content is content-addressed and
- * write-only in api/1 (POST /content), with no inventory to list — so the figure
- * is derived live from the playlists that reference assets: the count of distinct
- * asset_refs in play. That keeps it a true reading of the store (and naturally
- * zero when nothing is scheduled) rather than an invented number.
+ * # What it reports, and why it changed
+ *
+ * It used to count screens, schedules, automations and the assets in play, and
+ * open with three first-run steps into Extensions, Screens and Casts. Every one
+ * of those areas left core on 2026-08-19: the product ships as packs, and of the
+ * nine ship targets only device-discovery is installed on this box. A home page
+ * whose four figures and three links all point at deleted routes is worse than
+ * no home page — it reports a product the box is not running.
+ *
+ * So the figures are now the ones a Discovery-only box can actually answer, and
+ * each is a live read of the store rather than a remembered number:
+ *
+ *   Devices found      what the relays have reported seeing on their networks
+ *   Adopted            what THIS deployment decided to put under its control
+ *   Entities           the controllable things those devices expose
+ *   Extensions         installed packs — where every other capability comes from
+ *
+ * The first two are deliberately separate cards rather than one "12 of 30"
+ * figure. Discovery and adoption are different facts with different owners
+ * (relay-owned read model vs. this deployment's durable record), and the devices
+ * page exists to keep them apart; collapsing them here would re-blur exactly what
+ * that page unblurs. A discovered-but-unadopted fleet and an adopted fleet whose
+ * relay is offline are both normal, and the two cards read differently in each.
+ *
+ * There is still no server-side "counts" endpoint (api/1 lists are keyset-
+ * paginated, no totals, API-030), so each figure is a real walk of that
+ * resource's cursors. The four run independently, so a slow or failing family
+ * degrades only its own card, never the page. Each carries a graceful zero-state
+ * (nothing yet → a calm next step) and a graceful error-state (couldn't load →
+ * the Problem detail), so an empty or partly-degraded backend still renders a
+ * coherent home.
  */
 
-type MetricKey = "screens" | "schedules" | "automations" | "assets";
+type MetricKey = "devices" | "adopted" | "entities" | "extensions";
 
 type MetricState =
   | { status: "loading" }
@@ -49,63 +67,65 @@ async function countAll<T>(pages: AsyncGenerator<T, void, void>): Promise<number
 
 const METRICS: MetricSpec[] = [
   {
-    key: "screens",
-    label: "Screens",
-    icon: MonitorPlay,
-    emptyHint: "No screens yet — add one to start casting.",
-    count: (api) => countAll(api.scopeNodes.pages({ selector: "kind=screen" })),
+    key: "devices",
+    label: "Devices found",
+    icon: Radio,
+    emptyHint: "Nothing on the network yet — check a relay is connected.",
+    count: (api) => countAll(api.devices.pages()),
   },
   {
-    key: "schedules",
-    label: "Schedules",
-    icon: CalendarClock,
-    emptyHint: "No schedules yet — program a daypart to light a screen up.",
-    count: (api) => countAll(api.schedules.pages()),
+    key: "adopted",
+    label: "Adopted",
+    icon: ShieldCheck,
+    emptyHint: "Nothing adopted yet — adopt a device to put it under control.",
+    count: (api) => countAll(api.adoptedDevices.pages()),
   },
   {
-    key: "automations",
-    label: "Automations",
-    icon: Wand2,
-    emptyHint: "No automations yet — a rule reacts to the fleet for you.",
-    count: (api) => countAll(api.automations.pages()),
+    key: "entities",
+    label: "Entities",
+    icon: Cpu,
+    emptyHint: "No entities — a device reports these with itself.",
+    count: (api) => countAll(api.entities.pages()),
   },
   {
-    key: "assets",
-    label: "Assets in play",
-    icon: Images,
-    emptyHint: "No assets in play — upload content and add it to a playlist.",
+    key: "extensions",
+    label: "Extensions",
+    icon: Puzzle,
+    emptyHint: "No packs installed — this box can do almost nothing until one is.",
     count: async (api) => {
-      const refs = new Set<string>();
-      for await (const pl of api.playlists.pages()) {
-        for (const item of pl.items ?? []) {
-          if (item.source === "asset" && item.asset_ref) refs.add(item.asset_ref);
-        }
-      }
-      return refs.size;
+      // packs has no `pages()` generator (one keyset page per call), so the walk
+      // is the eager collector every other pack surface uses.
+      const packs = await collectPages<Pack>((cursor) => api.packs.list({ cursor }));
+      return packs.length;
     },
   },
 ];
 
-/** The first-run steps, in the order they unblock each other. Extensions leads
- * because a freshly claimed box can do almost nothing until one is installed —
- * the register's own words for this gap were "a freshly claimed box arrives
- * with no way to install anything", and the way now exists but nothing points
- * at it from where an operator lands. */
+/** The first-run steps, in the order they unblock each other.
+ *
+ * Extensions leads because a freshly claimed box can do almost nothing until one
+ * is installed — that was true when the register wrote "a freshly claimed box
+ * arrives with no way to install anything", and it is MORE true now that the
+ * eight other capability areas ship as packs rather than as core routes. The
+ * remaining two are the only other things an operator can usefully do on a
+ * Discovery-only box: see what the relays found, and tell the box where it is
+ * (a site's timezone and coordinates are what every schedule and sun rule
+ * eventually resolves against). */
 const FIRST_RUN_STEPS: { to: string; label: string; detail: string }[] = [
   {
     to: "/extensions",
     label: "Install an extension",
-    detail: "Browse what the configured registry sources offer, or upload a signed pack.",
+    detail: "Almost every capability arrives as a pack. Start here.",
   },
   {
-    to: "/screens",
-    label: "Add a screen",
-    detail: "Pair a display so there is somewhere for content to land.",
+    to: "/devices",
+    label: "See what is on the network",
+    detail: "The relays report the whole segment; adopt the ones this box should control.",
   },
   {
-    to: "/casts",
-    label: "Build a cast",
-    detail: "Lay out what a screen shows, then schedule when it shows it.",
+    to: "/settings",
+    label: "Tell the box where it is",
+    detail: "A site's timezone and coordinates are what local time resolves against.",
   },
 ];
 
@@ -159,10 +179,10 @@ function metricHint(spec: MetricSpec, state: MetricState): ReactNode {
 export default function OverviewRoute({ api }: { api?: WaiveoApi }) {
   const client = useMemo(() => api ?? createApi(), [api]);
   const [metrics, setMetrics] = useState<Record<MetricKey, MetricState>>({
-    screens: { status: "loading" },
-    schedules: { status: "loading" },
-    automations: { status: "loading" },
-    assets: { status: "loading" },
+    devices: { status: "loading" },
+    adopted: { status: "loading" },
+    entities: { status: "loading" },
+    extensions: { status: "loading" },
   });
 
   useEffect(() => {
@@ -189,7 +209,7 @@ export default function OverviewRoute({ api }: { api?: WaiveoApi }) {
         <PageHeader
           variant="hero"
           title="Overview"
-          description="Your fleet at a glance — screens, schedules, automations, and the assets in play, live from the store."
+          description="This box at a glance — what the relays have found, what it has adopted, and what it has installed."
         />
         {looksUnconfigured(metrics) ? (
           <section
@@ -200,7 +220,7 @@ export default function OverviewRoute({ api }: { api?: WaiveoApi }) {
               Start here
             </h2>
             <p className="text-sm text-muted-foreground">
-              This box is claimed and empty. Three steps make it a working sign.
+              This box is claimed and empty. Three steps make it a working deployment.
             </p>
             <ol className="flex flex-col gap-2">
               {FIRST_RUN_STEPS.map((step, i) => (

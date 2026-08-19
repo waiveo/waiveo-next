@@ -80,12 +80,20 @@ func TestNoConsoleRouteIsShadowedByAServerRoute(t *testing.T) {
 			t.Fatalf("derived server patterns %v are missing %q — the scan over main()'s mux found the wrong thing (or a route was removed and this list not updated); every assertion below would be vacuous", server, want)
 		}
 	}
-	for _, want := range []string{"/", "/screens", "/media", "/login", "/system"} {
+	// Named members chosen to survive the 2026-08-19 console strip: the front
+	// door, the ONE ship target still installed (Discovery), the surface that
+	// installs it, and the two identity/box pages that belong to no pack. The
+	// list used to name /screens and /media, which have since been deleted along
+	// with the rest of the slidecast surface.
+	for _, want := range []string{"/", "/devices", "/extensions", "/login", "/system"} {
 		if !slices.Contains(routes, want) {
 			t.Fatalf("derived console routes %v are missing %q — the scan over web/src/App.tsx found the wrong thing", routes, want)
 		}
 	}
-	if len(routes) < 12 {
+	// An anti-vacuity floor, not a product rule. Fourteen routes survive the
+	// strip; a scan that found fewer than ten has broken rather than the console
+	// having shrunk again, and it is the SCAN this guard is about.
+	if len(routes) < 10 {
 		t.Fatalf("derived only %d console routes (%v); the console has more than that, so the scan is broken", len(routes), routes)
 	}
 
@@ -117,10 +125,15 @@ func TestEveryNavItemPointsAtADeclaredConsoleRoute(t *testing.T) {
 	routes := consoleRoutes(t, root)
 	nav := navTargets(t, root)
 
-	if len(nav) < 10 {
+	// Seven rail targets survive the 2026-08-19 strip (Overview; Discovery's All
+	// devices; Extensions' Installed; Platform's Settings, API keys, Activity,
+	// System). The threshold was 10 against the pre-strip rail — it is lowered
+	// rather than deleted because what it guards is a DERIVATION that found
+	// nothing, which would make every assertion below vacuously true.
+	if len(nav) < 5 {
 		t.Fatalf("derived only %d nav targets (%v); the primary rail has more, so the scan is broken", len(nav), nav)
 	}
-	for _, want := range []string{"/", "/screens", "/media"} {
+	for _, want := range []string{"/", "/devices", "/system"} {
 		if !slices.Contains(nav, want) {
 			t.Fatalf("derived nav targets %v are missing %q — the scan over the shell's NAV_TREE found the wrong thing", nav, want)
 		}
@@ -143,8 +156,8 @@ func TestEveryNavItemPointsAtADeclaredConsoleRoute(t *testing.T) {
 // than the flat rail this replaced, so it is a build failure.
 //
 // Both sides are derived, and the exemptions are too. A route that is
-// deliberately off the rail — the sign-in page, the Studio (opened on a cast),
-// the account page in the header, a pack's own page — is declared in
+// deliberately off the rail — the sign-in page, the account page in the header,
+// a developer reference surface reached by address, a pack's own page — is declared in
 // OFF_RAIL_ROUTES *in the nav tree itself*, next to the door it is reached
 // through. That is what keeps this from degenerating into the thing it is
 // guarding against: there is no list of exceptions in this file to quietly grow
@@ -165,7 +178,10 @@ func TestEveryConsoleRouteIsReachable(t *testing.T) {
 	if len(offRail) < 3 {
 		t.Fatalf("derived only %d off-rail routes (%v); the console has more, so the scan over OFF_RAIL_ROUTES is broken", len(offRail), offRail)
 	}
-	for _, want := range []string{"/login", "/studio"} {
+	// /studio was the canonical off-rail example until it was deleted with the
+	// slidecast surface; /security is the durable one — the header's account
+	// link, which acts on the principal rather than on a console resource.
+	for _, want := range []string{"/login", "/security"} {
 		if !slices.Contains(offRail, want) {
 			t.Fatalf("derived off-rail routes %v are missing %q — the scan over OFF_RAIL_ROUTES found the wrong thing", offRail, want)
 		}

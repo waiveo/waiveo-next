@@ -196,9 +196,12 @@ test("core navigation — each nav item routes to its page heading", async ({ pa
   // "/upload" merges ago, so Playwright waited 30s for a link that cannot exist
   // and the suite carried a standing red. Worse than the red itself, that taught
   // everyone — me included — to wave the whole spec through as "known
-  // pre-existing", which is exactly how a real failure gets missed. It also knew
-  // nothing of Devices, Roku, Widgets, Variables, Extensions or Settings, all of
-  // which shipped after it was written.
+  // pre-existing", which is exactly how a real failure gets missed.
+  //
+  // Deriving is what let this survive the 2026-08-19 console strip untouched
+  // apart from its floor: the rail lost the whole Slidecast and Automations
+  // families, Roku, Widgets, Variables and Backup when those capabilities became
+  // packs, and an enumerated list would have gone red on every one of them.
   //
   // It asserts that SOME h1 paints, not which one. That is the property this test
   // is actually for — its own header says "a nav item that renders but routes
@@ -208,7 +211,12 @@ test("core navigation — each nav item routes to its page heading", async ({ pa
   const labels = await nav.getByRole("link").evaluateAll((els) =>
     els.map((el) => (el.textContent ?? "").trim()).filter((t) => t.length > 0),
   );
-  expect(labels.length).toBeGreaterThan(8);
+  // An anti-vacuity floor on the DERIVATION, not a claim about the product: a
+  // rail that yielded zero links would make the loop below pass by doing
+  // nothing. Seven destinations survive the strip (Overview, All devices,
+  // Installed, Settings, API keys, Activity, System), plus whatever pages the
+  // installed pack contributes.
+  expect(labels.length).toBeGreaterThan(4);
 
   for (const label of labels) {
     await nav.getByRole("link", { name: label, exact: true }).click();

@@ -675,7 +675,7 @@ describe("Devices — adopting, clicked through", () => {
   });
 });
 
-describe("Devices — entities and the remote", () => {
+describe("Devices — entities", () => {
   it("narrows the entities table to the device whose row was pressed", async () => {
     seed({
       devices: [device(), device({ id: OTHER_DEVICE_ID, name: "Cafe TV", labels: {} })],
@@ -703,57 +703,25 @@ describe("Devices — entities and the remote", () => {
     );
   });
 
-  it("offers the remote only for an entity whose class the remote can actually drive", async () => {
-    seed({
-      entities: [
-        entity(),
-        entity({ id: OTHER_ENTITY_ID, name: "Hanger thermostat", device_class: "thermostat" }),
-      ],
-    });
+  // The console strip (2026-08-19) removed BOTH control affordances this page
+  // used to carry: the per-entity Remote dialog and the "Roku console" link. The
+  // owner's rule is that a per-driver control surface belongs to a driver PACK,
+  // not to core's discovery page ("Roku is its own extension, and Discovery is
+  // its own extension"), and waiveo/roku is uninstalled — an adopted Roku is
+  // discovered and unclassified, and nothing here drives it.
+  //
+  // This is asserted rather than merely deleted because a half-removal is the
+  // failure shape: a Remote button whose component is gone renders a crash, and
+  // a link to a deleted /roku renders the 404 inside the shell. A media-player
+  // fleet is seeded on purpose, since that is exactly the state that used to
+  // produce both.
+  it("offers no control surface for a media player — a driver pack owns that", async () => {
+    seed();
     renderRoute();
     const entities = await screen.findByRole("table", { name: "Entities" });
-    await waitFor(() => expect(within(entities).getByText("Hanger thermostat")).toBeInTheDocument());
-    // One Remote button, for the one media-player entity — a remote built from
-    // media-player's vocabulary would only ever earn COMMAND_UNRESOLVED against
-    // the thermostat.
-    expect(within(entities).getAllByRole("button", { name: "Remote" })).toHaveLength(1);
-  });
-
-  it("links to the Roku console when a media player has been discovered", async () => {
-    seed();
-    renderRoute();
-    const link = await screen.findByRole("link", { name: "Roku console" });
-    expect(link).toHaveAttribute("href", "/roku");
-  });
-
-  it("offers no Roku console link when nothing on the fleet is a media player", async () => {
-    // The link is an offer to go and drive something. A deployment of
-    // thermostats has nothing to drive there, and a dead-end link is the same
-    // "button that does nothing" defect in a different shape.
-    seed({
-      devices: [device({ device_class: "thermostat" })],
-      entities: [entity({ device_class: "thermostat" })],
-    });
-    renderRoute();
-    await screen.findByRole("table", { name: "Discovered devices" });
+    await waitFor(() => expect(within(entities).getByText("Hanger TV main")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Remote" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Roku console" })).toBeNull();
-  });
-
-  it("opens the remote and dispatches a real command at the chosen entity", async () => {
-    let sent: Record<string, unknown> | null = null;
-    seed();
-    server.use(
-      http.post(`${TEST_BASE}/entities/${ENTITY_ID}/commands`, async ({ request }) => {
-        sent = (await request.json()) as Record<string, unknown>;
-        return ok({ ok: true });
-      }),
-    );
-    const user = renderRoute();
-    await user.click(await screen.findByRole("button", { name: "Remote" }));
-    const dialog = await screen.findByRole("dialog", { name: /Remote — Hanger TV main/ });
-    await user.click(within(dialog).getByRole("button", { name: "Home" }));
-    await waitFor(() => expect(sent).not.toBeNull());
-    expect(sent).toEqual({ command: "home" });
   });
 });
 

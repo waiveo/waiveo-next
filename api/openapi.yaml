@@ -695,6 +695,18 @@ paths:
   # node (DAT-131), so a name alone does not identify a row; and a
   # value-only write would be a second mutation path with its own concurrency
   # story beside the PATCH that already exists.
+  #
+  # NEVER write a secret through this family (DAT-138). A variable is stored
+  # unencrypted, is readable by every rule, is republished IN FULL on
+  # `variable.changed` (DAT-137, events/1 EVT-084) each time it moves, and is
+  # returned to anyone who can see the scope node it sits at. Passwords, API
+  # keys and tokens belong to the secret store, not here. This prohibition is
+  # written here because it currently has no other enforcement anywhere: it is
+  # unobservable to a corpus case, no schema check can detect it, and the
+  # console page that used to carry the warning where an operator would type one
+  # was deleted on 2026-08-19 with the rest of the variables UI. See
+  # `conformance/traceability/data-model-1.md` (DAT-138) for the full state of
+  # that gap.
   # ---------------------------------------------------------------------
   /variables:
     get:

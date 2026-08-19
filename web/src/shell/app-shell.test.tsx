@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import { AppShell } from "./app-shell";
+import { navLeaves } from "./nav-tree";
 import DesignRoute from "@/routes/design/design-route";
 
 // Drive matchMedia so a test can render at a specific viewport. Default (below)
@@ -30,6 +31,11 @@ afterEach(() => {
   window.localStorage.clear();
 });
 
+// The default path is /design ON PURPOSE, and it is no longer a rail entry: the
+// 2026-08-19 strip moved Pages and Design kit to OFF_RAIL_ROUTES. A route that
+// belongs to NO group is exactly what the collapse-memory and reveal tests below
+// need to stand on — collapsing the group that owns the current route would be
+// re-opened by the reveal rule on the next mount, testing nothing.
 function renderShell(path = "/design", children = <div>route content</div>) {
   return render(
     <ThemeProvider>
@@ -84,117 +90,115 @@ describe("AppShell — locked-left responsive shell", () => {
     expect(sidebar.className).toContain("wv-shell__sidebar");
     // The primary nav lives in the rail...
     const railNav = within(sidebar).getByRole("navigation", { name: /primary/i });
-    expect(within(railNav).getByRole("link", { name: "Design kit" })).toBeInTheDocument();
+    expect(within(railNav).getByRole("link", { name: "Activity" })).toBeInTheDocument();
     expect(within(railNav).getByRole("link", { name: "Overview" })).toBeInTheDocument();
     // ...and NOT in the header (that would be a top-nav).
     const header = container.querySelector('[data-slot="shell-header"]') as HTMLElement;
-    expect(within(header).queryByRole("link", { name: "Design kit" })).toBeNull();
+    expect(within(header).queryByRole("link", { name: "Activity" })).toBeNull();
     // The rail sits before the content in document order (left, not below).
     const content = container.querySelector('[data-slot="shell-content"]') as HTMLElement;
     expect(sidebar.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   // ── The information architecture ──────────────────────────────────────────
-  // The rail used to be thirteen flat siblings. The owner's complaint was
-  // structural, not cosmetic: "you've got CASTS over here, but CASTS should be
-  // under slide casts... Screens should be under slide cast, just like CASTS."
-  // These assertions ARE the IA — moving a page between areas has to be a
-  // deliberate edit here, not something that happens to still pass.
+  // The rail used to be thirteen flat siblings, and the grouping fixed that. It
+  // is now short for a different reason: on 2026-08-19 the owner stripped the
+  // console back to what this box actually runs. Eight of the nine ship targets
+  // ship as PACKS and none of them is installed, so the Slidecast group (Casts,
+  // Screens, Schedules, Media, Upload, Widgets), the Automations group (Rules,
+  // Variables) and Platform's Backup entry were deleted with their routes, and
+  // Pages/Design kit moved off-rail as developer reference.
+  //
+  // These assertions ARE the IA — moving a page between areas, or letting a
+  // deleted area creep back in as a core route, has to be a deliberate edit
+  // here rather than something that happens to still pass.
 
-  it("groups the rail by product area, with Casts and Screens under Slidecast", () => {
+  it("groups the rail by area: Overview, Discovery, Extensions, Platform", () => {
     const { container } = renderShell();
     const sidebar = container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
     expect(readRailTree(sidebar)).toEqual([
       { leaf: "Overview" },
-      {
-        group: "Slidecast",
-        expanded: true,
-        // Legacy's own order (Casts · Screens · Media · Widgets), with the two
-        // members legacy never had slotted where they belong rather than
-        // appended: Schedules programs Screens, Upload is Media's write half.
-        children: ["Casts", "Screens", "Schedules", "Media", "Upload", "Widgets"],
-      },
+      // The one ship target still installed on the box.
       { group: "Discovery", expanded: true, children: ["All devices"] },
-      // Automations became a GROUP when Variables landed beside it. Two pages
-      // that belong together are an area;
-      // admitting a second top-level leaf would make "top level" mean "no
-      // obvious home", which is the flat rail this tree replaced.
-      { group: "Automations", expanded: true, children: ["Rules", "Variables"] },
+      // Marketplace is itself one of the nine and would have gone with the rest;
+      // it stays because an optional pack that is the only way to install packs
+      // is a bricking hazard, and this is how Discovery got here.
       { group: "Extensions", expanded: true, children: ["Installed"] },
       {
         group: "Platform",
         expanded: true,
         // Settings leads the group and is INSIDE it: it edits where the box is
         // and what local time it keeps, which is the same subject the other
-        // four report on or act on. It is first because it is the only member
-        // that CONFIGURES — the rest read a deployment this page describes.
-        children: ["Settings", "API keys", "Activity", "System", "Backup", "Pages", "Design kit"],
+        // three report on. It is first because it is the only member that
+        // CONFIGURES — the rest read a deployment this page describes. Backup
+        // is absent: it belongs to waiveo/backups.
+        children: ["Settings", "API keys", "Activity", "System"],
       },
     ]);
   });
 
-  it("puts NO product page at the top level beside the platform pages", () => {
+  it("puts NO page at the top level beside Overview", () => {
     // The other half of the same property, stated as an absence. The tree
-    // assertion above would still pass if a duplicate `Casts` were ALSO left at
-    // the top level; this is what says the page moved rather than multiplied.
+    // assertion above would still pass if a duplicate `Settings` were ALSO left
+    // at the top level; this is what says a page has one home, not two.
     const { container } = renderShell();
     const sidebar = container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
     const topLevelLeaves = readRailTree(sidebar)
       .map((n) => ("leaf" in n ? n.leaf : undefined))
       .filter((l): l is string => l !== undefined);
     // Overview alone. It is the only page that belongs to no area — it
-    // summarizes all of them.
+    // summarizes the box.
     expect(topLevelLeaves).toEqual(["Overview"]);
-    for (const scattered of ["Casts", "Screens", "Media", "Upload", "System", "Backup", "Settings"]) {
+    for (const scattered of ["All devices", "Installed", "System", "Settings", "Activity"]) {
       expect(topLevelLeaves).not.toContain(scattered);
     }
   });
 
-  it("still reaches every destination the flat rail had", () => {
+  it("renders exactly the destinations the tree declares — no more, no fewer", () => {
     // Grouping is exactly the operation that loses a page, and a lost page is a
-    // worse outcome than the flat rail. (The build-level version of this is
-    // cmd/waiveo-feeder/consoleroutes_test.go, which derives BOTH the route
-    // table and the tree; this is the rendered check.)
+    // worse outcome than the flat rail this replaced. Derived from NAV_TREE
+    // rather than listed, so it cannot rot into a copy of the tree that agrees
+    // with itself: it fails when the shell DROPS a declared leaf, and it fails
+    // when the shell renders a rail link the tree does not declare. (The
+    // build-level version is cmd/waiveo-feeder/consoleroutes_test.go, which
+    // derives BOTH the route table and the tree; this is the rendered check.)
     const { container } = renderShell();
     const sidebar = container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
     const railNav = within(sidebar).getByRole("navigation", { name: /primary/i });
     const labels = within(railNav)
       .getAllByRole("link")
       .map((a) => a.textContent?.trim());
-    for (const had of [
-      "Overview",
-      "Screens",
-      "All devices",
-      "Schedules",
+    expect(labels).toEqual(navLeaves().map((leaf) => leaf.label));
+  });
+
+  it("carries no rail entry for a capability that left core with its pack", () => {
+    // The strip's own property, and the one a tree assertion alone would not
+    // state: these labels must not come back as CORE rail entries. A pack that
+    // ships its own pages contributes them through the separate Extensions
+    // landmark (use-installed-packs.ts), which is a different mechanism and a
+    // different landmark — so a returning capability cannot satisfy this by
+    // accident.
+    const { container } = renderShell();
+    const sidebar = container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
+    const railNav = within(sidebar).getByRole("navigation", { name: /primary/i });
+    for (const gone of [
       "Casts",
-      "Upload",
+      "Screens",
+      "Schedules",
       "Media",
-      "Automations",
-      "Activity",
-      "Pages",
-      "Extensions",
-      "System",
+      "Upload",
+      "Widgets",
+      "Rules",
+      "Variables",
       "Backup",
+      "Pages",
       "Design kit",
     ]) {
-      // Two destinations kept their route and changed their LABEL because their
-      // area became a group: "Extensions" now reads "Installed" under an
-      // Extensions group (a catalogue browse and a registry-source list are both
-      // recorded ABSENT and will land beside it), and "Automations" names the
-      // group whose page is "Rules" — what the resource is called in the
-      // contract, the builder and the engine. The device area was renamed to
-      // "Discovery" (owner, 2026-08-17) and its page stays "All devices"; Roku
-      // is no longer a rail entry (it is an extension's control surface, reached
-      // off-rail from the device it operates).
-      const renamed: Record<string, string> = {
-        Extensions: "Installed",
-        Automations: "Rules",
-      };
-      const expected = renamed[had] ?? had;
-      expect(labels).toContain(expected);
+      expect(within(railNav).queryByRole("link", { name: gone })).toBeNull();
     }
-    // ...plus the destination the flat rail never had at all (parity row 8.4).
-    expect(labels).toContain("Widgets");
+    for (const group of ["Slidecast", "Automations"]) {
+      expect(within(railNav).queryByRole("button", { name: group })).toBeNull();
+    }
   });
 
   it("exposes each group as a real disclosure — button, aria-expanded, aria-controls", () => {
@@ -208,7 +212,11 @@ describe("AppShell — locked-left responsive shell", () => {
     expect(railNav.tagName).toBe("NAV");
 
     const toggles = within(railNav).getAllByRole("button");
-    expect(toggles.map((b) => b.textContent?.trim())).toEqual(["Slidecast", "Discovery", "Automations", "Extensions", "Platform"]);
+    expect(toggles.map((b) => b.textContent?.trim())).toEqual([
+      "Discovery",
+      "Extensions",
+      "Platform",
+    ]);
     for (const toggle of toggles) {
       expect(toggle).toHaveAttribute("type", "button");
       expect(toggle).toHaveAttribute("aria-expanded", "true");
@@ -224,43 +232,44 @@ describe("AppShell — locked-left responsive shell", () => {
     const user = userEvent.setup();
     const { container } = renderShell();
     const sidebar = container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
-    const slidecast = within(sidebar).getByRole("button", { name: "Slidecast" });
+    const platform = within(sidebar).getByRole("button", { name: "Platform" });
 
-    expect(within(sidebar).getByRole("link", { name: "Casts" })).toBeInTheDocument();
-    await user.click(slidecast);
+    expect(within(sidebar).getByRole("link", { name: "Settings" })).toBeInTheDocument();
+    await user.click(platform);
 
-    expect(slidecast).toHaveAttribute("aria-expanded", "false");
+    expect(platform).toHaveAttribute("aria-expanded", "false");
     // Not merely invisible: gone from the a11y tree, so a screen-reader user is
-    // not offered six destinations a sighted user cannot see. (A Tailwind
-    // display class would look identical here and fail this.)
-    expect(within(sidebar).queryByRole("link", { name: "Casts" })).toBeNull();
-    expect(within(sidebar).queryByRole("link", { name: "Widgets" })).toBeNull();
+    // not offered destinations a sighted user cannot see. (A Tailwind display
+    // class would look identical here and fail this.)
+    expect(within(sidebar).queryByRole("link", { name: "Settings" })).toBeNull();
+    expect(within(sidebar).queryByRole("link", { name: "Activity" })).toBeNull();
     // A sibling group is untouched.
-    expect(within(sidebar).getByRole("link", { name: "Activity" })).toBeInTheDocument();
+    expect(within(sidebar).getByRole("link", { name: "All devices" })).toBeInTheDocument();
 
-    await user.click(slidecast);
-    expect(slidecast).toHaveAttribute("aria-expanded", "true");
-    expect(within(sidebar).getByRole("link", { name: "Casts" })).toBeInTheDocument();
+    await user.click(platform);
+    expect(platform).toHaveAttribute("aria-expanded", "true");
+    expect(within(sidebar).getByRole("link", { name: "Settings" })).toBeInTheDocument();
   });
 
   it("remembers which groups are collapsed across a remount", async () => {
-    // Collapse SLIDECAST while standing on /design, which lives in Platform.
-    // Collapsing the group that owns the current route would not test memory at
-    // all — the reveal rule below re-opens it on the next mount, correctly.
+    // Collapse PLATFORM while standing on /design, which is off-rail and so
+    // belongs to no group at all. Collapsing the group that owns the current
+    // route would not test memory — the reveal rule below re-opens it on the
+    // next mount, correctly.
     const user = userEvent.setup();
     const first = renderShell("/design");
     const sidebar1 = first.container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
-    await user.click(within(sidebar1).getByRole("button", { name: "Slidecast" }));
-    expect(within(sidebar1).queryByRole("link", { name: "Casts" })).toBeNull();
+    await user.click(within(sidebar1).getByRole("button", { name: "Platform" }));
+    expect(within(sidebar1).queryByRole("link", { name: "Settings" })).toBeNull();
     first.unmount();
 
     const second = renderShell("/design");
     const sidebar2 = second.container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
-    expect(within(sidebar2).getByRole("button", { name: "Slidecast" })).toHaveAttribute(
+    expect(within(sidebar2).getByRole("button", { name: "Platform" })).toHaveAttribute(
       "aria-expanded",
       "false",
     );
-    expect(within(sidebar2).queryByRole("link", { name: "Casts" })).toBeNull();
+    expect(within(sidebar2).queryByRole("link", { name: "Settings" })).toBeNull();
     // Only the group that was collapsed — the memory records deviations, not a
     // whole snapshot, so an area nobody touched still ships open.
     expect(within(sidebar2).getByRole("button", { name: "Discovery" })).toHaveAttribute(
@@ -273,32 +282,32 @@ describe("AppShell — locked-left responsive shell", () => {
     window.localStorage.setItem("waiveo.nav.groups", "{not json");
     const { container } = renderShell();
     const sidebar = container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
-    expect(within(sidebar).getByRole("button", { name: "Slidecast" })).toHaveAttribute(
+    expect(within(sidebar).getByRole("button", { name: "Platform" })).toHaveAttribute(
       "aria-expanded",
       "true",
     );
   });
 
   it("REVEALS the active route's group even when the operator had collapsed it", async () => {
-    // The failure this prevents: an operator collapses Slidecast, later follows
-    // a link to /casts, and the rail shows no trace of where they landed. The
+    // The failure this prevents: an operator collapses Platform, later follows
+    // a link to /system, and the rail shows no trace of where they landed. The
     // reveal is a real state change, so the group stays open and its toggle goes
     // on working normally.
     const user = userEvent.setup();
     const first = renderShell("/design");
     const sidebar1 = first.container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
-    await user.click(within(sidebar1).getByRole("button", { name: "Slidecast" }));
-    expect(within(sidebar1).queryByRole("link", { name: "Casts" })).toBeNull();
+    await user.click(within(sidebar1).getByRole("button", { name: "Platform" }));
+    expect(within(sidebar1).queryByRole("link", { name: "System" })).toBeNull();
     first.unmount();
 
     // Arrive on a page INSIDE the collapsed group.
-    const second = renderShell("/casts");
+    const second = renderShell("/system");
     const sidebar2 = second.container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
-    expect(within(sidebar2).getByRole("button", { name: "Slidecast" })).toHaveAttribute(
+    expect(within(sidebar2).getByRole("button", { name: "Platform" })).toHaveAttribute(
       "aria-expanded",
       "true",
     );
-    expect(within(sidebar2).getByRole("link", { name: "Casts" })).toHaveAttribute(
+    expect(within(sidebar2).getByRole("link", { name: "System" })).toHaveAttribute(
       "aria-current",
       "page",
     );
@@ -336,9 +345,9 @@ describe("AppShell — locked-left responsive shell", () => {
   });
 
   it("marks the active route's nav item with aria-current=page", () => {
-    const { container } = renderShell("/design");
+    const { container } = renderShell("/system");
     const sidebar = container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
-    expect(within(sidebar).getByRole("link", { name: "Design kit" })).toHaveAttribute(
+    expect(within(sidebar).getByRole("link", { name: "System" })).toHaveAttribute(
       "aria-current",
       "page",
     );
@@ -358,7 +367,7 @@ describe("AppShell — locked-left responsive shell", () => {
     const expand = within(sidebar).getByRole("button", { name: /expand sidebar/i });
     expect(expand).toHaveAttribute("aria-pressed", "true");
     // The nav link still exposes an accessible name while collapsed to icons.
-    expect(within(sidebar).getByRole("link", { name: "Design kit" })).toBeInTheDocument();
+    expect(within(sidebar).getByRole("link", { name: "Activity" })).toBeInTheDocument();
   });
 
   // ── The mobile drawer: hamburger + overlay + focus trap + esc + aria-expanded ──
@@ -374,7 +383,7 @@ describe("AppShell — locked-left responsive shell", () => {
     // Radix moves focus into the drawer (focus trap).
     expect(drawer.contains(document.activeElement)).toBe(true);
     // The drawer carries the same primary nav.
-    expect(within(drawer).getByRole("link", { name: "Design kit" })).toBeInTheDocument();
+    expect(within(drawer).getByRole("link", { name: "Activity" })).toBeInTheDocument();
   });
 
   it("closes the drawer on Escape and restores aria-expanded", async () => {
@@ -393,7 +402,7 @@ describe("AppShell — locked-left responsive shell", () => {
     renderShell();
     await user.click(screen.getByRole("button", { name: /open navigation menu/i }));
     const drawer = await screen.findByRole("dialog");
-    await user.click(within(drawer).getByRole("link", { name: "Design kit" }));
+    await user.click(within(drawer).getByRole("link", { name: "Activity" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 

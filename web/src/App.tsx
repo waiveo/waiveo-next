@@ -8,18 +8,7 @@ import { AppShell } from "@/shell/app-shell";
 import LoginRoute from "@/routes/login/login-route";
 import SetupRoute from "@/routes/setup/setup-route";
 import OverviewRoute from "@/routes/overview/overview-route";
-import ScreensRoute from "@/routes/screens/screens-route";
 import DevicesRoute from "@/routes/devices/devices-route";
-import RokuRoute from "@/routes/roku/roku-route";
-import SchedulesRoute from "@/routes/schedules/schedules-route";
-import UploadRoute from "@/routes/upload/upload-route";
-import MediaRoute from "@/routes/media/media-route";
-import CastsRoute from "@/routes/casts/casts-route";
-import StudioRoute from "@/routes/studio/studio-route";
-import PreviewRoute from "@/routes/preview/preview-route";
-import WidgetsRoute from "@/routes/widgets/widgets-route";
-import AutomationsRoute from "@/routes/automations/automations-route";
-import VariablesRoute from "@/routes/variables/variables-route";
 import ActivityRoute from "@/routes/activity/activity-route";
 import DesignRoute from "@/routes/design/design-route";
 import PagesRoute from "@/routes/pages/pages-route";
@@ -29,7 +18,6 @@ import ApiKeysRoute from "@/routes/apikeys/api-keys-route";
 import SecurityRoute from "@/routes/security/security-route";
 import SystemRoute from "@/routes/system/system-route";
 import SettingsRoute from "@/routes/settings/settings-route";
-import BackupRoute from "@/routes/backup/backup-route";
 
 // The application root. The ThemeProvider owns the Dusk/Daybreak theme for the
 // whole app (default Dusk, persisted, reflected as data-theme on <html>). The
@@ -38,6 +26,56 @@ import BackupRoute from "@/routes/backup/backup-route";
 // content region. The console pages talk to the feeder over the same-origin
 // api/1 client and the ui-schema renderer; Activity streams the live /events/v1
 // SSE. The full console navigation is wired here.
+//
+// # What CORE routes, after the 2026-08-19 strip
+//
+// The owner's rule for this console is that the product ships as PACKS: of the
+// nine ship targets (automation, marketplace, backups, system, comms, slidecast,
+// roku-integration, device-discovery, device-widgets) only ONE — device-discovery
+// — is installed on the box today, and core stopped carrying the other eight's
+// console surfaces rather than carrying them until each pack was ready. Thirteen
+// route directories left with that decision: the whole Slidecast family (casts,
+// screens, schedules, media, upload, widgets, and the full-screen Studio and
+// Preview), automations and variables, the Roku console and its remote, and the
+// backup surface.
+//
+// Those thirteen were NOT all decided by the same authority, and conflating them
+// would misrepresent the one document everyone will check:
+//
+//   Map-attributed (plans/2026-08-11-capability-ownership-map.md §3.1 Bucket A,
+//   plus §2.2 group E for variables) — `routes/studio` → `waiveo/slidecast`,
+//   `routes/automations` → `waiveo/automation-ui`, `routes/roku` +
+//   `routes/devices/roku-remote.tsx` + `routes/devices/command-outcome.ts` →
+//   `waiveo/roku`, `routes/backup` → `waiveo/backups`, `routes/widgets` →
+//   `waiveo/device-widgets`, `routes/variables` → `waiveo/system`. The map is
+//   the authority for these six and the strip merely executes it.
+//
+//   Owner-decided, AGAINST the map — `routes/casts`, `routes/screens`,
+//   `routes/schedules`, `routes/media`, `routes/upload`. The map files these
+//   under §3.3 "Bucket C — genuinely undecided" and refuses to rule ("This needs
+//   an owner decision; I am not guessing it"; §6.2 "8,751 lines hinge on it. I
+//   have not picked a side"), while its §2.2 group A target-owner column
+//   positively states core KEEPS `/casts`, `/playlists`, `/schedules`,
+//   `/screens`. The owner settled it himself on 2026-08-19 by naming the
+//   Slidecast group in the rail. Cite HIM for these five, not the map.
+//
+//   Unattributed — `routes/preview` post-dates the map and appears in it
+//   nowhere; it went as part of the Slidecast family under the same owner call.
+//
+// The map's sixth Bucket-C row, `web/src/api/casts.ts` (651 lines), was
+// deliberately KEPT while its five sibling rows went. The instruction was about
+// the console surface, and the api/1 families that module types remain core and
+// live — `/casts`, `/screens`, `/schedules`, `/playlists` in api/openapi.yaml,
+// served by `internal/app/api/casts.go` and siblings — which is precisely what
+// §2.2 group A says core keeps. The consequence, stated so nobody has to
+// rediscover it: it is a typed client with no console consumer right now, still
+// exported from `api/index.ts`, still wired into `api/resources.ts`, and its
+// test suite still runs.
+//
+// What is left is what belongs to no pack: identity (/login, /setup, /security),
+// the box itself (/settings, /api-keys, /activity, /system), the pack lifecycle
+// (/extensions and the /p/... pack pages), Discovery (/devices), and two
+// developer reference surfaces (/pages, /design) that are off the rail.
 //
 // Every api/1 route is authenticated (security-model/1 SEC-005), so the whole
 // shell sits behind a SessionGate: it probes /auth/session once and either
@@ -62,52 +100,6 @@ export default function App() {
               is minted by the next boot (internal/app/auth/destroy.go). The
               route's 401 message names the restart for exactly that reason. */}
           <Route path="/setup" element={<SetupRoute />} />
-          {/* The Studio is INSIDE the session gate and OUTSIDE the shell, and it
-              is the only route that is both.
-
-              It is a full-screen editor, not a console page: a header, a canvas
-              and four docked tool panels that between them want every pixel of
-              the viewport. Mounted in the shell's content column it rendered
-              beside a 240px nav rail that the operator cannot use while editing
-              anyway — the rail's destinations all abandon an unsaved cast — so
-              the rail was costing the canvas a sixth of its width and offering
-              nothing back. It is declared in the shell's OFF_RAIL_ROUTES for the
-              same reason it has no rail entry: it is a tool applied to a cast,
-              reached from the Casts library, and it carries its own door back
-              (the header's "Back to casts", which asks before discarding).
-
-              The gate still wraps it, because /casts and every read the editor
-              makes are authenticated (SEC-005); what it sheds is the CHROME, not
-              the authentication. */}
-          <Route
-            path="/studio"
-            element={
-              <SessionGate>
-                <StudioRoute />
-              </SessionGate>
-            }
-          />
-          {/* Cast preview: watch a cast play, see which of its slides a screen
-              would actually be sent, and work an authored menu or button with a
-              remote. Inside the gate and outside the shell for exactly the
-              reasons the Studio is — a 1920×1080 stage, a transport and a panel
-              want the viewport, and every rail destination abandons the thing
-              you are watching. It carries its own door back.
-
-              The Studio hosts the SAME player in an overlay over its live
-              document, because previewing unsaved edits is the loop this
-              surface exists for and a navigation would discard them. This route
-              is the other half: opening a preview on a SAVED cast from the
-              library, without opening an editor on it first, and a link one
-              person can send another. See preview-route.tsx. */}
-          <Route
-            path="/preview"
-            element={
-              <SessionGate>
-                <PreviewRoute />
-              </SessionGate>
-            }
-          />
           <Route
             element={
               <SessionGate>
@@ -116,54 +108,26 @@ export default function App() {
             }
           >
             <Route path="/" element={<OverviewRoute />} />
-            <Route path="/screens" element={<ScreensRoute />} />
-            {/* The device plane: what the relays have discovered, what has been
-                adopted, and the virtual remote. Distinct from /screens, which
-                is about displays content is scheduled against — a device is a
-                separate row with a separate owner (the relay). */}
+            {/* The device plane: what the relays have discovered and what this
+                deployment has adopted. This is device-discovery's surface, and
+                the one ship target still installed on the box — it is the reason
+                the strip above left the shell, the renderer and the pack-page
+                host exactly where they were. */}
             <Route path="/devices" element={<DevicesRoute />} />
-            {/* Operating an adopted media player, as distinct from discovering
-                and adopting one: live state, the remote, and every dispatch's
-                outcome kept on screen. Separate from /devices because the two
-                are different jobs — one is a decision, the other is a sequence
-                of actions whose results have to stay readable. */}
-            <Route path="/roku" element={<RokuRoute />} />
-            <Route path="/schedules" element={<SchedulesRoute />} />
-            {/* Upload, NOT `/content`: the feeder mounts the content origin at
-                `/content/` on this same mux, and ServeMux redirects `/content` to
-                it — so a console route there was answered by the origin's 403
-                Problem document and the SPA never saw the request. The origin's
-                path is on the wire (signed urls, REL-061), so the console moved.
-                cmd/waiveo-feeder/consoleroutes_test.go now derives both lists and
-                resolves every route below against a real ServeMux. */}
-            <Route path="/upload" element={<UploadRoute />} />
-            {/* The cast library: the slide documents themselves. Its rows open
-                the Studio at `/studio?id=…` — a query rather than a path segment
-                because the Studio is a tool APPLIED to a cast, not a sub-resource
-                of one, and the same editor opens with no cast at all (it says so,
-                and links back here). The editor itself is mounted above, outside
-                this shell. */}
-            <Route path="/casts" element={<CastsRoute />} />
-            {/* /studio is NOT here — see the full-screen note above the gate. */}
-            {/* The content origin's READ half. /upload puts bytes on the box and
-                shows this session's uploads by filename; this browses everything
-                already stored, addressed by digest. */}
-            <Route path="/media" element={<MediaRoute />} />
-            {/* What a slide can carry, browsable (parity row 8.4). Legacy had a
-                Widgets area under Slidecast and this console had none — the
-                kinds existed only as an insert menu inside the Studio, which
-                meant finding out whether the platform could put the weather on
-                a wall required first opening an editor on a cast you had not
-                made. Sits under Slidecast in the rail, where legacy had it. */}
-            <Route path="/widgets" element={<WidgetsRoute />} />
-            <Route path="/automations" element={<AutomationsRoute />} />
-            <Route path="/variables" element={<VariablesRoute />} />
             <Route path="/activity" element={<ActivityRoute />} />
             <Route path="/pages" element={<PagesRoute />} />
             {/* The pack lifecycle: what is installed, install/update/uninstall,
                 and each pack's install-record provenance. Distinct from the
                 `/p/...` routes below, which OPEN an installed pack's own page —
-                this one manages the packs themselves. */}
+                this one manages the packs themselves.
+
+                It is the marketplace ship target's surface and by the strip's
+                own rule it should have gone with the rest. It stays because the
+                ownership map's §1.3 names the failure directly: an optional pack
+                that is the only way to install packs is a bricking hazard. It is
+                also how waiveo/discovery — the one pack that IS installed — was
+                installed and is updated. Removing it leaves the CLI and api/1 as
+                the only path. */}
             <Route path="/extensions" element={<ExtensionsRoute />} />
             <Route path="/api-keys" element={<ApiKeysRoute />} />
             {/* An installed pack's page: `/p/{publisher}/{name}/{path}` — the
@@ -179,22 +143,17 @@ export default function App() {
                 its captured log, in one place, so "why is that screen dark"
                 does not start with an SSH session. Both reads are owner-only —
                 the page renders that refusal as an explanation rather than as a
-                blank panel. */}
+                blank panel.
+
+                This is NOT the `system` ship target: legacy's system EXTENSION
+                owned Variables & Secrets, which was /variables and left with the
+                strip. This page is box control, which the ownership map files
+                under core. */}
             <Route path="/system" element={<SystemRoute />} />
-            {/* The box's own configuration. Scoped hard on purpose: five of the
-                six settings the parity diff attributes to this absence have
-                nothing in this build to write to (no log level exists, the log
-                buffer's capacity is a compile-time constant, browser sessions
-                carry no expiry, the weather provider is keyless by design), and
-                the sixth — restart — already lives on /system. What is left is
-                the one platform setting everything reads: where a site is and
-                what local time it keeps. See the route's docstring. */}
+            {/* The box's own configuration: where a site is and what local time
+                it keeps — the one platform setting everything reads. See the
+                route's docstring. */}
             <Route path="/settings" element={<SettingsRoute />} />
-            {/* Workspace backup (parity row 7.5): export to one encrypted
-                portable container, get it OFF the box, and restore from it.
-                Separate from /system because it is an act on the workspace, not
-                a reading of the machine. */}
-            <Route path="/backup" element={<BackupRoute />} />
             <Route path="/design" element={<DesignRoute />} />
             {/* The catch-all, INSIDE the shell on purpose. A mistyped or dead
                 URL is the one moment an operator most needs the navigation —
@@ -222,10 +181,11 @@ export default function App() {
       {/* The toast HOST. It lives here, above the router and inside the theme,
           for the reason the bug it fixes demonstrates: the console had a themed
           Toaster, kit exports for it, and passing theme tests for it — and it was
-          MOUNTED NOWHERE. Five production `toast()` calls across three routes
-          (backup export, and the design/pages surfaces) fired into a void, and
-          `toast.success("Workspace exported")` was the sharpest: the one signal
-          that an operator's backup actually succeeded could never appear.
+          MOUNTED NOWHERE. Production `toast()` calls across three routes fired
+          into a void, and `toast.success("Workspace exported")` was the sharpest:
+          the one signal that an operator's backup actually succeeded could never
+          appear. (That backup surface has since left core with the strip; the
+          lesson about mounting the host has not.)
 
           Above the router, so a toast survives the navigation that often follows
           the action that raised it. Inside ThemeProvider, because the sonner host

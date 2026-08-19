@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router";
 import { Cpu, RefreshCw, Radio } from "lucide-react";
 import {
   Button,
@@ -17,22 +16,20 @@ import {
   collectPages,
   createApi,
   deviceFacts,
-  launchableApps,
   type Device,
   type Entity,
   type RelayHealth,
   type WaiveoApi,
 } from "@/api";
 import { formatAge } from "@/lib/format-age";
-import { RokuRemote } from "./roku-remote";
 import { describeDiscovery, type BlindReason } from "./discovery";
 import { DiscoveryPanel } from "./discovery-panel";
 import { AdoptedDevices } from "./adopted-devices";
 
 /**
  * The Devices route — the device plane as an operator sees it: what the relays
- * have FOUND, what this deployment has ADOPTED, the entities those devices
- * expose, and a virtual remote that drives one of them.
+ * have FOUND, what this deployment has ADOPTED, and the entities those devices
+ * expose.
  *
  * # The one distinction this page exists to keep straight
  *
@@ -86,19 +83,23 @@ import { AdoptedDevices } from "./adopted-devices";
  * releasing a device, which needs the record's own id and revision and so
  * belongs on a page that lists records, not discovered devices.
  *
- * # Control is entity-addressed
+ * # There is no control surface here, and that is deliberate
  *
- * A command goes to an ENTITY, never to a device (relay/1 REL-112 accepts one
- * resolved entity id and no selector). So the remote opens from the entities
- * table, not the devices table, even though "remote-control the TV" is how an
- * operator thinks about it.
+ * This page had a virtual remote and a link to a Roku console. Both are gone
+ * (2026-08-19). The owner drew the line first — "there should be no such thing
+ * as a Roku console when it comes to devices: Roku is its own extension, and
+ * Discovery is its own extension" — and the console strip finished it: a
+ * per-driver control surface is a DRIVER PACK's contribution, not something core
+ * carries on the discovery page. Until waiveo/roku exists, an adopted Roku is
+ * discovered, adopted and unclassified, and nothing on this page drives it. That
+ * is the accepted cost of the boundary, not an omission.
+ *
+ * A command still goes to an ENTITY rather than a device (relay/1 REL-112
+ * accepts one resolved entity id and no selector), so when a driver pack does
+ * bring a remote back it belongs against the entities table below — which is why
+ * that table still lists entities with their device class even though nothing
+ * here acts on one.
  */
-
-/** The device class the virtual remote knows how to drive. The remote is built
- * from `media-player`'s declared command vocabulary (REG-066) and would emit
- * `COMMAND_UNRESOLVED` against anything else, so it is offered for this class
- * only rather than for every entity with a state. */
-const REMOTE_CLASS = "media-player";
 
 function problemMessage(err: unknown): string {
   if (err instanceof ApiError) return err.detail ?? err.code;
@@ -180,8 +181,7 @@ interface DeviceRow {
 type Dialog =
   | { kind: "closed" }
   | { kind: "adopt"; row: DeviceRow }
-  | { kind: "retire-age"; row: DeviceRow }
-  | { kind: "remote"; entity: Entity; device: Device | null };
+  | { kind: "retire-age"; row: DeviceRow };
 
 export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
   const client = useMemo(() => api ?? createApi(), [api]);
@@ -269,16 +269,6 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
     }
     return counts;
   }, [devices]);
-
-  /** Whether any media player has been DISCOVERED — adopted or not. The link is
-   * offered for an unadopted one too, because the Roku console is where the
-   * reason it cannot be driven yet is spelled out. It is withheld only when the
-   * page has nothing of that class at all, since a link to an empty surface is
-   * the same dead-end this work exists to remove. */
-  const hasMediaPlayer = useMemo(
-    () => (devices ?? []).some((d) => d.device_class === REMOTE_CLASS),
-    [devices],
-  );
 
   const deviceNames = useMemo(
     () => new Map((devices ?? []).map((d) => [d.id, d.name] as [string, string])),
@@ -473,19 +463,9 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
         <PageHeader
           variant="hero"
           title="Discovery"
-          description="Everything the relays can see on their networks, what this deployment has adopted, and a remote for the ones it can drive."
+          description="Everything the relays can see on their networks, and what this deployment has adopted."
           actions={
             <div className="flex flex-wrap gap-2">
-              {/* The dialog remote below drives ONE entity and closes. The Roku
-                  console is the surface for actually operating a media player:
-                  its live attributes, whether it is drivable at all, and every
-                  dispatch's outcome kept on screen. Linked from here because
-                  this is where an operator arrives first. */}
-              {hasMediaPlayer ? (
-                <Button variant="outline" asChild>
-                  <Link to="/roku">Roku console</Link>
-                </Button>
-              ) : null}
               <Button variant="outline" icon={RefreshCw} onClick={() => void load()}>
                 Refresh
               </Button>
@@ -591,25 +571,6 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
                 icon={Cpu}
               />
             }
-            rowActions={(entity) =>
-              entity.device_class === REMOTE_CLASS ? (
-                <div className="flex justify-end">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() =>
-                      setDialog({
-                        kind: "remote",
-                        entity,
-                        device: (devices ?? []).find((d) => d.id === entity.device_id) ?? null,
-                      })
-                    }
-                  >
-                    Remote
-                  </Button>
-                </div>
-              ) : null
-            }
           />
         </section>
       </div>
@@ -699,25 +660,6 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
               at once is the very thing this field's write-once rule exists to prevent. Last-seen is
               untouched.
             </p>
-          </div>
-        ) : null}
-      </Modal>
-
-      <Modal
-        title={dialog.kind === "remote" ? `Remote — ${dialog.entity.name}` : "Remote"}
-        open={dialog.kind === "remote"}
-        onOpenChange={(open) => {
-          if (!open) setDialog({ kind: "closed" });
-        }}
-        size="sm"
-      >
-        {dialog.kind === "remote" ? (
-          <div className="flex justify-center">
-            <RokuRemote
-              api={client}
-              entity={dialog.entity}
-              apps={dialog.device ? launchableApps(dialog.device) : []}
-            />
           </div>
         ) : null}
       </Modal>

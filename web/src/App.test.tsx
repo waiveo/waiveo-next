@@ -25,11 +25,14 @@ const session = () =>
   });
 const server = setupServer(
   http.get("*/api/v1/auth/session", session),
-  http.get("*/api/v1/scope-nodes", empty),
-  http.get("*/api/v1/schedules", empty),
-  http.get("*/api/v1/automations", empty),
-  http.get("*/api/v1/playlists", empty),
-  // The shell resolves its Extensions nav over the installed-packs list.
+  // The Overview's four live counts, after the 2026-08-19 console strip: what
+  // the relays found, what was adopted, the entities exposed, and the installed
+  // packs. (It used to count screens/schedules/automations/playlists; those
+  // families left core with their routes.)
+  http.get("*/api/v1/devices", empty),
+  http.get("*/api/v1/adopted-devices", empty),
+  http.get("*/api/v1/entities", empty),
+  // Also the list the shell resolves its Extensions nav landmark over.
   http.get("*/api/v1/extensions", empty),
 );
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
@@ -49,8 +52,8 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Overview" })).toBeInTheDocument();
     // The primary nav rail carries the brand and the console destinations.
     const nav = screen.getAllByRole("navigation", { name: /primary/i })[0];
-    expect(within(nav).getByRole("link", { name: "Screens" })).toBeInTheDocument();
-    expect(within(nav).getByRole("link", { name: "Upload" })).toBeInTheDocument();
+    expect(within(nav).getByRole("link", { name: "All devices" })).toBeInTheDocument();
+    expect(within(nav).getByRole("link", { name: "Installed" })).toBeInTheDocument();
   });
 
   it("sends an unauthenticated visitor to the sign-in page instead of the console", async () => {
@@ -143,56 +146,36 @@ describe("App — a thrown route keeps the navigation, and leaving it clears the
 });
 
 /**
- * The Studio is the one route mounted INSIDE the session gate and OUTSIDE the
- * shell. Both halves are asserted here, against the real <App/>, because both
- * are properties of the route TABLE and nothing else can see them: the Studio's
- * own suite renders the component standalone, where there is no shell to be
- * outside of and no gate to be inside.
+ * After the 2026-08-19 strip, NO route is mounted inside the session gate and
+ * outside the shell. The Studio and the cast Preview were the only two, and both
+ * left with the slidecast ship target.
+ *
+ * This suite is what used to assert the Studio's full-screen mounting. It is
+ * kept, pointed at the absence, because the deletion has a failure mode a
+ * component test cannot see: a route table that still declares /studio, or a
+ * bundle that still pulls the editor in, would keep the page alive at an address
+ * with no way back. The 404 lands INSIDE the shell, which is the property the
+ * catch-all exists for.
  */
-describe("App — the Studio is full-screen, and still behind the gate", () => {
-  it("paints without the nav rail", async () => {
-    server.use(
-      http.get("*/api/v1/casts/:id", () =>
-        HttpResponse.json(
-          {
-            id: "01J8Z3K4N5P6Q7R8S9T0V1W2X3",
-            scope_node: "01J8Z3K4N5P6Q7R8S9T0V1W2P0",
-            name: "Lobby loop",
-            slides: [{ id: "s1", layers: [{ kind: "rect", x: 0, y: 0, w: 1920, h: 1080, color: "#101020" }] }],
-            labels: {},
-            revision: 1,
-            created_at: 0,
-            updated_at: 0,
-          },
-          { headers: { ETag: '"1"' } },
-        ),
-      ),
-      http.get("*/api/v1/content", () => HttpResponse.json({ content: [] })),
-      http.get("*/api/v1/entities", empty),
-    );
-    window.history.pushState({}, "", "/studio?id=01J8Z3K4N5P6Q7R8S9T0V1W2X3");
-    render(<App />);
-
-    // The editor is up…
-    expect(await screen.findByRole("menubar", { name: "Studio menu" })).toBeInTheDocument();
-    // …and the shell is not. Asserted on the rail rather than on a class name,
-    // because the rail is the thing that was eating the canvas's width — and it
-    // is the same landmark every other route in this file asserts is PRESENT, so
-    // this cannot pass by querying for something that never existed.
-    expect(screen.queryByRole("navigation", { name: /primary/i })).not.toBeInTheDocument();
-    // The way OUT is the editor's own, since the rail's is gone.
-    expect(screen.getByRole("button", { name: "Back to casts" })).toBeInTheDocument();
+describe("App — the stripped product routes are gone, not merely unlinked", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
   });
+  afterEach(() => vi.restoreAllMocks());
 
-  it("still sends an unauthenticated visitor to sign in", async () => {
-    // Outside the SHELL is not outside the GATE. /setup is genuinely ungated
-    // (nothing has claimed the box yet); the Studio edits a resource behind
-    // SEC-005 and must not paint for an anonymous caller.
-    server.use(http.get("*/api/v1/auth/session", () => new HttpResponse(null, { status: 401 })));
-    window.history.pushState({}, "", "/studio?id=01J8Z3K4N5P6Q7R8S9T0V1W2X3");
-    render(<App />);
+  it("answers a deleted product address with the 404, still inside the shell", async () => {
+    for (const gone of ["/studio?id=01J8Z3K4N5P6Q7R8S9T0V1W2X3", "/casts", "/screens", "/roku"]) {
+      window.history.pushState({}, "", gone);
+      const view = render(<App />);
 
-    expect(await screen.findByRole("button", { name: /sign in/i })).toBeInTheDocument();
-    expect(screen.queryByRole("menubar", { name: "Studio menu" })).not.toBeInTheDocument();
+      expect(await screen.findByText("No page at this address")).toBeInTheDocument();
+      // The rail survives, so the operator has somewhere to go from a dead link.
+      const rail = await screen.findByRole("navigation", { name: /primary/i });
+      expect(within(rail).getByRole("link", { name: "Overview" })).toBeInTheDocument();
+      // And nothing of the editor is left behind at that address.
+      expect(screen.queryByRole("menubar", { name: "Studio menu" })).not.toBeInTheDocument();
+
+      view.unmount();
+    }
   });
 });

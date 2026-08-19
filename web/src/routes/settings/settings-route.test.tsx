@@ -128,10 +128,16 @@ describe("Settings — reading what the box is configured with", () => {
     expect(within(table).getByText("41.8781, -87.6298")).toBeInTheDocument();
   });
 
-  it("sends an operator with no sites to the page that creates one", async () => {
+  // This used to assert a link to //screens, where the scope-tree panel created
+  // a site. That page left core with the slidecast ship target on 2026-08-19, so
+  // there is nowhere in the console to send an operator — and the one thing this
+  // empty state must NOT do is keep pointing at it. It says the absence out loud
+  // and names the paths that still work instead.
+  it("tells an operator with no sites that this console cannot create one", async () => {
     server.use(http.get("*/api/v1/scope-nodes", () => page([])));
     renderSettings();
-    expect(await screen.findByRole("link", { name: "Screens" })).toHaveAttribute("href", "/screens");
+    expect(await screen.findByText(/this console cannot create one/i)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Screens" })).not.toBeInTheDocument();
   });
 
   it("offers the site's STORED zone as a select option, so opening the form cannot change it", async () => {

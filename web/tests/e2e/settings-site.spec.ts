@@ -55,8 +55,7 @@ test("changes a site's time zone through the real control and it survives a relo
   // only once some other spec has installed that pack, so it passed until the
   // suite happened to run in an order where the install landed first.
   //
-  // The core page is the one this test is about, so name where it lives. Same
-  // scoping screens-pairing.spec.ts already uses for the same reason.
+  // The core page is the one this test is about, so name where it lives.
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "Primary" })

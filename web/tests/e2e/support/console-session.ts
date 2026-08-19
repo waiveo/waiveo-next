@@ -40,9 +40,9 @@ import { resolve } from "node:path";
  *   - A Playwright setup project + saved `storageState` is the idiomatic auth
  *     pattern and is wrong twice here. Its failure marks every dependent test as
  *     "did not run" — the same pathology one level up — and injecting a cookie
- *     jar would replace the suite's only credential-exchange click-through
- *     (screens-pairing signs in through the real form, deliberately) with the
- *     thing that click-through exists to avoid.
+ *     jar would replace the suite's credential-exchange click-through (every spec
+ *     here signs in through the real form, deliberately) with the thing that
+ *     click-through exists to avoid.
  *   - `globalSetup` shares the all-or-nothing failure mode and reports a claim
  *     failure as a run-level crash with no test attributed to it at all.
  *
@@ -73,9 +73,9 @@ export const DEV_DIR = resolve(process.cwd(), "..", ".dev");
  *
  * The check is for `feeder-auth/` — which `make dev-up` always creates — and not
  * for mere existence, because mere existence is exactly what fails to catch this.
- * A wrong-cwd run does not just READ the wrong path: `screens-pairing` calls
- * `mkdirSync(DEV_DIR, {recursive: true})` to drop its handoff file, so the first
- * wrong-cwd run CREATES the bogus directory and every run after it finds one
+ * A wrong-cwd run does not just READ the wrong path: a spec that calls
+ * `mkdirSync(DEV_DIR, {recursive: true})` to drop a handoff file makes the first
+ * wrong-cwd run CREATE the bogus directory, and every run after it finds one
  * there. An existence check passes from then on, and the misleading empty reads
  * resume. */
 export function devDir(): string {

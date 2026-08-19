@@ -23,19 +23,7 @@ for (const [theme, sky] of [
     // lands photographs the OLD pill on the OLD tab. Let it settle.
     await page.waitForTimeout(400);
     await page.screenshot({ path: `../.dev/tabs-${sky}-switched.png` });
-
-    await page.goto("/casts");
-    await expect(page.getByRole("heading", { name: "Casts", level: 1 })).toBeVisible();
-    const dup = page.getByRole("button", { name: /^duplicate / }).first();
-    if (await dup.isVisible()) {
-      await dup.hover();
-      await expect(page.getByRole("tooltip")).toBeVisible();
-      await page.waitForTimeout(200);
-      await page.screenshot({ path: `../.dev/tooltip-${sky}.png` });
-    }
-
-    await page.goto("/studio");
-    await page.waitForTimeout(400);
-    await page.screenshot({ path: `../.dev/studio-${sky}.png` });
+    // The /casts tooltip and /studio shots that used to follow went with those
+    // routes in the 2026-08-19 console strip.
   });
 }
