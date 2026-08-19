@@ -122,7 +122,26 @@ type SchemaDrift struct {
 // acts on one. It exists so that a store whose shape has diverged says so at
 // every boot, in the boot log and in `-store-check`, instead of waiting to be
 // discovered by whichever statement trips over it first.
+//
+// Created is a declared TABLE the file does not have. This pass does not create
+// it — applySchemaDDL does, seconds later — so it is neither an Added nor a
+// Divergent, and its own list is the SHAPE fix rather than a sentinel value
+// squeezed into one of theirs. Both alternatives are wrong in ways that matter:
+// Divergent is documented as "every difference this pass will not repair" and a
+// missing table IS repaired, while Added would claim the columns arrive by ALTER,
+// which for this table's PRIMARY KEY and NOT NULL columns is not merely
+// inaccurate but impossible (whyNotAddable refuses both). Reporting a pending
+// table THROUGH the column planner — by dropping the `continue` that skips it —
+// would therefore classify every one of those columns as blocked and route every
+// affected store, including every fresh install, permanently into maintenance
+// mode. Hence a third list, populated at that same `continue` and gated so a
+// fresh install stays quiet (planSchemaColumns).
+//
+// It is what box .12's `-store-check` could not say: it named the pending
+// relay_last_seen COLUMN and never the pending device_first_seen TABLE, because
+// nothing anywhere carried the fact.
 type SchemaMigration struct {
+	Created   []string
 	Added     []ColumnAddition
 	Divergent []SchemaDrift
 }
@@ -278,6 +297,27 @@ func tableNames(ctx context.Context, q queryer) ([]string, error) {
 	return out, rows.Err()
 }
 
+// tableExists reports whether the database holds an ordinary table by this name.
+//
+// It is how a reader that must survive a store the DDL has not run over yet asks
+// its question — `-store-check` opens read-only and never creates a table, so a
+// query naming one this build declares and the file has not got would fail with
+// "no such table" where the honest answer is "not yet, and the next boot creates
+// it". The boot itself never needs this: applySchemaDDL has run by then.
+func tableExists(ctx context.Context, q queryer, table string) (bool, error) {
+	rows, err := q.QueryContext(ctx,
+		`SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?`, table)
+	if err != nil {
+		return false, fmt.Errorf("store: look for table %s: %w", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+	found := rows.Next()
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("store: look for table %s: %w", table, err)
+	}
+	return found, nil
+}
+
 // readShape reads one table's columns in declaration order together with the
 // declaration text each came from. A table that does not exist yields an empty
 // shape and no error, which is how "the file does not have this table yet" is
@@ -383,26 +423,43 @@ func readTableColumns(ctx context.Context, q queryer, table string) ([]columnSha
 // this package issues names its columns explicitly (there is no `SELECT *` in
 // the package), so it cannot affect anything. Reporting it would put a line in
 // every boot log of any deployment that ever kept a table beside this store.
-func planSchemaColumns(ctx context.Context, q queryer, declared map[string]tableShape) (adds []ColumnAddition, blocked, divergent []SchemaDrift, err error) {
+//
+// A table the BUILD declares and the file does not have is the fourth outcome,
+// and it is reported without being acted on here: `created` names it, and
+// applySchemaDDL is what makes it exist a moment later. That list is empty on a
+// fresh store by construction — when the file holds NONE of the declared tables
+// it is an install rather than an upgrade, and a report shouting about thirty
+// tables it is about to create is the noise the skip below was written to
+// prevent. A file holding thirty of thirty-one is unambiguously an upgrade, and
+// the one it is missing is exactly the fact box .12's check could not state.
+func planSchemaColumns(ctx context.Context, q queryer, declared map[string]tableShape) (created []string, adds []ColumnAddition, blocked, divergent []SchemaDrift, err error) {
 	tables := make([]string, 0, len(declared))
 	for t := range declared {
 		tables = append(tables, t)
 	}
 	sort.Strings(tables)
 
+	var (
+		absent  []string
+		present int
+	)
 	for _, table := range tables {
 		want := declared[table]
 		onDisk, err := readShape(ctx, q, table)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		if len(onDisk.Columns) == 0 {
 			// The table is not on the file at all. applySchemaDDL creates it
 			// whole, with every column, immediately after this pass — so there is
-			// nothing to converge and reporting it as drift would make every fresh
-			// install shout about thirty missing tables it is about to create.
+			// nothing to converge, and reporting it as DRIFT would both mis-state
+			// the mechanism and make every fresh install shout about thirty missing
+			// tables it is about to create. The `continue` stays exactly as it was;
+			// what changes is that the fact is now carried out instead of dropped.
+			absent = append(absent, table)
 			continue
 		}
+		present++
 
 		found := make(map[string]columnShape, len(onDisk.Columns))
 		for _, c := range onDisk.Columns {
@@ -446,7 +503,13 @@ func planSchemaColumns(ctx context.Context, q queryer, declared map[string]table
 		}
 		divergent = append(divergent, constraintDrift(table, want, onDisk)...)
 	}
-	return adds, blocked, divergent, nil
+	if present > 0 {
+		// Sorted already: `tables` was walked in order. An upgrade, so name what is
+		// missing; on a fresh install (present == 0) `absent` is every declared
+		// table and is deliberately dropped.
+		created = absent
+	}
+	return created, adds, blocked, divergent, nil
 }
 
 // constraintDrift reports TABLE-level constraints the two sides disagree on — a
@@ -640,7 +703,7 @@ func migrateSchemaColumns(ctx context.Context, db *sql.DB) (SchemaMigration, err
 		return SchemaMigration{}, err
 	}
 
-	adds, blocked, divergent, err := planSchemaColumns(ctx, db, declared)
+	created, adds, blocked, divergent, err := planSchemaColumns(ctx, db, declared)
 	if err != nil {
 		return SchemaMigration{}, err
 	}
@@ -651,7 +714,11 @@ func migrateSchemaColumns(ctx context.Context, db *sql.DB) (SchemaMigration, err
 		// The conforming case, and the one that runs on every box on every boot
 		// after the first. No transaction, no write, nothing but the reads that
 		// produced the report.
-		return SchemaMigration{Divergent: divergent}, nil
+		//
+		// `created` still rides out: a store missing a whole TABLE and no columns
+		// is precisely box .12's shape, and it is a conforming store by this pass's
+		// reckoning.
+		return SchemaMigration{Created: created, Divergent: divergent}, nil
 	}
 
 	tx, err := db.BeginTx(ctx, nil)
@@ -660,7 +727,7 @@ func migrateSchemaColumns(ctx context.Context, db *sql.DB) (SchemaMigration, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	adds, blocked, _, err = planSchemaColumns(ctx, tx, declared)
+	_, adds, blocked, _, err = planSchemaColumns(ctx, tx, declared)
 	if err != nil {
 		return SchemaMigration{}, err
 	}
@@ -680,7 +747,7 @@ func migrateSchemaColumns(ctx context.Context, db *sql.DB) (SchemaMigration, err
 	// finds nothing left to add on. It also supplies the divergence report, taken
 	// AFTER the ALTERs, so the caller logs the store it is about to serve rather
 	// than the one the transaction opened on.
-	residualAdds, residualBlocked, divergent, err := planSchemaColumns(ctx, tx, declared)
+	created, residualAdds, residualBlocked, divergent, err := planSchemaColumns(ctx, tx, declared)
 	if err != nil {
 		return SchemaMigration{}, err
 	}
@@ -692,7 +759,7 @@ func migrateSchemaColumns(ctx context.Context, db *sql.DB) (SchemaMigration, err
 	if err := tx.Commit(); err != nil {
 		return SchemaMigration{}, &SchemaMigrationBlockedError{Cause: fmt.Errorf("commit schema migration: %w", err)}
 	}
-	return SchemaMigration{Added: adds, Divergent: divergent}, nil
+	return SchemaMigration{Created: created, Added: adds, Divergent: divergent}, nil
 }
 
 // reportSchemaMigration is the boot log's account of what the pass did, on the
@@ -730,6 +797,32 @@ func reportSchemaMigration(dsn string, m SchemaMigration) {
 			break
 		}
 		stdlog.Printf("store: schema drift: %s.%s: %s", d.Table, d.Column, d.Reason)
+	}
+}
+
+// reportCreatedTables is the boot log's account of the tables applySchemaDDL just
+// brought into existence on an EXISTING store.
+//
+// It is called AFTER that DDL has run rather than beside reportSchemaMigration,
+// and the ordering is the point: this store's reports state facts, not intentions
+// (`added missing column`, `created missing table`), and at the moment the column
+// pass reports, the table does not exist yet. A line claiming otherwise would be
+// the only forward-looking sentence in the boot log, and it would be wrong on
+// exactly the boot where the DDL failed.
+//
+// A fresh install says nothing — see planSchemaColumns for why `created` is empty
+// there — and neither does a store that already had every table, which is every
+// boot after the one that introduced one. `IF NOT EXISTS` is what erased this
+// distinction from the DDL itself, and it is why the fact has to be carried out
+// of the planner rather than observed at the CREATE.
+func reportCreatedTables(dsn string, created []string) {
+	for _, t := range created {
+		stdlog.Printf("store: created missing table %s in %s; this build declares it and the file did not have it",
+			t, dsn)
+	}
+	if len(created) > 0 {
+		stdlog.Printf("store: created %d missing table(s) in %s; creating a table cannot lose a row, since it did "+
+			"not exist to hold one", len(created), dsn)
 	}
 }
 
@@ -787,12 +880,12 @@ func InspectSchema(dsn string) (SchemaMigration, error) {
 	if err != nil {
 		return SchemaMigration{}, err
 	}
-	adds, blocked, divergent, err := planSchemaColumns(ctx, db, declared)
+	created, adds, blocked, divergent, err := planSchemaColumns(ctx, db, declared)
 	if err != nil {
 		return SchemaMigration{}, fmt.Errorf("store: inspect schema of %s: %w", dsn, err)
 	}
 	if len(blocked) > 0 {
 		return SchemaMigration{}, &SchemaMigrationBlockedError{Blocked: blocked}
 	}
-	return SchemaMigration{Added: adds, Divergent: divergent}, nil
+	return SchemaMigration{Created: created, Added: adds, Divergent: divergent}, nil
 }

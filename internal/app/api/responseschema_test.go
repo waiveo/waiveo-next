@@ -1040,6 +1040,27 @@ var probes = map[string]probe{
 		}
 		return e.do(t, http.MethodDelete, "/api/v1/devices/"+rsAdoptDeviceID+"/ignore", nil, nil)
 	},
+	"retireDeviceFirstSeen": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// Retiring a device that has no stored first_seen is a valid 200 whose body
+		// is the Device with the member absent — enough to verify the response shape,
+		// and the same latitude the unignore probe takes.
+		org := e.mintOrg(t)
+		mustPutDevice(t, e.registry, devices.Device{
+			ID: rsAdoptDeviceID, RelayID: rsRelayID, DeviceClass: "media-player",
+			Name: "Back Bar TV", ScopeNode: org, Labels: map[string]string{},
+			Address: "192.0.2.44:8060", Model: "Roku Ultra", Serial: "X00500ADOPT1",
+		})
+		if _, err := e.store.ReplaceDiscoveredDevices(context.Background(), rsRelayID, []store.DiscoveredDevice{{
+			DeviceID: rsAdoptDeviceID, RelayID: rsRelayID, ScopeNode: org,
+			Driver: "roku-ecp", NativeID: "uuid:roku:ecp:X00500ADOPT1", DeviceClass: "media-player",
+			Name: "Back Bar TV", Address: "192.0.2.44:8060", Model: "Roku Ultra", Serial: "X00500ADOPT1",
+			FirstSeen: 1000, LastSeen: 2000,
+			Entities: []wire.CandidateEntity{{Key: "main", DeviceClass: "media-player"}},
+		}}); err != nil {
+			t.Fatalf("mirror the device the retire probe clears: %v", err)
+		}
+		return e.do(t, http.MethodDelete, "/api/v1/devices/"+rsAdoptDeviceID+"/first-seen", nil, nil)
+	},
 
 	// --- workspace --------------------------------------------------------
 	"exportWorkspace": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {

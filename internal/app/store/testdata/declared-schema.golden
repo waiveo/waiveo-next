@@ -38,6 +38,7 @@ dayparts	scope_node	scope_node TEXT NOT NULL DEFAULT ''
 dayparts	updated_at	updated_at INTEGER NOT NULL
 device_first_seen	device_id	device_id TEXT PRIMARY KEY
 device_first_seen	first_seen	first_seen INTEGER NOT NULL
+device_first_seen	origin	origin TEXT NOT NULL DEFAULT ''
 discovered_devices	address	address TEXT NOT NULL DEFAULT ''
 discovered_devices	device_class	device_class TEXT NOT NULL
 discovered_devices	device_id	device_id TEXT PRIMARY KEY

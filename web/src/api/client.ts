@@ -358,6 +358,21 @@ export class ApiClient {
     if (!res.ok) await this.fail(res);
   }
 
+  /** DELETE a subresource that ANSWERS WITH ITS PARENT as that parent now reads.
+   *
+   * `discard`'s sibling, and the difference is the body rather than the verb.
+   * `DELETE /devices/{id}/first-seen` retires one stored fact and returns the
+   * device with the member gone, so a caller can correct the row it is already
+   * showing instead of re-listing a fleet to discover a single field changed —
+   * the same reason `adopt` returns the adopted device. No If-Match: the
+   * subresource carries no revision, and the operation's contract is the
+   * resulting state, which repeating reaches identically. */
+  async discardReturning<T>(path: string): Promise<T> {
+    const res = await this.send("DELETE", path);
+    if (!res.ok) await this.fail(res);
+    return (await res.json()) as T;
+  }
+
   /** POST a non-create mutating action (run, bulk-enable, …); carries an
    * Idempotency-Key so a retry-on-timeout cannot double-fire it. */
   async action<T>(path: string, body?: unknown): Promise<T> {

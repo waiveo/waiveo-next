@@ -99,8 +99,8 @@ func TestMirroredDevicesAreListableAfterARestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restoreDeviceRegistry: %v", err)
 	}
-	if n != 2 {
-		t.Errorf("restored count = %d, want 2", n)
+	if n.Restored != 2 {
+		t.Errorf("restored count = %d, want 2", n.Restored)
 	}
 
 	rows := restoredRegistry.Devices()
@@ -331,8 +331,8 @@ func TestRestoreDropsARevokedRelaysDevices(t *testing.T) {
 	if _, ok := restoredRegistry.Device(deviceid.Device(cmSite, cmDriver, cmNativeB)); !ok {
 		t.Errorf("the un-revoked relay's device was dropped too (registry has %v)", ids(restoredRegistry.Devices()))
 	}
-	if n != 1 {
-		t.Errorf("restoreDeviceRegistry reported %d restored device(s), want 1 — the count must not include rows it refused", n)
+	if n.Restored != 1 {
+		t.Errorf("restoreDeviceRegistry reported %d restored device(s), want 1 — the count must not include rows it refused", n.Restored)
 	}
 
 	// And the rows are gone from the mirror, so this is decided once rather than
@@ -466,4 +466,103 @@ func cmDevice(t *testing.T, r *devices.Registry, id string) devices.Device {
 	}
 	t.Fatalf("device %s is not in the registry; ids = %v", id, ids(r.Devices()))
 	return devices.Device{}
+}
+
+// TestTheRestoreCountsWhatTheBootLogHasToSayApart is the observability half of
+// the boot restore, pinned at the counts rather than at the log lines, because
+// the counts are what makes the three outcomes distinguishable at all.
+//
+// A bare "restored N" went silent at N=0, so a box whose durable mirror had been
+// UNWRITABLE for a week — which is what box .12 spent seven days doing (#194) —
+// booted byte-identically to a fresh install. And the first-seen projection, the
+// fact #196 exists to put in front of an operator, was never counted anywhere, so
+// "every device in the console shows an em dash" had no correlate in the log.
+func TestTheRestoreCountsWhatTheBootLogHasToSayApart(t *testing.T) {
+	ctx := context.Background()
+
+	// An empty mirror: nothing was restored, and the reason is that there is
+	// nothing there — which must not read the same as "the restore ran and put
+	// devices back".
+	empty := cmOpenStore(t, filepath.Join(t.TempDir(), "empty.db"))
+	t.Cleanup(func() { _ = empty.Close() })
+	counts, err := restoreDeviceRegistry(ctx, empty, devices.New(cmSite, func() int64 { return 20_000 }))
+	if err != nil {
+		t.Fatalf("restoreDeviceRegistry over an empty store: %v", err)
+	}
+	if counts.Mirrored != 0 || counts.Restored != 0 || counts.Aged != 0 {
+		t.Fatalf("an empty mirror restored %+v, want zeros", counts)
+	}
+
+	// A populated one, with the ages the ledger holds.
+	path := filepath.Join(t.TempDir(), "app.db")
+	first := cmOpenStore(t, path)
+	sink := newCandidateMirror(devices.New(cmSite, func() int64 { return 10_000 }), first, store.WallClockMs)
+	if err := sink.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{
+		cmCandidate(cmNativeA, "Lobby TV", "192.168.50.31:8060"),
+		cmCandidate(cmNativeB, "Cafe TV", "192.168.50.32:8060"),
+	}); err != nil {
+		t.Fatalf("ApplyCandidates: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	second := cmOpenStore(t, path)
+	t.Cleanup(func() { _ = second.Close() })
+	counts, err = restoreDeviceRegistry(ctx, second, devices.New(cmSite, func() int64 { return 20_000 }))
+	if err != nil {
+		t.Fatalf("restoreDeviceRegistry: %v", err)
+	}
+	if counts.Mirrored != 2 || counts.Restored != 2 {
+		t.Errorf("restore counts = %+v, want 2 mirrored and 2 restored", counts)
+	}
+	if counts.Aged != 2 {
+		t.Errorf("restore reported %d device(s) with a stored first_seen, want 2 — the age is the one fact the "+
+			"console cannot answer for before a relay reconnects, and it was never counted", counts.Aged)
+	}
+
+	// And a mirror whose ages have all been retired restores the devices while
+	// answering for none of their ages — the third outcome, which used to be
+	// indistinguishable from the second.
+	third := cmOpenStore(t, path)
+	for _, native := range []string{cmNativeA, cmNativeB} {
+		if _, err := third.RetireDeviceFirstSeen(ctx, deviceid.Device(cmSite, cmDriver, native)); err != nil {
+			t.Fatalf("RetireDeviceFirstSeen: %v", err)
+		}
+	}
+	retiredRegistry := devices.New(cmSite, func() int64 { return 20_000 })
+	counts, err = restoreDeviceRegistry(ctx, third, retiredRegistry)
+	if err != nil {
+		t.Fatalf("restoreDeviceRegistry after retiring every age: %v", err)
+	}
+	if err := third.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if counts.Restored != 2 || counts.Aged != 0 {
+		t.Errorf("restore counts = %+v, want 2 restored and 0 with a stored first_seen", counts)
+	}
+	// The counts alone are not the claim, and asserting only them is how the
+	// defect below survived a test that retires two devices and restarts.
+	//
+	// A retire clears the AGE and deliberately keeps the SIGHTING — the store's
+	// own docstring says a retire that blanked last_seen "would tell an operator a
+	// device that reported a minute ago has never been heard from", and
+	// devices.Registry.ForgetFirstSeen honours the same split in memory. Across a
+	// restart it did not hold: the restore's projection dropped any row whose
+	// first_seen was zero, so both instants went and the console reported a device
+	// that had never been heard from while the store still held the sighting.
+	// A powered-off device is exactly the population retire exists for, so
+	// "until it reports again" can be never.
+	for _, native := range []string{cmNativeA, cmNativeB} {
+		id := deviceid.Device(cmSite, cmDriver, native)
+		got := cmDevice(t, retiredRegistry, id)
+		if got.FirstSeen != 0 {
+			t.Errorf("%s still reports first_seen %d after a retire and a restart", id, got.FirstSeen)
+		}
+		if got.LastSeen == 0 {
+			t.Errorf("%s lost its last_seen across the restart: the store still holds the sighting, and a "+
+				"console that reports a device as never heard from is the thing the retire promises not to do",
+				id)
+		}
+	}
 }

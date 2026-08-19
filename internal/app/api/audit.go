@@ -331,6 +331,40 @@ func (srv *server) auditRouteOf(r *http.Request) (auditRoute, bool) {
 			action: "devices.adopt", resourceType: "devices", id: segs[1], registry: registryDevices,
 		}, true
 
+	// DELETE /devices/{id}/first-seen and DELETE /devices/{id}/ignore — the two
+	// per-device acts that REMOVE a stored decision.
+	//
+	// Enumerated for the reason the /screens/{id}/now arm gives: the generic arms
+	// recognise a three-segment path only when the method is POST, so a DELETE on
+	// this shape fell to the default arm, which spells the act `<family>.<verb>`
+	// and takes the LAST segment as the subject. Measured on the real router:
+	// `DELETE /api/v1/devices/{id}/first-seen` produced
+	// `action="devices.delete" id="first-seen" registry=""`. Every part of that is
+	// wrong in a way this file's own comments call out — it records deleting a
+	// DEVICE, an act this surface does not have; it names a path segment where a
+	// device id belongs, so the record cannot say WHICH device was changed; and
+	// with no registry, auditSubjectNode cannot read the device's placement, so
+	// the record files at the deployment fallback and is invisible to the Site-A
+	// operator whose own fleet it changed (EVT-012/120/123).
+	//
+	// It matters most for `first-seen`, which is the only operation on this
+	// surface that DESTROYS a durable value: the ledger carries no copy of what
+	// was retired, so a record that does not name the device cannot be used to
+	// reconstruct anything. The operation also carries `mcp:act`, so an agent can
+	// loop it across a fleet — 64 byte-identical `devices.delete` records naming
+	// no device is the worst possible trail for the one act that re-dates an
+	// inventory as new. `ignore` shares the shape and had the identical defect;
+	// both get a name that says what happened.
+	case family == "devices" && len(segs) == 3 && r.Method == http.MethodDelete &&
+		(segs[2] == "first-seen" || segs[2] == "ignore"):
+		action := "devices.retire-first-seen"
+		if segs[2] == "ignore" {
+			action = "devices.unignore"
+		}
+		return auditRoute{
+			action: action, resourceType: "devices", id: segs[1], registry: registryDevices,
+		}, true
+
 	// PUT|DELETE /screens/{id}/now — the push-now override (screennow.go): the
 	// operation that changes what a physical display is showing, out of band from
 	// its schedule. It is enumerated here rather than left to the generic reading

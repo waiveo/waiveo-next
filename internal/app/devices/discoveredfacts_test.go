@@ -204,3 +204,123 @@ func TestTheRelaysOwnFirstSeenNeverReachesTheRow(t *testing.T) {
 		t.Errorf("first_seen = %d after a re-report, want it to outlive the report exactly as adoption does", d.FirstSeen)
 	}
 }
+
+// TestForgetFirstSeenClearsTheAgeAndKeepsTheLastSighting is the read-model half
+// of retiring a stored first_seen, and it pins the asymmetry that the obvious
+// implementation gets wrong.
+//
+// The durable retire clears the ledger row and its mirror projection. This map is
+// the THIRD copy — the one the running process serves every list from — so
+// without a clearing path the console goes on showing the retired instant until
+// the next restart, which is the "the database says one thing and the process
+// says another" split MarkSeen exists to prevent in the other direction.
+//
+// And `delete(r.seen, id)` is the obvious implementation and the wrong one: it
+// would take last_seen with it, reporting a device that reported a minute ago as
+// never heard from. first_seen and last_seen are different facts answered by
+// different rules, and only the first is being retired.
+func TestForgetFirstSeenClearsTheAgeAndKeepsTheLastSighting(t *testing.T) {
+	r := New(testSite, func() int64 { return 0 })
+	c := candidate("roku-ecp", "X1")
+	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{c}); err != nil {
+		t.Fatalf("ApplyCandidates: %v", err)
+	}
+	id := deviceid.Device(testSite, "roku-ecp", "X1")
+	r.MarkSeen(map[string]Seen{id: {FirstMs: 1_700_000_000_000, LastMs: 1_799_999_000_000}})
+
+	r.ForgetFirstSeen(id)
+	d, ok := r.Device(id)
+	if !ok {
+		t.Fatalf("the device left the read model; retiring an age must not retire the device")
+	}
+	if d.FirstSeen != 0 {
+		t.Errorf("first_seen = %d after ForgetFirstSeen, want 0 — the API omits the member and the console shows "+
+			"an em dash, which is the honest answer until a report plants a new one", d.FirstSeen)
+	}
+	if d.LastSeen != 1_799_999_000_000 {
+		t.Errorf("last_seen = %d after ForgetFirstSeen, want it untouched at 1799999000000 — retiring an age must "+
+			"not report a device that reported a minute ago as never heard from", d.LastSeen)
+	}
+
+	// Idempotent, and harmless against an id this registry has no age for.
+	r.ForgetFirstSeen(id)
+	r.ForgetFirstSeen("01J8Z8D1SC0NEVERHEARD0FTH1S")
+	r.ForgetFirstSeen("")
+
+	// And the ordinary next projection repairs it: retiring makes a value
+	// non-permanent, it does not make the device permanently ageless.
+	r.MarkSeen(map[string]Seen{id: {FirstMs: 1_800_000_000_000, LastMs: 1_800_000_000_000, FirstOrigin: "planted"}})
+	if d, _ := r.Device(id); d.FirstSeen != 1_800_000_000_000 {
+		t.Errorf("first_seen = %d after a fresh plant was projected, want 1800000000000", d.FirstSeen)
+	}
+	if d, _ := r.Device(id); d.FirstSeenOrigin != "planted" {
+		t.Errorf("first_seen_origin = %q after a fresh plant, want \"planted\"", d.FirstSeenOrigin)
+	}
+}
+
+// TestForgetFirstSeenDropsTheProvenanceWithTheValue: `first_seen_origin` describes
+// `first_seen`, so a device that no longer has an age must not go on reporting
+// where the age it no longer has came from. Left behind, an `adopted` marker on a
+// retired device tells the console to caveat a value that is not there.
+func TestForgetFirstSeenDropsTheProvenanceWithTheValue(t *testing.T) {
+	r := New(testSite, func() int64 { return 0 })
+	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{candidate("roku-ecp", "X1")}); err != nil {
+		t.Fatalf("ApplyCandidates: %v", err)
+	}
+	id := deviceid.Device(testSite, "roku-ecp", "X1")
+	r.MarkSeen(map[string]Seen{id: {FirstMs: 1_700_000_000_000, LastMs: 1_799_999_000_000, FirstOrigin: "adopted"}})
+	if d, _ := r.Device(id); d.FirstSeenOrigin != "adopted" {
+		t.Fatalf("fixture: origin = %q, want adopted", d.FirstSeenOrigin)
+	}
+
+	r.ForgetFirstSeen(id)
+	if d, _ := r.Device(id); d.FirstSeenOrigin != "" {
+		t.Errorf("first_seen_origin = %q after the value was retired, want empty", d.FirstSeenOrigin)
+	}
+}
+
+// TestMarkSeenTeachesWithAZeroRatherThanErasing pins the merge rule the projection
+// depends on, and it is not a nicety: it is what lets the caller carry BOTH
+// instants of a partially-known device instead of dropping the row.
+//
+// Zero is the ABSENT answer everywhere along this fact's chain — the store returns
+// it, the api/1 member is omitted, the console draws an em dash — so "I have no
+// answer" must never overwrite "I have one". The caller used to enforce that by
+// discarding any row whose first_seen was zero (cmd/waiveo-feeder seenFrom), which
+// protected the age and silently destroyed the last-seen half of a RETIRED
+// device's record at every restart. Erasing has its own deliberate method
+// (ForgetFirstSeen) and this is not it.
+func TestMarkSeenTeachesWithAZeroRatherThanErasing(t *testing.T) {
+	r := New(testSite, func() int64 { return 0 })
+	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{candidate("roku-ecp", "X1")}); err != nil {
+		t.Fatalf("ApplyCandidates: %v", err)
+	}
+	id := deviceid.Device(testSite, "roku-ecp", "X1")
+	r.MarkSeen(map[string]Seen{id: {FirstMs: 1_700_000_000_000, LastMs: 1_799_999_000_000, FirstOrigin: "planted"}})
+
+	// A projection that knows only the sighting advances the sighting and leaves
+	// the age — and its provenance — exactly where they were.
+	r.MarkSeen(map[string]Seen{id: {LastMs: 1_800_000_000_000}})
+	d, _ := r.Device(id)
+	if d.FirstSeen != 1_700_000_000_000 {
+		t.Errorf("first_seen = %d after a projection carrying only a sighting, want it untouched at 1700000000000 "+
+			"— an absent answer must not erase a known one", d.FirstSeen)
+	}
+	if d.FirstSeenOrigin != "planted" {
+		t.Errorf("first_seen_origin = %q, want it untouched at \"planted\"", d.FirstSeenOrigin)
+	}
+	if d.LastSeen != 1_800_000_000_000 {
+		t.Errorf("last_seen = %d, want the advanced 1800000000000", d.LastSeen)
+	}
+
+	// And the mirror image: an age with no sighting keeps the sighting.
+	r.MarkSeen(map[string]Seen{id: {FirstMs: 1_650_000_000_000, FirstOrigin: "adopted"}})
+	d, _ = r.Device(id)
+	if d.LastSeen != 1_800_000_000_000 {
+		t.Errorf("last_seen = %d after a projection carrying only an age, want it untouched at 1800000000000",
+			d.LastSeen)
+	}
+	if d.FirstSeen != 1_650_000_000_000 || d.FirstSeenOrigin != "adopted" {
+		t.Errorf("the age and its origin move together; got %d/%q", d.FirstSeen, d.FirstSeenOrigin)
+	}
+}

@@ -213,7 +213,7 @@ func TestDeclaredSchemaMatchesAFreshStore(t *testing.T) {
 
 	// The same statement from the migration's own point of view: a store this
 	// build just created has nothing to add and nothing to report.
-	adds, blocked, divergent, err := planSchemaColumns(ctx, s.db, declared)
+	_, adds, blocked, divergent, err := planSchemaColumns(ctx, s.db, declared)
 	if err != nil {
 		t.Fatalf("planSchemaColumns over a fresh store: %v", err)
 	}
@@ -688,7 +688,7 @@ func TestPlanRefusesAColumnSQLiteCannotAdd(t *testing.T) {
 			base := mustShape(t, ctx, s.db, "ignored_devices")
 			base.Columns = append(base.Columns, tc.col)
 			base.Decl[tc.col.Name] = tc.decl
-			adds, blocked, _, err := planSchemaColumns(ctx, s.db, map[string]tableShape{"ignored_devices": base})
+			_, adds, blocked, _, err := planSchemaColumns(ctx, s.db, map[string]tableShape{"ignored_devices": base})
 			if err != nil {
 				t.Fatalf("planSchemaColumns: %v", err)
 			}
@@ -746,7 +746,7 @@ func TestPlanReportsAChangedColumnWithoutTouchingIt(t *testing.T) {
 		}
 	}
 
-	adds, blocked, divergent, err := planSchemaColumns(ctx, s.db, map[string]tableShape{"discovered_devices": retyped})
+	_, adds, blocked, divergent, err := planSchemaColumns(ctx, s.db, map[string]tableShape{"discovered_devices": retyped})
 	if err != nil {
 		t.Fatalf("planSchemaColumns: %v", err)
 	}
@@ -776,7 +776,7 @@ func TestPlanReportsATableConstraintTheFileDoesNotCarry(t *testing.T) {
 	declared := mustShape(t, ctx, s.db, "discovered_devices")
 	declared.Constraints = append(declared.Constraints, "UNIQUE (driver, native_id)")
 
-	adds, blocked, divergent, err := planSchemaColumns(ctx, s.db, map[string]tableShape{"discovered_devices": declared})
+	_, adds, blocked, divergent, err := planSchemaColumns(ctx, s.db, map[string]tableShape{"discovered_devices": declared})
 	if err != nil {
 		t.Fatalf("planSchemaColumns: %v", err)
 	}

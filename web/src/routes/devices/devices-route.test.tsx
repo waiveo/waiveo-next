@@ -54,8 +54,24 @@ function device(over: Partial<Device> = {}): Device {
     model: "Roku Ultra",
     adopted: false,
     ignored: false,
+    // The ordinary case a live deployment serves: an age this deployment
+    // OBSERVED. Stated in the base fixture rather than left off, because the
+    // server sends `first_seen_origin` on every row that has an age at all, and
+    // a fixture that omitted it would be exercising only the cautious branch —
+    // the exact opposite of the common one.
+    first_seen_origin: "planted",
     ...over,
   };
+}
+
+/** A device the deployment has no age for: the two age members ABSENT, not
+ * present-and-undefined. `exactOptionalPropertyTypes` makes that distinction a
+ * type error rather than a style note, which is right — the API omits the members
+ * and a fixture that carried explicit undefineds would describe a body no server
+ * sends. */
+function ageless(d: Device): Device {
+  const { first_seen: _first, first_seen_origin: _origin, ...rest } = d;
+  return rest as Device;
 }
 
 function entity(over: Partial<Entity> = {}): Entity {
@@ -211,6 +227,118 @@ describe("Devices — the discovered fleet", () => {
 
     const unknown = within(table).getByText("Unmirrored TV").closest("tr")!;
     expect(within(unknown).getAllByText("\u2014").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("marks an age it INHERITED rather than drawing it like one it observed", async () => {
+    /* #197, on the surface it was filed about.
+     *
+     * `first_seen` is planted once and never moves, which is what keeps a relay
+     * restart from re-dating a whole network as new. On a deployment upgraded
+     * from a build predating the durable ledger, every existing age was instead
+     * COPIED from an older column that had been written off the reporting
+     * relay's own unattested clock. On the one measured box that is 64 of 64
+     * rows, 57 of them sharing a single instant to the millisecond.
+     *
+     * Served identically to an observed instant, this page drew all of them as
+     * exact ages ("3d ago") in a column headed "First seen" and ranked the fleet
+     * on them — so an operator read "these 57 devices arrived on my network three
+     * days ago", which is not what the number means and not something anything
+     * observed. The caveat existed: in the boot log, in `waiveo-feeder
+     * -store-check`, and in the OpenAPI description. None of those is where the
+     * person reading the wrong number is looking.
+     */
+    const now = Date.now();
+    seed({
+      devices: [
+        device({ first_seen: now - 3 * 86_400_000, first_seen_origin: "planted" }),
+        device({
+          id: OTHER_DEVICE_ID,
+          name: "Inherited TV",
+          first_seen: now - 3 * 86_400_000,
+          first_seen_origin: "adopted",
+        }),
+        device({
+          id: THIRD_DEVICE_ID,
+          name: "Unrecorded TV",
+          first_seen: now - 3 * 86_400_000,
+          first_seen_origin: "unrecorded",
+        }),
+      ],
+    });
+    renderRoute();
+    const table = await screen.findByRole("table", { name: "Discovered devices" });
+
+    // The observed one is drawn exactly as before: this must not caveat an age
+    // the deployment really did watch.
+    const observed = within(table).getByText("Hanger TV").closest("tr")!;
+    expect(within(observed).getByText("3d ago")).toBeInTheDocument();
+    expect(within(observed).queryByText("~3d ago")).not.toBeInTheDocument();
+
+    // The inherited ones are marked, and say why on hover. `unrecorded` gets the
+    // same treatment as `adopted`: it cannot be shown NOT to be one.
+    for (const name of ["Inherited TV", "Unrecorded TV"]) {
+      const row = within(table).getByText(name).closest("tr")!;
+      const cell = within(row).getByText("~3d ago");
+      expect(cell).toBeInTheDocument();
+      expect(cell).toHaveAttribute("title", expect.stringContaining("Inherited, not observed"));
+      expect(cell).toHaveAttribute("title", expect.stringContaining("overstate"));
+    }
+  });
+
+  it("offers Retire only on an inherited age, and clears it from the row", async () => {
+    /* The other half of #197: marking the value and leaving the operator unable
+     * to act on it is half a repair. The correction path shipped over `waiveo
+     * call` and MCP only — so the person who could SEE the wrong number could not
+     * act on it, and the caller who could act could not see it.
+     *
+     * It is withheld on an OBSERVED age deliberately. Retiring one would discard
+     * a fact this deployment actually watched and let the next report replace it
+     * with "now", making the device read younger than it is — the defect the
+     * write-once rule exists to prevent, arriving through its own repair. */
+    const now = Date.now();
+    seed({
+      devices: [
+        device({ first_seen: now - 3 * 86_400_000, first_seen_origin: "planted" }),
+        device({
+          id: OTHER_DEVICE_ID,
+          name: "Inherited TV",
+          first_seen: now - 3 * 86_400_000,
+          first_seen_origin: "adopted",
+        }),
+      ],
+    });
+    let retiredPath: string | null = null;
+    server.use(
+      http.delete(`${TEST_BASE}/devices/:id/first-seen`, ({ request, params }) => {
+        retiredPath = new URL(request.url).pathname;
+        return ok(ageless(device({ id: String(params.id), name: "Inherited TV" })));
+      }),
+    );
+
+    const user = renderRoute();
+    const table = await screen.findByRole("table", { name: "Discovered devices" });
+
+    const observed = within(table).getByText("Hanger TV").closest("tr")!;
+    expect(within(observed).queryByRole("button", { name: "Retire age" })).not.toBeInTheDocument();
+
+    const inherited = within(table).getByText("Inherited TV").closest("tr")!;
+    await user.click(within(inherited).getByRole("button", { name: "Retire age" }));
+
+    // The dialog says the one thing this cannot do before it is confirmed.
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/cannot restore or replace it/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Retire age" }));
+
+    await waitFor(() => expect(retiredPath).toBe(`/api/v1/devices/${OTHER_DEVICE_ID}/first-seen`));
+    // The answer IS the device as it now reads, so the row corrects itself: the
+    // age is gone and the action with it.
+    await waitFor(() => {
+      const after = within(
+        screen.getByRole("table", { name: "Discovered devices" }),
+      ).getByText("Inherited TV").closest("tr")!;
+      expect(within(after).queryByText("~3d ago")).not.toBeInTheDocument();
+      expect(within(after).queryByRole("button", { name: "Retire age" })).not.toBeInTheDocument();
+    });
   });
 
   it("counts what discovery found, and says the console cannot start a sweep", async () => {

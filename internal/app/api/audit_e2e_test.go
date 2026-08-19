@@ -603,3 +603,101 @@ func TestAudit_ARefusedAdoptIsRecordedAgainstTheSameSubject(t *testing.T) {
 		t.Errorf("result = %q, want failure — a refused mutation is recorded in full (EVT-083)", rec.Result)
 	}
 }
+
+// TestAudit_RetiringAFirstSeenNamesTheActAndTheDevice is the audit half of the
+// only operation on this surface that DESTROYS a durable value.
+//
+// `first_seen` is planted once and never moves; retiring it is the single
+// sanctioned way one leaves, and the ledger keeps no copy of what went — so the
+// audit record is the entire remaining account of the act. It shipped with none.
+// `devices` is not a mounted CRUD family and no arm recognised a three-segment
+// DELETE, so the request fell to the generic default, which spells
+// `<family>.<verb>` and takes the LAST segment as the subject. Measured on the
+// real router before the fix:
+//
+//	action="devices.delete" id="first-seen" registry=""
+//
+// Three separate falsehoods in one record: it names an act this surface does not
+// have (no device was deleted), it names a path segment where a device id
+// belongs, and with no registry the placement cannot be resolved, so it files at
+// the deployment fallback — invisible to the very operator whose fleet it
+// changed. The operation carries `mcp:act`, so an agent can run it across a whole
+// inventory; sixty-four byte-identical records naming no device is the worst
+// possible trail for the one act that re-dates a fleet as new.
+//
+// The subscriber is deliberately the SITE's operator rather than the
+// unrestricted fixture, because that is the assertion the placement half turns
+// on: a record about her fleet that she cannot see is not an audit trail
+// (EVT-012/120/123).
+func TestAudit_RetiringAFirstSeenNamesTheActAndTheDevice(t *testing.T) {
+	registry := devices.New(auditDeviceSite, func() int64 { return 0 })
+	e := newAuditEnv(t, api.WithDevicePlane(registry, nil))
+	tr := seedScopedTree(t, e.testEnv)
+	alice := e.principalAt(t, tr.siteA)
+
+	node := tr.screensA[0]
+	mustPutDevice(t, registry, devices.Device{
+		ID: auditDeviceID, RelayID: auditRelayID, DeviceClass: "media-player",
+		Name: "Audited TV", ScopeNode: node, Labels: map[string]string{},
+		Address: "192.168.50.31:8060",
+	})
+	if _, err := e.store.ReplaceDiscoveredDevices(context.Background(), auditRelayID, []store.DiscoveredDevice{{
+		DeviceID: auditDeviceID, RelayID: auditRelayID, ScopeNode: node,
+		Driver: "roku-ecp", NativeID: "uuid:roku:ecp:AUDIT1", DeviceClass: "media-player",
+		Name: "Audited TV", Address: "192.168.50.31:8060", LastSeen: 2000,
+		Entities: []wire.CandidateEntity{{Key: "main", DeviceClass: "media-player"}},
+	}}); err != nil {
+		t.Fatalf("mirror the discovered device: %v", err)
+	}
+
+	br, closeConn := e.subscribe(t, alice)
+	defer closeConn()
+
+	resp, raw := e.as(t, alice, http.MethodDelete, "/api/v1/devices/"+auditDeviceID+"/first-seen", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("DELETE first-seen = %d, want 200 (body %s)", resp.StatusCode, raw)
+	}
+
+	rec := readAudit(t, br)
+	if rec.Action == "devices.delete" {
+		t.Fatalf("retiring an age records `devices.delete`, which describes DELETING THE DEVICE — an act this " +
+			"surface does not have")
+	}
+	if rec.Action != "devices.retire-first-seen" {
+		t.Errorf("action = %q, want \"devices.retire-first-seen\"", rec.Action)
+	}
+	if rec.Target == "devices:first-seen" {
+		t.Fatalf("the record's subject is the literal path segment, so the only account of a destroyed durable " +
+			"value cannot say WHICH device lost it")
+	}
+	if want := "devices:" + auditDeviceID; rec.Target != want {
+		t.Errorf("target = %q, want %q", rec.Target, want)
+	}
+	if rec.scopeNode != node {
+		t.Errorf("record filed at %q, want the device's own placement %q — filed at the deployment fallback it is "+
+			"invisible to the operator whose fleet it changed (EVT-012/120/123)", rec.scopeNode, node)
+	}
+	if rec.Actor != alice.PrincipalID {
+		t.Errorf("actor = %q, want %q", rec.Actor, alice.PrincipalID)
+	}
+	if rec.Result != events.AuditResultSuccess {
+		t.Errorf("result = %q, want success", rec.Result)
+	}
+
+	// The sibling DELETE on this family had the identical defect and the identical
+	// fix; asserted here so the two cannot drift apart again.
+	resp, raw = e.as(t, alice, http.MethodDelete, "/api/v1/devices/"+auditDeviceID+"/ignore", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("DELETE ignore = %d, want 200 (body %s)", resp.StatusCode, raw)
+	}
+	unignore := readAudit(t, br)
+	if unignore.Action != "devices.unignore" {
+		t.Errorf("un-ignoring records %q, want \"devices.unignore\"", unignore.Action)
+	}
+	if want := "devices:" + auditDeviceID; unignore.Target != want {
+		t.Errorf("un-ignore target = %q, want %q", unignore.Target, want)
+	}
+	if unignore.scopeNode != node {
+		t.Errorf("un-ignore filed at %q, want the device's placement %q", unignore.scopeNode, node)
+	}
+}

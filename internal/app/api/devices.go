@@ -91,6 +91,7 @@ func (srv *server) mountDevicePlane(rt *router) {
 	rt.HandleFunc("POST "+apiPrefix+"/devices/{id}/adopt", srv.adoptDevice)
 	rt.HandleFunc("POST "+apiPrefix+"/devices/{id}/ignore", srv.ignoreDevice)
 	rt.HandleFunc("DELETE "+apiPrefix+"/devices/{id}/ignore", srv.unignoreDevice)
+	rt.HandleFunc("DELETE "+apiPrefix+"/devices/{id}/first-seen", srv.retireDeviceFirstSeen)
 	rt.HandleFunc("GET "+apiPrefix+"/entities", srv.listEntities)
 	rt.HandleFunc("POST "+apiPrefix+"/entities/{id}/commands", srv.sendEntityCommand)
 	rt.HandleFunc("GET "+apiPrefix+"/discovery/relays", srv.getDiscoveryRelays)
@@ -529,6 +530,71 @@ func (srv *server) unignoreDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSONValue(w, http.StatusOK, unignored)
+}
+
+// ---- first-seen -------------------------------------------------------------
+
+// retireDeviceFirstSeen handles DELETE /api/v1/devices/{id}/first-seen (openapi
+// retireDeviceFirstSeen): it clears this deployment's stored first-seen instant
+// for one device, so the next report plants a fresh one, and answers with the
+// device as it now reads — `first_seen` absent.
+//
+// # Why the surface has this at all
+//
+// first_seen is planted once and never moves (internal/app/store
+// devicefirstseen.go), which is what stops a relay restart re-dating every device
+// on the network as new. The cost of that rule is that a WRONG value is permanent
+// too, and one population of wrong values exists by construction: a deployment
+// upgraded from a build predating the durable ledger adopted its values from the
+// older column, where they had been written off the reporting relay's own
+// unattested clock. Those are lower bounds on a device's age, not instants
+// anything observed, and nothing in the record tells them apart from planted
+// ones. A one-way ratchet with no way down is what this platform already refused
+// to ship for the clock floor (SEC-075's `clock_floor.reset`), and this is the
+// same admission for this ledger.
+//
+// # Why an api/1 operation rather than a flag or a console verb
+//
+// `-store-check` is read-only by construction and its whole docstring is the
+// story of it having written when it said it did not; a feeder flag would mean
+// stopping the appliance or racing the live registry; and the console verb set
+// (internal/app/auth) is a CLOSED enumeration reaching only uid-0 on the box,
+// which is not the operator looking at a wrong number in the web console. One
+// operation here reaches the console, `waiveo call`, and — through the `mcp:act`
+// tag, API-071's sole input to tool generation — an MCP tool, with no second
+// mechanism to keep in step.
+//
+// DELETE and not a POST, on unignoreDevice's rule: it REMOVES a stored decision
+// rather than recording a new one, and it is naturally idempotent — retiring a
+// device that has no stored answer is a 200 that changes nothing — so it needs no
+// Idempotency-Key wrapper. There is deliberately no counterpart that SETS an
+// instant: that would be an operator-asserted time claim, which is what SEC-067
+// refuses everywhere else, on a box where no verified time source is wired at all.
+func (srv *server) retireDeviceFirstSeen(w http.ResponseWriter, r *http.Request) {
+	device, id, ok := srv.resolveWritableDevice(w, r)
+	if !ok {
+		return
+	}
+	if _, err := srv.store.RetireDeviceFirstSeen(r.Context(), id); err != nil {
+		writeProblem(w, r, http.StatusInternalServerError, "INTERNAL", "Internal Server Error", "An unexpected server error occurred.")
+		return
+	}
+	// Durable rows first, then the read model — adopt's ordering rule, and here it
+	// has teeth in both directions. The store clears the ledger row AND the mirror
+	// projection of it; this clears the third copy, the one the running process
+	// serves every list from. Skipping it would leave the retired instant on screen
+	// until the next restart.
+	srv.devices.ForgetFirstSeen(id)
+	retired, ok := srv.devices.Device(id)
+	if !ok {
+		// Resolvable at the top of the handler and gone from the read model since:
+		// the durable retire still stands, and the caller's pre-read device with the
+		// member cleared is the truthful body (unignoreDevice's own fallback).
+		device.FirstSeen = 0
+		writeJSONValue(w, http.StatusOK, device)
+		return
+	}
+	writeJSONValue(w, http.StatusOK, retired)
 }
 
 // ---- command --------------------------------------------------------------

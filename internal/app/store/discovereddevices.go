@@ -110,8 +110,27 @@ type DiscoveredDevice struct {
 	// when the relay was last observed to have seen it. devicefirstseen.go says
 	// why a relay's own numbers are not read, and ReplaceDiscoveredDevices says
 	// how the second one is decided.
+	//
+	// FirstSeen is THE LEDGER'S answer, read through it rather than off the
+	// mirror column — see readDiscoveredDevices for why those are not always the
+	// same number and why every reader must get this one.
 	FirstSeen int64
 	LastSeen  int64
+	// FirstSeenOrigin says where FirstSeen came from (store.FirstSeenPlanted /
+	// Adopted / Unrecorded), and is empty exactly when FirstSeen is zero. A reader
+	// that renders the instant without it is claiming an observation it may not
+	// have: devicefirstseen.go's header has the vocabulary.
+	FirstSeenOrigin string
+	// MirroredFirstSeen is the raw `discovered_devices.first_seen` column, which
+	// equals FirstSeen on every row the ledger answers for and differs on exactly
+	// one population: a pre-ledger value the backfill REFUSED as implausible,
+	// which stays on the file (never-wipe) with no ledger row behind it.
+	//
+	// It exists for one caller — ReplaceDiscoveredDevices' never-wipe
+	// carry-forward, which must not blank that column while the app's clock is
+	// still unusable — and no reader outside this package should want it. Using
+	// it as a device's age is the defect this split exists to make impossible.
+	MirroredFirstSeen int64
 	// RelayLastSeen is the raw `last_seen` the reporting relay put on the wire,
 	// kept for ONE purpose and never rendered: comparing it with the next
 	// report's tells us whether the relay actually re-observed the device.
@@ -266,10 +285,13 @@ func (s *Store) ReplaceDiscoveredDevices(ctx context.Context, relayID string, ro
 			}
 			// The durable ledger owns first_seen, and this report can only ever
 			// teach it that the device exists — never when it was first seen.
-			row.FirstSeen, err = plantDeviceFirstSeen(ctx, tx, d.DeviceID, now)
+			row.FirstSeen, row.FirstSeenOrigin, err = plantDeviceFirstSeen(ctx, tx, d.DeviceID, now)
 			if err != nil {
 				return err
 			}
+			// The COLUMN normally carries the ledger's answer, which is what makes
+			// it the projection devicefirstseen.go says it is.
+			row.MirroredFirstSeen = row.FirstSeen
 			// Nothing was planted and nothing is held: the app's clock is not yet
 			// usable (devicefirstseen.go). Keep whatever the column already had
 			// rather than writing the projection's zero over it — on a box being
@@ -277,8 +299,15 @@ func (s *Store) ReplaceDiscoveredDevices(ctx context.Context, relayID string, ro
 			// would destroy the only copy before the backfill that rescues it has
 			// ever run on a working clock. Never-wipe: refusing to answer must not
 			// mean deleting the answer somebody else could still give.
-			if row.FirstSeen == 0 && was.FirstSeen > 0 {
-				row.FirstSeen = was.FirstSeen
+			//
+			// Only the COLUMN is carried forward, and the returned row's FirstSeen
+			// stays zero. That split is the point: the pre-ledger number survives
+			// on disk for the backfill to judge later, and it does not become this
+			// device's age in the meantime. Carrying it into the returned row —
+			// which is what the caller projects onto the read model — is how a
+			// value nothing here vouches for used to reach `GET /devices`.
+			if row.MirroredFirstSeen == 0 && was.MirroredFirstSeen > 0 {
+				row.MirroredFirstSeen = was.MirroredFirstSeen
 			}
 
 			entities, err := json.Marshal(nonNilEntities(row.Entities))
@@ -300,7 +329,7 @@ func (s *Store) ReplaceDiscoveredDevices(ctx context.Context, relayID string, ro
 				    relay_last_seen)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				row.DeviceID, row.RelayID, row.ScopeNode, row.Driver, row.NativeID, row.DeviceClass,
-				row.Name, row.Address, row.Model, row.Serial, row.FirstSeen, row.LastSeen,
+				row.Name, row.Address, row.Model, row.Serial, row.MirroredFirstSeen, row.LastSeen,
 				string(entities), string(ports), row.RelayLastSeen); err != nil {
 				return fmt.Errorf("store: ReplaceDiscoveredDevices: insert %s: %w", d.DeviceID, err)
 			}
@@ -444,17 +473,47 @@ func (s *Store) DiscoveredDevices(ctx context.Context) ([]DiscoveredDevice, erro
 
 // readDiscoveredDevices is the unlocked core, optionally narrowed to one
 // device_id. Callers hold their own lock (or run inside a transaction).
+//
+// # The age comes from the LEDGER, through a join, and not from the column
+//
+// `discovered_devices.first_seen` is documented as the ledger's PROJECTION
+// (devicefirstseen.go) and it is that for every row the ledger answers for. It is
+// not that for one population, and reading the column as though it were is how a
+// refused value reached an operator's screen while the same boot's log said the
+// device had no age at all:
+//
+//   - the backfill REFUSES a pre-ledger value it judges implausible — below the
+//     plausibility floor, or in the future of this box's clock — and writes no
+//     ledger row for it;
+//   - it deliberately leaves the column alone, because that value is the only
+//     copy of the site's pre-ledger history and never-wipe forbids destroying it
+//     to make a projection tidy;
+//   - so the column keeps a number this side has explicitly decided it will not
+//     stand behind, and the boot restore read it straight into the read model.
+//     Measured: a store whose one device carried `first_seen = 1000000` logged
+//     "refused … it has no age until the next report plants one" and then served
+//     `first_seen: 1000000`, which the console renders "20586d ago". A future
+//     value was worse still — the console clamps a negative age, so it rendered
+//     "just now" for a device the log said had no age whatever.
+//
+// The join makes the ledger the single answer to "how old is this device": a
+// refused row reads as absent, which is what the log says and what the console
+// draws as an em dash, while the refused NUMBER stays exactly where it was, named
+// by every `-store-check` until a report on a working clock replaces it.
+// MirroredFirstSeen carries the raw column out for the one caller that needs it.
 func readDiscoveredDevices(ctx context.Context, q queryer, deviceID string) ([]DiscoveredDevice, error) {
-	query := `SELECT device_id, relay_id, scope_node, driver, native_id, device_class,
-	                 name, address, model, serial, first_seen, last_seen, entities, open_ports,
-	                 relay_last_seen
-	          FROM discovered_devices`
+	query := `SELECT d.device_id, d.relay_id, d.scope_node, d.driver, d.native_id, d.device_class,
+	                 d.name, d.address, d.model, d.serial, d.first_seen, d.last_seen, d.entities, d.open_ports,
+	                 d.relay_last_seen,
+	                 COALESCE(l.first_seen, 0), COALESCE(l.origin, '')
+	          FROM discovered_devices d
+	          LEFT JOIN device_first_seen l ON l.device_id = d.device_id`
 	args := []any{}
 	if deviceID != "" {
-		query += ` WHERE device_id = ?`
+		query += ` WHERE d.device_id = ?`
 		args = append(args, deviceID)
 	}
-	query += ` ORDER BY device_id`
+	query += ` ORDER BY d.device_id`
 
 	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -465,11 +524,14 @@ func readDiscoveredDevices(ctx context.Context, q queryer, deviceID string) ([]D
 	out := []DiscoveredDevice{}
 	for rows.Next() {
 		var d DiscoveredDevice
-		var entities, ports string
+		var entities, ports, origin string
 		if err := rows.Scan(&d.DeviceID, &d.RelayID, &d.ScopeNode, &d.Driver, &d.NativeID, &d.DeviceClass,
-			&d.Name, &d.Address, &d.Model, &d.Serial, &d.FirstSeen, &d.LastSeen, &entities, &ports,
-			&d.RelayLastSeen); err != nil {
+			&d.Name, &d.Address, &d.Model, &d.Serial, &d.MirroredFirstSeen, &d.LastSeen, &entities, &ports,
+			&d.RelayLastSeen, &d.FirstSeen, &origin); err != nil {
 			return nil, fmt.Errorf("store: scan discovered device: %w", err)
+		}
+		if d.FirstSeen > 0 {
+			d.FirstSeenOrigin = firstSeenOrigin(origin)
 		}
 		if err := json.Unmarshal([]byte(entities), &d.Entities); err != nil {
 			return nil, fmt.Errorf("store: decode entities of discovered device %s: %w", d.DeviceID, err)

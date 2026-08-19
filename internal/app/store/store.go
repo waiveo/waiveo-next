@@ -395,6 +395,15 @@ func Open(dsn string, nowMs func() int64) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	// Said AFTER the DDL, because it is a fact rather than an intention, and said
+	// at all because `CREATE TABLE IF NOT EXISTS` is exactly what erases the
+	// distinction between "created it" and "it was already there". A table this
+	// build declares appearing on an existing box is a real schema event and used
+	// to be the only one that passed in complete silence — which is how box .12's
+	// `-store-check` came to name the pending relay_last_seen COLUMN and never the
+	// pending device_first_seen TABLE.
+	reportCreatedTables(dsn, schemaChanges.Created)
+
 	// CREATE TABLE IF NOT EXISTS is a no-op against a table an earlier build
 	// already created, so a column added since then needs its own step
 	// (migratePairingGrantsSchema's own doc). migrateSchemaColumns above now
@@ -453,10 +462,17 @@ func Open(dsn string, nowMs func() int64) (*Store, error) {
 	// in applySchemaDDL because it has to judge candidate values against the
 	// app's own clock, which only exists once the store is built — and after the
 	// column migration above, since the rows it reads must be the migrated shape.
-	if err := s.backfillDeviceFirstSeen(context.Background()); err != nil {
+	seeded, err := s.backfillDeviceFirstSeen(context.Background())
+	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
+	// Reported for the reason every other repair at this open is: the seed is the
+	// single most consequential irreversible act in the whole sequence — an adopted
+	// value is frozen as a lower bound on that device's age and a refused one
+	// leaves the device with no age at all — and it used to emit zero bytes whether
+	// it rescued every row, refused every row, or had nothing to do.
+	reportDeviceFirstSeenBackfill(dsn, seeded)
 	// The store's own integrity report, once, at boot. A store carrying rows an
 	// older build accepted and this build's validators do not is a legitimate
 	// state — writes to it still work, because a write is judged on what IT

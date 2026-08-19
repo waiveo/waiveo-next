@@ -277,6 +277,27 @@ func (e DeriveSpecValign) Valid() bool {
 	}
 }
 
+// Defines values for DeviceFirstSeenOrigin.
+const (
+	DeviceFirstSeenOriginAdopted    DeviceFirstSeenOrigin = "adopted"
+	DeviceFirstSeenOriginPlanted    DeviceFirstSeenOrigin = "planted"
+	DeviceFirstSeenOriginUnrecorded DeviceFirstSeenOrigin = "unrecorded"
+)
+
+// Valid indicates whether the value is a known member of the DeviceFirstSeenOrigin enum.
+func (e DeviceFirstSeenOrigin) Valid() bool {
+	switch e {
+	case DeviceFirstSeenOriginAdopted:
+		return true
+	case DeviceFirstSeenOriginPlanted:
+		return true
+	case DeviceFirstSeenOriginUnrecorded:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DiscoveryScanRequestReason.
 const (
 	DiscoveryScanRequestReasonOperator  DiscoveryScanRequestReason = "operator"
@@ -1843,10 +1864,21 @@ type Device struct {
 	//
 	// App-owned, and deliberately not the reporting relay's own `first_seen` (`relay/1` REL-110). A relay does not persist its candidate set, so its value is only ever "since this relay process started" and is re-minted from nothing at every relay restart; a four-year-old TV would read as new every time its relay was upgraded. Nor is it derived from the relay's timestamps at all: those are read off an unattested wall clock — `relay/1` REL-038's `clock_state` is `untrusted` on every relay that has not applied a verified time — so a relay booting with a stale clock could otherwise stamp a device it met moments ago as weeks old.
 	//
-	// Recorded ONCE, at the first report this deployment durably stored for the device, and never changed afterwards in either direction — not by a relay restart, not by the device dropping off the LAN and returning, not by it being re-homed to a different relay.
+	// Recorded ONCE, at the first report this deployment durably stored for the device, and never changed afterwards in either direction — not by a relay restart, not by the device dropping off the LAN and returning, not by it being re-homed to a different relay. The single exception is `retireDeviceFirstSeen`, an explicit operator act that clears the value so the next report plants a new one; nothing automatic ever moves it.
 	//
 	// Stamped on the app's own clock (`security-model` SEC-066), the same clock every other timestamp in this API is read against, so two devices' ages are comparable. ABSENT when this deployment has no answer — it has never durably mirrored the device, or its own clock was not yet usable when it tried — since a zero would claim the device was first seen at the epoch.
+	//
+	// NOT EVERY VALUE IS AN OBSERVATION, and `first_seen_origin` is how you tell. A deployment upgraded from a build that predates the durable ledger adopted its existing values from the older column, where they had been written from the reporting relay's own unattested clock. Such a value is an ESTIMATE rather than an instant this deployment observed: usually a lower bound on the device's age ("a report was held no later than X"), but an OVERSTATEMENT of it when the reporting relay's clock ran behind, which nothing here can detect. Two such values are not reliably comparable with each other or with an observed one. Read `first_seen_origin` before rendering this as an exact age or ranking a fleet on it, and see `retireDeviceFirstSeen` for how a value an operator can show is wrong stops being permanent.
 	FirstSeen *int64 `json:"first_seen,omitempty"`
+
+	// FirstSeenOrigin Where `first_seen` came from, and therefore whether it may be presented as an exact instant. ABSENT exactly when `first_seen` is.
+	//
+	// `planted` — stamped by this deployment from its own clock (`security-model` SEC-066) at a report it durably stored. An OBSERVATION: render it as an age, compare it with other planted values, sort on it.
+	//
+	// `adopted` — copied from the pre-ledger column at the upgrade that introduced the durable ledger, having been written from the reporting relay's own unattested clock at that relay's last restart. An ESTIMATE. It is usually a lower bound on the device's age and overstates it when that relay's clock ran behind, and two adopted values are not reliably comparable even with each other — on one measured deployment 57 of them shared a single instant to the millisecond. A renderer MUST mark these rather than drawing them identically to a `planted` value; `retireDeviceFirstSeen` clears one an operator can show is wrong.
+	//
+	// `unrecorded` — the row predates provenance being recorded at all, so this deployment cannot say which of the two it is. Treat it exactly as `adopted`: the caution is the same and the reason is the same.
+	FirstSeenOrigin *DeviceFirstSeenOrigin `json:"first_seen_origin,omitempty"`
 
 	// Id A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	Id Ulid `json:"id"`
@@ -1882,6 +1914,15 @@ type Device struct {
 	// Serial The serial number of the physical unit, as the device reported it. Absent when the probe did not answer.
 	Serial *string `json:"serial,omitempty"`
 }
+
+// DeviceFirstSeenOrigin Where `first_seen` came from, and therefore whether it may be presented as an exact instant. ABSENT exactly when `first_seen` is.
+//
+// `planted` — stamped by this deployment from its own clock (`security-model` SEC-066) at a report it durably stored. An OBSERVATION: render it as an age, compare it with other planted values, sort on it.
+//
+// `adopted` — copied from the pre-ledger column at the upgrade that introduced the durable ledger, having been written from the reporting relay's own unattested clock at that relay's last restart. An ESTIMATE. It is usually a lower bound on the device's age and overstates it when that relay's clock ran behind, and two adopted values are not reliably comparable even with each other — on one measured deployment 57 of them shared a single instant to the millisecond. A renderer MUST mark these rather than drawing them identically to a `planted` value; `retireDeviceFirstSeen` clears one an operator can show is wrong.
+//
+// `unrecorded` — the row predates provenance being recorded at all, so this deployment cannot say which of the two it is. Treat it exactly as `adopted`: the caution is the same and the reason is the same.
+type DeviceFirstSeenOrigin string
 
 // DeviceListResponse defines model for DeviceListResponse.
 type DeviceListResponse struct {
@@ -3642,6 +3683,12 @@ type AdoptDeviceParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// RetireDeviceFirstSeenParams defines parameters for RetireDeviceFirstSeen.
+type RetireDeviceFirstSeenParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // UnignoreDeviceParams defines parameters for UnignoreDevice.
 type UnignoreDeviceParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
@@ -4713,6 +4760,9 @@ type ClientInterface interface {
 	// AdoptDevice request
 	AdoptDevice(ctx context.Context, deviceId Ulid, params *AdoptDeviceParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// RetireDeviceFirstSeen request
+	RetireDeviceFirstSeen(ctx context.Context, deviceId Ulid, params *RetireDeviceFirstSeenParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// UnignoreDevice request
 	UnignoreDevice(ctx context.Context, deviceId Ulid, params *UnignoreDeviceParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -5738,6 +5788,18 @@ func (c *Client) ListDevices(ctx context.Context, params *ListDevicesParams, req
 
 func (c *Client) AdoptDevice(ctx context.Context, deviceId Ulid, params *AdoptDeviceParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewAdoptDeviceRequest(c.Server, deviceId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RetireDeviceFirstSeen(ctx context.Context, deviceId Ulid, params *RetireDeviceFirstSeenParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRetireDeviceFirstSeenRequest(c.Server, deviceId, params)
 	if err != nil {
 		return nil, err
 	}
@@ -9715,6 +9777,55 @@ func NewAdoptDeviceRequest(server string, deviceId Ulid, params *AdoptDevicePara
 			}
 
 			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewRetireDeviceFirstSeenRequest generates requests for RetireDeviceFirstSeen
+func NewRetireDeviceFirstSeenRequest(server string, deviceId Ulid, params *RetireDeviceFirstSeenParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "device_id", deviceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/devices/%s/first-seen", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
 		}
 
 	}
@@ -15060,6 +15171,9 @@ type ClientWithResponsesInterface interface {
 	// AdoptDeviceWithResponse request
 	AdoptDeviceWithResponse(ctx context.Context, deviceId Ulid, params *AdoptDeviceParams, reqEditors ...RequestEditorFn) (*AdoptDeviceResponse, error)
 
+	// RetireDeviceFirstSeenWithResponse request
+	RetireDeviceFirstSeenWithResponse(ctx context.Context, deviceId Ulid, params *RetireDeviceFirstSeenParams, reqEditors ...RequestEditorFn) (*RetireDeviceFirstSeenResponse, error)
+
 	// UnignoreDeviceWithResponse request
 	UnignoreDeviceWithResponse(ctx context.Context, deviceId Ulid, params *UnignoreDeviceParams, reqEditors ...RequestEditorFn) (*UnignoreDeviceResponse, error)
 
@@ -16816,6 +16930,39 @@ func (r AdoptDeviceResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r AdoptDeviceResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type RetireDeviceFirstSeenResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *Device
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+	ApplicationproblemJSON404 *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r RetireDeviceFirstSeenResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RetireDeviceFirstSeenResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r RetireDeviceFirstSeenResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -19992,6 +20139,15 @@ func (c *ClientWithResponses) AdoptDeviceWithResponse(ctx context.Context, devic
 	return ParseAdoptDeviceResponse(rsp)
 }
 
+// RetireDeviceFirstSeenWithResponse request returning *RetireDeviceFirstSeenResponse
+func (c *ClientWithResponses) RetireDeviceFirstSeenWithResponse(ctx context.Context, deviceId Ulid, params *RetireDeviceFirstSeenParams, reqEditors ...RequestEditorFn) (*RetireDeviceFirstSeenResponse, error) {
+	rsp, err := c.RetireDeviceFirstSeen(ctx, deviceId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRetireDeviceFirstSeenResponse(rsp)
+}
+
 // UnignoreDeviceWithResponse request returning *UnignoreDeviceResponse
 func (c *ClientWithResponses) UnignoreDeviceWithResponse(ctx context.Context, deviceId Ulid, params *UnignoreDeviceParams, reqEditors ...RequestEditorFn) (*UnignoreDeviceResponse, error) {
 	rsp, err := c.UnignoreDevice(ctx, deviceId, params, reqEditors...)
@@ -23113,6 +23269,53 @@ func ParseAdoptDeviceResponse(rsp *http.Response) (*AdoptDeviceResponse, error) 
 			return nil, err
 		}
 		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRetireDeviceFirstSeenResponse parses an HTTP response from a RetireDeviceFirstSeenWithResponse call
+func ParseRetireDeviceFirstSeenResponse(rsp *http.Response) (*RetireDeviceFirstSeenResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RetireDeviceFirstSeenResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Device
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
 
 	}
 

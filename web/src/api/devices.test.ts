@@ -181,6 +181,58 @@ describe("adopt — the one decision this API makes about a discovered device", 
   });
 });
 
+/** A device the deployment has no age for: the two age members ABSENT, not
+ * present-and-undefined. `exactOptionalPropertyTypes` makes that distinction a
+ * type error rather than a style note, which is right — the API omits the members
+ * and a fixture that carried explicit undefineds would describe a body no server
+ * sends. */
+function ageless(d: Device): Device {
+  const { first_seen: _first, first_seen_origin: _origin, ...rest } = d;
+  return rest as Device;
+}
+
+describe("retireFirstSeen — the only correction path for a device's age", () => {
+  it("DELETEs the subresource, carries no If-Match, and returns the device as it now reads", async () => {
+    let seen: { method: string; path: string; ifMatch: string | null } | null = null;
+    server.use(
+      http.delete(`${TEST_BASE}/devices/${ULID_A}/first-seen`, ({ request }) => {
+        seen = {
+          method: request.method,
+          path: new URL(request.url).pathname,
+          ifMatch: request.headers.get("If-Match"),
+        };
+        return ok(ageless(device({ id: ULID_A })));
+      }),
+    );
+    const after = await api().devices.retireFirstSeen(ULID_A);
+
+    expect(seen!.method).toBe("DELETE");
+    expect(seen!.path).toBe(`/api/v1/devices/${ULID_A}/first-seen`);
+    // No revision exists on a singleton subresource to condition on, and the
+    // operation's contract is the resulting state — which repeating reaches
+    // identically. `remove` (which REQUIRES an ETag) stays the verb for deleting
+    // a versioned resource.
+    expect(seen!.ifMatch).toBeNull();
+    // The BODY is the point of the method existing at all: `discard` returns
+    // void, and a caller that could not read the answer would have to re-list a
+    // fleet to learn one field changed.
+    expect(after.first_seen).toBeUndefined();
+    expect(after.first_seen_origin).toBeUndefined();
+  });
+
+  it("percent-encodes the id rather than splicing it into the path raw", async () => {
+    let path: string | null = null;
+    server.use(
+      http.delete(`${TEST_BASE}/devices/:id/first-seen`, ({ request }) => {
+        path = new URL(request.url).pathname;
+        return ok(device());
+      }),
+    );
+    await api().devices.retireFirstSeen("a/b");
+    expect(path).toBe("/api/v1/devices/a%2Fb/first-seen");
+  });
+});
+
 describe("adopted devices — the authored half", () => {
   it("creates an adoption record under an Idempotency-Key and deletes under If-Match", async () => {
     let created: Record<string, unknown> = {};

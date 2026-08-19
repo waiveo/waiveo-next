@@ -169,6 +169,22 @@ type Device struct {
 	// timestamp would lie about it.
 	FirstSeen int64 `json:"first_seen,omitempty"`
 	LastSeen  int64 `json:"last_seen,omitempty"`
+	// FirstSeenOrigin says whether FirstSeen is an instant this deployment
+	// OBSERVED or an estimate it inherited: `planted`, `adopted` or `unrecorded`
+	// (internal/app/store devicefirstseen.go has the vocabulary). Absent exactly
+	// when FirstSeen is.
+	//
+	// It exists because a renderer cannot otherwise be honest. A deployment
+	// upgraded from a build predating the durable ledger adopted its ages from a
+	// column written off the reporting relay's unattested clock; on box .12 that
+	// is 64 of 64 rows, 57 of them sharing one instant to the millisecond. Served
+	// without this member they are indistinguishable from witnessed instants, and
+	// the console drew all of them as exact ages ("3d ago") in a column headed
+	// "First seen" and RANKED them against each other — a precision and a
+	// comparability the numbers do not have. The caveat was documented in this
+	// schema's prose and in the boot log, neither of which is where the operator
+	// reading the wrong number is looking.
+	FirstSeenOrigin string `json:"first_seen_origin,omitempty"`
 }
 
 // Entity is one addressable object a device exposes — the openapi Entity schema,
@@ -284,12 +300,21 @@ type Registry struct {
 }
 
 // Seen is a device's age as this site knows it: when the site first held a
-// report of the device, and when it last did — both on the APP's clock (SEC-066)
-// rather than the reporting relay's wall clock, so an operator comparing two
-// devices is comparing two readings of one clock.
+// report of the device, when it last did, and — for the first of those — where
+// the number came from. Both instants are on the APP's clock (SEC-066) rather
+// than the reporting relay's wall clock, so an operator comparing two devices is
+// comparing two readings of one clock.
+//
+// FirstOrigin is empty exactly when FirstMs is zero, and otherwise carries the
+// store's vocabulary (store.FirstSeenPlanted / Adopted / Unrecorded). It rides
+// here because it must reach the api/1 Device: a value adopted from the
+// pre-ledger column at an upgrade is an estimate off an unattested relay clock,
+// and a surface that renders it identically to a planted instant is claiming an
+// observation this deployment never made.
 type Seen struct {
-	FirstMs int64
-	LastMs  int64
+	FirstMs     int64
+	LastMs      int64
+	FirstOrigin string
 }
 
 // incumbent is one device's current routing holder.
@@ -343,6 +368,21 @@ func New(siteScopeNode string, nowMs func() int64) *Registry {
 // that mentions half a site does not blank the other half's age. An id this
 // registry has not heard of is remembered anyway, for the reason the other two
 // projections allow it: the boot restore runs before any relay has connected.
+//
+// # A zero member TEACHES NOTHING; it does not erase
+//
+// The two instants are merged independently, and a zero on either side leaves
+// whatever is already known for that half alone. That is not politeness, it is
+// the rule that keeps this from being a second eraser: zero is the ABSENT answer
+// throughout this fact's chain (the store returns it, the api/1 member is
+// omitted, the console draws an em dash), and "I have no answer" must never
+// overwrite "I have one". Erasing is a separate, deliberate act with its own
+// method — ForgetFirstSeen — called by the operation that retires a stored age.
+//
+// The caller used to enforce this by dropping the whole entry when first_seen
+// was zero (cmd/waiveo-feeder seenFrom), which protected the age and silently
+// destroyed the LAST-seen half of a retired device's record at every restart.
+// Enforcing it per-member here is what lets that caller carry both.
 func (r *Registry) MarkSeen(seen map[string]Seen) {
 	if len(seen) == 0 {
 		return
@@ -353,8 +393,54 @@ func (r *Registry) MarkSeen(seen map[string]Seen) {
 		if id == "" {
 			continue
 		}
-		r.seen[id] = s
+		was := r.seen[id]
+		if s.FirstMs > 0 {
+			// The origin belongs to the instant and moves with it, never on its
+			// own: a stored age and a claim about where it came from that were
+			// taken from two different readings would be worse than either.
+			was.FirstMs, was.FirstOrigin = s.FirstMs, s.FirstOrigin
+		}
+		if s.LastMs > 0 {
+			was.LastMs = s.LastMs
+		}
+		r.seen[id] = was
 	}
+	r.rematerialize()
+}
+
+// ForgetFirstSeen clears the FIRST-seen half of a device's age in the read model,
+// so every later listing reports no age for it until a fresh report plants one.
+//
+// The read-model half of retiring a stored first_seen (internal/app/store
+// RetireDeviceFirstSeen): the ledger row and its mirror projection are deleted
+// first, and this teaches the running process that the value is gone. Without it
+// the retire is invisible until the next restart — the store would be clear while
+// this map went on serving the retired instant to every list, which is the exact
+// "the database says one thing and the process says another" split MarkSeen exists
+// to prevent in the other direction.
+//
+// LAST-seen is deliberately left exactly as it stands. It is a different fact,
+// answered by a different rule, and blanking it would report a device that
+// reported a minute ago as never heard from. That asymmetry is why this is not
+// `delete(r.seen, id)`, which is the obvious implementation and the wrong one.
+//
+// Clearing a device this registry has no age for is a harmless no-op, the same
+// latitude UnmarkIgnored takes.
+func (r *Registry) ForgetFirstSeen(deviceID string) {
+	if deviceID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	was, ok := r.seen[deviceID]
+	if !ok || was.FirstMs == 0 {
+		return
+	}
+	// The origin goes with the instant it describes. Leaving `adopted` behind on
+	// a device that now has no age would make the api/1 member say where a value
+	// that no longer exists came from.
+	was.FirstMs, was.FirstOrigin = 0, ""
+	r.seen[deviceID] = was
 	r.rematerialize()
 }
 
@@ -581,6 +667,7 @@ func (r *Registry) rematerialize() {
 			// rather than as "first seen at the epoch".
 			seen := r.seen[id]
 			d.FirstSeen, d.LastSeen = seen.FirstMs, seen.LastMs
+			d.FirstSeenOrigin = seen.FirstOrigin
 			devs[id] = d
 		}
 		for id, e := range v.entities {

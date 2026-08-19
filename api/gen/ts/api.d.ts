@@ -317,6 +317,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/devices/{device_id}/first-seen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                device_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Retire a device's stored first-seen instant
+         * @description Clears this deployment's stored `first_seen` for one device, so the next report plants a fresh one from the platform's own clock. The response is the device as it now reads, with `first_seen` absent.
+         *
+         *     `first_seen` is planted ONCE and never moves afterwards, which is what keeps a relay restart from re-dating every device on the network as new. The cost of that rule is that a wrong value is permanent, and one population of them exists: on a deployment upgraded from a build that predates the durable ledger, the stored value was adopted from the older column, where it had been written from the reporting relay's own unattested clock. Such a value is an ESTIMATE rather than an instant anything observed — usually a lower bound on the device's age, and an overstatement of it when that relay's clock ran behind. `Device.first_seen_origin` reports which values those are (`adopted`, or `unrecorded` where the row predates provenance being recorded).
+         *
+         *     So this is the one sanctioned way a planted value ever leaves: a deliberate, per-device act on a row an operator can show is wrong. It can only make a device read YOUNGER (the next report plants "now"), it asserts no instant of its own, and it is not a bulk repair — retiring a whole inventory would re-date every device as new, which is the defect the plant-once rule exists to prevent.
+         *
+         *     Naturally idempotent: retiring a device that has no stored `first_seen` succeeds and changes nothing. `last_seen` is untouched.
+         */
+        delete: operations["retireDeviceFirstSeen"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/discovery/scan": {
         parameters: {
             query?: never;
@@ -3295,11 +3323,24 @@ export interface components {
              *
              *     App-owned, and deliberately not the reporting relay's own `first_seen` (`relay/1` REL-110). A relay does not persist its candidate set, so its value is only ever "since this relay process started" and is re-minted from nothing at every relay restart; a four-year-old TV would read as new every time its relay was upgraded. Nor is it derived from the relay's timestamps at all: those are read off an unattested wall clock — `relay/1` REL-038's `clock_state` is `untrusted` on every relay that has not applied a verified time — so a relay booting with a stale clock could otherwise stamp a device it met moments ago as weeks old.
              *
-             *     Recorded ONCE, at the first report this deployment durably stored for the device, and never changed afterwards in either direction — not by a relay restart, not by the device dropping off the LAN and returning, not by it being re-homed to a different relay.
+             *     Recorded ONCE, at the first report this deployment durably stored for the device, and never changed afterwards in either direction — not by a relay restart, not by the device dropping off the LAN and returning, not by it being re-homed to a different relay. The single exception is `retireDeviceFirstSeen`, an explicit operator act that clears the value so the next report plants a new one; nothing automatic ever moves it.
              *
              *     Stamped on the app's own clock (`security-model` SEC-066), the same clock every other timestamp in this API is read against, so two devices' ages are comparable. ABSENT when this deployment has no answer — it has never durably mirrored the device, or its own clock was not yet usable when it tried — since a zero would claim the device was first seen at the epoch.
+             *
+             *     NOT EVERY VALUE IS AN OBSERVATION, and `first_seen_origin` is how you tell. A deployment upgraded from a build that predates the durable ledger adopted its existing values from the older column, where they had been written from the reporting relay's own unattested clock. Such a value is an ESTIMATE rather than an instant this deployment observed: usually a lower bound on the device's age ("a report was held no later than X"), but an OVERSTATEMENT of it when the reporting relay's clock ran behind, which nothing here can detect. Two such values are not reliably comparable with each other or with an observed one. Read `first_seen_origin` before rendering this as an exact age or ranking a fleet on it, and see `retireDeviceFirstSeen` for how a value an operator can show is wrong stops being permanent.
              */
             first_seen?: number;
+            /**
+             * @description Where `first_seen` came from, and therefore whether it may be presented as an exact instant. ABSENT exactly when `first_seen` is.
+             *
+             *     `planted` — stamped by this deployment from its own clock (`security-model` SEC-066) at a report it durably stored. An OBSERVATION: render it as an age, compare it with other planted values, sort on it.
+             *
+             *     `adopted` — copied from the pre-ledger column at the upgrade that introduced the durable ledger, having been written from the reporting relay's own unattested clock at that relay's last restart. An ESTIMATE. It is usually a lower bound on the device's age and overstates it when that relay's clock ran behind, and two adopted values are not reliably comparable even with each other — on one measured deployment 57 of them shared a single instant to the millisecond. A renderer MUST mark these rather than drawing them identically to a `planted` value; `retireDeviceFirstSeen` clears one an operator can show is wrong.
+             *
+             *     `unrecorded` — the row predates provenance being recorded at all, so this deployment cannot say which of the two it is. Treat it exactly as `adopted`: the caution is the same and the reason is the same.
+             * @enum {string}
+             */
+            first_seen_origin?: "planted" | "adopted" | "unrecorded";
             /**
              * Format: int64
              * @description When the reporting relay was last observed to have SEEN this device, in epoch milliseconds on the same clock as `first_seen` — which is what makes "not heard from since" answerable.
@@ -4360,6 +4401,35 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description The device is no longer ignored. The body is the device as it now reads, with `ignored` false. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Device"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    retireDeviceFirstSeen: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path: {
+                device_id: components["schemas"]["Ulid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The stored first-seen instant is retired. The body is the device as it now reads, with `first_seen` absent until the next report plants one. */
             200: {
                 headers: {
                     "Trace-Id": components["headers"]["TraceIdResponse"];

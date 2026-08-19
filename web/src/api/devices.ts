@@ -144,6 +144,26 @@ export interface DevicesModule extends ListOnlyModule<Device> {
    * ApiClient's `action` convention) so a retry-on-timeout replays the recorded
    * outcome. A double-click is not an error. */
   adopt(deviceId: string): Promise<Device>;
+
+  /** Retire ONE device's stored `first_seen`, so the next report from its relay
+   * plants a fresh one from the platform's own clock.
+   *
+   * The platform's only correction path for a device's age. `first_seen` is
+   * planted once and never moves — which is what keeps a relay restart from
+   * re-dating a whole network as new — so a WRONG value is permanent too, and
+   * one population of wrong values exists by construction: a deployment
+   * upgraded from a build predating the durable ledger inherited its ages from
+   * a column written off the reporting relay's own unattested clock.
+   * `first_seen_origin` is how a row says it is one of those.
+   *
+   * It can only make a device read YOUNGER, and it asserts no instant of its
+   * own — there is deliberately no counterpart that SETS one. Naturally
+   * idempotent: retiring a device with no stored age succeeds and changes
+   * nothing. `last_seen` is untouched, because a device that reported a minute
+   * ago must not start reading as never heard from.
+   *
+   * Returns the device as it now reads, with `first_seen` absent. */
+  retireFirstSeen(deviceId: string): Promise<Device>;
 }
 
 function devicesModule(client: ApiClient): DevicesModule {
@@ -154,6 +174,11 @@ function devicesModule(client: ApiClient): DevicesModule {
       // No body: the operation declares none, and `action` omits Content-Type
       // entirely when given none, which is what a bodyless POST should send.
       return client.action<Device>(`/devices/${encodeURIComponent(deviceId)}/adopt`);
+    },
+    retireFirstSeen(deviceId) {
+      return client.discardReturning<Device>(
+        `/devices/${encodeURIComponent(deviceId)}/first-seen`,
+      );
     },
   };
 }

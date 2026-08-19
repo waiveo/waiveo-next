@@ -425,6 +425,21 @@ func reportStoreIDs(storePath string, out io.Writer) int {
 		fmt.Fprintf(out, "the feeder will refuse to start against this store; nothing has been changed.\n")
 		return 1
 	} else {
+		// TABLES first, then columns. A whole table this build declares and the
+		// file has not got is the larger difference of the two, and it is the one
+		// this check used to be structurally unable to state: the column planner
+		// passes over an absent table by design, so run against box .12 it named
+		// the pending relay_last_seen COLUMN and never the pending
+		// device_first_seen TABLE that arrived in the same build.
+		if len(schema.Created) > 0 {
+			fmt.Fprintf(out, "%s: %d table(s) this build declares are missing and will be created when the store is next opened:\n",
+				storePath, len(schema.Created))
+			for _, t := range schema.Created {
+				fmt.Fprintf(out, "  %s\n", t)
+			}
+			fmt.Fprintf(out, "creating a table cannot lose a row: it did not exist to hold one.\n")
+			fmt.Fprintf(out, "this check has NOT created them: it reads the store read-only, and the next boot is what applies them.\n")
+		}
 		if len(schema.Added) == 0 {
 			fmt.Fprintf(out, "%s: every column this build declares is present.\n", storePath)
 		} else {
@@ -475,6 +490,7 @@ func reportStoreIDs(storePath string, out io.Writer) int {
 		fmt.Fprintf(out, "scope node %s names parent %s, which is not a stored scope node.\n", d.ChildID, d.ParentID)
 	}
 	reportOrgRoot(st, out, len(m.Rewrites))
+	reportDeviceFirstSeen(st, out)
 	reportEventLog(st, out)
 	return 0
 }
@@ -518,6 +534,96 @@ func reportOrgRoot(st *store.Store, out io.Writer, pendingRewrites int) {
 	case heal.Declined != "":
 		fmt.Fprintf(out, "there is no org-kind scope node and the next boot will NOT create one: %s\n", heal.Declined)
 	}
+}
+
+// reportDeviceFirstSeen prints what the durable first-seen ledger holds and what
+// the next boot would seed into it.
+//
+// It rides -store-check for the reason the org-root report does: this is the one
+// command an operator runs BEFORE a restart, and the seed is the single most
+// consequential thing a boot does that cannot be undone afterwards. An adopted
+// value is an estimate off the reporting relay's unattested clock frozen as that
+// device's age, and a refused one leaves the device with no age until a fresh
+// report. Seeing which is which BEFORE the restart is the difference between a
+// decision and an explanation.
+//
+// # It LISTS the ledger, because something else promises that it does
+//
+// The boot log caps its per-device account at twenty lines and then says
+// "`waiveo-feeder -store-check` lists every ledger row and its origin". That
+// sentence has to be true, and it was not: this function printed three counts and
+// the PENDING seed, and after a successful boot there is nothing pending — so an
+// operator following it on box .12, where the seed had just adopted 64 values and
+// named 20 of them, was told the ledger was fully answered and there was nothing
+// to list. The rows now come out in full, each with its origin, which is the fact
+// that decides whether an age may be read as an instant and which row is a
+// candidate for `retireDeviceFirstSeen`.
+//
+// It also names the ledger when the table itself is still pending, which is what
+// the schema section above cannot do for the store as it is opened here — that
+// section reads the file before any DDL, this one reads it through a handle that
+// still has not created anything.
+//
+// A failure to read is reported and not fatal, the same posture the event-log
+// report takes: this subcommand's job is the row-id question and it should still
+// answer it.
+func reportDeviceFirstSeen(st *store.Store, out io.Writer) {
+	ledger, err := st.InspectDeviceFirstSeen(context.Background())
+	if err != nil {
+		fmt.Fprintf(out, "the device first-seen ledger could not be read: %v\n", err)
+		return
+	}
+	if !ledger.Present {
+		fmt.Fprintf(out, "device first-seen ledger: the table is not on this store yet; the next boot creates it.\n")
+	} else {
+		fmt.Fprintf(out, "device first-seen ledger: %d row(s); %d of %d mirrored device(s) have a stored first_seen.\n",
+			len(ledger.Rows), ledger.Answered, ledger.Mirrored)
+	}
+	for _, r := range ledger.Rows {
+		fmt.Fprintf(out, "  %s  first_seen=%d  origin=%s\n", r.DeviceID, r.FirstSeen, r.Origin)
+	}
+	if ledger.Unverified > 0 {
+		// Said once, after the listing, rather than folded into each line: the
+		// operator's question here is "how much of my inventory's age is
+		// inherited", and a per-row repetition of the same caveat answers it worse
+		// than a count does.
+		fmt.Fprintf(out, "%d of those %d value(s) are NOT instants this deployment observed (origin %s or %s): each was %s.\n",
+			ledger.Unverified, len(ledger.Rows), store.FirstSeenAdopted, store.FirstSeenUnrecorded,
+			store.UnverifiedFirstSeenSentence)
+		fmt.Fprintf(out, "`retireDeviceFirstSeen` (DELETE /api/v1/devices/{id}/first-seen) is the only way one an operator can show is wrong ever leaves.\n")
+	}
+	pending := ledger.Pending
+	if len(pending.Adopted) == 0 && len(pending.Refused) == 0 {
+		fmt.Fprintf(out, "the next boot will seed nothing into it: every mirrored device either has a stored first_seen or has no older value to adopt.\n")
+		return
+	}
+	// The clock this plan was judged against, said out loud because it is NOT the
+	// clock the boot will judge against: this check reads the host wall clock now,
+	// the boot reads the app's own clock (SEC-066) then. The "running ahead"
+	// refusal turns on that comparison, so a value near the boundary can legitimately
+	// be planned one way here and decided the other way at the restart.
+	fmt.Fprintf(out, "judged against this host's clock at %d:\n", pending.AtMs)
+	if len(pending.Adopted) > 0 {
+		fmt.Fprintf(out, "the next boot will adopt %d value(s) from the pre-ledger column and mark each origin=%s; every one is %s:\n",
+			len(pending.Adopted), store.FirstSeenAdopted, store.UnverifiedFirstSeenSentence)
+		for _, a := range pending.Adopted {
+			fmt.Fprintf(out, "  %s  first_seen=%d\n", a.DeviceID, a.FirstSeen)
+		}
+		fmt.Fprintf(out, "once adopted, nothing moves such a value: `retireDeviceFirstSeen` is the only way one an operator can show is wrong ever leaves.\n")
+	}
+	if len(pending.Refused) > 0 {
+		// "carry no age" is now literally what those devices do — the store reads a
+		// device's age THROUGH the ledger (readDiscoveredDevices' join), so a
+		// refused value is not served, not restored into the read model and not
+		// drawn. Before that join it was a false sentence printed beside a console
+		// still rendering the refused number.
+		fmt.Fprintf(out, "the next boot will refuse %d value(s) as implausible; those devices carry no age at all until a fresh report plants one, and the refused value stays on the file and is listed here every time:\n",
+			len(pending.Refused))
+		for _, r := range pending.Refused {
+			fmt.Fprintf(out, "  %s  first_seen=%d: %s\n", r.DeviceID, r.FirstSeen, r.Reason)
+		}
+	}
+	fmt.Fprintf(out, "this check has NOT seeded anything: it reads the store read-only, and the next boot is what applies it.\n")
 }
 
 // reportEventLog prints what the durable event log holds, by retention class. A
@@ -1087,7 +1193,7 @@ func main() {
 	// (candidatemirror.go). Non-fatal: a feeder that cannot read its own cache
 	// still serves correctly the moment a relay connects, and refusing to boot
 	// over a cache would turn a cosmetic degradation into an outage.
-	if restored, err := restoreDeviceRegistry(context.Background(), st, deviceRegistry); err != nil {
+	if counts, err := restoreDeviceRegistry(context.Background(), st, deviceRegistry); err != nil {
 		// Stated in full rather than as "the list fills as relays report", which
 		// is true of the mirrored SIGHTINGS and false of everything else this
 		// function does. restoreDeviceRegistry is also the only boot-time site
@@ -1098,8 +1204,27 @@ func main() {
 		log.Printf("waiveo-feeder: restoring the discovered-device mirror FAILED: the device list fills as relays "+
 			"report, but the stored adopt/ignore decisions are NOT applied to the read model until the next "+
 			"successful restart: %v", err)
-	} else if restored > 0 {
-		log.Printf("waiveo-feeder: restored %d discovered device(s) from the last run", restored)
+	} else {
+		// Three outcomes, said apart. A bare "restored N" went silent at N=0, so a
+		// box whose mirror had been unwritable for a week booted byte-identically to
+		// a fresh one — and it never counted the first-seen projection at all, so
+		// "every device in the console shows an em dash" had no log correlate. The
+		// empty-mirror line is printed on a first boot too, deliberately: a report
+		// that speaks up about the state that heals itself and goes quiet on the one
+		// that needs a person has the asymmetry exactly backwards (store orgroot.go).
+		switch {
+		case counts.Mirrored == 0:
+			log.Printf("waiveo-feeder: the discovered-device mirror is empty; nothing was restored — normal on a " +
+				"first boot, and on any other boot it means no relay report has ever been durably written")
+		case counts.Aged == 0:
+			log.Printf("waiveo-feeder: restored %d discovered device(s) from the last run (%d adopted, %d ignored), "+
+				"none of which has a stored first_seen; the console shows no age for any device until a report "+
+				"plants one", counts.Restored, counts.Adopted, counts.Ignored)
+		default:
+			log.Printf("waiveo-feeder: restored %d of %d mirrored device(s) from the last run (%d with a stored "+
+				"first_seen, %d adopted, %d ignored)",
+				counts.Restored, counts.Mirrored, counts.Aged, counts.Adopted, counts.Ignored)
+		}
 	}
 
 	// The LIVE SCREEN STATUS read model (parity row 5.8): what each relay reports

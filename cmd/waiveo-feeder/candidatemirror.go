@@ -326,20 +326,45 @@ func (m candidateMirror) rowsFor(relayID string, candidates []wire.DeviceCandida
 //
 // It reads the rows the STORE returned rather than the candidates that went in,
 // because those are two different values: what went in is the relay's reading,
-// and what came back is the merged durable one. A row with no first_seen at all
-// is skipped rather than projected as zero — the read model's absent answer and
-// a stored zero mean the same thing, and writing one over an id that already has
-// an age would be the clobber this whole change exists to stop.
+// and what came back is the merged durable one.
+//
+// # The two instants are carried INDEPENDENTLY, and that is a fix
+//
+// This used to gate the whole pair on `FirstSeen > 0` and `continue` past the
+// row otherwise. The reasoning was sound about the shape it was written for — a
+// store row with no first_seen meant a clock this side could not use, and a
+// last_seen stamped off that same unusable clock was not worth carrying either.
+//
+// Retiring an age creates a shape that reasoning never saw: first_seen zero and
+// last_seen GOOD. RetireDeviceFirstSeen clears the age and deliberately leaves
+// the sighting, because they are different facts (its own docstring: "a retire
+// that blanked it would tell an operator a device that reported a minute ago has
+// never been heard from"), and devices.Registry.ForgetFirstSeen honours that
+// split in memory for exactly the same reason. The gate here then undid both at
+// the next restart: measured on a retired device, the durable row read
+// `first_seen=0 last_seen=1787113625572` and the restored read model read
+// `first=0 last=0` — the console reporting a device that had never been heard
+// from, while the store still held the sighting, until the device reported again.
+// A powered-off device is precisely the population retire exists for, so "until
+// it reports again" can be never.
+//
+// So each instant is carried on its own merits, and MarkSeen learns to take them
+// that way: a zero member teaches nothing rather than erasing what is there,
+// which keeps the property the old `continue` was protecting (an absent answer
+// never clobbers a known age) while no longer throwing the other half away with
+// it. A row carrying neither instant is still skipped outright.
 func seenFrom(rows []store.DiscoveredDevice) map[string]devices.Seen {
 	if len(rows) == 0 {
 		return nil
 	}
 	seen := make(map[string]devices.Seen, len(rows))
 	for _, d := range rows {
-		if d.DeviceID == "" || d.FirstSeen <= 0 {
+		if d.DeviceID == "" || (d.FirstSeen <= 0 && d.LastSeen <= 0) {
 			continue
 		}
-		seen[d.DeviceID] = devices.Seen{FirstMs: d.FirstSeen, LastMs: d.LastSeen}
+		seen[d.DeviceID] = devices.Seen{
+			FirstMs: d.FirstSeen, LastMs: d.LastSeen, FirstOrigin: d.FirstSeenOrigin,
+		}
 	}
 	return seen
 }
@@ -390,14 +415,19 @@ func seenFrom(rows []store.DiscoveredDevice) map[string]devices.Seen {
 // feeder that cannot pre-populate its device list still serves correctly the
 // moment its relays report, and refusing to boot over a cache would turn a
 // cosmetic degradation into an outage.
-func restoreDeviceRegistry(ctx context.Context, st *store.Store, registry *devices.Registry) (int, error) {
+func restoreDeviceRegistry(ctx context.Context, st *store.Store, registry *devices.Registry) (deviceRestore, error) {
 	mirrored, err := st.DiscoveredDevices(ctx)
 	if err != nil {
-		return 0, err
+		return deviceRestore{}, err
 	}
+	counts := deviceRestore{Mirrored: len(mirrored)}
 
 	byRelay := map[string][]wire.DeviceCandidate{}
+	agedByRelay := map[string]int{}
 	for _, d := range mirrored {
+		if d.FirstSeen > 0 {
+			agedByRelay[d.RelayID]++
+		}
 		byRelay[d.RelayID] = append(byRelay[d.RelayID], wire.DeviceCandidate{
 			// `match` is the relay's own provenance for the sighting and the
 			// read model does not consume it (wire.DeviceCandidate's doc), so
@@ -439,11 +469,10 @@ func restoreDeviceRegistry(ctx context.Context, st *store.Store, registry *devic
 		relayIDs = append(relayIDs, id)
 	}
 	sort.Strings(relayIDs)
-	restored := 0
 	for _, id := range relayIDs {
 		revoked, err := st.IsRevoked(ctx, store.RevocationSubjectRelay, id)
 		if err != nil {
-			return 0, err
+			return deviceRestore{}, err
 		}
 		if revoked {
 			log.Printf("waiveo-feeder: relay %s is revoked; dropping its %d mirrored device(s) rather than restoring them",
@@ -455,18 +484,20 @@ func restoreDeviceRegistry(ctx context.Context, st *store.Store, registry *devic
 			continue
 		}
 		if err := registry.ApplyCandidates(id, byRelay[id]); err != nil {
-			return 0, err
+			return deviceRestore{}, err
 		}
-		restored += len(byRelay[id])
+		counts.Restored += len(byRelay[id])
+		counts.Aged += agedByRelay[id]
 	}
 
 	adopted, err := st.List(ctx, store.KindAdoptedDevice, store.ListFilter{})
 	if err != nil {
-		return 0, err
+		return deviceRestore{}, err
 	}
 	for _, row := range adopted {
 		registry.MarkAdopted(row.ID)
 	}
+	counts.Adopted = len(adopted)
 
 	// The operator's IGNORE decisions, re-applied the same way and for the same
 	// reason: they are held beside the relay views, not on the mirrored rows, so a
@@ -475,11 +506,12 @@ func restoreDeviceRegistry(ctx context.Context, st *store.Store, registry *devic
 	// (store ignoreddevices.go) — so they are listed by their own accessor.
 	ignoredIDs, err := st.ListIgnoredDeviceIDs(ctx)
 	if err != nil {
-		return 0, err
+		return deviceRestore{}, err
 	}
 	for _, id := range ignoredIDs {
 		registry.MarkIgnored(id)
 	}
+	counts.Ignored = len(ignoredIDs)
 
 	// Last, so it lands on the rebuilt views rather than being rematerialized
 	// away by them. A revoked relay's rows were dropped above and their ages ride
@@ -487,5 +519,28 @@ func restoreDeviceRegistry(ctx context.Context, st *store.Store, registry *devic
 	// has no row for, exactly as it holds an adoption flag for a device that is
 	// currently powered off, and nothing lists a device that has no row.
 	registry.MarkSeen(restoredSeen)
-	return restored, nil
+	return counts, nil
+}
+
+// deviceRestore is what one boot's restore actually put back, in the terms the
+// boot log states it in.
+//
+// It is a struct rather than the bare count it used to be because that count
+// could not tell three different boots apart. A restore of zero was reported the
+// same way whether the box had never held a device or the mirror had been
+// UNWRITABLE for a week — which is precisely what box .12 spent seven days doing
+// (#194) — and the first-seen projection, the fact #196 exists to put in front of
+// an operator, was never counted at all, so "every device shows an em dash" had
+// no correlate anywhere in the log.
+//
+// Mirrored is every row read from the store; Restored is what reached the
+// registry, which is smaller when a revoked relay's rows were dropped. Aged
+// counts the restored rows that carry a durable first_seen: it is the number the
+// console's age column can answer for before any relay reconnects.
+type deviceRestore struct {
+	Mirrored int
+	Restored int
+	Aged     int
+	Adopted  int
+	Ignored  int
 }

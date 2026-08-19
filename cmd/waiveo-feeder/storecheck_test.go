@@ -11,7 +11,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/maaxton/waiveo-next/internal/app/devices"
 	"github.com/maaxton/waiveo-next/internal/app/store"
+	"github.com/maaxton/waiveo-next/internal/shared/deviceid"
 	_ "modernc.org/sqlite"
 )
 
@@ -546,5 +548,217 @@ func TestStoreCheckOnAPathWithNoStoreCreatesNothing(t *testing.T) {
 			names = append(names, e.Name())
 		}
 		t.Fatalf("a check must not create the store it was asked about; found %v", names)
+	}
+}
+
+// TestStoreCheckNamesThePendingTableAndTheSeedItEnables is #196's residual, in
+// the one place it was observed: run against box .12 before its upgrade, this
+// check named the pending `discovered_devices.relay_last_seen` COLUMN and never
+// the pending `device_first_seen` TABLE that arrived in the same build — because
+// the column planner passes over an absent table by design and nothing carried
+// the fact out.
+//
+// It matters more than a missing line. The boot that creates that table also runs
+// the one-time seed into it, and the seed is irreversible: an adopted value is
+// frozen as that device's age, a refused one leaves the device with no age at
+// all, and nothing afterwards moves either. This check is the only moment an
+// operator can see which is about to happen to which device.
+//
+// # It then RUNS the boot it described, because the description was false
+//
+// An earlier version of this test asserted the sentences and stopped. That is
+// how the sentences came to be wrong: the check said a refused device "carries no
+// age until a fresh report plants one" and the boot log said the same, while the
+// backfill only declined to copy the value into the LEDGER and never touched
+// `discovered_devices.first_seen` — the column the boot restore reads and the API
+// serves. Seconds after printing that line the same boot restored `first_seen =
+// 1000000` into the read model, where the console renders it "20586d ago"; a
+// FUTURE refused value was worse, since the console clamps a negative age and
+// drew "just now" for a device the log said had no age whatever. Three statements
+// about one device, mutually inconsistent, none of them checked.
+//
+// So the assertions run in two halves that must agree: what `-store-check`
+// PROMISES the next boot will do, and what the next boot — a real store.Open plus
+// the real restoreDeviceRegistry — actually leaves an operator reading.
+func TestStoreCheckNamesThePendingTableAndTheSeedItEnables(t *testing.T) {
+	dsn := seedStoreFileForCheck(t)
+
+	// The file a pre-ledger build left: mirror rows carrying a `first_seen` written
+	// off the reporting relay's clock, and no ledger table at all.
+	//
+	// The ids are DERIVED rather than invented, because the second half of this
+	// test restores the rows through the real intake, which derives the same id
+	// from (site, driver, native_id) and would otherwise never meet the fixture's.
+	const (
+		checkSite   = "site"
+		checkDriver = "roku-ecp"
+		nativeGood  = "uuid:roku:ecp:X00500RESCUABLE"
+		nativeBad   = "uuid:roku:ecp:X00500NEVERSET0"
+	)
+	rescuableID := deviceid.Device(checkSite, checkDriver, nativeGood)
+	refusedID := deviceid.Device(checkSite, checkDriver, nativeBad)
+
+	db, err := sql.Open("sqlite", "file:"+dsn)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	for _, row := range []struct {
+		deviceID  string
+		nativeID  string
+		firstSeen int64
+	}{
+		// A plausible instant months before now: the rescuable population.
+		{rescuableID, nativeGood, 1_787_098_315_675},
+		// A relay whose clock was never set: the refused population.
+		{refusedID, nativeBad, 1_000_000},
+	} {
+		if _, err := db.Exec(
+			`INSERT INTO discovered_devices
+			   (device_id, relay_id, scope_node, driver, native_id, device_class,
+			    name, address, model, serial, first_seen, last_seen, entities, open_ports, relay_last_seen)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			row.deviceID, "relay-from-the-old-build", checkSite, checkDriver, row.nativeID, "media-player",
+			"Lobby Roku", "192.168.50.31", "", "", row.firstSeen, 1_787_098_400_000, `[]`, `[]`, 0,
+		); err != nil {
+			t.Fatalf("seed the pre-ledger mirror row %s: %v", row.deviceID, err)
+		}
+	}
+	if _, err := db.Exec(`DROP TABLE device_first_seen`); err != nil {
+		t.Fatalf("forge the pre-ledger file shape: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+	before := storeFingerprint(t, dsn)
+
+	var out bytes.Buffer
+	if code := reportStoreIDs(dsn, &out); code != 0 {
+		t.Fatalf("reportStoreIDs exit code = %d, want 0\n%s", code, out.String())
+	}
+	got := out.String()
+	for _, want := range []string{
+		"1 table(s) this build declares are missing",
+		"device_first_seen",
+		"creating a table cannot lose a row",
+		"the table is not on this store yet",
+		"will adopt 1 value(s) from the pre-ledger column",
+		"origin=" + store.FirstSeenAdopted,
+		"OVERSTATES it if that relay's clock ran behind",
+		rescuableID + "  first_seen=1787098315675",
+		"will refuse 1 value(s) as implausible",
+		refusedID + "  first_seen=1000000",
+		"below the plausibility floor",
+		"this check has NOT seeded anything",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the check must name the pending table and the seed it enables; %q absent from:\n%s", want, got)
+		}
+	}
+	// The guarantee neither this check nor the code behind it can make — see
+	// internal/app/store's TestTheSeedSaysWhatItRescuedAndWhatItRefused.
+	if strings.Contains(got, "LOWER BOUND on") {
+		t.Fatalf("the check states an unqualified lower-bound guarantee on a value that can OVERSTATE an age:\n%s", got)
+	}
+
+	if after := storeFingerprint(t, dsn); after != before {
+		t.Fatalf("`-store-check` must not touch the store it is asked about.\n  before: %s\n   after: %s", before, after)
+	}
+	t.Logf("-store-check output:\n%s", got)
+
+	// --- and now the boot the check just described ---
+	//
+	// Nothing below re-reads a log. It asks the read model an operator's own
+	// question — "how old is this device" — through the same restore the feeder
+	// runs at boot, because that is the surface the promise was made about.
+	booted, err := store.Open(dsn, store.WallClockMs)
+	if err != nil {
+		t.Fatalf("open the store the check described: %v", err)
+	}
+	t.Cleanup(func() { _ = booted.Close() })
+
+	registry := devices.New(checkSite, store.WallClockMs)
+	counts, err := restoreDeviceRegistry(context.Background(), booted, registry)
+	if err != nil {
+		t.Fatalf("restoreDeviceRegistry: %v", err)
+	}
+
+	adopted, ok := registry.Device(rescuableID)
+	if !ok {
+		t.Fatalf("the adopted device is not in the restored registry")
+	}
+	if adopted.FirstSeen != 1_787_098_315_675 {
+		t.Errorf("the adopted device's age = %d, want the rescued 1787098315675", adopted.FirstSeen)
+	}
+	if adopted.FirstSeenOrigin != store.FirstSeenAdopted {
+		t.Errorf("the adopted device reports origin %q, want %q — a value served without its provenance is "+
+			"indistinguishable from an instant this deployment observed",
+			adopted.FirstSeenOrigin, store.FirstSeenAdopted)
+	}
+
+	refused, ok := registry.Device(refusedID)
+	if !ok {
+		t.Fatalf("the refused device is not in the restored registry — a refusal must not drop the device")
+	}
+	if refused.FirstSeen != 0 {
+		t.Fatalf("the check and the boot log both say the refused device carries NO age until a fresh report "+
+			"plants one; the restored read model serves first_seen = %d, which the console renders as an age. "+
+			"That is the sentence being false, not a rounding difference", refused.FirstSeen)
+	}
+	if refused.FirstSeenOrigin != "" {
+		t.Errorf("a device with no age reports origin %q, want empty", refused.FirstSeenOrigin)
+	}
+	// The device is still LISTED and still carries its sighting: a refusal is
+	// about the age and nothing else.
+	if refused.LastSeen != 1_787_098_400_000 {
+		t.Errorf("the refused device's last_seen = %d, want the mirrored 1787098400000 — refusing an age must "+
+			"not lose the sighting", refused.LastSeen)
+	}
+	if counts.Restored != 2 || counts.Aged != 1 {
+		t.Errorf("restore counts = %+v, want 2 restored and exactly 1 with a stored first_seen; the boot log's "+
+			"own count must agree with what the read model serves", counts)
+	}
+
+	// And the ledger listing the boot log's truncation referral points at is real:
+	// `-store-check` run AFTER the seed enumerates the rows and their origins.
+	var post bytes.Buffer
+	if code := reportStoreIDs(dsn, &post); code != 0 {
+		t.Fatalf("post-boot reportStoreIDs exit code = %d, want 0\n%s", code, post.String())
+	}
+	postOut := post.String()
+	for _, want := range []string{
+		"device first-seen ledger: 1 row(s)",
+		rescuableID + "  first_seen=1787098315675  origin=" + store.FirstSeenAdopted,
+		"1 of those 1 value(s) are NOT instants this deployment observed",
+		// The refusal keeps being named, forever, because the value is still on
+		// the file and the device still has no age.
+		refusedID + "  first_seen=1000000",
+	} {
+		if !strings.Contains(postOut, want) {
+			t.Fatalf("after the seed, `-store-check` must list the ledger in full — the boot log's truncation "+
+				"sends the operator here; %q absent from:\n%s", want, postOut)
+		}
+	}
+	t.Logf("post-boot -store-check output:\n%s", postOut)
+}
+
+// TestStoreCheckReportsAnAnsweredLedger: the conforming answer has to be stated
+// rather than implied by silence, on the same rule the column report follows —
+// "nothing to seed" and "the check did not look" must not read the same.
+func TestStoreCheckReportsAnAnsweredLedger(t *testing.T) {
+	dsn := seedStoreFileForCheck(t)
+
+	var out bytes.Buffer
+	if code := reportStoreIDs(dsn, &out); code != 0 {
+		t.Fatalf("reportStoreIDs exit code = %d, want 0\n%s", code, out.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "device first-seen ledger: 0 row(s); 0 of 0 mirrored device(s) have a stored first_seen") {
+		t.Fatalf("the check must state the ledger's census even when it is empty:\n%s", got)
+	}
+	if !strings.Contains(got, "the next boot will seed nothing into it") {
+		t.Fatalf("the check must say the next boot seeds nothing, rather than saying nothing:\n%s", got)
+	}
+	if strings.Contains(got, "table(s) this build declares are missing") {
+		t.Fatalf("a conforming store must not be reported as missing a table:\n%s", got)
 	}
 }

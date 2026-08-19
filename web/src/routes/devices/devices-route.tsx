@@ -117,6 +117,52 @@ function ageCell(atMs: number | undefined): string {
   return formatAge(Math.max(0, Date.now() - atMs));
 }
 
+/** Whether a device's `first_seen` is an instant this deployment OBSERVED, and
+ * may therefore be drawn as an exact age.
+ *
+ * Only `planted` is. `adopted` was copied from a pre-ledger column at an upgrade,
+ * having been written off the reporting relay's own unattested clock at that
+ * relay's last restart; `unrecorded` is a row from a build that did not record
+ * which of the two it was, so it cannot be shown not to be the first. Both get
+ * the same treatment because the caution is the same. An absent origin belongs to
+ * an absent age. */
+function isObservedAge(device: Device): boolean {
+  return device.first_seen_origin === "planted";
+}
+
+/** The `first_seen` cell.
+ *
+ * This is the whole of #197 as an operator meets it. `first_seen` is served
+ * identically whether this deployment WATCHED the device appear or inherited a
+ * number from an upgrade, and drawing both as "3d ago" under a column headed
+ * "First seen" claims a precision the second does not have. On the one measured
+ * deployment every age on the page was inherited and 57 of them were the same
+ * instant to the millisecond — a whole inventory reading as three days old, which
+ * a reasonable operator takes to mean the devices arrived three days ago.
+ *
+ * So an inherited age is drawn with a `~` and carries the caveat in its title:
+ * approximately, not at least, because the value overstates the age when the
+ * reporting relay's clock ran behind and understates it otherwise, and "≥ 3d"
+ * would be a second false guarantee in place of the first. The affordance for
+ * doing something about it is the row's own Retire action. */
+function firstSeenCell(device: Device): React.ReactNode {
+  const age = ageCell(device.first_seen);
+  if (age === "—" || isObservedAge(device)) return age;
+  return (
+    <span
+      className="text-muted-foreground"
+      title={
+        "Inherited, not observed. This age was copied from an older build's column, where it had been " +
+        "written from the reporting relay's own unattested clock — so it is an estimate rather than an " +
+        "instant this deployment watched, it is not comparable with an observed one, and it can overstate " +
+        "the device's age as well as understate it. Retire it to have the next report plant a real one."
+      }
+    >
+      ~{age}
+    </span>
+  );
+}
+
 /** A discovered device, flattened with the facts it reported and the entities
  * it exposes. `adopted` is the row's own flag, not a computed join — see the
  * module header. */
@@ -134,6 +180,7 @@ interface DeviceRow {
 type Dialog =
   | { kind: "closed" }
   | { kind: "adopt"; row: DeviceRow }
+  | { kind: "retire-age"; row: DeviceRow }
   | { kind: "remote"; entity: Entity; device: Device | null };
 
 export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
@@ -240,6 +287,9 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
   const openAdopt = useCallback((row: DeviceRow) => {
     setDialog({ kind: "adopt", row });
   }, []);
+  const openRetireAge = useCallback((row: DeviceRow) => {
+    setDialog({ kind: "retire-age", row });
+  }, []);
 
   const confirmAdopt = useCallback(async () => {
     if (dialog.kind !== "adopt" || busy) return;
@@ -264,6 +314,40 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
       setBusy(false);
     }
   }, [busy, client, dialog, load]);
+
+  /** Retire one device's inherited age.
+   *
+   * The other half of #197. Marking an inherited value in the table says "do not
+   * read this as exact" and leaves the operator with nothing to do about it —
+   * the correction path existed only over `waiveo call` and MCP, so the person
+   * who could SEE the wrong number could not act on it and the caller who could
+   * act could not see it.
+   *
+   * It is offered per device and never in bulk, deliberately: the values this
+   * repairs are wrong INDIVIDUALLY (an operator has evidence about one device,
+   * not a rule about all of them), and retiring a whole inherited inventory
+   * would re-date every device as new — which is the exact defect the plant-once
+   * rule exists to prevent, wearing a repair's name. */
+  const confirmRetireAge = useCallback(async () => {
+    if (dialog.kind !== "retire-age" || busy) return;
+    const { row } = dialog;
+    setBusy(true);
+    try {
+      const updated = await client.devices.retireFirstSeen(row.device.id);
+      toast.success(`Retired the stored age for ${updated.name}`);
+      setDialog({ kind: "closed" });
+      // The answer is the device as it now reads, so the row corrects itself
+      // without a re-list — and without one, the table would go on showing the
+      // retired instant until something else happened to reload.
+      setDevices((current) =>
+        (current ?? []).map((d) => (d.id === updated.id ? updated : d)),
+      );
+    } catch (err) {
+      toast.error(`Couldn't retire the stored age: ${problemMessage(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, client, dialog]);
 
   /* Finding one device in a fleet used to have no mechanism on this page: a
      plain sortable table and nothing else. The four identifying columns are
@@ -301,13 +385,19 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
          on the raw instant and RENDERED as an age: an operator scanning a fleet
          is comparing recency, not reading dates, and "3d ago" is the comparison
          made legible. Absent (the API omits both until a device has been durably
-         mirrored) renders as an em dash rather than as the epoch. */
+         mirrored) renders as an em dash rather than as the epoch.
+
+         `first_seen` additionally distinguishes an OBSERVED age from an
+         INHERITED one (firstSeenCell). The sort deliberately still runs on the
+         raw instant — an inherited value is a real number and ranking it among
+         the rest is more use than exiling it, and the cell is what says not to
+         read the ranking as exact. */
       {
         id: "first_seen",
         header: "First seen",
         accessorFn: (r) => r.device.first_seen ?? 0,
         meta: { numeric: true },
-        cell: ({ row }) => ageCell(row.original.device.first_seen),
+        cell: ({ row }) => firstSeenCell(row.original.device),
       },
       {
         id: "last_seen",
@@ -438,15 +528,29 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
                  different problems wearing one message. It now says which. */
               <EmptyState title={discovery.headline} description={discovery.detail} icon={Radio} />
             }
-            rowActions={(row) =>
-              row.adopted ? null : (
+            rowActions={(row) => {
+              /* Retire is offered only on a row whose age is INHERITED, which is
+                 the population it exists for: on an observed instant it would
+                 discard a fact this deployment actually watched and replace it
+                 with a later one, making the device read younger than it is. */
+              const canRetire =
+                row.device.first_seen !== undefined && !isObservedAge(row.device);
+              if (row.adopted && !canRetire) return null;
+              return (
                 <div className="flex justify-end gap-2">
-                  <Button size="sm" variant="outline" onClick={() => openAdopt(row)}>
-                    Adopt
-                  </Button>
+                  {canRetire ? (
+                    <Button size="sm" variant="ghost" onClick={() => openRetireAge(row)}>
+                      Retire age
+                    </Button>
+                  ) : null}
+                  {row.adopted ? null : (
+                    <Button size="sm" variant="outline" onClick={() => openAdopt(row)}>
+                      Adopt
+                    </Button>
+                  )}
                 </div>
-              )
-            }
+              );
+            }}
           />
         </section>
 
@@ -545,6 +649,55 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
               {dialog.row.entities.length === 1 ? "y" : "ies"} will be adopted enabled and visible,
               placed where its relay reports it. Poll cadence and per-entity policy are refined
               afterwards on the adopted device.
+            </p>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal
+        title={
+          dialog.kind === "retire-age"
+            ? `Retire the stored age for ${dialog.row.device.name}`
+            : "Retire stored age"
+        }
+        description="The next report from this device's relay plants a fresh first-seen instant on this deployment's own clock. Nothing else about the device changes."
+        open={dialog.kind === "retire-age"}
+        onOpenChange={(open) => {
+          if (!open) setDialog({ kind: "closed" });
+        }}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setDialog({ kind: "closed" })}>
+              Cancel
+            </Button>
+            <Button onClick={() => void confirmRetireAge()} disabled={busy}>
+              {busy ? "Retiring…" : "Retire age"}
+            </Button>
+          </>
+        }
+      >
+        {dialog.kind === "retire-age" ? (
+          <div className="flex flex-col gap-3 text-sm">
+            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-muted-foreground">
+              <dt>Stored age</dt>
+              <dd className="text-foreground">{ageCell(dialog.row.device.first_seen)}</dd>
+              <dt>Where it came from</dt>
+              <dd className="text-foreground">
+                {dialog.row.device.first_seen_origin === "adopted"
+                  ? "inherited from an older build's column"
+                  : "not recorded — this row predates provenance being kept"}
+              </dd>
+            </dl>
+            {/* Said plainly because it is the one thing this cannot do. Retiring
+                can only make a device read YOUNGER: the next report plants "now",
+                and there is deliberately no way to SET an instant, since nothing
+                on this platform can attest an operator's time claim. */}
+            <p className="text-xs text-muted-foreground">
+              This discards the stored instant and cannot restore or replace it — the device will
+              read as newly seen from its next report onward, which is younger than it really is.
+              Retire a value you can show is wrong, not a whole inventory: re-dating every device
+              at once is the very thing this field's write-once rule exists to prevent. Last-seen is
+              untouched.
             </p>
           </div>
         ) : null}
