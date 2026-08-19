@@ -94,8 +94,11 @@ func TestThePilotPageWiresBothPersistenceAndAnAction(t *testing.T) {
 		Actions []struct {
 			On struct {
 				Press struct {
-					Verb   string `json:"verb"`
-					Target string `json:"target"`
+					Verb string `json:"verb"`
+					// call-action names the pack action in `action`, never `target`
+					// (ui-schema/1 UIS-160). This test used to decode `target` and so
+					// held a page the renderer refuses (#205).
+					Action string `json:"action"`
 				} `json:"press"`
 			} `json:"on"`
 		} `json:"actions"`
@@ -108,13 +111,13 @@ func TestThePilotPageWiresBothPersistenceAndAnAction(t *testing.T) {
 	}
 	verbs := map[string]string{}
 	for _, a := range page.Actions {
-		verbs[a.On.Press.Verb] = a.On.Press.Target
+		verbs[a.On.Press.Verb] = a.On.Press.Action
 	}
 	if _, ok := verbs["submit"]; !ok {
 		t.Fatalf("the page has no submit; policy would render and not persist. verbs=%v", verbs)
 	}
 	if verbs["call-action"] != "run-backup" {
-		t.Fatalf("call-action targets %q, want run-backup — the button is how the pilot reaches pack CODE", verbs["call-action"])
+		t.Fatalf("call-action names %q, want run-backup — the button is how the pilot reaches pack CODE", verbs["call-action"])
 	}
 }
 

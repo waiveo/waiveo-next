@@ -19,6 +19,6 @@
   ],
   "actions": [
     { "type": "button", "props": { "labelMsg": "msg:settings.save", "style": "primary" }, "on": { "press": { "verb": "submit" } } },
-    { "type": "button", "props": { "labelMsg": "msg:settings.run" }, "on": { "press": { "verb": "call-action", "target": "run-backup" } } }
+    { "type": "button", "props": { "labelMsg": "msg:settings.run" }, "on": { "press": { "verb": "call-action", "action": "run-backup" } } }
   ]
 }

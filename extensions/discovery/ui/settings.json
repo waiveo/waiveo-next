@@ -23,8 +23,13 @@
           "bind": "schedule",
           "props": {
             "labelMsg": "msg:settings.schedule",
-            "placeholderMsg": "msg:settings.schedule.placeholder",
-            "helpMsg": "msg:settings.schedule.help"
+            "placeholderMsg": "msg:settings.schedule.placeholder"
+          }
+        },
+        {
+          "type": "text",
+          "props": {
+            "value": { "compute": "msg", "args": ["msg:settings.schedule.help"] }
           }
         }
       ]
@@ -74,7 +79,7 @@
       "on": {
         "press": {
           "verb": "call-action",
-          "target": "scan-now"
+          "action": "scan-now"
         }
       }
     }
