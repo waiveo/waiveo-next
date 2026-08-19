@@ -135,7 +135,7 @@ func TestOpenPortsSurviveAReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "app.db")
 
 	first := openFileStore(t, path)
-	if err := first.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{{
+	if _, err := first.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{{
 		DeviceID: igDeviceA, RelayID: "relay-a", ScopeNode: ddNodeID,
 		Driver: "net", NativeID: "c4:8b:66:68:21:25", DeviceClass: "unclassified",
 		FirstSeen: 1000, LastSeen: 2000, OpenPorts: []int{80, 8060},

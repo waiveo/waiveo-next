@@ -79,7 +79,8 @@ CREATE TABLE IF NOT EXISTS discovered_devices (
 	first_seen   INTEGER NOT NULL,
 	last_seen    INTEGER NOT NULL,
 	entities     TEXT NOT NULL DEFAULT '[]',
-	open_ports   TEXT NOT NULL DEFAULT '[]'
+	open_ports   TEXT NOT NULL DEFAULT '[]',
+	relay_last_seen INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS discovered_devices_relay ON discovered_devices (relay_id);
 `
@@ -104,8 +105,18 @@ type DiscoveredDevice struct {
 	Address     string
 	Model       string
 	Serial      string
-	FirstSeen   int64
-	LastSeen    int64
+	// FirstSeen and LastSeen are on the APP's clock (SEC-066), never the
+	// reporting relay's: when this site first held a report of the device, and
+	// when the relay was last observed to have seen it. devicefirstseen.go says
+	// why a relay's own numbers are not read, and ReplaceDiscoveredDevices says
+	// how the second one is decided.
+	FirstSeen int64
+	LastSeen  int64
+	// RelayLastSeen is the raw `last_seen` the reporting relay put on the wire,
+	// kept for ONE purpose and never rendered: comparing it with the next
+	// report's tells us whether the relay actually re-observed the device.
+	// It is an opaque change-detector, not a time — see ReplaceDiscoveredDevices.
+	RelayLastSeen int64
 	// OpenPorts is what an active scan found listening. Mirrored so a restart
 	// does not blank the column until the next scan — the same reason every
 	// other discovered fact is here.
@@ -118,6 +129,46 @@ type DiscoveredDevice struct {
 // full-set-replace semantics REL-111 gives the report itself, applied to the
 // durable copy so the two can never disagree about what a relay currently sees.
 //
+// It returns the rows AS STORED, which is not what was passed in: the durable
+// merge below fills in facts the report did not carry and stamps both seen
+// instants on this side's clock. The caller projects those onto the in-memory
+// read model (cmd/waiveo-feeder), so the value an operator is shown is the one
+// that is actually on disk rather than a second computation of it.
+//
+// # The two seen instants are this side's, and `last_seen` is not "now"
+//
+// Both are stamped from the app's own clock, for the reason devicefirstseen.go
+// gives at length: a relay's timestamps come off an unattested wall clock, and
+// relay/1's own `clock_state` for judging that clock is hardcoded `untrusted` in
+// every live relay because the verified-time source is still unbuilt.
+//
+// `first_seen` is planted once and never moves. `last_seen` has to keep moving,
+// and the honest question behind it is not "when did a report mentioning this
+// device arrive" — the relay re-sends its whole candidate set every minute and
+// internal/relay/deviceplane never expires a candidate, so a device unplugged a
+// week ago is still in every report, unchanged. Dating it "now" would make the
+// column say a dark device is live, which is the exact opposite of what an
+// operator reads it for.
+//
+// So the report's own `last_seen` is used, but never as a TIME: only compared
+// with the one the previous report carried for the same device. That comparison
+// needs no trusted clock and no shared clock, because it asks a yes/no question
+// about a number the relay controls end to end — did it CHANGE? The relay
+// advances a candidate's `last_seen` only when a lane actually re-observed the
+// device (deviceplane.Store.Observe), so:
+//
+//   - the stamp changed, or the device is new here, or the relay restarted and
+//     re-minted its candidates ⇒ it was genuinely seen, and this side stamps the
+//     moment it learned so;
+//   - the stamp is byte-identical to last time ⇒ the relay is replaying a frozen
+//     candidate, has not seen the device since, and the durable answer stays
+//     exactly where it was.
+//
+// That makes `last_seen` freeze the moment a device goes dark, which is what
+// makes "not heard from since" answerable, and it keeps `first_seen <= last_seen`
+// structural rather than hopeful: both are readings of one clock, and the first
+// is planted at the same instant the second is first written.
+//
 // The delete and the inserts share one transaction: a mirror that was briefly
 // empty mid-refresh would be read as "this relay found nothing", which is a
 // visible and alarming state to expose for a write that is not changing
@@ -127,23 +178,114 @@ type DiscoveredDevice struct {
 // caller derives that id, so an empty one is a caller defect on ONE device, and
 // failing the whole refresh over it would freeze the mirror for every other
 // device the relay can see.
-func (s *Store) ReplaceDiscoveredDevices(ctx context.Context, relayID string, rows []DiscoveredDevice) error {
+//
+// # What the wholesale replace must NOT replace
+//
+// The mirror's rows are authored by a relay process whose memory dies at every
+// restart, and a blind replace therefore writes that process's IGNORANCE over
+// what this side already knew. `first_seen` was the visible case (see
+// devicefirstseen.go), and it was not the only one: model and serial come only
+// from an active identification probe whose cache is in relay memory, an entity's
+// state comes only from the poller, and an open-port list comes only from a scan
+// that runs on a pack's schedule. A restarted relay reports every one of them
+// blank, and did so straight over the durable copy.
+//
+// So the replace MERGES against what is already stored, on exactly the rule
+// internal/relay/deviceplane.Store.Observe already applies inside one relay
+// process — "a scan that DID look replaces the list wholesale; an observation
+// that did not look keeps what is known" — lifted from process memory to the
+// durable row, where the lifetime finally matches the fact. The relay OBSERVES;
+// this side REMEMBERS.
+//
+// # An EMPTY report does not empty the mirror
+//
+// A report carrying no rows for this relay leaves the relay's rows exactly as
+// they are. A relay reports from its candidate store the moment a connection
+// comes up (cmd/waiveo-relay's OnConnected), which on a cold host — an ARP table
+// that has not warmed, a discovery sweep that has not finished — is empty
+// through no fault of the LAN, and a full-set replace would read that as "this
+// relay found nothing" and delete every durable fact about the site. "I have
+// nothing to say" is not evidence that there is nothing there. ForgetDiscovered-
+// Devices stays the only emptier, and it is called on REVOCATION, where an
+// emptied mirror is exactly the intent.
+func (s *Store) ReplaceDiscoveredDevices(ctx context.Context, relayID string, rows []DiscoveredDevice) ([]DiscoveredDevice, error) {
 	if relayID == "" {
-		return fmt.Errorf("store: ReplaceDiscoveredDevices: relay_id must not be empty")
+		return nil, fmt.Errorf("store: ReplaceDiscoveredDevices: relay_id must not be empty")
 	}
-	return s.writeTx(ctx, func(tx *sql.Tx) error {
+	if len(rows) == 0 {
+		// Nothing is deleted and nothing is written — see the header. Returning
+		// no rows is the honest answer to "what did this report store": nothing
+		// did, and the caller has no seen-instants to project.
+		return nil, nil
+	}
+	stored := make([]DiscoveredDevice, 0, len(rows))
+	err := s.writeTx(ctx, func(tx *sql.Tx) error {
+		// Read BEFORE the delete, and across the whole mirror rather than this
+		// relay's slice of it: REL-153 makes a device's identity independent of
+		// the relay currently reporting it, so a device re-homed to a second
+		// relay must carry its learned facts across with it rather than starting
+		// again as an unknown.
+		held, err := readDiscoveredDevices(ctx, tx, "")
+		if err != nil {
+			return err
+		}
+		prior := make(map[string]DiscoveredDevice, len(held))
+		for _, d := range held {
+			prior[d.DeviceID] = d
+		}
+
+		// One clock reading for the whole report, so every row a single report
+		// stores carries the same instant and two devices in one batch are never
+		// dated a query apart.
+		now := s.nowMs()
+
 		if _, err := tx.ExecContext(ctx, `DELETE FROM discovered_devices WHERE relay_id = ?`, relayID); err != nil {
 			return fmt.Errorf("store: ReplaceDiscoveredDevices: clear relay %s: %w", relayID, err)
 		}
+		stored = stored[:0]
 		for _, d := range rows {
 			if d.DeviceID == "" {
 				continue
 			}
-			entities, err := json.Marshal(nonNilEntities(d.Entities))
+			was, known := prior[d.DeviceID]
+			row := mergeDiscovered(was, d)
+			row.RelayID = relayID
+			// The relay's stamp as an opaque change-detector, never as a time —
+			// see the header. Unchanged means the relay has not seen the device
+			// since its last report, so the durable answer must not move.
+			row.RelayLastSeen = d.LastSeen
+			// A row this build has never written has no comparator — the column
+			// defaults to 0 on the upgrade that adds it — so the first report
+			// after an upgrade advances, which is right: that row's stored
+			// last_seen came off the RELAY's clock and must be replaced by one of
+			// ours, not carried forward as though it were ours.
+			if known && was.LastSeen > 0 && was.RelayLastSeen > 0 && d.LastSeen == was.RelayLastSeen {
+				row.LastSeen = was.LastSeen
+			} else {
+				row.LastSeen = now
+			}
+			// The durable ledger owns first_seen, and this report can only ever
+			// teach it that the device exists — never when it was first seen.
+			row.FirstSeen, err = plantDeviceFirstSeen(ctx, tx, d.DeviceID, now)
+			if err != nil {
+				return err
+			}
+			// Nothing was planted and nothing is held: the app's clock is not yet
+			// usable (devicefirstseen.go). Keep whatever the column already had
+			// rather than writing the projection's zero over it — on a box being
+			// upgraded that column IS the pre-ledger history, and blanking it
+			// would destroy the only copy before the backfill that rescues it has
+			// ever run on a working clock. Never-wipe: refusing to answer must not
+			// mean deleting the answer somebody else could still give.
+			if row.FirstSeen == 0 && was.FirstSeen > 0 {
+				row.FirstSeen = was.FirstSeen
+			}
+
+			entities, err := json.Marshal(nonNilEntities(row.Entities))
 			if err != nil {
 				return fmt.Errorf("store: ReplaceDiscoveredDevices: encode entities of %s: %w", d.DeviceID, err)
 			}
-			ports, err := json.Marshal(nonNilPorts(d.OpenPorts))
+			ports, err := json.Marshal(nonNilPorts(row.OpenPorts))
 			if err != nil {
 				return fmt.Errorf("store: ReplaceDiscoveredDevices: encode open_ports of %s: %w", d.DeviceID, err)
 			}
@@ -154,16 +296,122 @@ func (s *Store) ReplaceDiscoveredDevices(ctx context.Context, relayID string, ro
 			if _, err := tx.ExecContext(ctx,
 				`INSERT OR REPLACE INTO discovered_devices
 				   (device_id, relay_id, scope_node, driver, native_id, device_class,
-				    name, address, model, serial, first_seen, last_seen, entities, open_ports)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				d.DeviceID, relayID, d.ScopeNode, d.Driver, d.NativeID, d.DeviceClass,
-				d.Name, d.Address, d.Model, d.Serial, d.FirstSeen, d.LastSeen, string(entities), string(ports)); err != nil {
+				    name, address, model, serial, first_seen, last_seen, entities, open_ports,
+				    relay_last_seen)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				row.DeviceID, row.RelayID, row.ScopeNode, row.Driver, row.NativeID, row.DeviceClass,
+				row.Name, row.Address, row.Model, row.Serial, row.FirstSeen, row.LastSeen,
+				string(entities), string(ports), row.RelayLastSeen); err != nil {
 				return fmt.Errorf("store: ReplaceDiscoveredDevices: insert %s: %w", d.DeviceID, err)
 			}
+			stored = append(stored, row)
 		}
 		// Deliberately no bumpGeneration — see this file's header.
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return stored, nil
+}
+
+// mergeDiscovered folds one reported row onto whatever the mirror already holds
+// for that device, and returns the row to store.
+//
+// prior is the zero value when the device is new, which makes every rule below
+// degrade to "take what was reported" with no special case: a blank held fact is
+// exactly as unhelpful as a blank reported one.
+//
+// The identity half of a row — scope node, driver, native id, and the class the
+// report states — is taken as reported, because a report always carries it in
+// full and it is what the id was derived from. Everything below is a LEARNED
+// fact, and a report that does not carry one is saying "I did not learn it",
+// never "it is no longer true". That distinction is the whole content of this
+// function, and it is the same one deviceplane.Store.Observe draws for the same
+// four strings inside a single relay process.
+func mergeDiscovered(prior, next DiscoveredDevice) DiscoveredDevice {
+	row := next
+	row.Name = orKeepFact(next.Name, prior.Name)
+	// Address included deliberately, and it is the one with teeth: it is where a
+	// command to an adopted device is sent, so blanking it on a thin report costs
+	// control of the device. A genuinely changed address (DHCP moved it) is
+	// non-empty and does overwrite, which is the case that has to keep working.
+	row.Address = orKeepFact(next.Address, prior.Address)
+	row.Model = orKeepFact(next.Model, prior.Model)
+	row.Serial = orKeepFact(next.Serial, prior.Serial)
+
+	// Ports: only an active scan can assert this list, and only a deployment
+	// carrying the scanning pack runs one at all — every passive re-sighting in
+	// between carries none. Keeping the held list when the report carries none is
+	// the same rule the relay applies in memory.
+	//
+	// KNOWN LIMIT, stated rather than papered over: this cannot distinguish "a
+	// scan looked and found nothing open" from "nobody looked", because the
+	// stored column has no way to be absent (it is `[]` either way) and neither
+	// does the wire. Today that costs nothing — internal/relay/portscan only
+	// emits an entry for a host with a port OPEN, so a host whose ports have all
+	// closed is simply missing from the result and is never observed at all, which
+	// leaves the relay's own equivalent guard unreachable too. The day a scan
+	// reports a scanned-but-closed host, BOTH guards need the absent/empty
+	// distinction plumbed through, and this comment is where that starts.
+	if len(next.OpenPorts) == 0 && len(prior.OpenPorts) > 0 {
+		row.OpenPorts = prior.OpenPorts
+	}
+
+	row.Entities = mergeEntities(prior.Entities, next.Entities)
+	return row
+}
+
+// mergeEntities carries an entity's learned STATE and ATTRIBUTES across a report
+// that re-declares the entity without them.
+//
+// A discovery sighting observes that an entity exists; only the poller observes
+// what it is doing. So a re-declaration arrives with a blank state for every
+// entity, and taking it wholesale would blank the state an operator is watching
+// — and, after a restart, would hand adoption a device whose entities describe
+// nothing. A report that DOES carry a state states a new one and wins.
+//
+// A report that declares no entities at all keeps the held list outright, on the
+// header's rule: a relay whose in-memory candidate has just been re-minted has
+// not yet learned the fan-out, and a device that mirrors as entity-less is a
+// device that ADOPTS as entity-less — permanently, since nothing re-derives an
+// adopted row's entity list afterwards.
+func mergeEntities(prior, next []wire.CandidateEntity) []wire.CandidateEntity {
+	if len(next) == 0 {
+		return prior
+	}
+	if len(prior) == 0 {
+		return next
+	}
+	held := make(map[string]wire.CandidateEntity, len(prior))
+	for _, e := range prior {
+		held[e.Key] = e
+	}
+	out := make([]wire.CandidateEntity, 0, len(next))
+	for _, e := range next {
+		was, ok := held[e.Key]
+		if ok {
+			if e.State == "" {
+				e.State = was.State
+			}
+			if len(e.Attributes) == 0 {
+				e.Attributes = was.Attributes
+			}
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// orKeepFact returns the reported value when it carries one, else what is
+// already known. The counterpart of internal/relay/deviceplane's orKeep, at the
+// durable layer — see mergeDiscovered for why an empty report is silence rather
+// than a retraction.
+func orKeepFact(reported, held string) string {
+	if reported != "" {
+		return reported
+	}
+	return held
 }
 
 // ForgetDiscoveredDevices drops every mirrored row a relay reported.
@@ -198,7 +446,8 @@ func (s *Store) DiscoveredDevices(ctx context.Context) ([]DiscoveredDevice, erro
 // device_id. Callers hold their own lock (or run inside a transaction).
 func readDiscoveredDevices(ctx context.Context, q queryer, deviceID string) ([]DiscoveredDevice, error) {
 	query := `SELECT device_id, relay_id, scope_node, driver, native_id, device_class,
-	                 name, address, model, serial, first_seen, last_seen, entities, open_ports
+	                 name, address, model, serial, first_seen, last_seen, entities, open_ports,
+	                 relay_last_seen
 	          FROM discovered_devices`
 	args := []any{}
 	if deviceID != "" {
@@ -218,7 +467,8 @@ func readDiscoveredDevices(ctx context.Context, q queryer, deviceID string) ([]D
 		var d DiscoveredDevice
 		var entities, ports string
 		if err := rows.Scan(&d.DeviceID, &d.RelayID, &d.ScopeNode, &d.Driver, &d.NativeID, &d.DeviceClass,
-			&d.Name, &d.Address, &d.Model, &d.Serial, &d.FirstSeen, &d.LastSeen, &entities, &ports); err != nil {
+			&d.Name, &d.Address, &d.Model, &d.Serial, &d.FirstSeen, &d.LastSeen, &entities, &ports,
+			&d.RelayLastSeen); err != nil {
 			return nil, fmt.Errorf("store: scan discovered device: %w", err)
 		}
 		if err := json.Unmarshal([]byte(entities), &d.Entities); err != nil {

@@ -5,9 +5,9 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import { Toaster } from "@/components/kit/toaster";
+import { formatAge } from "@/lib/format-age";
 import {
   LiveScreensPanel,
-  formatAge,
   nowPlayingLabel,
   SCREEN_STATUS_FIELDS_WITH_NO_SHIPPED_PRODUCER,
 } from "./live-screens-panel";

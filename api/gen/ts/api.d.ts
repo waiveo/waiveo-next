@@ -3289,6 +3289,26 @@ export interface components {
              *     ABSENT until something scanned this device — passive discovery never sets it. Absent and empty are different facts: absent means nobody has looked, empty would mean a scan looked and found nothing open, and only a scan can assert the second.
              */
             open_ports?: number[];
+            /**
+             * Format: int64
+             * @description When this site FIRST held a report of this device, in epoch milliseconds. It is the answer to "is this new to my network, or has it been here for weeks" — the difference between a new arrival worth investigating and long-standing furniture.
+             *
+             *     App-owned, and deliberately not the reporting relay's own `first_seen` (`relay/1` REL-110). A relay does not persist its candidate set, so its value is only ever "since this relay process started" and is re-minted from nothing at every relay restart; a four-year-old TV would read as new every time its relay was upgraded. Nor is it derived from the relay's timestamps at all: those are read off an unattested wall clock — `relay/1` REL-038's `clock_state` is `untrusted` on every relay that has not applied a verified time — so a relay booting with a stale clock could otherwise stamp a device it met moments ago as weeks old.
+             *
+             *     Recorded ONCE, at the first report this deployment durably stored for the device, and never changed afterwards in either direction — not by a relay restart, not by the device dropping off the LAN and returning, not by it being re-homed to a different relay.
+             *
+             *     Stamped on the app's own clock (`security-model` SEC-066), the same clock every other timestamp in this API is read against, so two devices' ages are comparable. ABSENT when this deployment has no answer — it has never durably mirrored the device, or its own clock was not yet usable when it tried — since a zero would claim the device was first seen at the epoch.
+             */
+            first_seen?: number;
+            /**
+             * Format: int64
+             * @description When the reporting relay was last observed to have SEEN this device, in epoch milliseconds on the same clock as `first_seen` — which is what makes "not heard from since" answerable.
+             *
+             *     Deliberately not "when a report mentioning it last arrived": a relay re-sends its whole candidate set on a timer and never expires a candidate, so a device unplugged a week ago is still in every report it sends. This advances only when the relay's own record of the device changes, which it does when — and only when — a discovery lane actually re-observed it. A device that goes dark therefore freezes here and ages visibly.
+             *
+             *     ABSENT for the same reason `first_seen` is.
+             */
+            last_seen?: number;
             /** @description Whether an adoption record exists for this device — that is, whether it is under this platform's control and carried in the desired state its relay is sent (`relay/1` REL-063). Discovery alone never sets this; `adoptDevice` does. */
             adopted: boolean;
             /** @description Whether the operator has IGNORED this device — set it aside as something this deployment does not care about. Unlike `adopted`, an ignore reaches no relay: the device is still discovered and still reported, just marked so a console can keep it out of the way. Durable and reversible; `ignoreDevice` sets it and `unignoreDevice` clears it. Discovery alone never sets this. */

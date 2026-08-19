@@ -195,7 +195,7 @@ func TestOpenAddsOpenPortsToAStoreAnEarlierBuildCreated(t *testing.T) {
 
 	// And the write path — the one that produced 1017 swallowed errors on box .12
 	// — now works, carrying real ports through the column that was missing.
-	if err := s.ReplaceDiscoveredDevices(ctx, "relay-from-the-old-build", []store.DiscoveredDevice{{
+	if _, err := s.ReplaceDiscoveredDevices(ctx, "relay-from-the-old-build", []store.DiscoveredDevice{{
 		DeviceID:    "dev-mirrored-one",
 		ScopeNode:   "site",
 		Driver:      "roku",
@@ -276,11 +276,20 @@ func TestInspectSchemaReportsWhatTheNextOpenWillDo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InspectSchema: %v", err)
 	}
-	if len(plan.Added) != 1 {
-		t.Fatalf("want exactly one planned column addition, got %+v", plan.Added)
+	// Every column this build declares that the staged (older) file lacks, and
+	// nothing else. The fixture predates both additions the mirror has taken
+	// since — the scan's port list, and the relay stamp the last-seen rule
+	// compares against (discovereddevices.go) — so the plan naming exactly those
+	// two is the report doing its job.
+	planned := map[string]bool{}
+	for _, a := range plan.Added {
+		if a.Table != "discovered_devices" {
+			t.Fatalf("a column addition outside the staged table: %+v", a)
+		}
+		planned[a.Column] = true
 	}
-	if plan.Added[0].Table != "discovered_devices" || plan.Added[0].Column != "open_ports" {
-		t.Fatalf("want discovered_devices.open_ports, got %+v", plan.Added[0])
+	if len(plan.Added) != 2 || !planned["open_ports"] || !planned["relay_last_seen"] {
+		t.Fatalf("want discovered_devices.open_ports and .relay_last_seen planned, got %+v", plan.Added)
 	}
 	if len(plan.Divergent) != 0 {
 		t.Fatalf("a store that is merely missing a column has no non-additive drift; got %+v", plan.Divergent)

@@ -347,3 +347,123 @@ func TestRestoreDropsARevokedRelaysDevices(t *testing.T) {
 		}
 	}
 }
+
+// TestDeviceAgeSurvivesARelayRestartEndToEnd drives defect #196 down the path a
+// real report actually takes — the connection layer's CandidateSink, the live
+// registry, the durable mirror, and back out through the rows `GET /devices`
+// serves — rather than against the store alone.
+//
+// That end matters as much as the storage does. The relay's own first_seen is
+// its process uptime and nothing more, and it used to be copied through the
+// mirror unchanged; the value an operator saw was therefore reset by every relay
+// restart even though the feeder had held the right one a second earlier.
+func TestDeviceAgeSurvivesARelayRestartEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "app.db")
+	appClock := &cmClock{ms: 1_800_000_000_000}
+
+	first := cmOpenStoreAt(t, path, appClock.now)
+	registry := devices.New(cmSite, func() int64 { return 10_000 })
+	sink := newCandidateMirror(registry, first, appClock.now)
+
+	// The relay claims it has been watching this TV for two hours. Its wall clock
+	// is its own and nothing on this platform attests it, so what reaches the row
+	// is this site's own reading — see internal/app/store devicefirstseen.go.
+	const twoHours = 2 * 60 * 60 * 1000
+	const relayNow = 1_791_360_000_000
+	aged := cmCandidate(cmNativeA, "Lobby TV", "192.168.50.31:8060")
+	aged.FirstSeen, aged.LastSeen = relayNow-twoHours, relayNow
+	if err := sink.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{aged}); err != nil {
+		t.Fatalf("first report: %v", err)
+	}
+
+	born := cmDevice(t, registry, deviceid.Device(cmSite, cmDriver, cmNativeA))
+	if born.FirstSeen != appClock.now() {
+		t.Fatalf("served first_seen = %d, want this site's own clock %d", born.FirstSeen, appClock.now())
+	}
+	if born.LastSeen != appClock.now() {
+		t.Fatalf("served last_seen = %d, want %d", born.LastSeen, appClock.now())
+	}
+
+	// The relay process restarts an hour later. Its candidate store is empty, so
+	// it re-mints first_seen at the moment it re-discovers the device — the exact
+	// report that used to overwrite two hours of history with "brand new".
+	appClock.advance(60 * 60 * 1000)
+	remitted := cmCandidate(cmNativeA, "Lobby TV", "192.168.50.31:8060")
+	remitted.FirstSeen, remitted.LastSeen = 2_500, 2_600
+	if err := sink.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{remitted}); err != nil {
+		t.Fatalf("report after the relay restart: %v", err)
+	}
+
+	after := cmDevice(t, registry, born.ID)
+	if after.FirstSeen != born.FirstSeen {
+		t.Errorf("served first_seen = %d after a relay restart, want the durable %d — "+
+			"this is #196: a device that has been on the LAN for hours reading as new", after.FirstSeen, born.FirstSeen)
+	}
+	if after.LastSeen != appClock.now() {
+		t.Errorf("served last_seen = %d, want %d — it must still advance", after.LastSeen, appClock.now())
+	}
+
+	// The device is unplugged. The relay does not expire candidates, so it keeps
+	// re-sending this one unchanged; the served last_seen must stop moving, or
+	// the console reports a dead TV as live.
+	wentDark := appClock.now()
+	for day := 1; day <= 3; day++ {
+		appClock.advance(24 * 60 * 60 * 1000)
+		if err := sink.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{remitted}); err != nil {
+			t.Fatalf("day %d report: %v", day, err)
+		}
+		if got := cmDevice(t, registry, born.ID).LastSeen; got != wentDark {
+			t.Fatalf("day %d: served last_seen = %d, want it frozen at %d — the relay replayed a candidate it has not re-observed",
+				day, got, wentDark)
+		}
+	}
+
+	// And it survives the OTHER restart too: the feeder's. The boot restore is
+	// the only thing that answers the device page before a relay reconnects, so
+	// the age has to come back with the rows.
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	second := cmOpenStoreAt(t, path, appClock.now)
+	t.Cleanup(func() { _ = second.Close() })
+	restored := devices.New(cmSite, func() int64 { return 20_000 })
+	if _, err := restoreDeviceRegistry(ctx, second, restored); err != nil {
+		t.Fatalf("restoreDeviceRegistry: %v", err)
+	}
+	if got := cmDevice(t, restored, born.ID); got.FirstSeen != born.FirstSeen {
+		t.Errorf("restored first_seen = %d, want %d — the boot projection must carry the age, not just the row",
+			got.FirstSeen, born.FirstSeen)
+	}
+}
+
+// cmClock is a hand-driven app clock, so a case about "an hour later" moves the
+// clock instead of sleeping.
+type cmClock struct{ ms int64 }
+
+func (c *cmClock) now() int64      { return c.ms }
+func (c *cmClock) advance(d int64) { c.ms += d }
+
+// cmOpenStoreAt is cmOpenStore with the clock named, for the cases whose subject
+// IS the clock.
+func cmOpenStoreAt(t *testing.T, path string, nowMs func() int64) *store.Store {
+	t.Helper()
+	s, err := store.Open(path, nowMs)
+	if err != nil {
+		t.Fatalf("store.Open(%s): %v", path, err)
+	}
+	return s
+}
+
+// cmDevice reads one device out of the registry as `GET /devices` would, failing
+// the case when it is absent.
+func cmDevice(t *testing.T, r *devices.Registry, id string) devices.Device {
+	t.Helper()
+	for _, d := range r.Devices() {
+		if d.ID == id {
+			return d
+		}
+	}
+	t.Fatalf("device %s is not in the registry; ids = %v", id, ids(r.Devices()))
+	return devices.Device{}
+}

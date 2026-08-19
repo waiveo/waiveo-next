@@ -48,7 +48,20 @@ func discovered(id, relayID, nativeID string) store.DiscoveredDevice {
 // prove nothing.
 func openFileStore(t *testing.T, path string) *store.Store {
 	t.Helper()
-	s, err := store.Open(path, store.WallClockMs)
+	return openFileStoreAt(t, path, store.WallClockMs)
+}
+
+// ddAppNowMs is the app-clock reading the fixed-clock cases below run on. The
+// stored seen instants are stamped from the STORE's clock rather than copied off
+// the report (devicefirstseen.go), so a case that asserts an exact value has to
+// pin that clock instead of racing the wall.
+const ddAppNowMs int64 = 1_800_000_000_000
+
+// openFileStoreAt is openFileStore with the clock named, for the cases whose
+// subject IS the clock.
+func openFileStoreAt(t *testing.T, path string, nowMs func() int64) *store.Store {
+	t.Helper()
+	s, err := store.Open(path, nowMs)
 	if err != nil {
 		t.Fatalf("Open(%s): %v", path, err)
 	}
@@ -62,8 +75,8 @@ func TestDiscoveredDevicesSurviveAReopen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "app.db")
 
-	first := openFileStore(t, path)
-	if err := first.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{
+	first := openFileStoreAt(t, path, func() int64 { return ddAppNowMs })
+	if _, err := first.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{
 		discovered(ddDeviceA, "relay-a", "uuid:roku:ecp:X1"),
 	}); err != nil {
 		t.Fatalf("ReplaceDiscoveredDevices: %v", err)
@@ -72,7 +85,7 @@ func TestDiscoveredDevicesSurviveAReopen(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	second := openFileStore(t, path)
+	second := openFileStoreAt(t, path, func() int64 { return ddAppNowMs })
 	t.Cleanup(func() { _ = second.Close() })
 
 	got, err := second.DiscoveredDevices(ctx)
@@ -91,8 +104,19 @@ func TestDiscoveredDevicesSurviveAReopen(t *testing.T) {
 	if d.Address != "192.168.50.31:8060" || d.Model != "Roku Ultra" || d.Serial != "X00500ABC123" {
 		t.Errorf("address/model/serial = %q/%q/%q, want them all round-tripped", d.Address, d.Model, d.Serial)
 	}
-	if d.FirstSeen != 1_000 || d.LastSeen != 2_000 {
-		t.Errorf("first/last seen = %d/%d, want 1000/2000 — a reader must be able to tell how old the answer is", d.FirstSeen, d.LastSeen)
+	// Both instants are stamped on the APP's clock, never copied off the report:
+	// the fixture's candidate carries 1000/2000, the relay's own unattested wall
+	// readings, and neither reaches the row. A reader must be able to tell how
+	// old the answer is, and it can only do that if every row's timestamps are
+	// readings of ONE clock (devicefirstseen.go).
+	if d.FirstSeen != ddAppNowMs || d.LastSeen != ddAppNowMs {
+		t.Errorf("first/last seen = %d/%d, want %d for both — this site's own clock, not the relay's",
+			d.FirstSeen, d.LastSeen, ddAppNowMs)
+	}
+	// The relay's raw stamp rides along, unrendered: the next report compares
+	// against it to tell a genuine re-sighting from a replayed frozen candidate.
+	if d.RelayLastSeen != 2_000 {
+		t.Errorf("relay_last_seen = %d, want the reported 2000 kept as the change-detector", d.RelayLastSeen)
 	}
 	if len(d.Entities) != 1 || d.Entities[0].Key != "main" {
 		t.Errorf("entities = %+v, want the reported fan-out (adoption consumes it)", d.Entities)
@@ -106,20 +130,20 @@ func TestReplaceDiscoveredDevicesIsPerRelayFullSet(t *testing.T) {
 	ctx := context.Background()
 	s := openMem(t)
 
-	if err := s.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{
+	if _, err := s.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{
 		discovered(ddDeviceA, "relay-a", "uuid:roku:ecp:X1"),
 		discovered(ddDeviceB, "relay-a", "uuid:roku:ecp:X2"),
 	}); err != nil {
 		t.Fatalf("seed relay-a: %v", err)
 	}
-	if err := s.ReplaceDiscoveredDevices(ctx, "relay-b", []store.DiscoveredDevice{
+	if _, err := s.ReplaceDiscoveredDevices(ctx, "relay-b", []store.DiscoveredDevice{
 		discovered(ddDeviceC, "relay-b", "uuid:roku:ecp:X3"),
 	}); err != nil {
 		t.Fatalf("seed relay-b: %v", err)
 	}
 
 	// relay-a now sees only one of its two devices — the other was unplugged.
-	if err := s.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{
+	if _, err := s.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{
 		discovered(ddDeviceB, "relay-a", "uuid:roku:ecp:X2"),
 	}); err != nil {
 		t.Fatalf("re-report relay-a: %v", err)
@@ -147,10 +171,10 @@ func TestForgetDiscoveredDevicesClearsOneRelay(t *testing.T) {
 	ctx := context.Background()
 	s := openMem(t)
 
-	if err := s.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{discovered(ddDeviceA, "relay-a", "uuid:roku:ecp:X1")}); err != nil {
+	if _, err := s.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{discovered(ddDeviceA, "relay-a", "uuid:roku:ecp:X1")}); err != nil {
 		t.Fatalf("seed relay-a: %v", err)
 	}
-	if err := s.ReplaceDiscoveredDevices(ctx, "relay-b", []store.DiscoveredDevice{discovered(ddDeviceC, "relay-b", "uuid:roku:ecp:X3")}); err != nil {
+	if _, err := s.ReplaceDiscoveredDevices(ctx, "relay-b", []store.DiscoveredDevice{discovered(ddDeviceC, "relay-b", "uuid:roku:ecp:X3")}); err != nil {
 		t.Fatalf("seed relay-b: %v", err)
 	}
 	if err := s.ForgetDiscoveredDevices(ctx, "relay-a"); err != nil {
@@ -176,7 +200,7 @@ func TestDiscoveryWritesDoNotBumpTheGeneration(t *testing.T) {
 	s := openMem(t)
 
 	before := gen(t, s)
-	if err := s.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{discovered(ddDeviceA, "relay-a", "uuid:roku:ecp:X1")}); err != nil {
+	if _, err := s.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{discovered(ddDeviceA, "relay-a", "uuid:roku:ecp:X1")}); err != nil {
 		t.Fatalf("ReplaceDiscoveredDevices: %v", err)
 	}
 	if err := s.ForgetDiscoveredDevices(ctx, "relay-a"); err != nil {
@@ -195,7 +219,7 @@ func TestAdoptDiscoveredDeviceCreatesTheAdoptedRow(t *testing.T) {
 	s := openMem(t)
 	seedPlacementNode(t, s, ddNodeID)
 
-	if err := s.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{discovered(ddDeviceA, "relay-a", "uuid:roku:ecp:X1")}); err != nil {
+	if _, err := s.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{discovered(ddDeviceA, "relay-a", "uuid:roku:ecp:X1")}); err != nil {
 		t.Fatalf("seed mirror: %v", err)
 	}
 
@@ -254,7 +278,7 @@ func TestAdoptDiscoveredDeviceIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	s := openMem(t)
 	seedPlacementNode(t, s, ddNodeID)
-	if err := s.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{discovered(ddDeviceA, "relay-a", "uuid:roku:ecp:X1")}); err != nil {
+	if _, err := s.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{discovered(ddDeviceA, "relay-a", "uuid:roku:ecp:X1")}); err != nil {
 		t.Fatalf("seed mirror: %v", err)
 	}
 	if _, err := s.AdoptDiscoveredDevice(ctx, ddDeviceA); err != nil {
@@ -311,7 +335,7 @@ func TestAdoptDiscoveredDeviceRefusesADuplicateIdentity(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("seed the incumbent adopted row: %v", err)
 	}
-	if err := s.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{discovered(ddDeviceA, "relay-a", "uuid:roku:ecp:X1")}); err != nil {
+	if _, err := s.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{discovered(ddDeviceA, "relay-a", "uuid:roku:ecp:X1")}); err != nil {
 		t.Fatalf("seed mirror: %v", err)
 	}
 

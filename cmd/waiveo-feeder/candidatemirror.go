@@ -209,7 +209,8 @@ func (m candidateMirror) ApplyCandidates(relayID string, candidates []wire.Devic
 
 	ctx, cancel := context.WithTimeout(context.Background(), mirrorCandidatesTimeout)
 	defer cancel()
-	if err := m.st.ReplaceDiscoveredDevices(ctx, relayID, m.rowsFor(relayID, candidates)); err != nil {
+	stored, err := m.st.ReplaceDiscoveredDevices(ctx, relayID, m.rowsFor(relayID, candidates))
+	if err != nil {
 		if report, consecutive, lasted := m.faults.failed(m.nowMs()); report {
 			if consecutive <= 1 {
 				log.Printf("waiveo-feeder: mirroring relay %s's device report FAILED; the live view is unaffected, "+
@@ -221,6 +222,19 @@ func (m candidateMirror) ApplyCandidates(relayID string, candidates []wire.Devic
 			}
 		}
 		return nil
+	}
+	// The store is the OWNER of a device's age, not this report: it merged the
+	// relay's reading into the durable ledger and returned what now stands
+	// (internal/app/store devicefirstseen.go). Projecting that back onto the read
+	// model is what puts the committed value in front of an operator — without
+	// it the mirror would hold the right answer and `GET /devices` would keep
+	// serving the relay's process uptime, which is the half of this defect that
+	// makes it invisible rather than merely wrong.
+	//
+	// It runs AFTER the write, deliberately: a report whose mirror write failed
+	// projects nothing, so the read model never shows an age no row backs.
+	if seen := seenFrom(stored); len(seen) > 0 {
+		m.registry.MarkSeen(seen)
 	}
 	if !m.faults.pending() {
 		return nil
@@ -291,12 +305,43 @@ func (m candidateMirror) rowsFor(relayID string, candidates []wire.DeviceCandida
 			Address:     c.Address,
 			Model:       c.Model,
 			Serial:      c.Serial,
-			FirstSeen:   c.FirstSeen,
-			LastSeen:    c.LastSeen,
-			Entities:    c.Entities,
+			// The relay's `first_seen` is deliberately NOT carried. It is that
+			// relay process's uptime, re-minted from nothing at every restart,
+			// and the store owns this fact on its own clock instead
+			// (internal/app/store devicefirstseen.go) — passing it would only
+			// offer a value nothing is allowed to read.
+			//
+			// Its `last_seen` IS carried, and equally is not a time to the store:
+			// it is compared with the previous report's to tell a genuine
+			// re-sighting from a replayed frozen candidate.
+			LastSeen: c.LastSeen,
+			Entities: c.Entities,
 		})
 	}
 	return rows
+}
+
+// seenFrom projects stored mirror rows onto the age map the read model keeps
+// beside its views (devices.Registry.MarkSeen).
+//
+// It reads the rows the STORE returned rather than the candidates that went in,
+// because those are two different values: what went in is the relay's reading,
+// and what came back is the merged durable one. A row with no first_seen at all
+// is skipped rather than projected as zero — the read model's absent answer and
+// a stored zero mean the same thing, and writing one over an id that already has
+// an age would be the clobber this whole change exists to stop.
+func seenFrom(rows []store.DiscoveredDevice) map[string]devices.Seen {
+	if len(rows) == 0 {
+		return nil
+	}
+	seen := make(map[string]devices.Seen, len(rows))
+	for _, d := range rows {
+		if d.DeviceID == "" || d.FirstSeen <= 0 {
+			continue
+		}
+		seen[d.DeviceID] = devices.Seen{FirstMs: d.FirstSeen, LastMs: d.LastSeen}
+	}
+	return seen
 }
 
 // restoreDeviceRegistry loads the mirrored device rows, and the adoption
@@ -359,11 +404,16 @@ func restoreDeviceRegistry(ctx context.Context, st *store.Store, registry *devic
 			// the restore states the only honest thing it can: an empty object.
 			// Inventing the pattern that originally matched would be recording a
 			// provenance nothing observed.
-			Match:       []byte(`{}`),
-			Provenance:  wire.CandidateProvenanceDiscovered,
-			Status:      wire.CandidateStatusPending,
-			FirstSeen:   d.FirstSeen,
-			LastSeen:    d.LastSeen,
+			Match:      []byte(`{}`),
+			Provenance: wire.CandidateProvenanceDiscovered,
+			Status:     wire.CandidateStatusPending,
+			// The two seen instants are deliberately left at zero rather than
+			// filled from the row. These members are the RELAY's readings of its
+			// own clock and the row's are this side's (internal/app/store
+			// devicefirstseen.go); putting one where the other is expected would
+			// be a lie nothing currently reads, which is the kind that survives
+			// until something does. The restore carries the real ages the way the
+			// live path does — through registry.MarkSeen, below.
 			Driver:      d.Driver,
 			NativeID:    d.NativeID,
 			DeviceClass: d.DeviceClass,
@@ -375,6 +425,14 @@ func restoreDeviceRegistry(ctx context.Context, st *store.Store, registry *devic
 			Entities:    d.Entities,
 		})
 	}
+
+	// The ages the mirror holds, re-applied after the views are rebuilt below.
+	// They come from the store's own rows rather than from the reconstructed
+	// candidates, because the intake deliberately does not read a relay's
+	// first_seen at all (internal/app/devices intake.go) — this is the same
+	// projection a live report takes, taken once at boot so the console can
+	// answer "how long has this been here" before any relay has reconnected.
+	restoredSeen := seenFrom(mirrored)
 
 	relayIDs := make([]string, 0, len(byRelay))
 	for id := range byRelay {
@@ -422,5 +480,12 @@ func restoreDeviceRegistry(ctx context.Context, st *store.Store, registry *devic
 	for _, id := range ignoredIDs {
 		registry.MarkIgnored(id)
 	}
+
+	// Last, so it lands on the rebuilt views rather than being rematerialized
+	// away by them. A revoked relay's rows were dropped above and their ages ride
+	// along in this map, which is harmless: the registry holds an age for an id it
+	// has no row for, exactly as it holds an adoption flag for a device that is
+	// currently powered off, and nothing lists a device that has no row.
+	registry.MarkSeen(restoredSeen)
 	return restored, nil
 }

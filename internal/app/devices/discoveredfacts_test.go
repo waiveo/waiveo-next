@@ -156,3 +156,51 @@ func TestUnmarkIgnoredIsReversible(t *testing.T) {
 		t.Errorf("after adopt+ignore+unignore: adopted=%v ignored=%v, want adopted=true ignored=false", d.Adopted, d.Ignored)
 	}
 }
+
+// TestTheRelaysOwnFirstSeenNeverReachesTheRow is the app-side half of defect
+// #196, pinned at the layer where it was silently dropped and then silently
+// wrong.
+//
+// The intake carried neither seen instant onto the row for as long as the row
+// existed — so the field a discovery console needs most was written to disk,
+// destroyed on every relay restart, and never served to anybody. Restoring it
+// naively would be worse than the silence: a relay does not persist candidates,
+// so ITS first_seen is its own process uptime, and copying that through would
+// report a device the site has watched for months as new.
+//
+// So the row's age has exactly one source — the durable ledger, projected in by
+// MarkSeen — and this asserts both halves: the reported value does not reach the
+// row, and the projected one does and outlives the next report.
+func TestTheRelaysOwnFirstSeenNeverReachesTheRow(t *testing.T) {
+	r := New(testSite, func() int64 { return 0 })
+	c := candidate("roku-ecp", "X1")
+	// What a freshly restarted relay sends: "I first saw this a moment ago."
+	c.FirstSeen, c.LastSeen = 900_000, 900_100
+	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{c}); err != nil {
+		t.Fatalf("ApplyCandidates: %v", err)
+	}
+
+	d := r.Devices()[0]
+	if d.FirstSeen != 0 || d.LastSeen != 0 {
+		t.Fatalf("row age = %d/%d after a report alone, want 0/0 — a relay's own timestamps are its process uptime, not this site's history",
+			d.FirstSeen, d.LastSeen)
+	}
+
+	// The store commits, and projects what stands.
+	id := deviceid.Device(testSite, "roku-ecp", "X1")
+	r.MarkSeen(map[string]Seen{id: {FirstMs: 1_700_000_000_000, LastMs: 1_799_999_000_000}})
+	d = r.Devices()[0]
+	if d.FirstSeen != 1_700_000_000_000 || d.LastSeen != 1_799_999_000_000 {
+		t.Fatalf("row age = %d/%d after MarkSeen, want the ledger's values", d.FirstSeen, d.LastSeen)
+	}
+
+	// And the next report — which replaces the whole view — does not take it
+	// away again, for the reason `adopted` and `ignored` are held beside the
+	// views rather than on them.
+	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{c}); err != nil {
+		t.Fatalf("second ApplyCandidates: %v", err)
+	}
+	if d = r.Devices()[0]; d.FirstSeen != 1_700_000_000_000 {
+		t.Errorf("first_seen = %d after a re-report, want it to outlive the report exactly as adoption does", d.FirstSeen)
+	}
+}

@@ -988,7 +988,7 @@ var probes = map[string]probe{
 			Name: "Back Bar TV", ScopeNode: org, Labels: map[string]string{},
 			Address: "192.0.2.44:8060", Model: "Roku Ultra", Serial: "X00500ADOPT1",
 		})
-		if err := e.store.ReplaceDiscoveredDevices(context.Background(), rsRelayID, []store.DiscoveredDevice{{
+		if _, err := e.store.ReplaceDiscoveredDevices(context.Background(), rsRelayID, []store.DiscoveredDevice{{
 			DeviceID: rsAdoptDeviceID, RelayID: rsRelayID, ScopeNode: org,
 			Driver: "roku-ecp", NativeID: "uuid:roku:ecp:X00500ADOPT1", DeviceClass: "media-player",
 			Name: "Back Bar TV", Address: "192.0.2.44:8060", Model: "Roku Ultra", Serial: "X00500ADOPT1",
@@ -1008,7 +1008,7 @@ var probes = map[string]probe{
 			Name: "Back Bar TV", ScopeNode: org, Labels: map[string]string{},
 			Address: "192.0.2.44:8060", Model: "Roku Ultra", Serial: "X00500ADOPT1",
 		})
-		if err := e.store.ReplaceDiscoveredDevices(context.Background(), rsRelayID, []store.DiscoveredDevice{{
+		if _, err := e.store.ReplaceDiscoveredDevices(context.Background(), rsRelayID, []store.DiscoveredDevice{{
 			DeviceID: rsAdoptDeviceID, RelayID: rsRelayID, ScopeNode: org,
 			Driver: "roku-ecp", NativeID: "uuid:roku:ecp:X00500ADOPT1", DeviceClass: "media-player",
 			Name: "Back Bar TV", Address: "192.0.2.44:8060", Model: "Roku Ultra", Serial: "X00500ADOPT1",
@@ -1029,7 +1029,7 @@ var probes = map[string]probe{
 			Name: "Back Bar TV", ScopeNode: org, Labels: map[string]string{},
 			Address: "192.0.2.44:8060", Model: "Roku Ultra", Serial: "X00500ADOPT1",
 		})
-		if err := e.store.ReplaceDiscoveredDevices(context.Background(), rsRelayID, []store.DiscoveredDevice{{
+		if _, err := e.store.ReplaceDiscoveredDevices(context.Background(), rsRelayID, []store.DiscoveredDevice{{
 			DeviceID: rsAdoptDeviceID, RelayID: rsRelayID, ScopeNode: org,
 			Driver: "roku-ecp", NativeID: "uuid:roku:ecp:X00500ADOPT1", DeviceClass: "media-player",
 			Name: "Back Bar TV", Address: "192.0.2.44:8060", Model: "Roku Ultra", Serial: "X00500ADOPT1",

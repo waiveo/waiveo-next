@@ -38,7 +38,7 @@ func seedAdoptable(t *testing.T, e *devicePlaneEnv, deviceID, nativeID string) s
 		Name: "Lobby TV", ScopeNode: node, Labels: map[string]string{},
 		Address: "192.168.50.31:8060", Model: "Roku Ultra", Serial: "X00500ABC123",
 	})
-	if err := e.store.ReplaceDiscoveredDevices(context.Background(), adoptRelayID, []store.DiscoveredDevice{{
+	if _, err := e.store.ReplaceDiscoveredDevices(context.Background(), adoptRelayID, []store.DiscoveredDevice{{
 		DeviceID: deviceID, RelayID: adoptRelayID, ScopeNode: node,
 		Driver: "roku-ecp", NativeID: nativeID, DeviceClass: "media-player",
 		Name: "Lobby TV", Address: "192.168.50.31:8060", Model: "Roku Ultra", Serial: "X00500ABC123",

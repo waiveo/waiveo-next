@@ -1839,6 +1839,15 @@ type Device struct {
 	// ExternalId Client-assigned identifier (contracts/api-1.md#client-assignable-external_id).
 	ExternalId **string `json:"external_id,omitempty"`
 
+	// FirstSeen When this site FIRST held a report of this device, in epoch milliseconds. It is the answer to "is this new to my network, or has it been here for weeks" — the difference between a new arrival worth investigating and long-standing furniture.
+	//
+	// App-owned, and deliberately not the reporting relay's own `first_seen` (`relay/1` REL-110). A relay does not persist its candidate set, so its value is only ever "since this relay process started" and is re-minted from nothing at every relay restart; a four-year-old TV would read as new every time its relay was upgraded. Nor is it derived from the relay's timestamps at all: those are read off an unattested wall clock — `relay/1` REL-038's `clock_state` is `untrusted` on every relay that has not applied a verified time — so a relay booting with a stale clock could otherwise stamp a device it met moments ago as weeks old.
+	//
+	// Recorded ONCE, at the first report this deployment durably stored for the device, and never changed afterwards in either direction — not by a relay restart, not by the device dropping off the LAN and returning, not by it being re-homed to a different relay.
+	//
+	// Stamped on the app's own clock (`security-model` SEC-066), the same clock every other timestamp in this API is read against, so two devices' ages are comparable. ABSENT when this deployment has no answer — it has never durably mirrored the device, or its own clock was not yet usable when it tried — since a zero would claim the device was first seen at the epoch.
+	FirstSeen *int64 `json:"first_seen,omitempty"`
+
 	// Id A 26-character Crockford-base32 identifier, lexicographically sortable by creation time.
 	Id Ulid `json:"id"`
 
@@ -1847,6 +1856,13 @@ type Device struct {
 
 	// Labels A resource's labels as the key→value map the label-selector grammar evaluates (`contracts/api-1.md#label-selector-grammar`). Keys and values are constrained by API-042's charsets, which is what makes every label expressible in a selector term without escaping.
 	Labels LabelMap `json:"labels"`
+
+	// LastSeen When the reporting relay was last observed to have SEEN this device, in epoch milliseconds on the same clock as `first_seen` — which is what makes "not heard from since" answerable.
+	//
+	// Deliberately not "when a report mentioning it last arrived": a relay re-sends its whole candidate set on a timer and never expires a candidate, so a device unplugged a week ago is still in every report it sends. This advances only when the relay's own record of the device changes, which it does when — and only when — a discovery lane actually re-observed it. A device that goes dark therefore freezes here and ages visibly.
+	//
+	// ABSENT for the same reason `first_seen` is.
+	LastSeen *int64 `json:"last_seen,omitempty"`
 
 	// Model The model the device reported when the relay probed it over the driver's own protocol. Absent when the probe did not answer.
 	Model *string `json:"model,omitempty"`

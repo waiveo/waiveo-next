@@ -36,6 +36,8 @@ dayparts	labels	labels TEXT NOT NULL DEFAULT '{}'
 dayparts	revision	revision INTEGER NOT NULL
 dayparts	scope_node	scope_node TEXT NOT NULL DEFAULT ''
 dayparts	updated_at	updated_at INTEGER NOT NULL
+device_first_seen	device_id	device_id TEXT PRIMARY KEY
+device_first_seen	first_seen	first_seen INTEGER NOT NULL
 discovered_devices	address	address TEXT NOT NULL DEFAULT ''
 discovered_devices	device_class	device_class TEXT NOT NULL
 discovered_devices	device_id	device_id TEXT PRIMARY KEY
@@ -48,6 +50,7 @@ discovered_devices	name	name TEXT NOT NULL DEFAULT ''
 discovered_devices	native_id	native_id TEXT NOT NULL
 discovered_devices	open_ports	open_ports TEXT NOT NULL DEFAULT '[]'
 discovered_devices	relay_id	relay_id TEXT NOT NULL
+discovered_devices	relay_last_seen	relay_last_seen INTEGER NOT NULL DEFAULT 0
 discovered_devices	scope_node	scope_node TEXT NOT NULL
 discovered_devices	serial	serial TEXT NOT NULL DEFAULT ''
 event_log_meta	evicted_through	evicted_through TEXT NOT NULL DEFAULT ''

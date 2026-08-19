@@ -526,7 +526,7 @@ func TestAudit_AdoptRecordsTheDeviceAndItsPlacement(t *testing.T) {
 		Name: "Audited TV", ScopeNode: node, Labels: map[string]string{},
 		Address: "192.168.50.31:8060",
 	})
-	if err := e.store.ReplaceDiscoveredDevices(context.Background(), auditRelayID, []store.DiscoveredDevice{{
+	if _, err := e.store.ReplaceDiscoveredDevices(context.Background(), auditRelayID, []store.DiscoveredDevice{{
 		DeviceID: auditDeviceID, RelayID: auditRelayID, ScopeNode: node,
 		Driver: "roku-ecp", NativeID: "uuid:roku:ecp:AUDIT1", DeviceClass: "media-player",
 		Name: "Audited TV", Address: "192.168.50.31:8060", FirstSeen: 1000, LastSeen: 2000,

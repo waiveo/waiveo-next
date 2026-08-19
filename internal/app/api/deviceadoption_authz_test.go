@@ -37,7 +37,7 @@ import (
 // the wrong answer.
 func mirrorScopedDevice(t *testing.T, e *devicePlaneEnv, deviceID, scopeNode, nativeID string) {
 	t.Helper()
-	if err := e.store.ReplaceDiscoveredDevices(context.Background(), "relay-"+deviceID, []store.DiscoveredDevice{{
+	if _, err := e.store.ReplaceDiscoveredDevices(context.Background(), "relay-"+deviceID, []store.DiscoveredDevice{{
 		DeviceID: deviceID, RelayID: "relay-" + deviceID, ScopeNode: scopeNode,
 		Driver: "roku-ecp", NativeID: nativeID, DeviceClass: "media-player",
 		Name: "Scoped TV", Address: "192.168.50.31:8060",

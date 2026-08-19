@@ -34,6 +34,7 @@ const DEVICE_ID = "01J8ZDEV1CE00000000000000A";
 const OTHER_DEVICE_ID = "01J8ZDEV1CE00000000000000B";
 const ENTITY_ID = "01J8ZENT1TY00000000000000A";
 const OTHER_ENTITY_ID = "01J8ZENT1TY00000000000000B";
+const THIRD_DEVICE_ID = "01J8ZDEV1CE00000000000000C";
 
 function device(over: Partial<Device> = {}): Device {
   return {
@@ -168,6 +169,48 @@ describe("Devices — the discovered fleet", () => {
     expect(within(table).getByText("192.0.2.40")).toBeInTheDocument();
     expect(within(table).getByText("Roku Ultra")).toBeInTheDocument();
     expect(within(table).getByText("Discovered")).toBeInTheDocument();
+  });
+
+  it("renders the two seen instants as ages, and an absent one as no answer", async () => {
+    // The RENDERING half of the age columns, and deliberately no more than
+    // that. Whether the served first_seen actually survives a relay restart is
+    // a server-side property this test cannot see: the API is stubbed here, so
+    // it would pass against a server that reset the value every minute. That
+    // half is pinned where it lives — internal/app/store's
+    // TestFirstSeenSurvivesARelayRestart and cmd/waiveo-feeder's
+    // TestDeviceAgeSurvivesARelayRestartEndToEnd.
+    //
+    // What IS this page's own to get right: turning two epoch instants into the
+    // comparison an operator is actually making (weeks-old furniture vs. a new
+    // arrival), and refusing to answer at all for a device the deployment has
+    // no record of, rather than dating it to 1970.
+    const now = Date.now();
+    seed({
+      devices: [
+        device({ first_seen: now - 21 * 86_400_000, last_seen: now - 4_000 }),
+        device({
+          id: OTHER_DEVICE_ID,
+          name: "Cafe TV",
+          first_seen: now - 90_000,
+          last_seen: now - 90_000,
+        }),
+        // A device the deployment has never durably mirrored: the API omits
+        // both members, and the page must say so rather than date it to 1970.
+        device({ id: THIRD_DEVICE_ID, name: "Unmirrored TV" }),
+      ],
+    });
+    renderRoute();
+    const table = await screen.findByRole("table", { name: "Discovered devices" });
+
+    const furniture = within(table).getByText("Hanger TV").closest("tr")!;
+    expect(within(furniture).getByText("21d ago")).toBeInTheDocument();
+    expect(within(furniture).getByText("4s ago")).toBeInTheDocument();
+
+    const newcomer = within(table).getByText("Cafe TV").closest("tr")!;
+    expect(within(newcomer).getAllByText("1m ago")).toHaveLength(2);
+
+    const unknown = within(table).getByText("Unmirrored TV").closest("tr")!;
+    expect(within(unknown).getAllByText("\u2014").length).toBeGreaterThanOrEqual(2);
   });
 
   it("counts what discovery found, and says the console cannot start a sweep", async () => {

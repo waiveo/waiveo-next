@@ -448,6 +448,15 @@ func Open(dsn string, nowMs func() int64) (*Store, error) {
 	}
 
 	s := &Store{db: db, nowMs: nowMs}
+	// Seed the first-seen ledger from the column it took over, if this is the
+	// upgrade that introduces it (devicefirstseen.go). It runs HERE rather than
+	// in applySchemaDDL because it has to judge candidate values against the
+	// app's own clock, which only exists once the store is built — and after the
+	// column migration above, since the rows it reads must be the migrated shape.
+	if err := s.backfillDeviceFirstSeen(context.Background()); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	// The store's own integrity report, once, at boot. A store carrying rows an
 	// older build accepted and this build's validators do not is a legitimate
 	// state — writes to it still work, because a write is judged on what IT
@@ -610,6 +619,15 @@ func applySchemaDDL(db *sql.DB) error {
 	// reaches a relay, so it must not bump the generation (ignoreddevices.go).
 	if _, err := db.Exec(ignoredDevicesSchema); err != nil {
 		return fmt.Errorf("store: migrate ignored devices: %w", err)
+	}
+	// When this site first saw each device (device_first_seen). Beside the mirror
+	// rather than inside it for the reason the ignore decisions are: a relay's
+	// report REPLACES that relay's mirror rows wholesale, so a fact that must
+	// outlive every report — and every relay restart, which re-mints the relay's
+	// idea of "first" from nothing — cannot live in a row the next report deletes
+	// (devicefirstseen.go).
+	if _, err := db.Exec(deviceFirstSeenSchema); err != nil {
+		return fmt.Errorf("store: migrate device first seen: %w", err)
 	}
 	// Revoked screens and relay certificates (api/1 API-140, revocations.go).
 	// Their own table rather than a column, so a revocation outlives the row it

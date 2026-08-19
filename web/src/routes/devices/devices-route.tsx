@@ -23,6 +23,7 @@ import {
   type RelayHealth,
   type WaiveoApi,
 } from "@/api";
+import { formatAge } from "@/lib/format-age";
 import { RokuRemote } from "./roku-remote";
 import { describeDiscovery, type BlindReason } from "./discovery";
 import { DiscoveryPanel } from "./discovery-panel";
@@ -102,6 +103,18 @@ const REMOTE_CLASS = "media-player";
 function problemMessage(err: unknown): string {
   if (err instanceof ApiError) return err.detail ?? err.code;
   return "the service is unreachable.";
+}
+
+/** Render one epoch-millisecond instant as an age relative to now, or an em dash
+ * when the API omitted it.
+ *
+ * Absent is a real answer here and must not be faked: `first_seen`/`last_seen`
+ * are absent until this deployment has durably mirrored the device, so a
+ * fallback of 0 would render every un-mirrored row as "20000d ago" — a
+ * confident, wrong statement about a device nobody has a record for. */
+function ageCell(atMs: number | undefined): string {
+  if (atMs === undefined || atMs <= 0) return "—";
+  return formatAge(Math.max(0, Date.now() - atMs));
 }
 
 /** A discovered device, flattened with the facts it reported and the entities
@@ -281,6 +294,27 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
         header: "Entities",
         accessorFn: (r) => r.entities.length,
         meta: { numeric: true },
+      },
+      /* The two columns that answer "is this new to my network, or has it been
+         here for weeks" — the question this page exists for and the one it could
+         not answer at all, because the API served neither field. They are sorted
+         on the raw instant and RENDERED as an age: an operator scanning a fleet
+         is comparing recency, not reading dates, and "3d ago" is the comparison
+         made legible. Absent (the API omits both until a device has been durably
+         mirrored) renders as an em dash rather than as the epoch. */
+      {
+        id: "first_seen",
+        header: "First seen",
+        accessorFn: (r) => r.device.first_seen ?? 0,
+        meta: { numeric: true },
+        cell: ({ row }) => ageCell(row.original.device.first_seen),
+      },
+      {
+        id: "last_seen",
+        header: "Last seen",
+        accessorFn: (r) => r.device.last_seen ?? 0,
+        meta: { numeric: true },
+        cell: ({ row }) => ageCell(row.original.device.last_seen),
       },
       {
         id: "status",

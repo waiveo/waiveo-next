@@ -17,6 +17,7 @@ import {
   type ScreenStatus,
   type WaiveoApi,
 } from "@/api";
+import { formatAge } from "@/lib/format-age";
 
 /**
  * The fleet-operations panel: what every screen is actually doing, and the one
@@ -93,21 +94,6 @@ const REACHABILITY_LABEL: Record<string, string> = {
   stale: "Not heard from",
   never_seen: "Never seen",
 };
-
-/** Render a millisecond age as a short human duration, or an em dash for the
- * never sentinel (-1). Never "0s ago" for never — that is the single most
- * misleading thing this panel could say. */
-export function formatAge(ms: number): string {
-  if (ms < 0) return "—";
-  if (ms < 1_000) return "just now";
-  const s = Math.floor(ms / 1_000);
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
-}
 
 /** What a row's Status cell says UNDER the chip when a screen is refusing its
  * program: the player's own reason, which is the actionable half of the state.

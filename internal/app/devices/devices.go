@@ -149,6 +149,26 @@ type Device struct {
 	// until something scanned it: no port list and an empty port list are
 	// different facts, and only a scan can assert the second.
 	OpenPorts []int `json:"open_ports,omitempty"`
+	// FirstSeen is when this SITE first held a report of the device and LastSeen
+	// is when its relay was last observed to have SEEN it, both in epoch
+	// milliseconds on the app's own clock (SEC-066) — the pair that answers "is
+	// this new to my network, or has it been here for weeks", which is the
+	// question a discovery inventory exists for.
+	//
+	// They are stamped from the durable ledger and the mirror row
+	// (internal/app/store), never from the reporting relay's numbers. A relay
+	// does not persist candidates, so its idea of "first" is re-minted at every
+	// relay restart and would report a four-year-old TV as new every time its
+	// relay was upgraded; and its clock is unattested (REL-038's clock_state is
+	// `untrusted` on every live relay), so its idea of "how long ago" is a
+	// number nothing on this platform stands behind.
+	//
+	// Both are omitempty because zero is not a time: a device this deployment
+	// has never mirrored (the store write is failing, or the row predates the
+	// ledger) carries no answer, and an absent member says that where an epoch
+	// timestamp would lie about it.
+	FirstSeen int64 `json:"first_seen,omitempty"`
+	LastSeen  int64 `json:"last_seen,omitempty"`
 }
 
 // Entity is one addressable object a device exposes — the openapi Entity schema,
@@ -244,9 +264,32 @@ type Registry struct {
 	// is remembered until it reports.
 	ignored map[string]bool
 
+	// seen is when this SITE first and last held a report of each device — the
+	// app's own record of a device's age, held here for the third time in this
+	// struct and for the third identical reason: a relay's report replaces its
+	// whole view, so anything stamped onto a view row dies with the next report.
+	//
+	// The values are NOT the ones the report carries. A relay does not persist
+	// candidates, so its `first_seen` is only ever "since this relay process
+	// started" and is re-minted from nothing at every relay restart — which is
+	// exactly the defect that made the durable ledger (internal/app/store
+	// devicefirstseen.go) the owner of this fact. This map is that ledger's
+	// projection: the store merges, commits, and returns what stands, and
+	// MarkSeen teaches it here.
+	seen map[string]Seen
+
 	// Merged view, rebuilt from views on every write. Reads never touch views.
 	devices  map[string]Device
 	entities map[string]Entity
+}
+
+// Seen is a device's age as this site knows it: when the site first held a
+// report of the device, and when it last did — both on the APP's clock (SEC-066)
+// rather than the reporting relay's wall clock, so an operator comparing two
+// devices is comparing two readings of one clock.
+type Seen struct {
+	FirstMs int64
+	LastMs  int64
 }
 
 // incumbent is one device's current routing holder.
@@ -282,8 +325,37 @@ func New(siteScopeNode string, nowMs func() int64) *Registry {
 		incumbency: map[string]incumbent{},
 		adopted:    map[string]bool{},
 		ignored:    map[string]bool{},
+		seen:       map[string]Seen{},
 		nowMs:      nowMs,
 	}
+}
+
+// MarkSeen teaches the read model what the durable first/last-seen ledger holds
+// for a batch of devices (see Registry.seen).
+//
+// A PROJECTION, exactly as MarkAdopted and MarkIgnored are: the store merges and
+// commits first, and this only carries the committed answer into the rows an
+// operator reads. It takes the whole batch rather than one device at a time
+// because a report re-states every device a relay can see — one lock and one
+// rematerialize for a report, not sixty of each.
+//
+// A device the store did not return keeps whatever it already had, so a report
+// that mentions half a site does not blank the other half's age. An id this
+// registry has not heard of is remembered anyway, for the reason the other two
+// projections allow it: the boot restore runs before any relay has connected.
+func (r *Registry) MarkSeen(seen map[string]Seen) {
+	if len(seen) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, s := range seen {
+		if id == "" {
+			continue
+		}
+		r.seen[id] = s
+	}
+	r.rematerialize()
 }
 
 // MarkAdopted records that an adoption record exists for deviceID, so every
@@ -501,6 +573,14 @@ func (r *Registry) rematerialize() {
 			// a fact that outlives a report can be attached to one.
 			d.Adopted = r.adopted[id]
 			d.Ignored = r.ignored[id]
+			// The age too, and for the same reason — with one extra one behind
+			// it: the report DOES carry a first_seen, and taking it would be
+			// taking a relay's process uptime as the device's history. The
+			// durable ledger's answer is stamped here instead, and a device the
+			// ledger has nothing for reads zero, which serializes as absent
+			// rather than as "first seen at the epoch".
+			seen := r.seen[id]
+			d.FirstSeen, d.LastSeen = seen.FirstMs, seen.LastMs
 			devs[id] = d
 		}
 		for id, e := range v.entities {
