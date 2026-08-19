@@ -36,10 +36,10 @@ import {
   type WaiveoApi,
 } from "@/api";
 import { loadPackCatalog, resolveTitle } from "@/routes/packs/catalog";
-import { notifyPacksChanged } from "@/routes/packs/use-installed-packs";
+import { notifyPacksChanged } from "@/routes/packs/packs-changed";
 import { useOptionalSession } from "@/auth/session-gate";
 import { can } from "@/auth/can";
-import { resolvePackIcon } from "@/shell/pack-icon";
+import { resolvePackIcon } from "./pack-icon";
 import {
   describeInstall,
   describeRefusal,
@@ -97,21 +97,38 @@ import {
  * ordinary Required badge would present a broken deployment as a deliberate one,
  * so it gets its own words.
  *
+ * IT IS THE DOOR TO A PACK'S PAGES. The rail carries no pack-contributed
+ * section — the owner removed it on 2026-08-19, for every pack — so a pack's
+ * `/p/{publisher}/{name}/{path}` pages are reached from the cards below and
+ * nowhere else. web/src/shell/nav-tree.ts's OFF_RAIL_ROUTES records that, and a
+ * test here clicks the link and asserts where it lands, so the door cannot be
+ * deleted quietly.
+ *
+ * Being the only door makes this page the only place two obligations can live.
+ * MKT-097's second half — a DISABLED pack "MUST NOT appear as a navigable
+ * destination" — used to be met by the rail section, which listed enabled packs
+ * only; it is met here now, by naming a disabled pack's pages without linking
+ * them (`PackHealth.pagesWithdrawn`). And because it is the only door, it must
+ * not be behind a remote registry: the update-availability check folds into a
+ * card AFTER it renders rather than gating the list, so a box whose registry is
+ * unreachable still reaches every page it has installed. See `refresh`.
+ *
  * IT SAYS "LIVE" ONLY WHERE LIVE IS TRUE. A pack is DATA: a manifest, page
  * documents, message catalogs and declared collections. Installing one writes
  * them in a single transaction; nothing is compiled, nothing is executed, no
- * service restarts. That claim is made good in this console too — a successful
- * install/update/uninstall fires PACKS_CHANGED_EVENT and the shell's Extensions
- * nav re-resolves, so the pack's pages appear in the rail immediately. A console
- * that needed a reload to show its own work would have required a restart from
- * where the operator sits, whatever the box did.
+ * service restarts. That claim is made good in this console too — the installed
+ * list re-reads itself, so the pack and its page links appear here immediately,
+ * and a successful install/update/uninstall fires PACKS_CHANGED_EVENT so the
+ * rail's "extensions need attention" badge re-resolves with it. A console that
+ * needed a reload to show its own work would have required a restart from where
+ * the operator sits, whatever the box did.
  *
  * EVERY FAILURE IS SHOWN WITH ITS REASON. A refused install renders the box's
  * detail, its machine code, EVERY per-field violation the manifest engine
  * returned, and the trace id — never a generic "install failed". A pack whose
  * declared page path cannot be confined to its own namespace is reported as
- * unreachable rather than silently dropped (which is what the nav does, correctly,
- * and what a management console must not).
+ * unreachable rather than silently dropped — the list of links below simply
+ * omits it, and an omission is not a reason.
  *
  * ── grammar-gap: byte upload ────────────────────────────────────────────────
  *
@@ -339,6 +356,8 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
       alive.current = false;
     };
   }, []);
+  /** Which `refresh()` call owns the list right now. See `refresh`. */
+  const refreshGeneration = useRef(0);
 
   const setOutcome = useCallback((key: string, outcome: Outcome | null) => {
     setOutcomes((prev) => {
@@ -350,10 +369,34 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
   }, []);
 
   /** Load every installed pack, with its locale-resolved title and its install
-   * history. Two extra reads per pack (the en catalog the nav already needs, and
-   * the record history the update affordance depends on) — a box holds a handful
-   * of packs, and both answers are load-bearing rather than decorative. */
+   * history. Two extra reads per pack (its en catalog, and the record history the
+   * update affordance depends on) — a box holds a handful of packs, both answers
+   * are load-bearing rather than decorative, and both are served out of this
+   * box's own store.
+   *
+   * WHAT IT DELIBERATELY DOES NOT WAIT FOR is the update-availability check. That
+   * one is not a local read: `GET /extensions/{id}/update` resolves the pack
+   * through its pinned channel, which walks every configured registry source
+   * server-side with a 60-second per-fetch budget and no index cache. Since the
+   * pack-contributed rail section was removed, THIS LIST IS THE ONLY DOOR to
+   * every `/p/{publisher}/{name}/{path}` page in the console — so blocking it on
+   * a remote registry would mean that on a LAN-only box, or one whose registry is
+   * simply down, no pack page is reachable from anywhere in the UI until the
+   * lookups time out. The rail entry this replaced needed two local calls.
+   *
+   * So the cards are built from local answers and rendered, and availability
+   * FOLDS IN per card as each answer arrives (`availability: null` already means
+   * "not read yet", which is why the card renders nothing rather than "Up to
+   * date"). Same reasoning as the sibling `loadCatalog()`, which is kept out of
+   * this function so a slow registry never delays the installed list — the check
+   * was simply on the wrong side of that line. */
   const refresh = useCallback(async () => {
+    // Bumped per call so a slow availability answer from a SUPERSEDED refresh
+    // cannot land on the list a later one produced — the merge is keyed by pack
+    // id, so without this an in-flight lookup from before an update was applied
+    // could repaint the old note over the new one.
+    const generation = ++refreshGeneration.current;
+    const current = () => alive.current && refreshGeneration.current === generation;
     setLoading(true);
     try {
       const packs = await collectPages<Pack>((cursor) => client.packs.list({ cursor }));
@@ -369,42 +412,51 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
           } catch (err: unknown) {
             recordsError = describeRefusal(err).detail;
           }
-          const provenance = packProvenance(records);
-          // Only auto-tracked packs have a channel to ask about. A direct
-          // install has nothing to resolve through (MKT-094a) and the endpoint
-          // refuses it, so asking would spend a request to be told what the
-          // records already say.
-          let availability: AvailabilityNote | null = null;
-          let availabilityError: string | null = null;
-          if (provenance.autoTracked) {
-            try {
-              availability = describeAvailability(await client.packs.updateAvailability(pack.id));
-            } catch (err: unknown) {
-              availabilityError = describeRefusal(err).detail;
-            }
-          }
           return {
             pack,
             title: resolveTitle(messages, pack.manifest.displayName),
             titleResolved: typeof messages[pack.manifest.displayName] === "string",
             messages,
             health: packHealth(pack),
-            provenance,
+            provenance: packProvenance(records),
             records,
             recordsError,
-            availability,
-            availabilityError,
+            availability: null,
+            availabilityError: null,
           };
         }),
       );
-      if (!alive.current) return;
+      if (!current()) return;
       setCards(built);
       setListError(null);
+      // Only auto-tracked packs have a channel to ask about. A direct install has
+      // nothing to resolve through (MKT-094a) and the endpoint refuses it, so
+      // asking would spend a request to be told what the records already say.
+      for (const card of built) {
+        if (!card.provenance.autoTracked) continue;
+        void (async () => {
+          let availability: AvailabilityNote | null = null;
+          let availabilityError: string | null = null;
+          try {
+            availability = describeAvailability(
+              await client.packs.updateAvailability(card.pack.id),
+            );
+          } catch (err: unknown) {
+            availabilityError = describeRefusal(err).detail;
+          }
+          if (!current()) return;
+          setCards((prev) =>
+            prev.map((c) =>
+              c.pack.id === card.pack.id ? { ...c, availability, availabilityError } : c,
+            ),
+          );
+        })();
+      }
     } catch (err: unknown) {
-      if (!alive.current) return;
+      if (!current()) return;
       setListError(describeRefusal(err).detail);
     } finally {
-      if (alive.current) setLoading(false);
+      if (current()) setLoading(false);
     }
   }, [client]);
 
@@ -553,7 +605,7 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
             : "Disabled. Its pages are withdrawn; its data, install history and the extension itself are untouched.",
         });
         await refresh();
-        // The rail lists only enabled packs, so it has to re-resolve.
+        // The pack set the rail reports on changed under it, so it re-resolves.
         notifyPacksChanged();
       } catch (err: unknown) {
         if (alive.current) setOutcome(id, { kind: "refused", refusal: describeRefusal(err) });
@@ -700,10 +752,9 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
           <p className="text-sm text-muted-foreground">
             An extension is <strong>sealed and signed</strong>: a manifest, its pages, its
             message catalogs and the data collections it declares. Installing one writes those files
-            and its collections in a single transaction, and the pack's pages appear in the
-            navigation immediately. There is no image rebuild and no reboot in that path. Removing
-            one takes its pages, its authored rows and its install records away in one transaction
-            too.
+            and its collections in a single transaction, and the pack's pages are open from its card
+            below immediately. There is no image rebuild and no reboot in that path. Removing one
+            takes its pages, its authored rows and its install records away in one transaction too.
           </p>
           <p className="text-sm text-muted-foreground">
             Every pack installable today is <strong>declarative</strong> — data this box validates
@@ -1068,9 +1119,10 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
                       <p className="rounded-input border border-border px-3 py-2 text-sm">
                         <strong>This extension is turned off.</strong>{" "}
                         <span className="text-muted-foreground">
-                          Its pages are not served and it does not appear in the navigation. Its
-                          data, its install history and the extension itself are untouched —
-                          enabling it puts everything back.
+                          Its pages are not served and none of them is a destination anywhere in
+                          this console — they are listed below, struck through, so you can see what
+                          comes back. Its data, its install history and the extension itself are
+                          untouched — enabling it puts everything back.
                         </span>
                       </p>
                     ) : null}
@@ -1100,7 +1152,7 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
                           {card.health.unreachablePages.length} declared page
                           {card.health.unreachablePages.length === 1 ? " is" : "s are"} unreachable
                           and {card.health.unreachablePages.length === 1 ? "does" : "do"} not appear
-                          in the navigation — the path escapes this pack's own namespace:{" "}
+                          in the page list below — the path escapes this pack's own namespace:{" "}
                           <span className="font-mono text-xs break-all">
                             {card.health.unreachablePages.join(", ")}
                           </span>
@@ -1119,19 +1171,45 @@ export default function ExtensionsRoute({ api }: { api?: WaiveoApi }) {
                               None — this pack contributes no console pages.
                             </span>
                           ) : (
-                            <ul className="flex flex-wrap gap-2">
-                              {card.health.pages.map((pg) => (
-                                <li key={pg.path}>
-                                  <Link
-                                    to={pg.href}
-                                    className="inline-flex items-center gap-1 rounded-input px-2 py-0.5 text-sm underline outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                                  >
-                                    <KitIcon icon={FileText} decorative className="size-3.5" />
-                                    {resolveTitle(card.messages, pg.titleMsg)}
-                                  </Link>
-                                </li>
-                              ))}
-                            </ul>
+                            <>
+                              <ul className="flex flex-wrap gap-2">
+                                {card.health.pages.map((pg) => (
+                                  <li key={pg.path}>
+                                    {card.health.pagesWithdrawn ? (
+                                      // MKT-097: a disabled pack MUST NOT appear
+                                      // as a navigable destination. This card is
+                                      // the only surface that lists a pack's
+                                      // pages, so it is the whole of the client
+                                      // half — the page is NAMED (an operator
+                                      // deciding whether to re-enable needs to
+                                      // know what comes back) and is not a link.
+                                      // Rendering one and letting the box's 404
+                                      // answer the click would be a destination
+                                      // that fails, not one withdrawn.
+                                      <span className="inline-flex items-center gap-1 rounded-input px-2 py-0.5 text-sm text-muted-foreground line-through">
+                                        <KitIcon icon={FileText} decorative className="size-3.5" />
+                                        {resolveTitle(card.messages, pg.titleMsg)}
+                                      </span>
+                                    ) : (
+                                      <Link
+                                        to={pg.href}
+                                        className="inline-flex items-center gap-1 rounded-input px-2 py-0.5 text-sm underline outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                      >
+                                        <KitIcon icon={FileText} decorative className="size-3.5" />
+                                        {resolveTitle(card.messages, pg.titleMsg)}
+                                      </Link>
+                                    )}
+                                  </li>
+                                ))}
+                              </ul>
+                              {card.health.pagesWithdrawn ? (
+                                <p className="mt-1.5 text-xs text-muted-foreground">
+                                  Withdrawn while this extension is off — not destinations here or
+                                  anywhere in this console, and the box refuses them too. They are
+                                  named, not deleted: enabling it opens every one of them again.
+                                </p>
+                              ) : null}
+                            </>
                           )}
                         </dd>
                       </div>

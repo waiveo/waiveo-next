@@ -4,7 +4,6 @@ import {
   AudioWaveform,
   ChevronDown,
   ChevronRight,
-  FileText,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
@@ -16,10 +15,7 @@ import { SignOutButton } from "@/auth/sign-out-button";
 import { SecurityLink } from "@/auth/security-link";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
-import type { WaiveoApi } from "@/api";
-import { useInstalledPackNav, type PackNavGroup } from "@/routes/packs/use-installed-packs";
 import { useUpdatesWaiting } from "@/routes/packs/use-updates-waiting";
-import { resolvePackIcon } from "./pack-icon";
 import { NAV_TREE, groupOwning, type NavGroup, type NavLeaf } from "./nav-tree";
 
 /**
@@ -38,17 +34,29 @@ import { NAV_TREE, groupOwning, type NavGroup, type NavLeaf } from "./nav-tree";
  *
  * The information architecture — which destinations exist and which product
  * area owns each one — is DATA, in `./nav-tree.ts`. This file knows how to
- * render a tree; it does not know that Casts belong under Slidecast. That split
- * is deliberate: adding a page is a node in an array, which is a one-line merge
- * between parallel tracks rather than a conflict inside a component.
+ * render a tree; it does not know that All devices belongs under Discovery. That
+ * split is deliberate: adding a page is a node in an array, which is a one-line
+ * merge between parallel tracks rather than a conflict inside a component.
  *
- * There are two nav landmarks, never merged: "Primary" (this tree, the core
- * console) and "Extensions" (installed packs' own pages, resolved live), so
- * third-party destinations stay visibly demarcated from first-party ones.
+ * # ONE nav landmark: no pack gets its own rail area (owner, 2026-08-19)
+ *
+ * The rail used to render a SECOND landmark below a divider, built live from the
+ * installed packs' declared pages — a titled section per pack. The owner killed
+ * it on sight ("the hell is this Discovery policy crap? That doesn't need to be
+ * there"), and the ruling is general: no pack gets its own nav area, now or in
+ * future. The immediate offence was duplication — waiveo/discovery's section put
+ * the word "Discovery" in the rail a second time, under the core Discovery group
+ * — but the rule does not depend on a name collision.
+ *
+ * Pack pages are NOT withdrawn by that. `/p/{publisher}/{name}/{path}` still
+ * routes and still renders; Extensions > Installed lists every installed pack
+ * with a link to each of its pages, and that page is now the sole door. It is
+ * declared as such in nav-tree.ts's OFF_RAIL_ROUTES, and the door is pinned by a
+ * test that clicks it (routes/extensions/extensions-route.test.tsx).
  */
 
 /** Which groups the operator has left OPEN, keyed by the group's stable id.
- * Absent means "as shipped", which is open — a rail that hides five of its six
+ * Absent means "as shipped", which is open — a rail that hides most of its
  * product areas on first run reintroduces the problem the tree exists to fix. */
 type OpenGroups = Record<string, boolean>;
 
@@ -142,7 +150,7 @@ function Brand({ collapsed, className }: { collapsed?: boolean; className?: stri
   );
 }
 
-/** The shared active/hover styling every nav link (core or extension) wears. */
+/** The shared active/hover styling every nav link wears. */
 function navLinkClass(collapsed?: boolean) {
   return ({ isActive }: { isActive: boolean }) =>
     cn(
@@ -277,13 +285,11 @@ function NavGroupSection({
 function ShellNav({
   collapsed,
   onNavigate,
-  packNav,
   openGroups,
   onToggleGroup,
 }: {
   collapsed?: boolean;
   onNavigate?: () => void;
-  packNav?: PackNavGroup[];
   openGroups: OpenGroups;
   onToggleGroup: (id: string) => void;
 }) {
@@ -293,6 +299,10 @@ function ShellNav({
   // at?" — and both answers are yes. The PAGE is where the two are told apart;
   // splitting them in the rail would put a distinction in the place with the
   // least room to explain it.
+  //
+  // The badge hangs off the CORE Extensions group, and always has — it survived
+  // the removal of the pack-contributed section untouched, which is also where
+  // it belongs: it points at /extensions, the page that acts on what it counts.
   const needsAttention = updates.count + updates.withdrawn;
   const extensionsBadge =
     needsAttention > 0
@@ -308,106 +318,38 @@ function ShellNav({
         }
       : undefined;
   return (
-    <div className="flex flex-col gap-4">
-      {/* A real list inside the landmark: a screen reader announces "6 items"
-          and the group/child relationship is structural, not a matter of
-          indentation an assistive technology cannot see. */}
-      <nav aria-label="Primary">
-        <ul className="flex flex-col gap-1">
-          {NAV_TREE.map((node) => (
-            <li key={node.kind === "leaf" ? node.to : node.id}>
-              {node.kind === "leaf" ? (
-                <NavLeafLink item={node} collapsed={collapsed} onNavigate={onNavigate} />
-              ) : (
-                <NavGroupSection
-                  group={node}
-                  open={isGroupOpen(openGroups, node.id)}
-                  onToggle={onToggleGroup}
-                  collapsed={collapsed}
-                  onNavigate={onNavigate}
-                  badge={node.id === "extensions" ? extensionsBadge : undefined}
-                />
-              )}
-            </li>
-          ))}
-        </ul>
-      </nav>
-      {packNav && packNav.length > 0 ? (
-        <ExtensionsNav groups={packNav} collapsed={collapsed} onNavigate={onNavigate} />
-      ) : null}
-    </div>
-  );
-}
-
-/** The Extensions section — installed packs' pages, grouped by pack. A second,
- * distinctly-labelled nav landmark (never merged into Primary) so third-party
- * content is clearly demarcated from the core console destinations. */
-function ExtensionsNav({
-  groups,
-  collapsed,
-  onNavigate,
-}: {
-  groups: PackNavGroup[];
-  collapsed?: boolean | undefined;
-  onNavigate?: (() => void) | undefined;
-}) {
-  return (
-    // The landmark keeps its accessible name ("Extensions") and its own <nav>, so
-    // assistive tech still hears third-party content announced as a separate
-    // region — the demarcation above is intact where it does the work.
+    // ONE landmark, rendered directly: nothing follows it and nothing may. The
+    // wrapper this used to sit in existed to space the Primary nav from the
+    // pack-contributed section below it, and that section is gone (see the
+    // header — no pack gets a rail area of its own).
     //
-    // What it no longer renders is a VISIBLE heading reading "Extensions", which
-    // collided head-on with the core Extensions group in Primary: the rail showed
-    // two sections under that one word, one meaning "manage packs" and one meaning
-    // "pages packs contributed". Legacy never had this meta-heading — each
-    // extension declared its own titled section and they stacked as peers of the
-    // core ones — and every pack group here already carries the pack's own name
-    // and icon, so the word was labelling a set its members label better.
-    //
-    // The rule is separated by a border instead. That keeps the boundary visible
-    // (a pack may title a page "Backup"; an operator must be able to see that it
-    // is a pack's page) without spending a section name on it.
-    <nav
-      aria-label="Extensions"
-      className="flex flex-col gap-2 border-t border-border pt-3 mt-1"
-    >
-      {groups.map((group) => (
-        <div key={group.packId} className="flex flex-col gap-1">
-          {/* The group heading wears the pack's icon: its manifest-declared glyph
-              when it names a host-allowed one, else the default extension glyph.
-              resolvePackIcon ALWAYS returns a real component — the nav never shows
-              a broken/missing icon, even for an unknown or non-string name. */}
-          <div
-            data-slot="pack-group-heading"
-            className={cn("flex items-center gap-2 px-3", collapsed && "justify-center")}
-          >
-            <KitIcon
-              icon={resolvePackIcon(group.icon)}
-              decorative
-              className="size-4 shrink-0 text-muted-foreground"
-            />
-            <span
-              className={cn(
-                "text-[11px] font-medium text-muted-foreground",
-                collapsed && "sr-only",
-              )}
-            >
-              {group.title}
-            </span>
-          </div>
-          {group.pages.map((pg) => (
-            <NavLink key={pg.to} to={pg.to} onClick={onNavigate} className={navLinkClass(collapsed)}>
-              <KitIcon icon={FileText} decorative className="size-4 shrink-0" />
-              <span className={cn(collapsed && "sr-only")}>{pg.label}</span>
-            </NavLink>
-          ))}
-        </div>
-      ))}
+    // A real list inside the landmark, so a screen reader announces the item
+    // count and the group/child relationship is structural rather than a matter
+    // of indentation an assistive technology cannot see.
+    <nav aria-label="Primary">
+      <ul className="flex flex-col gap-1">
+        {NAV_TREE.map((node) => (
+          <li key={node.kind === "leaf" ? node.to : node.id}>
+            {node.kind === "leaf" ? (
+              <NavLeafLink item={node} collapsed={collapsed} onNavigate={onNavigate} />
+            ) : (
+              <NavGroupSection
+                group={node}
+                open={isGroupOpen(openGroups, node.id)}
+                onToggle={onToggleGroup}
+                collapsed={collapsed}
+                onNavigate={onNavigate}
+                badge={node.id === "extensions" ? extensionsBadge : undefined}
+              />
+            )}
+          </li>
+        ))}
+      </ul>
     </nav>
   );
 }
 
-export function AppShell({ children, api }: { children?: ReactNode; api?: WaiveoApi }) {
+export function AppShell({ children }: { children?: ReactNode }) {
   // Read reactively from the router, NOT from window.location: the boundary
   // below is keyed on it, and a global read typechecks fine while never
   // changing on a client-side navigation — the key would be frozen at whatever
@@ -415,9 +357,6 @@ export function AppShell({ children, api }: { children?: ReactNode; api?: Waiveo
   const { pathname: contentPathname } = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  // The Extensions nav: installed packs' pages, resolved over the api/1 client.
-  // Degrades to nothing (no section) when no packs are installed or unreachable.
-  const packNav = useInstalledPackNav(api);
   // ONE expand/collapse state for the rail and the drawer. They are never both
   // visible (the breakpoint decides), but they are both mounted — two
   // independent copies would drift, so an operator who collapsed a group on a
@@ -451,12 +390,7 @@ export function AppShell({ children, api }: { children?: ReactNode; api?: Waiveo
         )}
       >
         <Brand collapsed={collapsed} />
-        <ShellNav
-          collapsed={collapsed}
-          packNav={packNav}
-          openGroups={openGroups}
-          onToggleGroup={toggleGroup}
-        />
+        <ShellNav collapsed={collapsed} openGroups={openGroups} onToggleGroup={toggleGroup} />
         <div className="mt-auto flex flex-col gap-1">
           <button
             type="button"
@@ -502,7 +436,6 @@ export function AppShell({ children, api }: { children?: ReactNode; api?: Waiveo
             <Brand />
             <ShellNav
               onNavigate={() => setDrawerOpen(false)}
-              packNav={packNav}
               openGroups={openGroups}
               onToggleGroup={toggleGroup}
             />

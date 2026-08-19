@@ -180,8 +180,12 @@ func TestEveryConsoleRouteIsReachable(t *testing.T) {
 	}
 	// /studio was the canonical off-rail example until it was deleted with the
 	// slidecast surface; /security is the durable one — the header's account
-	// link, which acts on the principal rather than on a console resource.
-	for _, want := range []string{"/login", "/security"} {
+	// link, which acts on the principal rather than on a console resource. The
+	// pack-page route joined them on 2026-08-19, when the owner removed the
+	// pack-contributed rail section: every `/p/...` page is now reached from
+	// Extensions > Installed, and naming it here means DELETING that declaration
+	// is a loud failure rather than a page nothing leads to.
+	for _, want := range []string{"/login", "/security", "/p/:publisher/:name/*"} {
 		if !slices.Contains(offRail, want) {
 			t.Fatalf("derived off-rail routes %v are missing %q — the scan over OFF_RAIL_ROUTES found the wrong thing", offRail, want)
 		}
@@ -192,6 +196,27 @@ func TestEveryConsoleRouteIsReachable(t *testing.T) {
 	for _, to := range offRail {
 		if slices.Contains(nav, to) {
 			t.Errorf("%q is declared in OFF_RAIL_ROUTES but IS on the primary rail; drop the declaration, or it will excuse the page for good the day it leaves the nav", to)
+		}
+	}
+
+	// Every declaration has to SAY the door. Read the limit of this honestly:
+	// what follows checks that a justification was written, not that it is true —
+	// only a test that drives the named door can do that, which is why the pack
+	// pages' door is clicked in web/src/routes/extensions/extensions-route.test.tsx
+	// rather than asserted here. What this does buy is that OFF_RAIL_ROUTES
+	// cannot decay into a bare list of paths: an entry costs an argument, and an
+	// argument is the thing a reviewer can disagree with. Without it the whole
+	// guard degrades toward "every route is either reachable or declared
+	// unreachable", which is a tautology dressed as a property.
+	doors := offRailDoors(t, root)
+	for _, to := range offRail {
+		via, ok := doors[to]
+		if !ok {
+			t.Errorf("OFF_RAIL_ROUTES declares %q with no reachedVia this scan can read; the declaration is the DOOR, and a `to:` on its own excuses the page while recording nothing", to)
+			continue
+		}
+		if len(strings.TrimSpace(via)) < 60 || strings.Contains(via, "TODO") || strings.Contains(via, "TBD") {
+			t.Errorf("OFF_RAIL_ROUTES declares %q with a reachedVia that says nothing (%q). Name the surface an operator actually reaches it from, and why it is not a rail destination.", to, via)
 		}
 	}
 
@@ -562,6 +587,32 @@ func navTargets(t *testing.T, root string) []string {
 func offRailRoutes(t *testing.T, root string) []string {
 	t.Helper()
 	return tableTargets(t, root, "export const OFF_RAIL_ROUTES")
+}
+
+// offRailEntryRe reads one OFF_RAIL_ROUTES entry — its route and the prose that
+// names the door. Deliberately anchored on the PAIR: an entry whose reachedVia
+// this cannot read is reported as missing rather than silently skipped, since a
+// scan that quietly finds nothing is how a justification requirement becomes a
+// formality.
+var offRailEntryRe = regexp.MustCompile(`(?s)to:\s*"([^"]+)",\s*reachedVia:\s*"((?:[^"\\]|\\.)*)"`)
+
+// offRailDoors maps each off-rail route to the prose justifying it.
+func offRailDoors(t *testing.T, root string) map[string]string {
+	t.Helper()
+	src := readRepoFile(t, root, navTreeFile)
+	start := strings.Index(src, "export const OFF_RAIL_ROUTES")
+	if start < 0 {
+		t.Fatalf("%s has no OFF_RAIL_ROUTES — the console navigation moved and this scan must move with it", navTreeFile)
+	}
+	end := strings.Index(src[start:], "\n];")
+	if end < 0 {
+		t.Fatalf("could not find the end of OFF_RAIL_ROUTES in %s", navTreeFile)
+	}
+	out := map[string]string{}
+	for _, m := range offRailEntryRe.FindAllStringSubmatch(src[start:start+end], -1) {
+		out[m[1]] = m[2]
+	}
+	return out
 }
 
 // tableTargets pulls the `to:` values out of one top-level array literal in the

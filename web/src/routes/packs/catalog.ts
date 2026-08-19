@@ -1,5 +1,5 @@
-// Installed-pack locale + data-source helpers, shared by the Extensions nav and
-// the pack page route.
+// Installed-pack locale + data-source helpers, shared by the Extensions console
+// and the pack page route.
 //
 // A pack ships its display strings as a locale catalog per locale (MAN-110): a
 // flat `{ key: text }` map whose keys are BARE (`page.menuItems.title`), while the
@@ -7,7 +7,7 @@
 // helpers bridge the two — prefixing the catalog into the form the ui-schema
 // renderer's message resolver reads, layering the en fallback under the active
 // locale (MAN-111: every msg: ultimately resolves against en), and resolving a
-// single title for the nav. They also read a page document's data source to name
+// single title for a link. They also read a page document's data source to name
 // the pack collection its rows come from, so the route can load them.
 
 import type { PacksModule } from "@/api";

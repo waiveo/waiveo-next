@@ -25,7 +25,8 @@ import type { Page } from "./pagination";
 //
 // The install envelope carries the FULL manifest body; the console reads only the
 // identity, the declared collections (to know which pack-data sources exist), and
-// the ui.pages[] entries (to build the Extensions nav). Every other manifest
+// the ui.pages[] entries (to list, and link, an installed pack's pages on the
+// Extensions console — the only door to them). Every other manifest
 // section (capabilities, egress, devices, …) is validated server-side at install
 // and irrelevant to rendering, so it is left untyped here.
 
@@ -66,7 +67,7 @@ export interface PackManifest {
   displayName: string;
   description?: string;
   /** An optional display hint: a lucide glyph name (kebab-case) the console
-   * resolves to the pack's nav-group icon. Grammar-validated at install; an
+   * resolves to the glyph on the pack's card. Grammar-validated at install; an
    * absent or unrecognized name degrades to the default extension glyph, never a
    * broken icon (resolvePackIcon). Untrusted — the runtime value is not
    * guaranteed to be a string. */

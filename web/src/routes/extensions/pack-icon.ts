@@ -1,5 +1,11 @@
-// The Extensions-nav icon resolver: a manifest-declared glyph name → a real
-// lucide component for an installed pack's nav group.
+// The pack icon resolver: a manifest-declared glyph name → a real lucide
+// component for an installed pack.
+//
+// It sits beside the Extensions console because that is now its only consumer:
+// the pack cards on /extensions. It used to live in the shell, resolving the
+// glyph for a pack's own rail section — the section the owner killed on
+// 2026-08-19 — and there is no longer any shell code that reads a pack's
+// manifest at all.
 //
 // A pack MAY name an icon in its manifest (`icon`, an optional display hint —
 // a lowercase kebab-case lucide glyph name, grammar-validated at install in
@@ -31,9 +37,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-/** The glyph a pack group wears when its manifest declares no icon — or declares
- * one the host does not recognize. A real, always-available extension glyph, so
- * the nav never shows a broken/missing icon. */
+/** The glyph a pack wears when its manifest declares no icon — or declares one
+ * the host does not recognize. A real, always-available extension glyph, so the
+ * console never shows a broken/missing icon. */
 export const DEFAULT_PACK_ICON: LucideIcon = Puzzle;
 
 /**
@@ -67,7 +73,7 @@ export const ALLOWED_PACK_ICONS: Record<string, LucideIcon> = {
 };
 
 /**
- * Resolve a manifest-declared icon NAME to a lucide component for the nav.
+ * Resolve a manifest-declared icon NAME to a lucide component.
  *
  * The value is UNTRUSTED manifest data (install validates the manifest as JSON,
  * not the icon's runtime type), so anything that is not an allowed string name —
@@ -75,7 +81,12 @@ export const ALLOWED_PACK_ICONS: Record<string, LucideIcon> = {
  * The return is ALWAYS a real component: the console never renders a broken icon.
  */
 export function resolvePackIcon(name?: unknown): LucideIcon {
-  if (typeof name === "string") {
+  // OWN properties only. A plain-object lookup answers "constructor",
+  // "toString" and "__proto__" out of Object.prototype with something truthy but
+  // un-renderable, and the manifest grammar (a lowercase identifier) admits every
+  // one of those names — so an unguarded index turns a pack's display hint into a
+  // crash on the surface that renders it. `hasOwn` is the whole fix.
+  if (typeof name === "string" && Object.hasOwn(ALLOWED_PACK_ICONS, name)) {
     const icon = ALLOWED_PACK_ICONS[name];
     if (icon) return icon;
   }

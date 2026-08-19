@@ -119,7 +119,8 @@ export default function App() {
             {/* The pack lifecycle: what is installed, install/update/uninstall,
                 and each pack's install-record provenance. Distinct from the
                 `/p/...` routes below, which OPEN an installed pack's own page —
-                this one manages the packs themselves.
+                this one manages the packs themselves, and (since the rail's
+                pack section was removed) is also the only way to reach them.
 
                 It is the marketplace ship target's surface and by the strip's
                 own rule it should have gone with the rest. It stays because the
@@ -131,7 +132,14 @@ export default function App() {
             <Route path="/extensions" element={<ExtensionsRoute />} />
             <Route path="/api-keys" element={<ApiKeysRoute />} />
             {/* An installed pack's page: `/p/{publisher}/{name}/{path}` — the
-                pack id is two path segments, the page path a trailing splat. */}
+                pack id is two path segments, the page path a trailing splat.
+
+                OFF the rail, and reached from /extensions above: the owner
+                removed the pack-contributed rail section on 2026-08-19 and no
+                pack gets a nav area of its own. The Installed page lists every
+                pack with a link to each page it declares, which makes it the
+                door — declared as such in shell/nav-tree.ts's OFF_RAIL_ROUTES,
+                and pinned by a test that clicks it. */}
             <Route path="/p/:publisher/:name/*" element={<PackPageRoute />} />
             {/* The caller's own account security — second-factor enrollment
                 (security-model/1 SEC-004). Reached from the header rather than

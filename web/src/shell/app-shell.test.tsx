@@ -173,11 +173,11 @@ describe("AppShell — locked-left responsive shell", () => {
 
   it("carries no rail entry for a capability that left core with its pack", () => {
     // The strip's own property, and the one a tree assertion alone would not
-    // state: these labels must not come back as CORE rail entries. A pack that
-    // ships its own pages contributes them through the separate Extensions
-    // landmark (use-installed-packs.ts), which is a different mechanism and a
-    // different landmark — so a returning capability cannot satisfy this by
-    // accident.
+    // state: these labels must not come back as CORE rail entries. Nor can a
+    // returning capability satisfy this by arriving as a pack — since 2026-08-19
+    // the rail has NO pack-contributed section at all (the owner removed it for
+    // every pack), and a pack's pages are reached from Extensions > Installed.
+    // shell/extensions-rail.test.tsx holds that absence.
     const { container } = renderShell();
     const sidebar = container.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
     const railNav = within(sidebar).getByRole("navigation", { name: /primary/i });

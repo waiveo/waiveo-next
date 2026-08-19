@@ -169,6 +169,32 @@ describe("packHealth", () => {
       "/p/acme/menu-board/%252e%252e/%252e%252e/scope-nodes",
     ]);
   });
+
+  // MKT-097: "a disabled pack's ui.pages MUST NOT be served, and it MUST NOT
+  // appear as a navigable destination". The box enforces the first half. This
+  // flag is the whole of the second half, because the Extensions card is now the
+  // only surface in the console that lists a pack's pages.
+  it("WITHDRAWS a disabled pack's pages as destinations while still naming them", () => {
+    const health = packHealth(pack({ enabled: false }) as unknown as Pack);
+    expect(health.pagesWithdrawn).toBe(true);
+    // Named, not dropped: an operator deciding whether to re-enable has to be
+    // able to see what comes back. Withdrawn is not deleted.
+    expect(health.pages.map((pg) => pg.path)).toEqual(["menu-items", "settings"]);
+  });
+
+  it("leaves an ENABLED pack's pages navigable", () => {
+    expect(packHealth(pack() as unknown as Pack).pagesWithdrawn).toBe(false);
+  });
+
+  it("does not read a MISSING enabled member as disabled", () => {
+    // An older box omits the member entirely. Reading absence as "off" would
+    // withdraw every page of every pack from the one surface that reaches them —
+    // a console that hid a working deployment's pages because it could not find
+    // a field.
+    const p: Partial<Pack> = { ...(pack() as unknown as Pack) };
+    delete p.enabled;
+    expect(packHealth(p as Pack).pagesWithdrawn).toBe(false);
+  });
 });
 
 describe("describeUpdate", () => {

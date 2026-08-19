@@ -6,7 +6,7 @@ import { render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Routes, Route, useParams } from "react-router";
 import { vi } from "vitest";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import { SessionGate } from "@/auth/session-gate";
@@ -114,6 +114,19 @@ function renderRoute() {
         <ExtensionsRoute />
       </MemoryRouter>
     </ThemeProvider>,
+  );
+}
+
+/** Stands in for PackPageRoute at `/p/:publisher/:name/*` and reports the params
+ * it was matched with. The real route is exercised by its own suite
+ * (routes/packs/pack-page-route.test.tsx); what is under test HERE is whether a
+ * link on the Extensions page lands on that route at all, and with which pack. */
+function PackPageProbe() {
+  const params = useParams();
+  return (
+    <div data-testid="pack-page-probe">
+      {`${params.publisher}|${params.name}|${params["*"]}`}
+    </div>
   );
 }
 
@@ -563,7 +576,7 @@ describe("Extensions console — removing", () => {
 });
 
 describe("Extensions console — honest health", () => {
-  it("NAMES a declared page whose path escapes the pack's namespace, which the nav drops silently", async () => {
+  it("NAMES a declared page whose path escapes the pack's namespace, rather than just omitting it", async () => {
     mockFeeder({
       packs: [
         pack({
@@ -614,11 +627,108 @@ describe("Extensions console — honest health", () => {
   });
 });
 
+// ── THE DOOR to every pack page ─────────────────────────────────────────────
+//
+// The rail carries no pack-contributed section: the owner removed it on
+// 2026-08-19, for every pack, now and in future. `/p/{publisher}/{name}/{path}`
+// is therefore declared OFF the rail (web/src/shell/nav-tree.ts's
+// OFF_RAIL_ROUTES) with THIS page named as the door it is reached through — and
+// a declaration in prose is exactly the kind of claim that rots into a lie the
+// day someone tidies a link away. These tests are the claim, checked: delete the
+// page links from the card and the pack pages become unreachable, which fails
+// here rather than in an operator's hands.
+describe("Extensions console — the door to a pack's pages", () => {
+  it("NAVIGATES to the pack page route when a page link is clicked", async () => {
+    // Driven, not rendered. An `href` assertion proves the string is right and
+    // nothing about where it lands; this puts the pack-page route in the router
+    // and asserts the click actually resolves onto it, with the pack id and page
+    // path intact.
+    mockFeeder({ packs: [pack()] });
+    render(
+      <ThemeProvider>
+        <MemoryRouter initialEntries={["/extensions"]}>
+          <Routes>
+            <Route path="/extensions" element={<ExtensionsRoute />} />
+            <Route path="/p/:publisher/:name/*" element={<PackPageProbe />} />
+          </Routes>
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+
+    const card = await packCard(PACK_ID);
+    await userEvent.click(within(card).getByRole("link", { name: /Menu Items/ }));
+
+    // The real /p/:publisher/:name/* route matched, with the pack's own segments.
+    expect(await screen.findByTestId("pack-page-probe")).toHaveTextContent(
+      `acme|menu-board|menu-items`,
+    );
+  });
+
+  it("links EVERY page the pack declares, so no page depends on a rail entry", async () => {
+    // The removed section listed all of a pack's pages. If this page listed only
+    // some of them, killing the section would have orphaned the rest quietly.
+    mockFeeder({ packs: [pack()] });
+    renderRoute();
+
+    const card = await packCard(PACK_ID);
+    const hrefs = within(card)
+      .getAllByRole("link")
+      .map((a) => a.getAttribute("href"))
+      .filter((h): h is string => !!h?.startsWith("/p/"));
+    expect(hrefs).toEqual([`/p/${PACK_ID}/menu-items`, `/p/${PACK_ID}/settings`]);
+  });
+
+  it("opens the door while the REGISTRY hangs — a pack page needs no availability answer", async () => {
+    // The availability check is the one call on this page that is not a local
+    // read: server-side it resolves the pack through its pinned channel, walking
+    // every configured registry source with a 60-second per-fetch budget and no
+    // index cache. Since this list is the only door to every pack page, blocking
+    // it on that would mean a LAN-only box — or one whose registry is simply down
+    // — has NO route into /p/... from anywhere in the console until the lookups
+    // time out. A local capability withheld on a remote answer.
+    let release: () => void = () => {};
+    const hung = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    mockFeeder({ packs: [pack()] });
+    server.use(
+      http.get("*/api/v1/extensions/:publisher/:name/update", async () => {
+        await hung;
+        return jsonBody({
+          action: "unchanged",
+          id: PACK_ID,
+          from_version: "1.0.0",
+          to_version: "1.0.0",
+          trust_channel: "community",
+          source: "registry",
+        });
+      }),
+    );
+    renderRoute();
+
+    // The card and its page links are here while the registry is still hanging.
+    const card = await packCard(PACK_ID);
+    expect(within(card).getByRole("link", { name: /Menu Items/ })).toHaveAttribute(
+      "href",
+      `/p/${PACK_ID}/menu-items`,
+    );
+    expect(screen.queryByText(/Loading installed extensions/)).toBeNull();
+    // And it does not LIE while it waits: "Up to date" derived from a lookup
+    // that has not answered would be worse than saying nothing at all.
+    expect(within(card).queryByText(/Up to date/)).toBeNull();
+
+    release();
+    // When the answer does arrive it folds into the card already on screen.
+    expect(await within(card).findByText(/Up to date/)).toBeInTheDocument();
+  });
+});
+
 describe("Extensions console — live, in this console", () => {
-  it("an installed pack's pages appear in the shell nav with NO reload", async () => {
+  it("an installed pack's pages are open from this page with NO reload", async () => {
     // "Installs live" has to be true of the console the operator is looking at,
-    // not only of the box. Without the change signal the rail would keep showing
-    // the pre-install world until the page was reloaded — a restart, from where
+    // not only of the box. This page is now the only door to a pack's pages, so
+    // an install that did not land here until a reload would leave the pack's
+    // pages unreachable in the session that installed it — a restart, from where
     // the operator sits.
     const state = mockFeeder({ packs: [] });
     server.use(
@@ -642,8 +752,8 @@ describe("Extensions console — live, in this console", () => {
     );
 
     await screen.findByText("No extensions installed");
-    // Nothing installed: there is no Extensions landmark at all.
-    expect(screen.queryByRole("navigation", { name: "Extensions" })).not.toBeInTheDocument();
+    // Nothing installed: no card, and so no way into any pack page.
+    expect(document.querySelector('[data-slot="pack-card"]')).toBeNull();
 
     await userEvent.upload(
       screen.getByLabelText(/Extension artifact/),
@@ -651,14 +761,22 @@ describe("Extensions console — live, in this console", () => {
     );
     await userEvent.click(screen.getByRole("button", { name: /Install the chosen extension file/ }));
 
-    const ext = await screen.findByRole("navigation", { name: "Extensions" });
-    expect(within(ext).getByRole("link", { name: "Menu Items" })).toHaveAttribute(
+    const card = await packCard(PACK_ID);
+    expect(within(card).getByRole("link", { name: /Menu Items/ })).toHaveAttribute(
       "href",
       `/p/${PACK_ID}/menu-items`,
     );
+    // And the shell around it grew no section of its own for the new pack: the
+    // rail's one landmark is Primary, whatever is installed.
+    const sidebar = document.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
+    expect(
+      within(sidebar)
+        .getAllByRole("navigation")
+        .map((n) => n.getAttribute("aria-label")),
+    ).toEqual(["Primary"]);
   });
 
-  it("an uninstalled pack's pages LEAVE the shell nav with no reload either", async () => {
+  it("an uninstalled pack's pages LEAVE this page with no reload either", async () => {
     const state = mockFeeder({ packs: [pack()] });
     server.use(
       http.get("*/api/v1/extensions/:publisher/:name", () =>
@@ -680,14 +798,120 @@ describe("Extensions console — live, in this console", () => {
       </ThemeProvider>,
     );
 
-    await screen.findByRole("navigation", { name: "Extensions" });
     const card = await packCard(PACK_ID);
+    expect(within(card).getByRole("link", { name: /Menu Items/ })).toBeInTheDocument();
     await userEvent.click(within(card).getByRole("button", { name: `Uninstall ${PACK_ID}` }));
     await userEvent.click(await screen.findByRole("button", { name: "Uninstall permanently" }));
 
     await waitFor(() =>
-      expect(screen.queryByRole("navigation", { name: "Extensions" })).not.toBeInTheDocument(),
+      expect(document.querySelector('[data-slot="pack-card"]')).toBeNull(),
     );
+    expect(screen.queryByRole("link", { name: /Menu Items/ })).not.toBeInTheDocument();
+  });
+
+  it("clears the rail's update badge when the update is taken HERE, with no reload", async () => {
+    // The PACKS_CHANGED_EVENT pin (routes/packs/packs-changed.ts).
+    //
+    // Its one remaining subscriber is the rail's updates badge
+    // (routes/packs/use-updates-waiting.ts), which resolves once per client
+    // identity and has NO other trigger: no polling, no route change, nothing.
+    // Without a test that fires it end to end the event is a module imported in
+    // exactly one place whose effect is invisible — someone tidies the notify
+    // calls or the listener away as dead code, `npm run check` stays green, and
+    // an operator who takes an update from this page is left looking at a rail
+    // that still says it is waiting until they reload. That is the precise
+    // reload-to-see-your-own-work failure the module's header says it prevents.
+    //
+    // Driven through the real control rather than by dispatching the event
+    // directly: what has to hold is that TAKING AN UPDATE re-resolves the badge,
+    // and a test that fires the event itself would pass with every
+    // notifyPacksChanged() call deleted.
+    let applied = false;
+    const state = mockFeeder({ packs: [pack()] });
+    const availability = (over: Record<string, unknown>) => ({
+      action: "unchanged",
+      id: PACK_ID,
+      from_version: "1.0.0",
+      to_version: "1.0.0",
+      trust_channel: "community",
+      source: "registry",
+      ...over,
+    });
+    server.use(
+      http.get("*/api/v1/extensions/:publisher/:name/update", () =>
+        jsonBody(
+          applied
+            ? availability({ from_version: "2.0.0", to_version: "2.0.0" })
+            : availability({ action: "updated", to_version: "2.0.0" }),
+        ),
+      ),
+      http.post("*/api/v1/extensions/:publisher/:name/update", () => {
+        applied = true;
+        state.packs = [pack({ version: "2.0.0" })];
+        return jsonBody(availability({ action: "updated", to_version: "2.0.0" }));
+      }),
+    );
+
+    render(
+      <ThemeProvider>
+        <MemoryRouter initialEntries={["/extensions"]}>
+          <AppShell>
+            <ExtensionsRoute />
+          </AppShell>
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+
+    // The rail says one update is waiting, on the group that discloses this page.
+    const sidebar = document.querySelector('[data-slot="shell-sidebar"]') as HTMLElement;
+    const railToggle = await within(sidebar).findByRole("button", {
+      name: /Extensions.*1 update waiting/s,
+    });
+    expect(railToggle.getAttribute("data-nav-group")).toBe("extensions");
+
+    // Take it, from the page the badge sends the operator to.
+    const card = await packCard(PACK_ID);
+    await userEvent.click(
+      within(card).getByRole("button", { name: `Update ${PACK_ID} to 2.0.0` }),
+    );
+    await within(card).findByText(/Updated 1\.0\.0 → 2\.0\.0/);
+
+    // The rail stops claiming it. Nothing was reloaded and the client identity
+    // never changed, so the ONLY thing that can have moved this is the event.
+    await waitFor(() =>
+      expect(railToggle.querySelector('[data-slot="nav-group-badge"]')).toBeNull(),
+    );
+  });
+});
+
+// ── The pack's glyph on its card ────────────────────────────────────────────
+//
+// resolvePackIcon used to be exercised through the rail section that is now
+// gone. Its unit test (./pack-icon.test.ts) covers the mapping; these two cover
+// the wiring — that a real glyph reaches the DOM here, and that untrusted
+// manifest data degrades rather than rendering nothing.
+describe("Extensions console — the pack glyph", () => {
+  /** The lucide `lucide-<name>` class of the FIRST glyph in `el`, or "" when it
+   * carries none — which is what a broken/missing icon looks like. */
+  function iconName(el: Element | null | undefined): string {
+    const cls = el?.querySelector("svg")?.getAttribute("class") ?? "";
+    return cls.match(/lucide-[a-z0-9-]+/)?.[0] ?? "";
+  }
+
+  it("wears the manifest-DECLARED glyph when it names one the host allows", async () => {
+    mockFeeder({ packs: [pack({ manifest: packManifest({ icon: "utensils" }) })] });
+    renderRoute();
+    expect(iconName(await packCard(PACK_ID))).toBe("lucide-utensils");
+  });
+
+  it("falls back to a real DEFAULT glyph for an unknown or non-string icon", async () => {
+    mockFeeder({
+      packs: [pack({ manifest: packManifest({ icon: { evil: 1 } as unknown as string }) })],
+    });
+    renderRoute();
+    // Install validates the manifest as JSON, not the icon's runtime type: the
+    // console must render a real glyph anyway, never a blank or a crash.
+    expect(iconName(await packCard(PACK_ID))).toBe("lucide-puzzle");
   });
 });
 
@@ -1002,6 +1226,95 @@ it("shows a disabled pack as off, and offers to enable it", async () => {
   expect(within(card).getByText(/enabling it puts everything back/i)).toBeInTheDocument();
   expect(within(card).getByRole("button", { name: /Enable acme\/menu-board/ })).toBeInTheDocument();
   expect(within(card).queryByRole("button", { name: /Disable/ })).not.toBeInTheDocument();
+});
+
+// MKT-097's OTHER half, on the only surface left that can break it.
+//
+// "A disabled pack's ui.pages MUST NOT be served, AND it MUST NOT appear as a
+// navigable destination" — one sentence, two obligations. The box holds the
+// first (its page route answers 404 while a pack is off; see
+// TestDisablingAPackWithdrawsItsPages). The second used to be held by the
+// pack-contributed rail section, which listed only enabled packs; that section
+// was removed on 2026-08-19 and this card is now the ONLY place in the console
+// that lists a pack's pages, so it is the only place the obligation can live.
+//
+// A card that rendered the links anyway and let the server's 404 answer the
+// click would not satisfy it: that is a destination that FAILS, not one
+// withdrawn, and the operator who just turned the pack off to stop it is the one
+// being sent into the error page.
+describe("Extensions console — a disabled pack is not a destination (MKT-097)", () => {
+  /** Every `/p/...` link inside `el` — the pack-namespace destinations it offers. */
+  function packLinks(el: HTMLElement): string[] {
+    return within(el)
+      .queryAllByRole("link")
+      .map((a) => a.getAttribute("href") ?? "")
+      .filter((href) => href.startsWith("/p/"));
+  }
+
+  it("offers NO link into a disabled pack's namespace, while still naming its pages", async () => {
+    mockFeeder({ packs: [pack({ enabled: false })] });
+    renderRoute();
+
+    const card = await packCard(PACK_ID);
+    expect(packLinks(card)).toEqual([]);
+    // Withdrawn is not deleted: the pages are still NAMED, because an operator
+    // deciding whether to re-enable has to see what comes back. That is the
+    // difference between a management console and the nav that used to carry
+    // them, which was right to omit them silently.
+    expect(within(card).getByText("Menu Items")).toBeInTheDocument();
+    expect(within(card).getByText(/Withdrawn while this extension is off/i)).toBeInTheDocument();
+    // …and the card says so in the withdrawal notice too, in the contract's own
+    // terms rather than as a note about what clicking would do.
+    expect(
+      within(card).getByText(/none of them is a destination anywhere in this console/i),
+    ).toBeInTheDocument();
+  });
+
+  it("WITHDRAWS them the moment the pack is turned off, with no reload", async () => {
+    // The state that matters is the one an operator creates themselves: they
+    // disable a misbehaving pack and the links must go with it in that render,
+    // not on the next load of the page.
+    const state = mockFeeder({ packs: [pack()] });
+    server.use(
+      http.put("*/api/v1/extensions/acme/menu-board/enabled", () => {
+        state.packs = [pack({ enabled: false })];
+        return jsonBody({ id: PACK_ID, enabled: false });
+      }),
+    );
+    renderRoute();
+
+    const card = await packCard(PACK_ID);
+    expect(packLinks(card)).toEqual([`/p/${PACK_ID}/menu-items`, `/p/${PACK_ID}/settings`]);
+
+    await userEvent.click(
+      within(card).getByRole("button", { name: /Disable acme\/menu-board, keeping its data/ }),
+    );
+
+    await waitFor(() => expect(packLinks(card)).toEqual([]));
+  });
+
+  it("puts every one of them back when the pack is enabled again", async () => {
+    // MKT-097: "Enabling MUST restore exactly what disabling withdrew." A card
+    // that withdrew the links but restored only some of them would strand a page
+    // with no door anywhere in the console.
+    const state = mockFeeder({ packs: [pack({ enabled: false })] });
+    server.use(
+      http.put("*/api/v1/extensions/acme/menu-board/enabled", () => {
+        state.packs = [pack()];
+        return jsonBody({ id: PACK_ID, enabled: true });
+      }),
+    );
+    renderRoute();
+
+    const card = await packCard(PACK_ID);
+    expect(packLinks(card)).toEqual([]);
+
+    await userEvent.click(within(card).getByRole("button", { name: /Enable acme\/menu-board/ }));
+
+    await waitFor(() =>
+      expect(packLinks(card)).toEqual([`/p/${PACK_ID}/menu-items`, `/p/${PACK_ID}/settings`]),
+    );
+  });
 });
 
 // The refusal a required pack gets, surfaced rather than swallowed: a control

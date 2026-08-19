@@ -48,14 +48,15 @@ test("changes a site's time zone through the real control and it survives a relo
 
   // Reached from the rail, in the Platform group — not typed as a URL.
   //
-  // Scoped to the Primary nav, and it has to be: an installed pack contributes
-  // its own pages to the rail's Extensions section, and the in-repo menu-board
-  // example declares one titled "Settings" (`page.settings.title`). An unscoped
-  // link-by-name therefore matches two elements and fails on strict mode — but
-  // only once some other spec has installed that pack, so it passed until the
-  // suite happened to run in an order where the install landed first.
-  //
-  // The core page is the one this test is about, so name where it lives.
+  // Scoped to the Primary nav. It USED to be load-bearing: an installed pack
+  // contributed its pages to a second rail section, and the in-repo menu-board
+  // example declares one titled "Settings" (`page.settings.title`), so an
+  // unscoped link-by-name matched two elements and failed strict mode — but only
+  // once some other spec had installed that pack, so it passed until the suite
+  // happened to run in an order where the install landed first. That section was
+  // removed on 2026-08-19 (no pack gets a rail area), so the collision is gone.
+  // The scoping stays because the core page is the one this test is about, and
+  // naming where it lives is how the click stays a statement about the rail.
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "Primary" })

@@ -26,7 +26,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { collectPages, createApi, type Pack, type WaiveoApi } from "@/api";
-import { PACKS_CHANGED_EVENT } from "./use-installed-packs";
+import { PACKS_CHANGED_EVENT } from "./packs-changed";
 
 /** What the rail needs to know about pending pack updates. */
 export interface UpdatesWaiting {

@@ -32,7 +32,9 @@ const server = setupServer(
   http.get("*/api/v1/devices", empty),
   http.get("*/api/v1/adopted-devices", empty),
   http.get("*/api/v1/entities", empty),
-  // Also the list the shell resolves its Extensions nav landmark over.
+  // Also the list the rail's "extensions need attention" badge counts over.
+  // (It is no longer a nav SOURCE: the pack-contributed rail section was removed
+  // on 2026-08-19 and pack pages are reached from Extensions > Installed.)
   http.get("*/api/v1/extensions", empty),
 );
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));

@@ -133,14 +133,35 @@ export interface ReachablePage {
 /** What this box can actually show of an installed pack. */
 export interface PackHealth {
   pages: ReachablePage[];
+  /** TRUE when the pack is DISABLED, so not one of `pages` may be rendered as a
+   * navigable destination (marketplace/1 MKT-097).
+   *
+   * MKT-097 forbids two things in one sentence: a disabled pack's `ui.pages`
+   * MUST NOT be served, and it MUST NOT appear as a navigable destination. The
+   * box enforces the first — the page route answers 404 while a pack is off —
+   * and this flag is the whole of the second, because since the pack-contributed
+   * rail section was removed on 2026-08-19 the Extensions card is the ONLY
+   * surface in the console that lists a pack's pages. A card that linked them
+   * anyway would leave the requirement unimplemented client-side: the click
+   * would be offered, taken, and answered with the server's refusal, which is a
+   * destination that fails rather than a destination withdrawn.
+   *
+   * The pages are still LISTED, inert — that is the difference between this
+   * surface and the nav that used to carry them. A nav omits; a management
+   * console must be able to say what comes back when the pack is enabled again,
+   * and an operator deciding whether to re-enable needs to see it. Withdrawn is
+   * not deleted. */
+  pagesWithdrawn: boolean;
   /** Declared page paths that CANNOT be confined to the pack's own
    * `/p/{publisher}/{name}/` namespace — a `..`, a `.`, or an empty segment.
    *
-   * The Extensions nav drops these silently (use-installed-packs), which is the
-   * right thing for a nav landmark and the wrong thing for a management console:
-   * the operator installed a pack that declares N pages and can reach fewer, with
-   * nothing anywhere saying so. Naming them here is the whole difference between
-   * a page that is missing and a page that is missing FOR A REASON. */
+   * Nothing else in the console would say so: this page's own list below simply
+   * omits them, and an operator who installed a pack declaring N pages and can
+   * open fewer would have nothing anywhere to tell them why. Naming them here is
+   * the whole difference between a page that is missing and a page that is
+   * missing FOR A REASON — and since this page is now the ONLY door to a pack's
+   * pages (the pack-contributed rail section was removed on 2026-08-19), it is
+   * also the only place the difference can be drawn. */
   unreachablePages: string[];
   collections: string[];
 }
@@ -164,7 +185,11 @@ export function packHealth(pack: Pack): PackHealth {
     });
   }
   const collections = (pack.manifest.dataModel?.collections ?? []).map((c) => c.name);
-  return { pages, unreachablePages, collections };
+  // `enabled === false` only — never `!pack.enabled`. An older box that omits the
+  // member entirely would otherwise read as DISABLED and have every one of its
+  // pages withdrawn from the one surface that reaches them, which is the failure
+  // mode the api/1 note on `Pack.enabled` warns about: absence is not a state.
+  return { pages, pagesWithdrawn: pack.enabled === false, unreachablePages, collections };
 }
 
 // ── Outcomes ─────────────────────────────────────────────────────────────────

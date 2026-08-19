@@ -68,12 +68,24 @@ import {
  *   Platform     the box itself: what it is configured as, what it has done,
  *                whether it is healthy
  *
- * A pack contributes its own rail entries live: the shell resolves an installed
- * pack's declared pages into a separate "Extensions" landmark
- * (routes/packs/use-installed-packs.ts), so waiveo/discovery's settings page
- * appears without being written down here. That is the mechanism the eight
- * departed areas are expected to come back through — as pack contributions, not
- * as nodes in this array.
+ * # NO PACK GETS ITS OWN RAIL AREA (owner, 2026-08-19)
+ *
+ * A pack used to contribute rail entries live: the shell resolved an installed
+ * pack's declared pages into a second landmark below a divider, one titled
+ * section per pack. The owner killed that section outright, for every pack, now
+ * and in future. This array is therefore the WHOLE rail — what it declares is
+ * what the console shows, and there is nothing beneath it.
+ *
+ * The trigger was waiveo/discovery putting a second "Discovery" in the rail (a
+ * pack section carrying its policy page, directly under the core Discovery
+ * group), but the ruling is not about that collision: a pack does not get a nav
+ * area whether or not its name is already taken.
+ *
+ * This removed a RAIL SECTION, not a capability. `/p/{publisher}/{name}/{path}`
+ * is still routed and still served; the door is Extensions > Installed, which
+ * lists every installed pack with a link to each page it declares. That is the
+ * mechanism the eight departed areas come back through — a pack's pages are
+ * reached through the pack, not by growing this array or a section beside it.
  *
  * # The shape of the model
  *
@@ -292,7 +304,7 @@ export const OFF_RAIL_ROUTES: OffRailRoute[] = [
   {
     to: "/p/:publisher/:name/*",
     reachedVia:
-      "An installed pack's own page. The shell resolves these live from the installed-pack list into the separate 'Extensions' nav landmark, so they are navigable without being declared here. This is the door the eight stripped product areas are expected to come back through.",
+      "An installed pack's own page, reached from Extensions > Installed (/extensions): every installed pack's card links each page the pack declares, at exactly this route. That link IS the door and is pinned as one — routes/extensions/extensions-route.test.tsx clicks it and asserts it lands on this route, so deleting the link fails the build rather than quietly orphaning every pack page. Off the rail because the owner killed the pack-contributed rail section on 2026-08-19: no pack gets a nav area of its own, now or in future. This is also the door the eight stripped product areas come back through as they ship as packs.",
   },
 ];
 
