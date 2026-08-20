@@ -187,6 +187,26 @@ type Device struct {
 	FirstSeenOrigin string `json:"first_seen_origin,omitempty"`
 }
 
+// WithoutAge returns the device with BOTH age members cleared, together.
+//
+// They are one fact in two fields: FirstSeenOrigin qualifies FirstSeen and is
+// documented above as absent exactly when FirstSeen is. Clearing the instant and
+// leaving the qualifier serves an origin for a value this deployment no longer
+// holds — `"first_seen_origin": "adopted"` with no age beside it — and a client
+// that reads the qualifier without first checking the value it qualifies gets a
+// confident answer about nothing.
+//
+// It is a method rather than two statements at the call site because the two
+// CAN be cleared apart in Go and are wrong apart in every case. The retire
+// handler's fallback path (internal/app/api devices.go) did exactly that, which
+// is what this exists to make unrepeatable: there is now one operation, and its
+// name is the invariant.
+func (d Device) WithoutAge() Device {
+	d.FirstSeen = 0
+	d.FirstSeenOrigin = ""
+	return d
+}
+
 // Entity is one addressable object a device exposes — the openapi Entity schema,
 // field for field. It is the unit rules/1 entity references resolve to and the
 // unit a device command is addressed to (REL-112).

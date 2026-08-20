@@ -590,8 +590,13 @@ func (srv *server) retireDeviceFirstSeen(w http.ResponseWriter, r *http.Request)
 		// Resolvable at the top of the handler and gone from the read model since:
 		// the durable retire still stands, and the caller's pre-read device with the
 		// member cleared is the truthful body (unignoreDevice's own fallback).
-		device.FirstSeen = 0
-		writeJSONValue(w, http.StatusOK, device)
+		//
+		// WithoutAge, not two assignments: FirstSeenOrigin qualifies FirstSeen and is
+		// absent exactly when it is (devices.Device). This path cleared the instant
+		// and left the qualifier, serving an origin for a value the deployment no
+		// longer holds. The pair now has one operation so it cannot be half-done here
+		// or anywhere else.
+		writeJSONValue(w, http.StatusOK, device.WithoutAge())
 		return
 	}
 	writeJSONValue(w, http.StatusOK, retired)
