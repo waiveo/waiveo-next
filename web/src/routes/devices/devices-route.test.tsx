@@ -778,14 +778,35 @@ describe("Devices — finding one device in a fleet", () => {
     expect(screen.getByText("Stock room light")).toBeInTheDocument();
   });
 
-  it("filters by adoption state, which is a BADGE cell and still filterable", async () => {
+  it("filters by the decision, which is a BADGE cell and still filterable", async () => {
+    // Labelled "Decision" rather than "Adoption" because the column now carries
+    // three states: adoption is one decision an operator takes about a device
+    // and ignoring is the other, so a filter named for only one of them hides
+    // the existence of the second from the person looking for it.
     seed({ devices: fleet(), entities: [] });
     const user = renderRoute();
     await screen.findByRole("table", { name: "Discovered devices" });
 
-    await user.selectOptions(screen.getByLabelText("Adoption"), "Adopted");
+    await user.selectOptions(screen.getByLabelText("Decision"), "Adopted");
     await waitFor(() => expect(screen.queryByText("Hanger TV")).not.toBeInTheDocument());
     expect(screen.getByText("Cafe TV")).toBeInTheDocument();
+  });
+
+  it("offers Ignored as a filter option only because a row carries it", async () => {
+    // Faceted from the rows present, like every other enum filter on this page.
+    seed({
+      devices: [device(), device({ id: OTHER_DEVICE_ID, name: "Lobby TV", ignored: true })],
+      entities: [],
+    });
+    const user = renderRoute();
+    await screen.findByRole("table", { name: "Discovered devices" });
+
+    const decision = screen.getByLabelText("Decision");
+    expect(within(decision).getByRole("option", { name: "Ignored (1)" })).toBeInTheDocument();
+
+    await user.selectOptions(decision, "Ignored");
+    await waitFor(() => expect(screen.queryByText("Hanger TV")).not.toBeInTheDocument());
+    expect(screen.getByText("Lobby TV")).toBeInTheDocument();
   });
 });
 
@@ -810,5 +831,164 @@ describe("Devices — when the device plane cannot be read", () => {
     );
     renderRoute();
     expect(await screen.findByRole("alert")).toHaveTextContent(/No relay is connected/);
+  });
+});
+
+describe("Devices — ignoring, clicked through", () => {
+  // Every test here CLICKS. The whole capability existed server-side — store
+  // projection, both routes, idempotency, a required `ignored` member in the
+  // schema — and shipped unreachable because nothing in the console called it.
+  // A test that asserted the button rendered would have passed against that
+  // exact bug, so these drive the control and read the request that came out.
+
+  it("ignores by device id with no body, and flips the row from the answer", async () => {
+    let rows = [device()];
+    let seen: { method: string; path: string; body: string; idempotencyKey: string | null } | null =
+      null;
+    seed();
+    server.use(
+      http.get(`${TEST_BASE}/devices`, () => page(rows)),
+      http.get(`${TEST_BASE}/entities`, () => page([entity()])),
+      http.post(`${TEST_BASE}/devices/${DEVICE_ID}/ignore`, async ({ request }) => {
+        seen = {
+          method: request.method,
+          path: new URL(request.url).pathname,
+          body: await request.text(),
+          idempotencyKey: request.headers.get("Idempotency-Key"),
+        };
+        rows = [device({ ignored: true })];
+        return ok(device({ ignored: true }));
+      }),
+    );
+
+    const user = renderRoute();
+    // No confirm dialog, deliberately: the act reaches no relay and is reversed
+    // by the button that replaces it. If a dialog is ever added, this click
+    // stops working and the test says so rather than silently passing.
+    await user.click(await screen.findByRole("button", { name: "Ignore" }));
+
+    await waitFor(() => expect(seen).not.toBeNull());
+    expect(seen!.method).toBe("POST");
+    expect(seen!.path).toBe(`/api/v1/devices/${DEVICE_ID}/ignore`);
+    expect(seen!.body).toBe("");
+    // A double-click must not fire twice at the far end (API-050/052).
+    expect(seen!.idempotencyKey).toBeTruthy();
+
+    const table = await screen.findByRole("table", { name: "Discovered devices" });
+    await waitFor(() => expect(within(table).getByText("Ignored")).toBeInTheDocument());
+    // Reversible from the row it is on — the spec's "never a hidden trash can".
+    expect(within(table).getByRole("button", { name: "Un-ignore" })).toBeInTheDocument();
+  });
+
+  it("un-ignores with a DELETE, and puts the row back", async () => {
+    let rows = [device({ ignored: true })];
+    let seen: { method: string; path: string } | null = null;
+    seed();
+    server.use(
+      http.get(`${TEST_BASE}/devices`, () => page(rows)),
+      http.get(`${TEST_BASE}/entities`, () => page([entity()])),
+      http.delete(`${TEST_BASE}/devices/${DEVICE_ID}/ignore`, ({ request }) => {
+        seen = { method: request.method, path: new URL(request.url).pathname };
+        rows = [device({ ignored: false })];
+        return ok(device({ ignored: false }));
+      }),
+    );
+
+    const user = renderRoute();
+    await user.click(await screen.findByRole("button", { name: "Un-ignore" }));
+
+    await waitFor(() => expect(seen).not.toBeNull());
+    expect(seen!.method).toBe("DELETE");
+    expect(seen!.path).toBe(`/api/v1/devices/${DEVICE_ID}/ignore`);
+
+    const table = await screen.findByRole("table", { name: "Discovered devices" });
+    await waitFor(() => expect(within(table).getByText("Discovered")).toBeInTheDocument());
+    expect(within(table).getByRole("button", { name: "Ignore" })).toBeInTheDocument();
+  });
+
+  it("still offers Adopt on an ignored device, because ignoring is not a veto", async () => {
+    // An ignore is "not interested for now", not "never". The path from set-aside
+    // to adopted has to stay open on the row, or changing your mind means first
+    // finding the un-ignore, which is friction with no safety value behind it.
+    seed();
+    server.use(
+      http.get(`${TEST_BASE}/devices`, () => page([device({ ignored: true })])),
+      http.get(`${TEST_BASE}/entities`, () => page([entity()])),
+    );
+    renderRoute();
+    const table = await screen.findByRole("table", { name: "Discovered devices" });
+    expect(within(table).getByRole("button", { name: "Adopt" })).toBeInTheDocument();
+    expect(within(table).getByRole("button", { name: "Un-ignore" })).toBeInTheDocument();
+  });
+
+  it("offers no ignore on an ADOPTED device, and reads it as adopted when both flags are set", async () => {
+    // The flags are independent on the row and a device can carry both, so the
+    // console's reading order is load-bearing: adoption supersedes ignoring
+    // (internal/app/devices Device.Ignored). Showing a device that is actively
+    // polled and driveable as merely "set aside" would be a false status.
+    seed();
+    server.use(
+      http.get(`${TEST_BASE}/devices`, () => page([device({ adopted: true, ignored: true })])),
+      http.get(`${TEST_BASE}/entities`, () => page([entity()])),
+    );
+    renderRoute();
+    const table = await screen.findByRole("table", { name: "Discovered devices" });
+    await waitFor(() => expect(within(table).getByText("Adopted")).toBeInTheDocument());
+    expect(within(table).queryByText("Ignored")).toBeNull();
+    expect(within(table).queryByRole("button", { name: "Ignore" })).toBeNull();
+    expect(within(table).queryByRole("button", { name: "Un-ignore" })).toBeNull();
+  });
+
+  it("reports the Problem and leaves the device un-ignored when the ignore is refused", async () => {
+    seed();
+    server.use(
+      http.get(`${TEST_BASE}/devices`, () => page([device()])),
+      http.get(`${TEST_BASE}/entities`, () => page([entity()])),
+      http.post(`${TEST_BASE}/devices/${DEVICE_ID}/ignore`, () =>
+        HttpResponse.json(
+          {
+            type: "about:blank",
+            title: "Forbidden",
+            status: 403,
+            code: "FORBIDDEN",
+            detail: "This principal may not write devices.",
+            trace_id: TRACE_ID,
+          },
+          { status: 403, headers: { "Content-Type": "application/problem+json", "Trace-Id": TRACE_ID } },
+        ),
+      ),
+    );
+
+    const user = renderRoute();
+    await user.click(await screen.findByRole("button", { name: "Ignore" }));
+
+    // The row must NOT optimistically flip: a device the server refused to
+    // ignore that reads as ignored is the console lying about a decision.
+    const table = await screen.findByRole("table", { name: "Discovered devices" });
+    await waitFor(() =>
+      expect(within(table).getByRole("button", { name: "Ignore" })).toBeInTheDocument(),
+    );
+    expect(within(table).getByText("Discovered")).toBeInTheDocument();
+    expect(within(table).queryByText("Ignored")).toBeNull();
+  });
+
+  it("filters the fleet by the ignore decision, faceted from the rows present", async () => {
+    seed();
+    server.use(
+      http.get(`${TEST_BASE}/devices`, () =>
+        page([
+          device(),
+          device({ id: OTHER_DEVICE_ID, name: "Lobby TV", ignored: true }),
+        ]),
+      ),
+      http.get(`${TEST_BASE}/entities`, () => page([entity()])),
+    );
+    renderRoute();
+    const table = await screen.findByRole("table", { name: "Discovered devices" });
+    await waitFor(() => expect(within(table).getByText("Lobby TV")).toBeInTheDocument());
+    // "Ignored" is a badge cell, so it needs its own accessor to be filterable
+    // at all — the same trap the adoption filter documents.
+    expect(within(table).getByText("Ignored")).toBeInTheDocument();
+    expect(within(table).getByText("Discovered")).toBeInTheDocument();
   });
 });

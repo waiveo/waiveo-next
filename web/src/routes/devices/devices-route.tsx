@@ -170,6 +170,9 @@ function firstSeenCell(device: Device): React.ReactNode {
 interface DeviceRow {
   device: Device;
   adopted: boolean;
+  /** The row's own ignore flag, read straight off the device for the same
+   * reason `adopted` is — it is a member of the resource, not a join. */
+  ignored: boolean;
   address: string | null;
   model: string | null;
   driver: string | null;
@@ -245,6 +248,7 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
       return {
         device,
         adopted: device.adopted,
+        ignored: device.ignored,
         address: facts.address,
         model: facts.model,
         driver: facts.driver,
@@ -339,6 +343,47 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
     }
   }, [busy, client, dialog]);
 
+  /** Set a device aside, or put it back.
+   *
+   * Deliberately NOT behind a confirm dialog, unlike adopt and retire-age. Those
+   * two are gated because of what they do beyond this page: adopt writes a
+   * durable record and ships it to a relay, and retire-age destroys a stored
+   * fact that cannot be recovered. An ignore does neither — it reaches no relay,
+   * changes no desired state, and is reversed by the button that replaces it on
+   * the same row. A confirm step on a one-click-reversible act is friction that
+   * teaches an operator to click through dialogs, which is a cost paid on the
+   * dialogs that matter.
+   *
+   * One handler for both directions because they are the same decision read
+   * forwards and backwards, and splitting them duplicates the row patch and the
+   * error path for no gain. The response IS the device as it now reads, so the
+   * row corrects itself without re-listing the fleet for one flag. */
+  const toggleIgnored = useCallback(
+    async (row: DeviceRow) => {
+      if (busy) return;
+      const wasIgnored = row.ignored;
+      setBusy(true);
+      try {
+        const updated = wasIgnored
+          ? await client.devices.unignore(row.device.id)
+          : await client.devices.ignore(row.device.id);
+        toast.success(
+          wasIgnored ? `${updated.name} is back in the list` : `Set ${updated.name} aside`,
+        );
+        setDevices((current) => (current ?? []).map((d) => (d.id === updated.id ? updated : d)));
+      } catch (err) {
+        toast.error(
+          wasIgnored
+            ? `Couldn't un-ignore the device: ${problemMessage(err)}`
+            : `Couldn't ignore the device: ${problemMessage(err)}`,
+        );
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, client],
+  );
+
   /* Finding one device in a fleet used to have no mechanism on this page: a
      plain sortable table and nothing else. The four identifying columns are
      marked searchable, and the three closed-vocabulary ones carry their own
@@ -396,14 +441,26 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
         meta: { numeric: true },
         cell: ({ row }) => ageCell(row.original.device.last_seen),
       },
+      /* THREE states, not two. `adopted` and `ignored` are independent flags on
+         the row and a device can carry both, so the order here is the decision:
+         adoption SUPERSEDES ignoring in this console's reading (Device.Ignored,
+         internal/app/devices). Reading them in the other order would show a
+         device that is actively polled and driveable as merely set aside.
+
+         Ignored is `warn`, not `pending`: pending is an OPEN question and this
+         one is answered. Spending the muted/pending colour on it would make a
+         decision look like an omission, which is the reading that turns an
+         ignore list into a place things get lost. */
       {
         id: "status",
         header: "Status",
-        accessorFn: (r) => (r.adopted ? "Adopted" : "Discovered"),
-        meta: { filter: "enum", filterLabel: "Adoption" },
+        accessorFn: (r) => (r.adopted ? "Adopted" : r.ignored ? "Ignored" : "Discovered"),
+        meta: { filter: "enum", filterLabel: "Decision" },
         cell: ({ row }) =>
           row.original.adopted ? (
             <StatusBadge status="ok">Adopted</StatusBadge>
+          ) : row.original.ignored ? (
+            <StatusBadge status="warn">Ignored</StatusBadge>
           ) : (
             <StatusBadge status="pending">Discovered</StatusBadge>
           ),
@@ -515,7 +572,15 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
                  with a later one, making the device read younger than it is. */
               const canRetire =
                 row.device.first_seen !== undefined && !isObservedAge(row.device);
-              if (row.adopted && !canRetire) return null;
+              /* EVERY undecided row carries both decisions (discovery spec §7),
+                 and an ignored row carries the reversal — an ignore an operator
+                 cannot see and undo from the list is the hidden trash can the
+                 spec forbids. An ADOPTED row offers neither: ignoring something
+                 this deployment actively polls and drives is not a decision that
+                 means anything, and the flag would contradict the status badge
+                 beside it. */
+              const canDecide = !row.adopted;
+              if (!canDecide && !canRetire) return null;
               return (
                 <div className="flex justify-end gap-2">
                   {canRetire ? (
@@ -523,11 +588,21 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
                       Retire age
                     </Button>
                   ) : null}
-                  {row.adopted ? null : (
+                  {canDecide ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={busy}
+                      onClick={() => void toggleIgnored(row)}
+                    >
+                      {row.ignored ? "Un-ignore" : "Ignore"}
+                    </Button>
+                  ) : null}
+                  {canDecide ? (
                     <Button size="sm" variant="outline" onClick={() => openAdopt(row)}>
                       Adopt
                     </Button>
-                  )}
+                  ) : null}
                 </div>
               );
             }}

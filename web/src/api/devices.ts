@@ -164,6 +164,37 @@ export interface DevicesModule extends ListOnlyModule<Device> {
    *
    * Returns the device as it now reads, with `first_seen` absent. */
   retireFirstSeen(deviceId: string): Promise<Device>;
+
+  /** Set ONE discovered device aside as something this deployment does not care
+   * about.
+   *
+   * The counterpart to `adopt` and NOT its opposite: adopt and ignore are the
+   * two decisions this API makes about a device, and a device that is neither
+   * is simply undecided. The difference that matters to a caller is REACH —
+   * an adoption writes a durable record that its relay is sent in signed
+   * desired state, while an ignore reaches no relay at all. The device is still
+   * discovered, still reported, and still counted; the flag only lets a console
+   * keep it out of the way. Nothing stops discovering because it was ignored.
+   *
+   * Durable, and survives a re-sighting — which is the whole point. An ignore
+   * that a later report cleared would make the decision worthless on exactly
+   * the devices an operator most wants silenced: the ones that keep announcing
+   * themselves.
+   *
+   * Returns the device as it now reads, with `ignored` true. Idempotent twice
+   * over, like `adopt`: ignoring an already-ignored device succeeds and changes
+   * nothing, and the POST carries an Idempotency-Key. */
+  ignore(deviceId: string): Promise<Device>;
+
+  /** Reverse an ignore, returning the device to plain "discovered".
+   *
+   * Ignoring is reversible by construction — never a hidden trash can — so
+   * this exists for the same reason the flag is durable: a decision an operator
+   * cannot see or undo is one they learn not to make. Naturally idempotent:
+   * un-ignoring a device that was not ignored succeeds and changes nothing.
+   *
+   * Returns the device as it now reads, with `ignored` false. */
+  unignore(deviceId: string): Promise<Device>;
 }
 
 function devicesModule(client: ApiClient): DevicesModule {
@@ -179,6 +210,17 @@ function devicesModule(client: ApiClient): DevicesModule {
       return client.discardReturning<Device>(
         `/devices/${encodeURIComponent(deviceId)}/first-seen`,
       );
+    },
+    ignore(deviceId) {
+      // Bodyless POST, like `adopt`: the operation declares no body, and the
+      // decision is entirely carried by which device the path names.
+      return client.action<Device>(`/devices/${encodeURIComponent(deviceId)}/ignore`);
+    },
+    unignore(deviceId) {
+      // DELETE that answers with its parent, like `retireFirstSeen`: the reply
+      // is the device as it now reads, so a caller corrects the row it is
+      // already showing instead of re-listing the fleet for one flag.
+      return client.discardReturning<Device>(`/devices/${encodeURIComponent(deviceId)}/ignore`);
     },
   };
 }

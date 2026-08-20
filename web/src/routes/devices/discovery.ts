@@ -82,7 +82,19 @@ export interface Discovery {
   caveat: string | null;
   found: number;
   adopted: number;
-  /** Found and NOT adopted — the number of decisions waiting. */
+  /** Found and IGNORED — set aside as something this deployment does not care
+   * about. Counted separately from `adopted` because it is a different decision
+   * with a different reach (it writes no adoption record and reaches no relay),
+   * and separately from `pending` because it IS a decision. */
+  ignored: number;
+  /** Found and UNDECIDED — the number of decisions waiting.
+   *
+   * Adopting and ignoring are both decisions, so both leave this count. It was
+   * `found - adopted` while ignoring had no console control, which was harmless
+   * only because nothing could be ignored: the moment an operator can set a
+   * device aside, counting it as still-waiting means the page goes on demanding
+   * a decision that has already been made — and the loudest devices, the ones
+   * worth silencing, would be the ones it nagged about forever. */
   pending: number;
   /** Connected relays, or `null` when health could not be read. Never 0 for
    * "unknown": those are different facts and 0 is a claim. */
@@ -110,8 +122,14 @@ export function describeDiscovery(input: DiscoveryInput): Discovery {
   const relayCount = relays === null ? null : relays.length;
   const found = devices?.length ?? 0;
   const adopted = (devices ?? []).filter((d) => d.adopted).length;
-  const pending = found - adopted;
-  const base = { found, adopted, pending, relayCount };
+  // Adopting SUPERSEDES ignoring in this console's reading (internal/app/devices
+  // Device.Ignored): the two flags are independent on the row, so a device can
+  // carry both, and counting it under each would report more decisions than
+  // there are devices. Reading it as adopted here is what keeps
+  // adopted + ignored + pending === found an identity rather than a hope.
+  const ignored = (devices ?? []).filter((d) => d.ignored && !d.adopted).length;
+  const pending = found - adopted - ignored;
+  const base = { found, adopted, ignored, pending, relayCount };
 
   if (devicesError !== null) {
     return {
@@ -188,12 +206,22 @@ export function describeDiscovery(input: DiscoveryInput): Discovery {
       : null;
 
   if (pending === 0) {
+    // "Everything found is adopted" is only true when nothing was set aside.
+    // Once some devices are ignored the same sentence is a false claim about
+    // the fleet's state — and it is the sentence an operator would check the
+    // page against, so it has to name both outcomes rather than collapse them
+    // into the flattering one.
     return {
       ...base,
       kind: "all-adopted",
-      headline: `Everything found is adopted — ${found} device${found === 1 ? "" : "s"}, no decisions waiting`,
+      headline:
+        ignored === 0
+          ? `Everything found is adopted — ${found} device${found === 1 ? "" : "s"}, no decisions waiting`
+          : `No decisions waiting — ${adopted} adopted, ${ignored} set aside`,
       detail:
-        "Every device the relays reported already has an adoption record, so there is nothing to adopt. This is the steady state, not an empty result.",
+        ignored === 0
+          ? "Every device the relays reported already has an adoption record, so there is nothing to adopt. This is the steady state, not an empty result."
+          : "Every device the relays reported has been decided about: adopted, or ignored as something this deployment does not care about. Ignored devices are still discovered and still reported — the decision only keeps them out of the way, and it can be reversed on the row.",
       caveat: relayCaveat,
     };
   }
@@ -218,9 +246,13 @@ export function describeDiscovery(input: DiscoveryInput): Discovery {
  *     connected does not appear; only a connected relay's view is held.
  *   - own LAN: discovery is per-relay SSDP/mDNS on that relay's own network
  *     (cmd/waiveo-relay's watches) — neither protocol routes between subnets.
- *   - ignored: intake carries an operator-ignored candidate in the report and
- *     deliberately does NOT materialize a row for it
- *     (internal/app/devices/intake.go, REL-110).
+ *   - relay-suppressed candidate: intake carries a candidate whose relay-side
+ *     status is `ignored` and deliberately does NOT materialize a row for it
+ *     (internal/app/devices/intake.go:134, REL-110). This is a DIFFERENT
+ *     mechanism from the row-level Ignore this page offers: that one sets
+ *     `Device.Ignored` on a row that stays listed and stays reversible, while
+ *     this one removes the device from the list entirely. Both are called
+ *     "ignore" in their own layer, which is exactly why this entry names which.
  *   - incumbency: a device another relay is already the incumbent for is dropped
  *     from this relay's view before the merge (REL-153a/b).
  *   - whole-report refusal: one malformed candidate refuses the ENTIRE report
@@ -244,9 +276,9 @@ export const MISSING_DEVICE_REASONS: MissingReason[] = [
       "Each relay discovers over SSDP and mDNS on the LAN it sits on, and neither protocol crosses subnets. A device on another VLAN is invisible to it no matter how reachable it is by IP.",
   },
   {
-    title: "It was ignored",
+    title: "Its relay suppressed it as a candidate",
     detail:
-      "A candidate an operator suppressed is still carried in the relay's report and is deliberately not listed here — otherwise the suppression would be cosmetic.",
+      "A candidate suppressed at the relay is still carried in its report and is deliberately not materialized here — otherwise the suppression would be cosmetic. This is NOT the Ignore button on a row below: that one keeps the device listed and marks it, and is reversed from the row it is on.",
   },
   {
     title: "Another relay already owns it",

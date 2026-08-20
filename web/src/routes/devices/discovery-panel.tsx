@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Cpu, MonitorPlay, Network, Radio } from "lucide-react";
+import { ChevronDown, ChevronRight, Cpu, EyeOff, MonitorPlay, Network, Radio } from "lucide-react";
 import { StatCard, StatusBadge, type Status } from "@/components/kit";
 import type { RelayHealth } from "@/api";
 import {
@@ -100,7 +100,7 @@ export function DiscoveryPanel({
       </div>
 
       {/* (2) The counts. */}
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <StatCard
           label="Discovered"
           value={String(discovery.found)}
@@ -115,6 +115,23 @@ export function DiscoveryPanel({
             discovery.pending > 0
               ? `${discovery.pending} awaiting a decision`
               : "Nothing awaiting a decision"
+          }
+        />
+        {/* Set-aside is a COUNT that is always rendered, including at zero.
+            A tile that appears only when non-zero would make the decision
+            discoverable only after it had already been made — and the reason
+            this count is on the page at all is that an ignore must never be a
+            hidden trash can (discovery spec §7). Zero is also the answer to
+            "have I set anything aside and forgotten about it?", which is the
+            question the tile exists to keep answerable. */}
+        <StatCard
+          label="Set aside"
+          value={String(discovery.ignored)}
+          icon={EyeOff}
+          hint={
+            discovery.ignored > 0
+              ? "Still discovered, still reported"
+              : "Nothing has been ignored"
           }
         />
         <StatCard
@@ -210,6 +227,11 @@ export function DiscoveryPanel({
         discovered device this deployment&apos;s: it writes a durable adoption record, ships it to
         the device&apos;s relay to poll, and is what makes commands to that device&apos;s entities
         resolve at all. Until then a device is only a sighting.{" "}
+        <strong className="font-medium text-foreground">Ignore</strong> is the other decision, and
+        it is deliberately much smaller: it sets a device aside as something this deployment does
+        not care about, and reaches no relay at all. The device is still discovered, still reported
+        and still counted — it is marked, not removed, and un-ignoring it on the row puts it back.
+        Nothing stops looking for a device because it was ignored.{" "}
         <strong className="font-medium text-foreground">Refresh</strong> re-reads what the relays
         have already reported — each relay sweeps its own network on its own schedule, so there is
         no scan to start from here.

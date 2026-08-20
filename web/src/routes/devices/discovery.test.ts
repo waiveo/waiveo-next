@@ -146,7 +146,10 @@ describe("MISSING_DEVICE_REASONS", () => {
     // "check the cables".
     expect(titles.join(" ")).toMatch(/relay is not connected/);
     expect(titles.join(" ")).toMatch(/not on a relay's own network/);
-    expect(titles.join(" ")).toMatch(/ignored/);
+    // Named for the LAYER that suppressed it, not for the word "ignored": the
+    // row-level Ignore control uses that word for a different mechanism, and a
+    // device set aside on a row is still listed rather than missing.
+    expect(titles.join(" ")).toMatch(/suppressed it as a candidate/);
     expect(titles.join(" ")).toMatch(/Another relay already owns it/);
     expect(titles.join(" ")).toMatch(/whole report was refused/);
   });
@@ -212,5 +215,82 @@ describe("describeDiscovery — no relay DOMINATES, whatever the list length (HV
     });
     expect(d.kind).toBe("all-adopted");
     expect(d.caveat).toMatch(/whether it is running NOW is not known/);
+  });
+});
+
+describe("describeDiscovery — ignoring is a DECISION, not a pending one", () => {
+  // `pending` was `found - adopted` for as long as nothing could be ignored,
+  // which made it accidentally correct. The moment the console grew an Ignore
+  // control that arithmetic starts counting settled decisions as open ones,
+  // and the page nags hardest about exactly the devices an operator silenced.
+
+  it("does not count an ignored device as waiting for a decision", () => {
+    const d = describeDiscovery({
+      devices: [device(), device({ id: "B", ignored: true })],
+      devicesError: null,
+      relays,
+      blind: null,
+    });
+    expect(d.found).toBe(2);
+    expect(d.ignored).toBe(1);
+    expect(d.pending).toBe(1);
+  });
+
+  it("keeps adopted + ignored + pending an identity with the fleet size", () => {
+    // The property that makes the three counts safe to render side by side. A
+    // device counted under two headings reports more decisions than devices.
+    const devices = [
+      device({ id: "A" }),
+      device({ id: "B", adopted: true }),
+      device({ id: "C", ignored: true }),
+      device({ id: "D", adopted: true, ignored: true }),
+    ];
+    const d = describeDiscovery({ devices, devicesError: null, relays, blind: null });
+    expect(d.found).toBe(4);
+    expect(d.adopted + d.ignored + d.pending).toBe(d.found);
+    // Adoption supersedes: D is adopted, and is not also counted as set aside.
+    expect(d.adopted).toBe(2);
+    expect(d.ignored).toBe(1);
+    expect(d.pending).toBe(1);
+  });
+
+  it("stops claiming everything is ADOPTED when some of it was set aside", () => {
+    const d = describeDiscovery({
+      devices: [device({ adopted: true }), device({ id: "B", ignored: true })],
+      devicesError: null,
+      relays,
+      blind: null,
+    });
+    expect(d.kind).toBe("all-adopted");
+    expect(d.pending).toBe(0);
+    // The headline is the sentence an operator checks the page against, so it
+    // must name both outcomes rather than collapse them into the flattering one.
+    expect(d.headline).toMatch(/1 adopted, 1 set aside/);
+    expect(d.headline).not.toMatch(/Everything found is adopted/);
+    expect(d.detail).toMatch(/still discovered and still reported/);
+  });
+
+  it("keeps the plain all-adopted sentence when nothing was set aside", () => {
+    const d = describeDiscovery({
+      devices: [device({ adopted: true })],
+      devicesError: null,
+      relays,
+      blind: null,
+    });
+    expect(d.kind).toBe("all-adopted");
+    expect(d.ignored).toBe(0);
+    expect(d.headline).toMatch(/Everything found is adopted/);
+    expect(d.headline).not.toMatch(/set aside/);
+  });
+
+  it("distinguishes the relay's candidate suppression from the row-level Ignore", () => {
+    // Two different mechanisms wear the word "ignore" in their own layer: the
+    // relay-side candidate status makes a device VANISH (intake refuses to
+    // materialize it), while the row-level flag keeps it listed and marked. An
+    // explainer that said "ignored devices are not listed here" would be flatly
+    // contradicted by the ignored row visible directly below it.
+    const reason = MISSING_DEVICE_REASONS.find((r) => /suppressed it as a candidate/.test(r.title));
+    expect(reason).toBeDefined();
+    expect(reason!.detail).toMatch(/NOT the Ignore button/);
   });
 });
