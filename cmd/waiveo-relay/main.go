@@ -1360,14 +1360,43 @@ func main() {
 					// maintain (ObservePorts) rather than minting a second row.
 					if hosts := neighborLane.Hosts(); len(hosts) > 0 {
 						open := portscan.Scan(rootCtx, hosts, portscan.Config{})
-						attached := 0
+						now := time.Now().UnixMilli()
+						attached, cleared := 0, 0
 						for ip, ports := range open {
-							if neighborLane.ObservePorts(ip, ports, time.Now().UnixMilli()) {
+							if neighborLane.ObservePorts(ip, ports, now) {
 								attached++
 							}
 						}
-						log.Printf("waiveo-relay: discovery scan %s: port scan found open ports on %d of %d host(s), attached to %d candidate(s)",
-							id, len(open), len(hosts), attached)
+						// The hosts this scan ASKED about and found nothing open on.
+						// portscan.Scan omits them deliberately — "only the caller knows
+						// which hosts it asked about" — and this is that caller, so this is
+						// where the distinction the rest of the stack documents is made or
+						// lost. It was lost: 25 of 64 hosts on the dev box had been probed
+						// and reported as never looked at.
+						//
+						// An EMPTY list is a finding — a scan looked and nothing on the probed
+						// set answered — and every layer below says so in as many words
+						// (Observation.OpenPorts, app Device.OpenPorts, api/1's own
+						// open_ports description). Leaving it nil reports it as "nobody has
+						// looked", which is the one thing they all promise it does not mean.
+						//
+						// It is also the only way a finding can ever be RETRACTED: a host that
+						// answered 8060 last week and answers nothing today keeps serving the
+						// stale port forever, because a nil never displaces a list.
+						//
+						// []int{} and not nil: the merge rule downstream is `o.OpenPorts !=
+						// nil`, so the empty slice must be non-nil to register as an
+						// observation at all.
+						for _, ip := range hosts {
+							if _, found := open[ip]; found {
+								continue
+							}
+							if neighborLane.ObservePorts(ip, []int{}, now) {
+								cleared++
+							}
+						}
+						log.Printf("waiveo-relay: discovery scan %s: port scan found open ports on %d of %d host(s), attached to %d candidate(s), recorded %d with nothing open",
+							id, len(open), len(hosts), attached, cleared)
 					}
 					scanDisc.Scan(rootCtx)
 					log.Printf("waiveo-relay: discovery scan %s complete (%s)", id, reason)

@@ -622,21 +622,26 @@ func identityKeyOf(driver, nativeID string) string {
 // device identity and entity fan-out REL-110a adds. Serialized to the corpus's
 // field order/shape.
 type Candidate struct {
-	Match        Match             `json:"match"`
-	Provenance   Provenance        `json:"provenance"`
-	Status       Status            `json:"status"`
-	IgnoredUntil *string           `json:"ignored_until"`
-	FirstSeen    int64             `json:"first_seen"`
-	LastSeen     int64             `json:"last_seen"`
-	Driver       string            `json:"driver"`
-	NativeID     string            `json:"native_id"`
-	DeviceClass  string            `json:"device_class"`
-	Name         string            `json:"name,omitempty"`
-	Address      string            `json:"address,omitempty"`
-	Model        string            `json:"model,omitempty"`
-	Serial       string            `json:"serial,omitempty"`
-	OpenPorts    []int             `json:"open_ports,omitempty"`
-	Entities     []CandidateEntity `json:"entities"`
+	Match        Match      `json:"match"`
+	Provenance   Provenance `json:"provenance"`
+	Status       Status     `json:"status"`
+	IgnoredUntil *string    `json:"ignored_until"`
+	FirstSeen    int64      `json:"first_seen"`
+	LastSeen     int64      `json:"last_seen"`
+	Driver       string     `json:"driver"`
+	NativeID     string     `json:"native_id"`
+	DeviceClass  string     `json:"device_class"`
+	Name         string     `json:"name,omitempty"`
+	Address      string     `json:"address,omitempty"`
+	Model        string     `json:"model,omitempty"`
+	Serial       string     `json:"serial,omitempty"`
+	// `omitzero`, NEVER `omitempty`: omitempty drops an EMPTY slice and a nil
+	// one identically, which is precisely the distinction this field exists to
+	// carry (see Observation.OpenPorts and the mergeInto rule). omitzero omits
+	// only the zero value — nil — so "a scan looked and found nothing open"
+	// survives serialization as `[]` instead of vanishing into "nobody looked".
+	OpenPorts []int             `json:"open_ports,omitzero"`
+	Entities  []CandidateEntity `json:"entities"`
 	// NameRank is how good the source of Name was, remembered so the NEXT
 	// sighting can be refused if it is worse (keepName).
 	//

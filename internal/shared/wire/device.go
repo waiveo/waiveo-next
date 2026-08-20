@@ -81,23 +81,26 @@ type DeviceCandidatesBody struct {
 // whose sighting carried no usable LOCATION, or whose identification probe did
 // not answer, reports what it does know rather than dropping the device.
 type DeviceCandidate struct {
-	Match        json.RawMessage   `json:"match"`
-	Provenance   string            `json:"provenance"`
-	Status       string            `json:"status"`
-	IgnoredUntil *string           `json:"ignored_until"`
-	FirstSeen    int64             `json:"first_seen"`
-	LastSeen     int64             `json:"last_seen"`
-	Driver       string            `json:"driver"`
-	NativeID     string            `json:"native_id"`
-	DeviceClass  string            `json:"device_class"`
-	ClassRank    string            `json:"class_rank,omitempty"`
-	Name         string            `json:"name,omitempty"`
-	NameRank     string            `json:"name_rank,omitempty"`
-	Address      string            `json:"address,omitempty"`
-	Model        string            `json:"model,omitempty"`
-	Serial       string            `json:"serial,omitempty"`
-	OpenPorts    []int             `json:"open_ports,omitempty"`
-	Entities     []CandidateEntity `json:"entities"`
+	Match        json.RawMessage `json:"match"`
+	Provenance   string          `json:"provenance"`
+	Status       string          `json:"status"`
+	IgnoredUntil *string         `json:"ignored_until"`
+	FirstSeen    int64           `json:"first_seen"`
+	LastSeen     int64           `json:"last_seen"`
+	Driver       string          `json:"driver"`
+	NativeID     string          `json:"native_id"`
+	DeviceClass  string          `json:"device_class"`
+	ClassRank    string          `json:"class_rank,omitempty"`
+	Name         string          `json:"name,omitempty"`
+	NameRank     string          `json:"name_rank,omitempty"`
+	Address      string          `json:"address,omitempty"`
+	Model        string          `json:"model,omitempty"`
+	Serial       string          `json:"serial,omitempty"`
+	// `omitzero`, not `omitempty` — an empty list is a scan's finding and must
+	// cross the wire as `[]`; omitempty would erase it into an absent member and
+	// tell the app peer nobody had looked. See REL-110 / api/1 open_ports.
+	OpenPorts []int             `json:"open_ports,omitzero"`
+	Entities  []CandidateEntity `json:"entities"`
 }
 
 // Candidate name-rank values (REL-110c): which KIND of record authored `name`,

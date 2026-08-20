@@ -277,11 +277,12 @@ func TestInspectSchemaReportsWhatTheNextOpenWillDo(t *testing.T) {
 		t.Fatalf("InspectSchema: %v", err)
 	}
 	// Every column this build declares that the staged (older) file lacks, and
-	// nothing else. The fixture predates all four additions the mirror has taken
-	// since — the scan's port list, the relay stamp the last-seen rule compares
-	// against, REL-110c's name rank and REL-110d's class rank
-	// (discovereddevices.go) — so the plan naming exactly those four is the
-	// report doing its job.
+	// nothing else. The fixture predates all five additions the mirror has taken
+	// since — the scan's port list, the flag saying whether a scan ever REPORTED
+	// that list (without which an empty list and an absent one are the same four
+	// bytes), the relay stamp the last-seen rule compares against, REL-110c's
+	// name rank and REL-110d's class rank (discovereddevices.go) — so the plan
+	// naming exactly those five is the report doing its job.
 	planned := map[string]bool{}
 	for _, a := range plan.Added {
 		if a.Table != "discovered_devices" {
@@ -289,8 +290,9 @@ func TestInspectSchemaReportsWhatTheNextOpenWillDo(t *testing.T) {
 		}
 		planned[a.Column] = true
 	}
-	if len(plan.Added) != 4 || !planned["open_ports"] || !planned["relay_last_seen"] || !planned["name_rank"] || !planned["class_rank"] {
-		t.Fatalf("want discovered_devices.open_ports, .relay_last_seen, .name_rank and .class_rank planned, got %+v", plan.Added)
+	if len(plan.Added) != 5 || !planned["open_ports"] || !planned["ports_scanned"] ||
+		!planned["relay_last_seen"] || !planned["name_rank"] || !planned["class_rank"] {
+		t.Fatalf("want discovered_devices.open_ports, .ports_scanned, .relay_last_seen, .name_rank and .class_rank planned, got %+v", plan.Added)
 	}
 	if len(plan.Divergent) != 0 {
 		t.Fatalf("a store that is merely missing a column has no non-additive drift; got %+v", plan.Divergent)

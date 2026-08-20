@@ -148,7 +148,10 @@ type Device struct {
 	// OpenPorts is what an active scan found listening on this device. Absent
 	// until something scanned it: no port list and an empty port list are
 	// different facts, and only a scan can assert the second.
-	OpenPorts []int `json:"open_ports,omitempty"`
+	// `omitzero`, not `omitempty`: the doc above is the whole point of the
+	// member, and omitempty would serve an empty list — a real scan result —
+	// as an absent one, contradicting it on the wire api/1 publishes.
+	OpenPorts []int `json:"open_ports,omitzero"`
 	// FirstSeen is when this SITE first held a report of the device and LastSeen
 	// is when its relay was last observed to have SEEN it, both in epoch
 	// milliseconds on the app's own clock (SEC-066) — the pair that answers "is

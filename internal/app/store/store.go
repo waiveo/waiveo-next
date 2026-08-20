@@ -450,6 +450,15 @@ func Open(dsn string, nowMs func() int64) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate pack installs: %w", err)
 	}
+	// Runs AFTER the column pass above, which is what puts `ports_scanned` on an
+	// older file. A data repair rather than a schema one: the generic pass can
+	// add a column and give every row its default, but it cannot know that a row
+	// still holding a non-empty port list is proof a scan once reported it. See
+	// backfillPortsScanned — safe at every boot, so it needs no marker.
+	if err := backfillPortsScanned(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: %w", err)
+	}
 
 	// Every migration above has run, so the file now holds this build's shape:
 	// stamp its epoch. A fresh file (read 0) and a pre-marker legacy file (also

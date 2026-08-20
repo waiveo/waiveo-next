@@ -52,6 +52,7 @@ discovered_devices	name	name TEXT NOT NULL DEFAULT ''
 discovered_devices	name_rank	name_rank TEXT NOT NULL DEFAULT ''
 discovered_devices	native_id	native_id TEXT NOT NULL
 discovered_devices	open_ports	open_ports TEXT NOT NULL DEFAULT '[]'
+discovered_devices	ports_scanned	ports_scanned INTEGER NOT NULL DEFAULT 0
 discovered_devices	relay_id	relay_id TEXT NOT NULL
 discovered_devices	relay_last_seen	relay_last_seen INTEGER NOT NULL DEFAULT 0
 discovered_devices	scope_node	scope_node TEXT NOT NULL

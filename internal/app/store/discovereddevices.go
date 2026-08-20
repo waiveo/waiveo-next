@@ -102,6 +102,10 @@ CREATE TABLE IF NOT EXISTS discovered_devices (
 	last_seen    INTEGER NOT NULL,
 	entities     TEXT NOT NULL DEFAULT '[]',
 	open_ports   TEXT NOT NULL DEFAULT '[]',
+	-- Whether a scan has REPORTED this device's ports. open_ports alone
+	-- cannot say: an absent list and an empty one are both [], and they mean
+	-- opposite things (see migrateDiscoveredDevicesSchema).
+	ports_scanned INTEGER NOT NULL DEFAULT 0,
 	relay_last_seen INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS discovered_devices_relay ON discovered_devices (relay_id);
@@ -356,6 +360,8 @@ func (s *Store) ReplaceDiscoveredDevices(ctx context.Context, relayID string, ro
 			if err != nil {
 				return fmt.Errorf("store: ReplaceDiscoveredDevices: encode entities of %s: %w", d.DeviceID, err)
 			}
+			// The list still serializes non-nil (no JSON `null` in this store), and
+			// `ports_scanned` carries the qualifier that says how to read it.
 			ports, err := json.Marshal(nonNilPorts(row.OpenPorts))
 			if err != nil {
 				return fmt.Errorf("store: ReplaceDiscoveredDevices: encode open_ports of %s: %w", d.DeviceID, err)
@@ -368,11 +374,11 @@ func (s *Store) ReplaceDiscoveredDevices(ctx context.Context, relayID string, ro
 				`INSERT OR REPLACE INTO discovered_devices
 				   (device_id, relay_id, scope_node, driver, native_id, device_class, class_rank,
 				    name, name_rank, address, model, serial, first_seen, last_seen, entities, open_ports,
-				    relay_last_seen)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				    ports_scanned, relay_last_seen)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				row.DeviceID, row.RelayID, row.ScopeNode, row.Driver, row.NativeID, row.DeviceClass, row.ClassRank,
 				row.Name, row.NameRank, row.Address, row.Model, row.Serial, row.MirroredFirstSeen, row.LastSeen,
-				string(entities), string(ports), row.RelayLastSeen); err != nil {
+				string(entities), string(ports), boolToInt(row.OpenPorts != nil), row.RelayLastSeen); err != nil {
 				return fmt.Errorf("store: ReplaceDiscoveredDevices: insert %s: %w", d.DeviceID, err)
 			}
 			stored = append(stored, row)
@@ -581,16 +587,23 @@ func mergeDiscovered(prior, next DiscoveredDevice) DiscoveredDevice {
 	// between carries none. Keeping the held list when the report carries none is
 	// the same rule the relay applies in memory.
 	//
-	// KNOWN LIMIT, stated rather than papered over: this cannot distinguish "a
-	// scan looked and found nothing open" from "nobody looked", because the
-	// stored column has no way to be absent (it is `[]` either way) and neither
-	// does the wire. Today that costs nothing — internal/relay/portscan only
-	// emits an entry for a host with a port OPEN, so a host whose ports have all
-	// closed is simply missing from the result and is never observed at all, which
-	// leaves the relay's own equivalent guard unreachable too. The day a scan
-	// reports a scanned-but-closed host, BOTH guards need the absent/empty
-	// distinction plumbed through, and this comment is where that starts.
-	if len(next.OpenPorts) == 0 && len(prior.OpenPorts) > 0 {
+	// The limit this block used to record is now CLOSED, and the guard is stated
+	// in the terms it always needed. It read `len(next.OpenPorts) == 0`, which is
+	// true for both an absent list and an empty one — fine only while the relay
+	// could not produce an empty one. It now can: the port scan observes the
+	// hosts it probed and found nothing on, `ports_scanned` carries the
+	// difference to disk, and the wire carries it as `[]` under omitzero.
+	//
+	// So the two cases split, and they want OPPOSITE outcomes:
+	//
+	//   nil  — this report did not scan. Keep what is known, or a passive
+	//          re-observation every 30s would blank a scan's findings seconds
+	//          after it made them. This is the original rule and it still holds.
+	//   []   — a scan looked and nothing answered. This is a FINDING and it must
+	//          land, because it is the only way a port that has CLOSED is ever
+	//          retracted. Keeping the prior list here would serve a device's
+	//          8060 forever after the Roku behind it was unplugged.
+	if next.OpenPorts == nil && len(prior.OpenPorts) > 0 {
 		row.OpenPorts = prior.OpenPorts
 	}
 
@@ -1253,7 +1266,7 @@ func (s *Store) DiscoveredDevices(ctx context.Context) ([]DiscoveredDevice, erro
 func readDiscoveredDevices(ctx context.Context, q queryer, deviceID string) ([]DiscoveredDevice, error) {
 	query := `SELECT d.device_id, d.relay_id, d.scope_node, d.driver, d.native_id, d.device_class, d.class_rank,
 	                 d.name, d.name_rank, d.address, d.model, d.serial, d.first_seen, d.last_seen, d.entities, d.open_ports,
-	                 d.relay_last_seen,
+	                 d.ports_scanned, d.relay_last_seen,
 	                 COALESCE(l.first_seen, 0), COALESCE(l.origin, '')
 	          FROM discovered_devices d
 	          LEFT JOIN device_first_seen l ON l.device_id = d.device_id`
@@ -1274,9 +1287,10 @@ func readDiscoveredDevices(ctx context.Context, q queryer, deviceID string) ([]D
 	for rows.Next() {
 		var d DiscoveredDevice
 		var entities, ports, origin string
+		var portsScanned int
 		if err := rows.Scan(&d.DeviceID, &d.RelayID, &d.ScopeNode, &d.Driver, &d.NativeID, &d.DeviceClass, &d.ClassRank,
 			&d.Name, &d.NameRank, &d.Address, &d.Model, &d.Serial, &d.MirroredFirstSeen, &d.LastSeen, &entities, &ports,
-			&d.RelayLastSeen, &d.FirstSeen, &origin); err != nil {
+			&portsScanned, &d.RelayLastSeen, &d.FirstSeen, &origin); err != nil {
 			return nil, fmt.Errorf("store: scan discovered device: %w", err)
 		}
 		if d.FirstSeen > 0 {
@@ -1285,8 +1299,20 @@ func readDiscoveredDevices(ctx context.Context, q queryer, deviceID string) ([]D
 		if err := json.Unmarshal([]byte(entities), &d.Entities); err != nil {
 			return nil, fmt.Errorf("store: decode entities of discovered device %s: %w", d.DeviceID, err)
 		}
-		if err := json.Unmarshal([]byte(ports), &d.OpenPorts); err != nil {
-			return nil, fmt.Errorf("store: decode open_ports of discovered device %s: %w", d.DeviceID, err)
+		// A row nothing has scanned decodes to NIL, not to an empty list. The
+		// column holds `[]` either way, so `ports_scanned` is the only thing that
+		// can tell them apart — and decoding an unscanned row as `[]` would have
+		// the API assert, on every device restored at boot, that a scan looked and
+		// found nothing.
+		if portsScanned != 0 {
+			if err := json.Unmarshal([]byte(ports), &d.OpenPorts); err != nil {
+				return nil, fmt.Errorf("store: decode open_ports of discovered device %s: %w", d.DeviceID, err)
+			}
+			if d.OpenPorts == nil {
+				// `null` in the column (a value this build never writes) would
+				// otherwise re-erase the qualifier the flag just asserted.
+				d.OpenPorts = []int{}
+			}
 		}
 		out = append(out, d)
 	}
@@ -1304,6 +1330,43 @@ func nonNilPorts(p []int) []int {
 		return []int{}
 	}
 	return p
+}
+
+// backfillPortsScanned marks the rows whose surviving port list proves a scan
+// once reported them.
+//
+// `ports_scanned` exists because `open_ports` could not hold the difference
+// between "a scan looked and found nothing open" and "nobody has looked" — the
+// column is `TEXT NOT NULL DEFAULT '[]'` and the write path ran every value
+// through nonNilPorts, so both landed as the same four bytes. That is the KNOWN
+// LIMIT mergeDiscovered recorded at length, whose closing sentence was that the
+// day a scan reports a scanned-but-closed host is the day it must be plumbed
+// through. That day arrived when the relay's port scan began observing the hosts
+// it probed and found nothing on.
+//
+// The column itself is added by the ordinary additive-schema pass, which gives
+// every existing row the declared default of 0 — "nobody has looked". For most
+// rows that is exactly right and deliberately conservative: an old `[]` meant
+// both things at once, and reading it as "scanned and empty" would have the
+// platform assert scans it never ran. Those rows degrade to unknown and the next
+// scan restates them.
+//
+// But one direction IS provable from an old row: a surviving NON-EMPTY list is
+// evidence that some scan did report it, and leaving those at 0 would throw away
+// real findings the file already holds. This restores exactly those.
+//
+// SAFE ON EVERY BOOT, which is why it carries no once-only marker and needs no
+// migration bookkeeping. This build never writes a non-empty list without also
+// writing ports_scanned = 1, so after the first pass the predicate matches
+// nothing. And a genuinely scanned-and-empty row stores `[]`, so it is never
+// touched — the one outcome that would corrupt a real finding into a claim.
+func backfillPortsScanned(db *sql.DB) error {
+	if _, err := db.Exec(
+		`UPDATE discovered_devices SET ports_scanned = 1
+		 WHERE ports_scanned = 0 AND open_ports <> '[]' AND open_ports <> ''`); err != nil {
+		return fmt.Errorf("backfill discovered_devices.ports_scanned: %w", err)
+	}
+	return nil
 }
 
 func nonNilEntities(in []wire.CandidateEntity) []wire.CandidateEntity {
@@ -1426,4 +1489,12 @@ func adoptedName(d DiscoveredDevice) string {
 		return d.Name
 	}
 	return d.Driver + " " + d.NativeID
+}
+
+// boolToInt stores a Go bool in the INTEGER column SQLite gives us.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
