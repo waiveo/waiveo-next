@@ -59,6 +59,22 @@ export interface PackManifestCollection {
   singleton?: boolean;
 }
 
+/** One manifest-declared action (MAN-070) — an operation a pack exposes for an
+ * operator to invoke, gated on the capability named by `capabilityScope`.
+ *
+ * The console reads this for ONE purpose: to answer "which installed extension
+ * owns this capability, and where does an operator go to use it?" Core surfaces
+ * deliberately do not perform pack work, but a core page that stays silent about
+ * where the work lives leaves the capability undiscoverable — which is how the
+ * Discovery page came to state that no scan could be started while an installed
+ * pack was declaring a scan action the whole time. Matching on
+ * `capabilityScope` rather than on `name` keeps that answer pack-agnostic: the
+ * capability is the platform's vocabulary, the action name is the pack's. */
+export interface PackManifestAction {
+  name: string;
+  capabilityScope: string;
+}
+
 /** The console-relevant slice of an installed pack's manifest. */
 export interface PackManifest {
   id: string;
@@ -74,6 +90,10 @@ export interface PackManifest {
   icon?: string;
   ui: { pages: PackManifestPage[] };
   dataModel: { version: number; collections: PackManifestCollection[] };
+  /** Optional: a pack that exposes no operator-invokable operation declares
+   * none, and an older box may omit the member entirely. Every read of it must
+   * therefore tolerate absence rather than treat it as an empty declaration. */
+  actions?: PackManifestAction[];
 }
 
 /** An installed pack as the registry returns it: the identity + baseline plus the

@@ -147,11 +147,13 @@ function seed({
   entities = [entity()],
   systemHealth = health(),
   adopted = [],
+  packs = [scannerPack()],
 }: {
   devices?: Device[];
   entities?: Entity[];
   systemHealth?: SystemHealth;
   adopted?: unknown[];
+  packs?: unknown[];
 } = {}) {
   server.use(
     http.get(`${TEST_BASE}/devices`, () => page(devices)),
@@ -161,7 +163,38 @@ function seed({
     // list so a test still describes one connected relay in one place.
     http.get(`${TEST_BASE}/discovery/relays`, () => ok({ relays: systemHealth.relays })),
     http.get(`${TEST_BASE}/adopted-devices`, () => page(adopted as never[])),
+    // The pack registry, read so the page can say WHO can start a scan. Stubbed
+    // by default for exactly the reason the header above records: the route
+    // catches this read's failure, so without a stub every test here would keep
+    // passing against a permanently unreadable registry — the adopted-panel
+    // mistake, repeated.
+    http.get(`${TEST_BASE}/extensions`, () => page(packs as never[])),
   );
+}
+
+/** An installed extension that declares a scan action — the deployment the box
+ * actually runs. Defined here rather than inline because the DEFAULT matters:
+ * a fixture with no scanner would make every unrelated test describe a
+ * deployment that cannot scan, which is not the one being built. */
+function scannerPack(over: Record<string, unknown> = {}) {
+  return {
+    id: "waiveo/discovery",
+    revision: 1,
+    version: "1.0.0",
+    data_model_version: 1,
+    created_at: 0,
+    updated_at: 0,
+    enabled: true,
+    manifest: {
+      id: "waiveo/discovery",
+      version: "1.0.0",
+      displayName: "Discovery",
+      ui: { pages: [{ path: "settings", pageType: "settings-form", titleMsg: "msg:page.settings.title" }] },
+      dataModel: { version: 1, collections: [] },
+      actions: [{ name: "scan-now", capabilityScope: "discovery.scan" }],
+    },
+    ...over,
+  };
 }
 
 /** Rendered inside a router: the page links to the Roku console, and a `<Link>`
@@ -343,13 +376,76 @@ describe("Devices — the discovered fleet", () => {
     });
   });
 
-  it("counts what discovery found, and says the console cannot start a sweep", async () => {
+  it("counts what discovery found, and says this page starts nothing", async () => {
     seed({ devices: [device(), device({ id: OTHER_DEVICE_ID, name: "Cafe TV" })] });
     renderRoute();
     const status = await screen.findByRole("region", { name: "Discovery status" });
     await waitFor(() => expect(within(status).getByText("Discovered")).toBeInTheDocument());
     expect(within(status).getByText("Relays reporting")).toBeInTheDocument();
-    expect(within(status).getByText(/there is no scan to start from here/)).toBeInTheDocument();
+    expect(within(status).getByText(/Refresh/)).toBeInTheDocument();
+    // The page must NOT go back to claiming a scan cannot be started. It can —
+    // by the extension that owns `discovery.scan` — and the old sentence was
+    // read as "this platform has no on-demand scan" for as long as it stood.
+    expect(within(status).queryByText(/there is no scan to start from here/)).toBeNull();
+  });
+
+  it("names the extension that CAN start a scan, and links straight to it", async () => {
+    seed();
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    const link = await within(status).findByRole("link", { name: "Discovery" });
+    // The link goes into the pack's own confined namespace — the only door to a
+    // pack page since the rail section was removed.
+    expect(link).toHaveAttribute("href", "/p/waiveo/discovery/settings");
+    expect(within(status).getByText(/can scan this deployment's networks now/)).toBeInTheDocument();
+  });
+
+  it("says nothing can scan on demand only when nothing installed declares it", async () => {
+    seed({ packs: [] });
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    await waitFor(() =>
+      expect(within(status).getByText(/Nothing installed can scan on demand/)).toBeInTheDocument(),
+    );
+    expect(within(status).queryByRole("link", { name: "Discovery" })).toBeNull();
+  });
+
+  it("does NOT claim nothing can scan when the registry could not be read", async () => {
+    // The distinction the whole page is built on, applied to one more read:
+    // an empty registry is a fact about the deployment, a refused read is a
+    // fact about this console. Collapsing them would have the page invent an
+    // architectural limit out of its own missing permission.
+    seed();
+    server.use(
+      http.get(`${TEST_BASE}/extensions`, () =>
+        HttpResponse.json(
+          {
+            type: "about:blank",
+            title: "Forbidden",
+            status: 403,
+            code: "FORBIDDEN",
+            detail: "Only the workspace owner may read the pack registry.",
+            trace_id: TRACE_ID,
+          },
+          { status: 403, headers: { "Content-Type": "application/problem+json", "Trace-Id": TRACE_ID } },
+        ),
+      ),
+    );
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    await waitFor(() =>
+      expect(within(status).getByText(/could not be read here/)).toBeInTheDocument(),
+    );
+    expect(within(status).queryByText(/Nothing installed can scan on demand/)).toBeNull();
+  });
+
+  it("offers no link into a DISABLED scanner, and says why rather than going quiet", async () => {
+    seed({ packs: [scannerPack({ enabled: false })] });
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    await waitFor(() => expect(within(status).getByText("Discovery")).toBeInTheDocument());
+    expect(within(status).queryByRole("link", { name: "Discovery" })).toBeNull();
+    expect(within(status).getByText(/it is disabled/)).toBeInTheDocument();
   });
 
   it("names the relay that reported the devices, with the address it dials on", async () => {

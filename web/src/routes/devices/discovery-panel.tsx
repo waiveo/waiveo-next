@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router";
 import { ChevronDown, ChevronRight, Cpu, EyeOff, MonitorPlay, Network, Radio } from "lucide-react";
 import { StatCard, StatusBadge, type Status } from "@/components/kit";
 import type { RelayHealth } from "@/api";
@@ -6,6 +7,7 @@ import {
   MISSING_DEVICE_REASONS,
   type Discovery,
 } from "./discovery";
+import type { ScanOwner } from "./scan-owner";
 
 /**
  * The Discovery panel — the top of the Devices page, and the whole answer to
@@ -25,9 +27,18 @@ import {
  *   5. WHAT ADOPT ACTUALLY DOES, stated before the operator presses it rather
  *      than only inside the confirm dialog.
  *
- * Nothing here can START a sweep, and the panel says so in as many words: the
- * absence of a Scan button is otherwise read as a missing feature rather than as
- * the architecture. Relays discover; this console reads.
+ * Nothing here can START a sweep, and the panel says so — but it now also says
+ * WHO CAN. The earlier wording ("there is no scan to start from here") was true
+ * about this page and false about the deployment: scanning is owned by an
+ * extension, `waiveo/discovery` declares a `scan-now` action gated on
+ * `discovery.scan`, and invoking it drives a real ARP sweep and port scan. An
+ * operator reading the old sentence concluded the platform could not scan on
+ * demand, while the one operational control in Discovery sat three clicks away
+ * under "Extensions" with nothing pointing at it.
+ *
+ * The absence of a Scan BUTTON here is still the architecture — core does not
+ * perform pack work — but the absence of a POINTER was just a gap. Relays
+ * discover; this console reads; an extension decides when to look.
  */
 
 /** Discovery state → the kit's status vocabulary.
@@ -65,6 +76,11 @@ export interface DiscoveryPanelProps {
   devicesByRelay: Map<string, number>;
   /** How many entities the deployment's devices expose in total. */
   entityCount: number;
+  /** The installed extensions that can start a scan, or `null` when the pack
+   * registry could not be read. Empty and null are different claims: empty says
+   * this deployment has nothing that scans on demand, null says this console
+   * does not know — and only the first is the page's to assert. */
+  scanOwners: ScanOwner[] | null;
 }
 
 export function DiscoveryPanel({
@@ -72,6 +88,7 @@ export function DiscoveryPanel({
   relays,
   devicesByRelay,
   entityCount,
+  scanOwners,
 }: DiscoveryPanelProps) {
   const [showMissing, setShowMissing] = useState(false);
 
@@ -233,9 +250,66 @@ export function DiscoveryPanel({
         and still counted — it is marked, not removed, and un-ignoring it on the row puts it back.
         Nothing stops looking for a device because it was ignored.{" "}
         <strong className="font-medium text-foreground">Refresh</strong> re-reads what the relays
-        have already reported — each relay sweeps its own network on its own schedule, so there is
-        no scan to start from here.
+        have already reported; it starts nothing.
       </p>
+
+      {/* (6) WHERE A SCAN COMES FROM. This page cannot start one — core does not
+          perform an extension's work — but it used to leave that as "there is no
+          scan to start", which reads as "this platform cannot scan on demand".
+          It can: an extension owning `discovery.scan` asks core, core asks each
+          relay, and the relay runs its ARP sweep and port scan. Saying so, with
+          the way there, is the difference between an architecture explained and
+          a capability hidden. */}
+      <div
+        data-slot="scan-owner"
+        className="flex flex-col gap-1 rounded-card border border-border bg-card p-4 text-sm"
+      >
+        <h3 className="font-medium text-foreground">Starting a scan</h3>
+        {scanOwners === null ? (
+          <p className="text-muted-foreground">
+            Passive discovery runs continuously and needs nothing started. Whether any installed
+            extension can also scan on demand could not be read here — the extension registry did
+            not answer, which is not the same as nothing being installed.
+          </p>
+        ) : scanOwners.length === 0 ? (
+          <p className="text-muted-foreground">
+            Passive discovery runs continuously and needs nothing started. Nothing installed can
+            scan on demand: active scanning is owned by an extension holding{" "}
+            <code className="font-mono text-xs">discovery.scan</code>, and this deployment has none.
+          </p>
+        ) : (
+          <>
+            <p className="text-muted-foreground">
+              Passive discovery runs continuously. An on-demand sweep is an extension&apos;s
+              decision, not this page&apos;s — it asks core, core asks every relay, and each relay
+              scans the subnets its policy allows.
+            </p>
+            <ul className="flex flex-col gap-1">
+              {scanOwners.map((owner) => (
+                <li key={owner.id} data-slot="scan-owner-entry">
+                  {owner.href !== null ? (
+                    <Link
+                      to={owner.href}
+                      className="font-medium text-foreground underline underline-offset-4 outline-none hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {owner.displayName}
+                    </Link>
+                  ) : (
+                    <span className="font-medium text-foreground">{owner.displayName}</span>
+                  )}{" "}
+                  <span className="text-muted-foreground">
+                    {owner.disabled
+                      ? "— can scan, but it is disabled, so its pages are withdrawn. Enable it on the Extensions page."
+                      : owner.href === null
+                        ? "— can scan, but declares no page this console can open."
+                        : "— can scan this deployment's networks now."}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
     </section>
   );
 }

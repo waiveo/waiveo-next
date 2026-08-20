@@ -18,11 +18,13 @@ import {
   deviceFacts,
   type Device,
   type Entity,
+  type Pack,
   type RelayHealth,
   type WaiveoApi,
 } from "@/api";
 import { formatAge } from "@/lib/format-age";
 import { describeDiscovery, type BlindReason } from "./discovery";
+import { scanOwners } from "./scan-owner";
 import { DiscoveryPanel } from "./discovery-panel";
 import { AdoptedDevices } from "./adopted-devices";
 
@@ -196,6 +198,12 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
   // unknown one. `blind` names which refusal produced the null.
   const [relays, setRelays] = useState<RelayHealth[] | null>(null);
   const [blind, setBlind] = useState<BlindReason | null>(null);
+  // The installed packs, or null when the registry could not be read. Null and
+  // [] are DIFFERENT facts here for the same reason they are for relays: []
+  // licenses the page to say "nothing installed can start a scan", and a failed
+  // read does not. Saying it on a refusal would be the page inventing an
+  // architectural limit out of its own missing permission.
+  const [packs, setPacks] = useState<Pack[] | null>(null);
   const [dialog, setDialog] = useState<Dialog>({ kind: "closed" });
   const [busy, setBusy] = useState(false);
   // The device whose entities the lower table is narrowed to; null shows every
@@ -223,6 +231,12 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
         setRelays(null);
         setBlind(err instanceof ApiError && err.code === "FORBIDDEN" ? "forbidden" : "unreachable");
       });
+    // Read separately, and its failure never fails the page — the fleet is
+    // readable without knowing who owns scanning, and a registry refusal must
+    // not cost an operator the device list.
+    void collectPages<Pack>((cursor) => client.packs.list({ cursor }))
+      .then(setPacks)
+      .catch(() => setPacks(null));
     try {
       const [deviceRows, entityRows] = await Promise.all([
         collectPages<Device>((cursor) => client.devices.list({ cursor })),
@@ -541,6 +555,7 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
           relays={relays}
           devicesByRelay={devicesByRelay}
           entityCount={entities.length}
+          scanOwners={packs === null ? null : scanOwners(packs)}
         />
 
         <section aria-label="Discovered devices" className="flex flex-col gap-3">
