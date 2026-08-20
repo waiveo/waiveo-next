@@ -379,7 +379,21 @@ func (l *Listener) observePTRRecords(resources []dnsmessage.Resource, atMs int64
 			Driver:      w.Driver,
 			NativeID:    instance,
 			DeviceClass: w.DeviceClass,
-			Name:        instanceLabel(wireInstance, r.Header.Name.String()),
+			// PRODUCT for the reason the name below is Friendly: a declared watch
+			// names one service type a pack asked for BY NAME, so the declaration
+			// is the evidence and there is nothing to infer. Stated explicitly so
+			// this lane does not sit at the ladder's zero value and report a class
+			// it is sure of as unranked.
+			//
+			// The same containment note applies as to the name: this lane keys
+			// candidates by mDNS INSTANCE while the neighbour and host-mDNS lanes
+			// key theirs by MAC identity, so today this rank only ever meets
+			// another sighting of the same instance through the same watch. If a
+			// future change canonicalizes this lane onto the MAC the way
+			// discovery.canonicalize does, this rank stops being inert — and it is
+			// already the right value for that day.
+			ClassRank: deviceplane.ClassRankProduct,
+			Name:      instanceLabel(wireInstance, r.Header.Name.String()),
 			// A DECLARED watch names one service type a pack asked for by name,
 			// so unlike hostmdns — which reads the WHOLE avahi cache and has to
 			// judge types nobody chose — the declaration is the evidence.

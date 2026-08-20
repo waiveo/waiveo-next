@@ -259,6 +259,17 @@ type Store struct {
 	// transaction that already holds the write lock.
 	required RequiredPacks
 
+	// rankResetSeen remembers which devices have already had a rank note
+	// announced — noteNameRankReset for the name ladder being discarded,
+	// noteClassRankRefused for a class correction being refused — so a condition
+	// that repeats on every report for as long as an older relay speaks for a
+	// device is logged ONCE rather than once a minute forever. Keys are prefixed
+	// per note so the two never suppress each other. Its own mutex: it is touched
+	// inside a write transaction, where mu is already held, and it guards nothing
+	// else.
+	rankResetMu   sync.Mutex
+	rankResetSeen map[string]bool
+
 	// readOnly marks a handle from OpenReadOnly. The database is already opened
 	// `mode=ro`, so this changes nothing SQLite enforces; what it stops is the
 	// one write this package attempts outside a query — Close's WAL checkpoint.

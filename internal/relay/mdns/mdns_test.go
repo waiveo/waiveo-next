@@ -824,3 +824,29 @@ func TestInstanceLabel(t *testing.T) {
 		}
 	}
 }
+
+// The declared mDNS lane's own half of the same statement (#204). Asserted on
+// the candidate this lane observes rather than on a merge outcome, because the
+// defect it guards is that the value is never SET — which every merge test would
+// pass through unchanged.
+func TestTheDeclaredMDNSLaneStatesProductAuthorityForItsClass(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	l, err := New(Config{
+		Watches:   []Watch{watchFor(mustMatch(t, `{"mdns":"_waiveo._tcp"}`))},
+		Store:     store,
+		NowMillis: func() int64 { return 1000 },
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	l.handlePacket(buildPTRPacket(t, "_waiveo._tcp.local.", "TheHanger._waiveo._tcp.local."))
+
+	cands := store.Report().Body.Candidates
+	if len(cands) != 1 {
+		t.Fatalf("the store holds %d candidates, want 1", len(cands))
+	}
+	if cands[0].ClassRank != deviceplane.ClassRankProduct {
+		t.Fatalf("class_rank = %d, want %d (product) — a watch names one service type a pack asked for BY NAME, so the declaration is the evidence; left at the ladder's zero value this lane reports a class it is sure of as unranked",
+			cands[0].ClassRank, deviceplane.ClassRankProduct)
+	}
+}

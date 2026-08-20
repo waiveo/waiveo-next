@@ -139,7 +139,7 @@ func (l *Lane) sweep() {
 		nameRank  deviceplane.NameRank
 		addr      string
 		class     string
-		classAuth int
+		classAuth deviceplane.ClassRank
 	}
 	best := map[string]*host{}
 	for _, s := range services {
@@ -189,9 +189,17 @@ func (l *Lane) sweep() {
 			Driver:      driver,
 			NativeID:    nativeID,
 			DeviceClass: h.class,
-			Name:        h.name,
-			NameRank:    h.nameRank,
-			Address:     h.addr,
+			// The sweep's own class verdict, carried UP rather than thrown away
+			// with the `host` map. That discard is the whole of #204: betterClass
+			// decided this device's class against every record in the cache, and
+			// the answer then died with the sweep, so the merge above saw two
+			// specific classes and took the newer one. A sweep that happens to
+			// miss the record the better class came from could therefore
+			// reclassify a device — durably, once the app peer's mirror stored it.
+			ClassRank: h.classAuth,
+			Name:      h.name,
+			NameRank:  h.nameRank,
+			Address:   h.addr,
 		}, now)
 	}
 }
@@ -333,8 +341,11 @@ func nameRankFor(serviceType string) deviceplane.NameRank {
 	}
 }
 
-// The authority of a service type's CLASS signal: how strongly the fact that a
-// device advertises this type asserts what the device IS.
+// classAuthority says how strongly the fact that a device advertises this
+// service type asserts what the device IS — the class half of the same job
+// nameRankFor does for the name, off the same record, and deliberately a
+// different answer (`_ecobee._tcp` is a definitive CLASS signal and a terrible
+// NAME source).
 //
 // This exists because "most specific wins" was a rank with only two values, so
 // two DIFFERENT specific classes tied and the first one parsed simply held. That
@@ -342,36 +353,26 @@ func nameRankFor(serviceType string) deviceplane.NameRank {
 // filtered on the avahi transaction it was nearly unreachable. #203 makes it
 // reachable — widening the parse to the records avahi cached on the v6
 // transaction feeds classFor records it never saw before — and the merge below
-// this lane makes it DURABLE: deviceplane.keepClass and the store's
-// keepClassFact both treat one specific class replacing another as a genuine
-// reclassification and take it. An order-dependent pick, taken durably, every 30
+// this lane makes it DURABLE. An order-dependent pick, taken durably, every 30
 // seconds, is #198's signature on the class field.
-const (
-	classAuthorityNone = iota
-	// A FEATURE any kind of device may implement, including fabric membership.
-	// Every entry is a lab sighting on a device of a different kind:
-	// `_matter._tcp` on 192.168.50.43, a Google speaker (OUI 84:28:59) whose
-	// other service is `_spotify-connect._tcp`; `_hap._tcp` on the ecobee
-	// thermostats at 192.168.39.241/242; `_airplay._tcp` AND
-	// `_spotify-connect._tcp` on that same ecobee at 192.168.39.241, which is the
-	// sighting that refutes ranking media above smart-home outright — the
-	// thermostat really does advertise both, and it is not a media player.
-	// `_smb._tcp` (192.168.51.147) and `_afpovertcp._tcp` (192.168.50.57) are
-	// here on the same principle: any computer shares files.
-	classAuthorityFeature
-	// The device's OWN product service — advertised because of what the device
-	// is, not as a feature bolted onto something else.
-	classAuthorityProduct
-)
-
-// classAuthority says which of the three a service type is. A type classFor does
-// not recognise has no class signal at all; a recognised type defaults to
-// FEATURE, the weaker of the two real levels, so a type added to classFor
-// without a deliberate decision here can never silently outrank an established
-// product signal — the same conservative default nameRankFor takes.
-func classAuthority(serviceType string) int {
+//
+// The LADDER ITSELF lives in deviceplane (ClassRank), not here, and that moved
+// as part of #204. The values are unchanged; what changed is that they now
+// OUTLIVE the sweep. Held here, the verdict was discarded when sweep() returned,
+// so it could rank records against each other within one browse and could not
+// rank one browse against the next — which is the merge that decides what an
+// operator actually sees. The evidence for each level is on the constants; the
+// evidence for each TYPE is below, and both bars are the one nameRankFor sets:
+// a level claimed on plausibility rather than a sighting is a classification
+// that cannot be corrected.
+//
+// A type classFor does not recognise has no class signal at all; a recognised
+// type defaults to FEATURE, the weaker of the two real levels, so a type added
+// to classFor without a deliberate decision here can never silently outrank an
+// established product signal — the same conservative default nameRankFor takes.
+func classAuthority(serviceType string) deviceplane.ClassRank {
 	if classFor(serviceType) == deviceplane.ClassUnclassified {
-		return classAuthorityNone
+		return deviceplane.ClassRankNone
 	}
 	switch serviceType {
 	// PRODUCT, and every one is a lab sighting: `_ecobee._tcp` (192.168.39.241,
@@ -391,9 +392,9 @@ func classAuthority(serviceType string) int {
 		"_androidtvremote2._tcp", "_googlecast._tcp",
 		"_ipp._tcp", "_ipps._tcp", "_printer._tcp", "_pdl-datastream._tcp",
 		"_scanner._tcp", "_uscan._tcp", "_uscans._tcp":
-		return classAuthorityProduct
+		return deviceplane.ClassRankProduct
 	default:
-		return classAuthorityFeature
+		return deviceplane.ClassRankFeature
 	}
 }
 
@@ -417,32 +418,23 @@ func classAuthority(serviceType string) int {
 // The second step is a documented policy rather than a lexicographic tiebreak on
 // purpose: alphabetical order would give the same answer here only by accident,
 // and would silently invert if a class token were ever respelled.
-func betterClass(auth int, class string, heldAuth int, held string) bool {
-	if auth == classAuthorityNone {
+//
+// It compares on deviceplane.ClassConcreteness rather than a local copy, and
+// that is not tidying: deviceplane.keepClass now runs the SAME comparison across
+// sweeps (#204), and two definitions of "more concrete" would let one browse's
+// pick and the merge that keeps it disagree about the same pair of tokens —
+// which is a flap that no single-layer test can see.
+func betterClass(rank deviceplane.ClassRank, class string, heldRank deviceplane.ClassRank, held string) bool {
+	if rank == deviceplane.ClassRankNone {
 		return false
 	}
-	if auth != heldAuth {
-		return auth > heldAuth
+	if rank != heldRank {
+		return rank > heldRank
 	}
 	if class != held {
-		return classConcreteness(class) > classConcreteness(held)
+		return deviceplane.ClassConcreteness(class) > deviceplane.ClassConcreteness(held)
 	}
 	return false
-}
-
-// classConcreteness ranks how much a class narrows what an operator can DO with
-// a device — device_class governs the command vocabulary (REG-052). A media
-// player, a printer and a storage box each name a concrete function; smart-home
-// is the broad bucket a bare fabric membership lands in.
-func classConcreteness(class string) int {
-	switch class {
-	case "", deviceplane.ClassUnclassified:
-		return 0
-	case "smart-home":
-		return 1
-	default:
-		return 2
-	}
 }
 
 // cleanName turns an mDNS instance name into a display name, or "" when there

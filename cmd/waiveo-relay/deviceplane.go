@@ -170,3 +170,38 @@ func nameRankToken(r deviceplane.NameRank) string {
 		return wire.CandidateNameRankNone
 	}
 }
+
+// classRankToken projects the plane's class-authority ladder onto REL-110d's
+// wire token — nameRankToken's job for the other ranked fact, in the same place
+// and for the same composition-root reason.
+//
+// # THIS FUNCTION NEVER RETURNS THE EMPTY STRING, AND THAT IS THE DESIGN
+//
+// `class_rank` is `omitempty` on wire.DeviceCandidate, so it is fair to ask when
+// this relay omits it. It never does, and unlike the name's case that is not an
+// accident worth engineering around — it is what REL-110d means.
+//
+// For the NAME the question is at least conceivable: a candidate may carry no
+// `name`, so "nothing to rank" is a state the relay can be in. `device_class` is
+// REQUIRED by REL-110a, so every candidate always has a class and this relay
+// always has a verdict about it — including the honest verdict `none`, which is
+// what an unrecognised host gets and is a real statement rather than a fallback.
+// An ABSENT `class_rank` therefore has exactly ONE possible meaning on this
+// wire: a peer older than REL-110d. A relay that emitted absence would be
+// claiming to be older than it is, and would hand its own next report a licence
+// to overwrite a classification it had just refused.
+//
+// So the tag's absence path is exercised only by a CROSS-VERSION case — an old
+// peer's report, or the feeder rebuilding a mirror row whose rank was never
+// recorded — never by this producer. The covering test says so in those terms
+// rather than pretending this function has an unreachable branch to cover.
+func classRankToken(r deviceplane.ClassRank) string {
+	switch r {
+	case deviceplane.ClassRankProduct:
+		return wire.CandidateClassRankProduct
+	case deviceplane.ClassRankFeature:
+		return wire.CandidateClassRankFeature
+	default:
+		return wire.CandidateClassRankNone
+	}
+}

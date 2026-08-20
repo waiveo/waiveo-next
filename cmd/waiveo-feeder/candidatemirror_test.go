@@ -752,3 +752,114 @@ func TestTheReportedNameSourceOutlivesTheRelayThatReportedIt(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 }
+
+// THE CLASS'S SOURCE SURVIVES THE RELAY (REL-110d, #204), driven through the
+// real sink so every hop is exercised: the wire member, rowsFor's carry onto the
+// store row, the durable merge, and the restore that rebuilds the registry from
+// it.
+//
+// The fixture is 192.168.39.241, an ecobee thermostat. It advertises its own
+// `_ecobee` service (smart-home, at PRODUCT authority) alongside `_airplay` and
+// `_spotify-connect` (media-player, at FEATURE), so it is one missing record
+// from being called a media player — and the durable rank is the only thing that
+// can tell those two sweeps apart once the relay's own memory has died.
+//
+// The speaker at 192.168.50.43 is deliberately NOT the fixture here. Its two
+// records are equally ranked, so nothing this layer holds can separate them;
+// that instance is fixed on the relay, by the cross-sweep memory that stops the
+// flapping report from ever being sent. Trying to fix it here as well is what
+// the merge no longer does — see internal/app/store.keepClassFact.
+//
+// This is the hop the two layers most need to agree on. The read model takes a
+// report's class verbatim (the relay is authoritative for its own LAN), so the
+// durable refusal only reaches an operator because storedFrom feeds the merged
+// row back through rematerialize. A guard that lived only in the store would
+// leave `GET /devices` showing the artifact until the next restart.
+func TestTheReportedClassSourceOutlivesTheRelayThatReportedIt(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "app.db")
+
+	first := cmOpenStore(t, path)
+	registry := devices.New(cmSite, func() int64 { return 10_000 })
+	sink := newCandidateMirror(registry, first, store.WallClockMs)
+
+	// A sweep that read the thermostat's own product service.
+	whole := cmCandidate(cmNativeA, "Thermostat", "192.168.39.241:8060")
+	whole.DeviceClass = "smart-home"
+	whole.ClassRank = wire.CandidateClassRankProduct
+	if err := sink.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{whole}); err != nil {
+		t.Fatalf("steady-state report: %v", err)
+	}
+	id := deviceid.Device(cmSite, cmDriver, cmNativeA)
+	assertLayersAgree(t, ctx, registry, first, id, "smart-home", "192.168.39.241:8060", "Thermostat")
+
+	// THE RELAY RESTARTS. Its map is re-minted, its first sweep's browse is
+	// missing `_ecobee`, and it reports media-player honestly — off the media
+	// features the thermostat really does advertise, at the authority those
+	// records deserve.
+	partial := cmCandidate(cmNativeA, "Thermostat", "192.168.39.241:8060")
+	partial.DeviceClass = "media-player"
+	partial.ClassRank = wire.CandidateClassRankFeature
+	if err := sink.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{partial}); err != nil {
+		t.Fatalf("report from the restarted relay: %v", err)
+	}
+	if after := cmDevice(t, registry, id); after.DeviceClass != "smart-home" {
+		t.Fatalf("GET /devices would serve class %q after a relay restart, want smart-home — a thermostat is not a media player because it can play audio, and this class governs the command vocabulary (REG-052)",
+			after.DeviceClass)
+	}
+	assertLayersAgree(t, ctx, registry, first, id, "smart-home", "192.168.39.241:8060", "Thermostat")
+
+	// THE FEEDER RESTARTS TOO, with no relay connected: the registry is rebuilt
+	// from the mirror, and the rank has to be on the FILE for any of this to mean
+	// anything after this point.
+	if err := first.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	second := cmOpenStore(t, path)
+	restored := devices.New(cmSite, func() int64 { return 20_000 })
+	if _, err := restoreDeviceRegistry(ctx, second, restored); err != nil {
+		t.Fatalf("restoreDeviceRegistry: %v", err)
+	}
+	assertLayersAgree(t, ctx, restored, second, id, "smart-home", "192.168.39.241:8060", "Thermostat")
+
+	// And the refusal is still live in the NEW process, on nothing but what the
+	// file carried across.
+	revived := newCandidateMirror(restored, second, store.WallClockMs)
+	if err := revived.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{partial}); err != nil {
+		t.Fatalf("post-restart report: %v", err)
+	}
+	assertLayersAgree(t, ctx, restored, second, id, "smart-home", "192.168.39.241:8060", "Thermostat")
+
+	// A GENUINE RECLASSIFICATION STILL LANDS through the whole chain, at the SAME
+	// authority — the property that makes the refusal safe rather than a
+	// permanent pin, and the one the durable layer must never trade away. A pack
+	// correcting its declared class, or the thermostat being replaced by a
+	// speaker on the same MAC, speaks at exactly the authority the held class
+	// already has. If an equal-authority restatement could not land, this row
+	// would be smart-home for the life of the file with no operator action that
+	// clears it.
+	declared := cmCandidate(cmNativeA, "Thermostat", "192.168.39.241:8060")
+	declared.DeviceClass = "media-player"
+	declared.ClassRank = wire.CandidateClassRankProduct
+	if err := revived.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{declared}); err != nil {
+		t.Fatalf("reclassification report: %v", err)
+	}
+	assertLayersAgree(t, ctx, restored, second, id, "media-player", "192.168.39.241:8060", "Thermostat")
+
+	// AND IN THE LESS-CONCRETE DIRECTION, which is the arm that distinguishes
+	// this rule from a concreteness tiebreak: the pack corrects itself back, or
+	// the device really is a thermostat again. Same authority, less concrete
+	// class. A tiebreak would accept the correction above and refuse this one —
+	// permanently, through every layer, with `GET /devices` serving a class the
+	// relay stopped asserting and no operator action that clears it.
+	recorrected := cmCandidate(cmNativeA, "Thermostat", "192.168.39.241:8060")
+	recorrected.DeviceClass = "smart-home"
+	recorrected.ClassRank = wire.CandidateClassRankProduct
+	if err := revived.ApplyCandidates(cmRelayA, []wire.DeviceCandidate{recorrected}); err != nil {
+		t.Fatalf("re-correction report: %v", err)
+	}
+	assertLayersAgree(t, ctx, restored, second, id, "smart-home", "192.168.39.241:8060", "Thermostat")
+	if err := second.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+}

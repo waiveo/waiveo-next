@@ -768,3 +768,26 @@ func TestSSDPWithoutAMACKeepsItsWatchIdentity(t *testing.T) {
 			cands[0].Driver, cands[0].NativeID)
 	}
 }
+
+// A DECLARED CLASS OUTRANKS AN INFERRED ONE, and this lane has to say so
+// explicitly or it silently reports the ladder's zero value (#204).
+//
+// It is not a theoretical collision. canonicalize re-keys a MAC-resolvable SSDP
+// sighting onto the MAC identity — the SAME store key hostmdns writes — so a
+// pack's declaration and a service-type guess really do meet in keepClass. Left
+// unranked, a watch that a human wrote ("a device answering this SSDP pattern is
+// a media player") could never displace hostmdns's inference from whatever
+// `_matter` or `_airplay` record the host happened to advertise. The rank would
+// have INTRODUCED that regression, which is why the lane states its own.
+func TestADeclaredWatchStatesProductAuthorityForItsClass(t *testing.T) {
+	w := watchFor(mustMatch(t, `{"ssdp":"urn:roku-com:device:player:1"}`))
+	obs := w.observation("uuid:roku:ecp:X1", "192.168.50.31:8060", Identity{})
+
+	if obs.DeviceClass != "media-player" {
+		t.Fatalf("device_class = %q, want media-player — the declaration's own class", obs.DeviceClass)
+	}
+	if obs.ClassRank != deviceplane.ClassRankProduct {
+		t.Fatalf("class_rank = %d, want %d (product) — a pack's declared watch is the strongest class statement this relay has, and leaving it at the ladder's zero value means a service-type guess outranks a human's declaration on the same store key",
+			obs.ClassRank, deviceplane.ClassRankProduct)
+	}
+}

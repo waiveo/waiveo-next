@@ -226,12 +226,23 @@ func (w Watch) observation(usn, address string, id Identity) deviceplane.Observa
 		Driver:      w.Driver,
 		NativeID:    usn,
 		DeviceClass: w.DeviceClass,
-		Name:        id.Name,
-		NameRank:    id.NameRank,
-		Address:     address,
-		Model:       id.Model,
-		Serial:      id.Serial,
-		Entities:    w.Entities,
+		// A DECLARED watch is the strongest class statement this relay ever has:
+		// a human wrote down "a device answering this SSDP pattern is a media
+		// player" and a pack shipped it, where hostmdns is INFERRING a kind from
+		// a service type it recognised. Stated explicitly rather than left at the
+		// ladder's zero value, and that is load-bearing rather than tidy —
+		// canonicalize below re-keys this sighting onto the MAC identity, which
+		// is the same store key hostmdns writes, so the two lanes' classes really
+		// do meet in keepClass. Left unranked, a pack's declaration could never
+		// displace hostmdns's FEATURE guess, which is a regression #204's own
+		// rank would have introduced.
+		ClassRank: deviceplane.ClassRankProduct,
+		Name:      id.Name,
+		NameRank:  id.NameRank,
+		Address:   address,
+		Model:     id.Model,
+		Serial:    id.Serial,
+		Entities:  w.Entities,
 		// The DECLARATION behind the fan-out, named so the store can tell a
 		// watch that narrowed its entity list from a lane that has no watch at
 		// all, and so an apply that REMOVES this watch can drop what it declared

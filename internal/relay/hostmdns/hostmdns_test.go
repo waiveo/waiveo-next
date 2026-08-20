@@ -1,6 +1,8 @@
 package hostmdns
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/relay/deviceplane"
@@ -744,4 +746,59 @@ func hostmdnsName(t *testing.T, store *deviceplane.Store) string {
 		t.Fatalf("candidates = %d, want 1 (every service here is one device): %+v", len(cands), cands)
 	}
 	return cands[0].Name
+}
+
+// THE COUPLING BETWEEN THE CLASS AND ITS RANK, asserted because the two are
+// carried as separate members and nothing in the type system pairs them.
+//
+// A sighting's class rank is `none` if and only if its class is `unclassified`.
+// classAuthority enforces the forward direction (an unrecognised service type
+// has no class signal), and the sweep's initialisation plus betterClass's
+// none-guard enforce the reverse: `best` starts every host at
+// (unclassified, none) and betterClass refuses to update either without a real
+// authority, so the pair can never drift apart.
+//
+// It matters because the two halves travel independently from here — the class
+// as REL-110a's required member, the rank as REL-110d's optional one — and a
+// specific class reported at `none` would be a classification the app peer's
+// durable merge must treat as unvouched-for, while an `unclassified` reported at
+// `product` would be the generic default claiming authority it cannot have.
+func TestASightingsClassRankIsNoneExactlyWhenItsClassIsUnclassified(t *testing.T) {
+	store := deviceplane.NewStore("relay-1")
+	lane, err := New(Config{
+		Store:      store,
+		NowMillis:  func() int64 { return 1000 },
+		ResolveMAC: func(ip string) (string, bool) { return "84:28:59:9f:2f:" + ip[len(ip)-2:], true },
+		// A spread of hosts: two the table recognises at different authorities,
+		// and two it does not recognise at all.
+		Browse: func() ([]Service, error) {
+			return []Service{
+				{Name: "ecobee-ares", Type: "_ecobee._tcp", Address: "192.168.50.11"},
+				{Name: "speaker", Type: "_spotify-connect._tcp", Address: "192.168.50.22"},
+				{Name: "some-box", Type: "_ssh._tcp", Address: "192.168.50.33"},
+				{Name: "another", Type: "_workstation._tcp", Address: "192.168.50.44"},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := lane.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run returned %v, want context.Canceled", err)
+	}
+
+	cands := store.Report().Body.Candidates
+	if len(cands) != 4 {
+		t.Fatalf("the store holds %d candidates, want 4", len(cands))
+	}
+	for _, c := range cands {
+		unclassified := c.DeviceClass == deviceplane.ClassUnclassified
+		unranked := c.ClassRank == deviceplane.ClassRankNone
+		if unclassified != unranked {
+			t.Errorf("candidate %s reports class %q at rank %d — a specific class at `none` is a classification nothing vouches for, and `unclassified` at any real rank is the generic default claiming authority it cannot have",
+				c.NativeID, c.DeviceClass, c.ClassRank)
+		}
+	}
 }

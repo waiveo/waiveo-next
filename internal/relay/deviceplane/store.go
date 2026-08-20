@@ -80,22 +80,209 @@ const IgnoredForever = "forever"
 // downgrades a candidate another lane has already classified (keepClass).
 const ClassUnclassified = "unclassified"
 
-// keepClass merges a re-sighting's device_class without letting the generic
-// default erase a learned one. Enumerate-all means several lanes observe one
-// device: the neighbour lane knows only that a host exists (unclassified), while
-// the mDNS lane may know it is a media player. Overwriting unconditionally
-// (which every re-sighting used to do) let whichever lane swept last win, so a
-// classified device flickered back to unclassified on the next neighbour sweep.
-// A SPECIFIC class wins; between two specific classes the newer sighting wins
-// (an actual reclassification); ClassUnclassified only fills a gap.
-func keepClass(next, current string) string {
-	if next != "" && next != ClassUnclassified {
-		return next
+// ClassRank is how strongly the RECORD behind a sighting asserts what the device
+// IS — the class's answer to the question NameRank answers for the name, and
+// authored in the same place for the same reason: beside the mDNS service-type
+// table in hostmdns, where the knowledge lives, then carried up on the
+// Observation to the one point every lane converges.
+//
+// # WHY THIS LADDER EXISTS AT ALL, AND WHY IT IS NOT NEW KNOWLEDGE
+//
+// The relay already knew every value below. hostmdns.classAuthority has ranked
+// service types since #203, and betterClass has picked between them on
+// (authority, concreteness). What it did NOT do was remember the verdict: the
+// `host` struct holding it was declared INSIDE Lane.sweep, so the rank was
+// discarded the moment the sweep returned, and keepClass below — which is the
+// merge that decides what SURVIVES a sweep — only ever saw the class token.
+// Two sweeps of one device therefore compared as specific-vs-specific and the
+// newer one simply won.
+//
+// That made the class a function of THE RECORDS ONE SWEEP HELD rather than of
+// the device, and sweeps have been measured dropping records nondeterministically
+// (see nameRankFor's `_display._tcp` note: three consecutive dumps 12s apart
+// disagreed about one host's services). Measured on box .12 by replaying a real
+// `avahi-browse -a -t -r -p -k` through the real rules: 192.168.50.43 advertises
+// `_matter._tcp` (smart-home) and `_spotify-connect._tcp` (media-player), both at
+// Feature. Drop the single `_spotify-connect` record from a sweep and the pick is
+// smart-home — which the old keepClass took as a genuine reclassification, and
+// which the app peer's durable mirror then wrote to DISK. The device_class
+// governs the command vocabulary (REG-052), so this is not a wrong label; it is
+// a device that loses commands and stops matching class-targeted automation,
+// silently, because one UDP record was missing from one 30-second window.
+//
+// # THE LADDER IS AUTHORITY ONLY; CONCRETENESS IS THE SECOND KEY
+//
+// betterClass compares two things and only ONE of them belongs here. Authority —
+// is this the device's own product service, or a feature bolted onto it — is a
+// fact about the mDNS SERVICE TYPE, and the service type is dropped by every
+// layer above hostmdns. Concreteness is a pure function of the class TOKEN, so
+// any layer holding the token can re-derive it (ClassConcreteness below, and the
+// app peer's own restatement of it). Only the half that cannot be re-derived
+// needs to be remembered and carried, which is why this ladder has three values
+// and not six.
+//
+// # THE REFRESHABILITY CONSTRAINT APPLIES HERE TOO
+//
+// NameRank's hard rule — A RANK MAY NOT SIT ABOVE ANY RANK A CONTINUOUSLY
+// SWEEPING LANE CAN PRODUCE UNLESS ITS OWN SOURCE SWEEPS TOO — is a property of
+// ranked merges, not of names. Both ranks below are minted by hostmdns, which
+// re-reads the whole avahi cache every 30 seconds, and by the declared lanes,
+// which re-observe on every packet. Nothing here is claimable once and then
+// unrestatable, so a device that genuinely changes what it advertises is
+// reclassified rather than pinned.
+//
+// That holds for the DECLARED source only because of the withdrawal seam, and
+// the claim is worth nothing without it. A pack's watch re-observes for as long
+// as the pack is installed, but a pack that is REMOVED stops observing — and
+// silence is indistinguishable from a quiet device, so no rule reading sightings
+// can retract what it said. Its Product rank would simply out-rank every
+// hostmdns sighting for the rest of the process. RetainDeclarations is where
+// that retraction happens, for the same reason and at the same seam as the
+// entity fan-out's.
+type ClassRank int
+
+const (
+	// ClassRankNone is "this sighting has no opinion about what the device is":
+	// the neighbour and port-scan lanes, which know only that a host exists and
+	// mint ClassUnclassified, and any lane not yet taught to rank. It is the ZERO
+	// VALUE on purpose — a lane added later that sets a DeviceClass and forgets
+	// the rank can fill a gap and can never displace a ranked classification.
+	ClassRankNone ClassRank = iota
+	// ClassRankFeature is a service any KIND of device may implement, including
+	// fabric membership: `_matter`/`_hap` (a Matter/HomeKit fabric), `_airplay`
+	// and `_spotify-connect` (media features), `_smb`/`_afpovertcp` (any computer
+	// shares files). Every one of those is a lab sighting on a device of a
+	// different kind — the ecobee at 192.168.39.241 advertises THREE of them —
+	// which is why a feature can classify a device nothing else recognises and
+	// must never outrank what the device says about itself.
+	ClassRankFeature
+	// ClassRankProduct is the device's OWN product service, advertised because of
+	// what the device is rather than as a feature bolted onto something else
+	// (`_ecobee`, `_home-assistant`, `_ipp`), or a pack's DECLARED watch — a
+	// human wrote down "a device answering this pattern is a media player", which
+	// is the strongest statement this relay ever has about a device's kind.
+	ClassRankProduct
+)
+
+// ClassConcreteness ranks how much a class narrows what an operator can DO with
+// a device — device_class governs the command vocabulary (REG-052). A media
+// player, a printer and a storage box each name a concrete function; smart-home
+// is the broad bucket a bare fabric membership lands in; the generic default and
+// the empty string name nothing.
+//
+// It is EXPORTED and it lives here rather than in hostmdns because it is the
+// second key of every ranked class comparison in this process — the sweep's own
+// pick (hostmdns.betterClass) and the cross-sweep merge (keepClass) must use one
+// definition or the two disagree about the same pair of tokens. It is also the
+// half of the rank that is DERIVABLE from the value, which is what lets the app
+// peer restate it instead of needing a second wire member for it.
+func ClassConcreteness(class string) int {
+	switch class {
+	case "", ClassUnclassified:
+		return 0
+	case "smart-home":
+		return 1
+	default:
+		return 2
 	}
-	if current != "" && current != ClassUnclassified {
-		return current
+}
+
+// classAuthorityOf is the rank a class token is ALLOWED to carry, and it exists
+// because a rank is a statement about the RECORD BEHIND a class — and behind a
+// class of zero concreteness there is no record.
+//
+// ClassUnclassified is not a classification, it is the absence of one: every
+// lane mints it for a host it has not recognised, and REL-110a's requirement
+// that `device_class` be non-empty is the only reason it is spelled as a value
+// at all. A sighting that recognised nothing cannot be authoritative about
+// nothing, so its rank is ClassRankNone whatever the caller stamped.
+//
+// Without this floor the ladder inverts. Both declared lanes —
+// discovery.Watch.observation and mdns's watch sighting — stamp ClassRankProduct
+// on the watch's DeviceClass UNCONDITIONALLY, deliberately, so a pack can
+// correct an inference; and `unclassified` is a legal Class identifier under
+// device-class-registry/1 REG-010 (`^[a-z][a-z0-9-]*$`, nothing reserves the
+// sentinel), so a pack declaring that class mints (unclassified, Product) — a
+// generic default that OUTRANKS every real classification on the LAN and pins
+// the candidate there. The guard this whole function exists to preserve,
+// defeated by the rank meant to strengthen it.
+//
+// It is applied at this store rather than in each lane on purpose: Observe is
+// the one point every lane converges on, and a floor duplicated per lane is a
+// floor a lane added later forgets. The two writes below (the re-sighting merge
+// in keepClass, and the first-sighting store) are the only places a ClassRank
+// enters this process's memory.
+func classAuthorityOf(class string, rank ClassRank) ClassRank {
+	if ClassConcreteness(class) == 0 {
+		return ClassRankNone
 	}
-	return next
+	return rank
+}
+
+// keepClass merges a re-sighting's device_class by ranking WHOSE STATEMENT IT IS
+// and only then how specific it is — betterClass's own ordering, applied across
+// sweeps instead of within one.
+//
+// It returns the PAIR, for keepName's reason: a class stamped with another
+// sighting's rank is a corrupted ladder entry and a silent one.
+//
+// The comparison is the pair (classAuthorityOf(class, rank),
+// ClassConcreteness(class)) taken lexicographically, with same-or-better
+// winning. Every rule the old presence-shaped merge had falls out of it, which
+// is why there are no special cases left:
+//
+//   - THE GENERIC DEFAULT STILL ONLY FILLS A GAP. ClassUnclassified is
+//     (None, 0), the bottom of both keys — floored there by classAuthorityOf
+//     rather than trusted to arrive there — so it wins only against another
+//     (None, 0) and can never take a class some lane learned. That is the
+//     original guard, unchanged in effect.
+//   - A GENUINE RECLASSIFICATION STILL LANDS. Two equally-sourced, equally
+//     concrete classes — a media player that is now reported as a printer —
+//     compare equal and the newer sighting wins on recency, exactly as keepName
+//     lets a rename land at equal rank.
+//   - AN EQUAL-AUTHORITY DOWNGRADE IS NOW REFUSED, and this is the fix.
+//     192.168.50.43's two records are BOTH Feature, so authority ties and
+//     concreteness decides: media-player (2) holds against smart-home (1), and a
+//     sweep that happens to miss `_spotify-connect` changes nothing.
+//   - AUTHORITY IS COMPARED FIRST, and that ordering is load-bearing in the
+//     opposite direction. The ecobee at 192.168.39.241 holds smart-home from
+//     `_ecobee` at Product against media-player from `_airplay` at Feature.
+//     Concreteness alone would call the thermostat a media player; only
+//     authority-first keeps it a thermostat.
+//
+// # THE CONCRETENESS TIEBREAK LIVES HERE AND ONLY HERE, and that is a decision
+//
+// The third rule above is a bet: that a same-authority class change is more
+// likely a sweep that dropped a record than a device that changed kind. The bet
+// is sound HERE and only here, because here it is BOUNDED — this store dies with
+// the process, and a process spans tens of sweeps, which is the timescale over
+// which a dropped-record explanation is the likely one. The app peer's durable
+// mirror deliberately does NOT restate it (internal/app/store.keepClassFact):
+// the identical bet held at DISK lifetime never expires, so a device that
+// genuinely stops advertising its more concrete service could never be
+// reclassified again by anything. One heuristic, at the one layer that can
+// bound it, with the layer that cannot deferring to this one.
+//
+// THE ACCEPTED COST, stated because it is real and because it is what that bound
+// buys: a device that PERMANENTLY stops advertising its more concrete or
+// better-sourced service keeps its old class for the life of this process, and
+// so does a device whose pack CORRECTS a declared class to a less concrete one
+// under the same match key (an equal-authority restatement, refused by the same
+// rule). Both land on the next relay restart, and neither reaches disk as a
+// permanent state. That is keepName's own accepted cost one field over, bounded
+// the same way — every rank here is one a sweeping lane restates.
+func keepClass(next string, nextRank ClassRank, held string, heldRank ClassRank) (string, ClassRank) {
+	nextRank, heldRank = classAuthorityOf(next, nextRank), classAuthorityOf(held, heldRank)
+	if nextRank != heldRank {
+		if nextRank > heldRank {
+			return next, nextRank
+		}
+		return held, heldRank
+	}
+	if ClassConcreteness(next) >= ClassConcreteness(held) {
+		return next, nextRank
+	}
+	return held, heldRank
 }
 
 // NameRank is how good the SOURCE of a discovered name is — and "source" means
@@ -365,7 +552,14 @@ type Observation struct {
 	Driver      string
 	NativeID    string
 	DeviceClass string
-	Name        string
+	// ClassRank says how strongly the record behind DeviceClass asserts what the
+	// device is, so the merge can refuse a worse-sourced classification of the
+	// same device (keepClass). A lane that sets DeviceClass and leaves this zero
+	// gets ClassRankNone: its class can fill a gap and can never displace a
+	// ranked one — the same safe zero value NameRank has, and the reason a lane
+	// added later inherits the policy instead of having to remember it.
+	ClassRank ClassRank
+	Name      string
 	// NameRank says how good the record that authored Name is, so the merge can
 	// refuse a strictly worse statement about the same device (keepName). A lane
 	// that sets Name and leaves this zero gets NameRankNone: its name can fill a
@@ -469,6 +663,24 @@ type Candidate struct {
 	// peer ever parses; the projection states the token instead, field by field,
 	// which is what that projection is for.
 	NameRank NameRank `json:"-"`
+	// ClassRank is how strongly the record behind DeviceClass asserted it,
+	// remembered so the NEXT sighting can be refused if it is worse (keepClass).
+	//
+	// It is here for the reason NameRank is, one step further along: the rank
+	// used to live only inside a hostmdns sweep, so it did not survive even to
+	// the NEXT SWEEP of the same process, let alone a relay restart. Carrying it
+	// on the candidate is what makes keepClass a cross-sweep merge instead of a
+	// re-decision from scratch every 30 seconds.
+	//
+	// `json:"-"` for exactly the reason NameRank carries it: this type's tags are
+	// the frozen REL-110 corpus's shape (conformance/corpora/relay-1), which two
+	// gates diff as a full JSON tree, and the rank on the wire is a TOKEN whose
+	// ordering is deliberately not on the wire (wire.CandidateClassRank*).
+	// Encoding the int here would put a shape on the corpus oracle that no peer
+	// ever parses; cmd/waiveo-relay's toWireCandidates states the token instead.
+	// This tag, not `omitempty` over in wire, is what keeps the corpus
+	// byte-identical — see the note on wire.DeviceCandidate.ClassRank.
+	ClassRank ClassRank `json:"-"`
 	// entitySource is the declaration whose fan-out Entities currently holds —
 	// the Observation.EntitySource that last stated it. Still unexported, for
 	// the reason NameRank no longer qualifies under: this is merge memory with
@@ -554,10 +766,21 @@ func (s *Store) Observe(o Observation, atMs int64) {
 	// all-or-nothing, on the sound ground that a partial replace would delete the
 	// devices whose candidates happened to be malformed. But the malformed
 	// candidate is attacker-CHOSEN: one spoofed reply carrying an over-long or
-	// non-UTF-8 USN would make every subsequent report unapplyable and blank the
-	// whole site's device list — permanently, since nothing here expires a
-	// candidate. A per-device problem must not become a site-wide outage, and the
-	// place to stop it is before the poison is ever stored.
+	// non-UTF-8 USN would make every subsequent report unapplyable.
+	//
+	// WHAT THAT COSTS, traced rather than assumed — this sentence used to say it
+	// would "blank the whole site's device list", and it does not. The app's
+	// intake validates the whole report BEFORE it touches its read model, and the
+	// feeder's mirror returns before its durable write, so a refused report leaves
+	// both exactly as they were. The real consequence is the other failure mode:
+	// the site's device list FREEZES at its last good report, indefinitely and
+	// silently, because this store never expires a candidate and re-sends the same
+	// poison every minute. Nothing is lost and nothing is ever refreshed —
+	// measured as 5 of 5 devices unrefreshed on one over-long token. That is a
+	// weaker claim than "blanked" and a stronger argument for stopping the poison
+	// here, since here is the only place it can be stopped before it becomes
+	// permanent. Its twin lives at internal/app/devices/intake.go and says the
+	// same thing; if either moves, both do.
 	if !observationFieldOK(o.Driver) || !observationFieldOK(o.NativeID) ||
 		!observationFieldOK(o.DeviceClass) || !observationFieldOK(o.Name) ||
 		!observationFieldOK(o.Address) || !observationFieldOK(o.Model) || !observationFieldOK(o.Serial) {
@@ -610,9 +833,14 @@ func (s *Store) Observe(o Observation, atMs int64) {
 		// MAC-resolved lane stamps must not erase the declared search target a
 		// device actually answered.
 		c.Match = keepMatch(o.Match, c.Match)
-		// keepClass, not a bare overwrite: a specific class one lane learned must
-		// not be downgraded to the generic default by another lane's next sweep.
-		c.DeviceClass = keepClass(o.DeviceClass, c.DeviceClass)
+		// keepClass, not a bare overwrite, and RANKED rather than merely specific:
+		// a class one lane learned must not be downgraded to the generic default
+		// by another lane's next sweep, NOR to a worse-sourced specific class by
+		// a sweep that happened to miss the record the better one came from.
+		// DeviceClass and ClassRank move as a PAIR for keepName's reason — a
+		// class stamped with a rank that did not author it is a silent lie to the
+		// next merge — so nothing else here may touch either.
+		c.DeviceClass, c.ClassRank = keepClass(o.DeviceClass, o.ClassRank, c.DeviceClass, c.ClassRank)
 		// Entity STATE is carried across a re-sighting, for exactly the reason
 		// the learned facts below are: a discovery sighting never observes state
 		// (an SSDP NOTIFY says a device exists, not that it is playing), so the
@@ -735,6 +963,17 @@ func (s *Store) Observe(o Observation, atMs int64) {
 		// against it. A name with no rank behind it is indistinguishable from one
 		// nothing vouches for, which is what the merge would then have to assume.
 		NameRank: o.NameRank,
+		// Likewise for the class, and this is the hop whose absence made #204 a
+		// defect rather than a nicety: without it the FIRST sighting's authority
+		// was already gone by the time the second arrived, so keepClass had
+		// nothing to compare and every sweep re-decided from scratch.
+		//
+		// Floored through classAuthorityOf on the way in, not merely on the way
+		// through keepClass: a first sighting has no held pair to be compared
+		// against, so an unfloored (unclassified, Product) would be STORED as
+		// written and then reported upward as a generic default with product
+		// authority behind it.
+		ClassRank: classAuthorityOf(o.DeviceClass, o.ClassRank),
 		// Likewise: which declaration authored this fan-out, so RetainDeclarations
 		// can drop it when that declaration goes away. A candidate first seen by a
 		// lane with no watch records no source, which is right — it has no fan-out
@@ -767,6 +1006,36 @@ func (s *Store) Observe(o Observation, atMs int64) {
 //
 // A candidate with no recorded source is untouched — it never had a declared
 // fan-out to lose.
+//
+// # THE CLASS AUTHORITY IS WITHDRAWN TOO, and #204 is what made that necessary
+//
+// A declared watch does not only state a fan-out. It states the strongest CLASS
+// claim this relay ever has — discovery.Watch.observation stamps
+// ClassRankProduct on the watch's DeviceClass, deliberately, so a pack can
+// correct hostmdns's inference — and canonicalize re-keys that sighting onto the
+// MAC, which is the same store key hostmdns writes. So before #204 the
+// withdrawal seam had one declaration-authored fact to withdraw and now it has
+// two, and the second one is the one that REFUSES things: left behind, a removed
+// pack's Product rank goes on out-ranking every hostmdns sighting for the rest
+// of the process, and the class it authored can never be corrected by the lane
+// that can actually see the device.
+//
+// The rank is dropped to ClassRankNone and the CLASS TOKEN IS KEPT, which is the
+// whole shape of the fix. Withdrawing a declaration retracts its AUTHORITY, not
+// the observation — nothing on the LAN just changed, and blanking the class to
+// ClassUnclassified would report a device as unrecognised between this apply and
+// the next sweep, which is a worse lie than a stale-but-plausible class. At
+// ClassRankNone the next sweeping lane to say anything at all outranks it, so
+// the field re-converges within one sweep; the concreteness half of keepClass
+// still stops the neighbour lane's generic default from taking it in the
+// meantime.
+//
+// It is keyed on entitySource, the only declaration handle a candidate carries.
+// That is exact for a candidate whose class the declaration authored, and
+// conservative for one whose class hostmdns won: the latter is down-ranked
+// without cause, and hostmdns re-states its rank on the next 30-second sweep and
+// takes the field straight back. A conservative down-rank self-heals; a stale
+// authority does not, which is why the imprecision is on this side.
 func (s *Store) RetainDeclarations(live map[string]bool) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -776,6 +1045,7 @@ func (s *Store) RetainDeclarations(live map[string]bool) int {
 			continue
 		}
 		c.Entities, c.entitySource = nil, ""
+		c.ClassRank = ClassRankNone
 		cleared++
 	}
 	return cleared

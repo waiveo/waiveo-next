@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	stdlog "log"
 	"net"
 
 	"github.com/maaxton/waiveo-next/internal/datamodel"
@@ -66,17 +67,23 @@ import (
 // incumbency rule (internal/app/devices) has already decided which relay speaks
 // for it by the time a row is written here.
 //
-// `name_rank` is the only column here that is not a fact about the device: it is
-// REL-110c's statement about `name` — which kind of LAN record authored it — and
-// it exists so mergeDiscovered can refuse a worse-sourced name. It is TEXT
-// defaulting to the empty string, for two reasons that both matter. A constant
-// default is what makes the column ADDABLE to a store that already exists
-// (schemamigrate.go's whyNotAddable), and TEXT is what lets the empty string
-// mean UNRECORDED as a value distinct from the recorded-and-weakest `none`. An
-// INTEGER column defaulting to 0 would collapse those two into one number, so
-// every row written before this column existed would silently claim a relay had
-// told us its name was unranked — the #197 defect verbatim, and the reason
+// `name_rank` and `class_rank` are the only columns here that are not facts
+// about the device: they are REL-110c's statement about `name` and REL-110d's
+// about `device_class` — which kind of LAN record authored each — and they exist
+// so mergeDiscovered can refuse a worse-sourced value. Both are TEXT defaulting
+// to the empty string, for two reasons that both matter. A constant default is
+// what makes a column ADDABLE to a store that already exists (schemamigrate.go's
+// whyNotAddable), and TEXT is what lets the empty string mean UNRECORDED as a
+// value distinct from the recorded-and-weakest `none`. An INTEGER column
+// defaulting to 0 would collapse those two into one number, so every row written
+// before the column existed would silently claim a relay had told us its name or
+// class was unranked — the #197 defect verbatim, and the reason
 // device_first_seen.origin is spelled the same way one file over.
+//
+// The two ranks are separate columns because they are separate requirements with
+// separate vocabularies and — the reason that actually bites — DIFFERENT ANSWERS
+// FOR UNRECORDED. keepNameFact treats an unranked report as a merge on presence
+// alone; keepClassFact does not. One column could not carry both rules.
 const discoveredDevicesSchema = `
 CREATE TABLE IF NOT EXISTS discovered_devices (
 	device_id    TEXT PRIMARY KEY,
@@ -85,6 +92,7 @@ CREATE TABLE IF NOT EXISTS discovered_devices (
 	driver       TEXT NOT NULL,
 	native_id    TEXT NOT NULL,
 	device_class TEXT NOT NULL,
+	class_rank   TEXT NOT NULL DEFAULT '',
 	name         TEXT NOT NULL DEFAULT '',
 	name_rank    TEXT NOT NULL DEFAULT '',
 	address      TEXT NOT NULL DEFAULT '',
@@ -115,7 +123,17 @@ type DiscoveredDevice struct {
 	Driver      string
 	NativeID    string
 	DeviceClass string
-	Name        string
+	// ClassRank is REL-110d's rank of whatever record implied DeviceClass, held
+	// for the merge and for nothing else — no surface renders it, and Stored
+	// deliberately does not carry it (see storedFrom in cmd/waiveo-feeder). It is
+	// one of classRankNone/Feature/Product, or classRankUnrecorded for a row
+	// whose class arrived before this column existed or from a relay that does
+	// not rank classes. It carries AUTHORITY only: how concrete the class is
+	// follows from the class token and is re-derived (classConcretenessFact).
+	// DeviceClass and ClassRank MOVE AS A PAIR through every merge; keepClassFact
+	// is the only thing that may set either.
+	ClassRank string
+	Name      string
 	// NameRank is REL-110c's rank of whatever authored Name, held for the merge
 	// and for nothing else — no surface renders it, and Stored deliberately does
 	// not carry it (see storedFrom in cmd/waiveo-feeder). It is one of
@@ -290,6 +308,8 @@ func (s *Store) ReplaceDiscoveredDevices(ctx context.Context, relayID string, ro
 			}
 			was, known := prior[d.DeviceID]
 			row := mergeDiscovered(was, d)
+			s.noteNameRankReset(was, d, relayID)
+			s.noteClassRankRefused(was, d, relayID)
 			row.RelayID = relayID
 			// The relay's stamp as an opaque change-detector, never as a time —
 			// see the header. Unchanged means the relay has not seen the device
@@ -346,11 +366,11 @@ func (s *Store) ReplaceDiscoveredDevices(ctx context.Context, relayID string, ro
 			// refresh on the loser's leftover row.
 			if _, err := tx.ExecContext(ctx,
 				`INSERT OR REPLACE INTO discovered_devices
-				   (device_id, relay_id, scope_node, driver, native_id, device_class,
+				   (device_id, relay_id, scope_node, driver, native_id, device_class, class_rank,
 				    name, name_rank, address, model, serial, first_seen, last_seen, entities, open_ports,
 				    relay_last_seen)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				row.DeviceID, row.RelayID, row.ScopeNode, row.Driver, row.NativeID, row.DeviceClass,
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				row.DeviceID, row.RelayID, row.ScopeNode, row.Driver, row.NativeID, row.DeviceClass, row.ClassRank,
 				row.Name, row.NameRank, row.Address, row.Model, row.Serial, row.MirroredFirstSeen, row.LastSeen,
 				string(entities), string(ports), row.RelayLastSeen); err != nil {
 				return fmt.Errorf("store: ReplaceDiscoveredDevices: insert %s: %w", d.DeviceID, err)
@@ -383,12 +403,84 @@ func (s *Store) ReplaceDiscoveredDevices(ctx context.Context, relayID string, ro
 //
 // It turned out to be only half the rule, in both planes. Presence defends
 // against a report that learned NOTHING; it says nothing about one that learned
-// something WORSE, and a report can be worse in two ways this mirror sees every
-// minute — a class that has regressed to the generic default, and an address
-// that has lost its port. Those are ranked below rather than taken. The rule is
-// the same one deviceplane.keepClass has enforced in relay memory all along,
-// carried to the layer whose lifetime actually outlives the ignorance being
-// written over it.
+// something WORSE, and a report can be worse in ways this mirror sees every
+// minute — a class regressed to the generic default, an address that has lost
+// its port, a machine-generated label where a chosen name exists, a class picked
+// from whichever records one sweep happened to hold. Those are ranked below
+// rather than taken.
+//
+// # THE RANKED-FACT LEDGER, and what is deliberately NOT on it
+//
+// The same defect has now been fixed three times, one field at a time, each
+// found by hardware rather than by reading code: address (#198-era, rank
+// re-derived from the value), name (#202, REL-110c's wire member plus a durable
+// column), class (#204, REL-110d — the rank had to be given a life ACROSS SWEEPS
+// on the relay before either half of it could travel). Fixing the third and
+// stopping would be how a fourth arrives, so this is the enumeration that says
+// the class is closed rather than hoping it is.
+//
+// The durable surface of a relay observation is small and closed. The app peer's
+// inbound frame handler (internal/feeder/relayconn/server.go) has six cases after
+// the handshake — state.pull (a request; writes nothing), state.ack (an in-memory
+// map), device.candidates, screen.status, discovery.scan_status, pairing.redeemed
+// — and only TWO reach disk: this table (plus the device_first_seen ledger) and a
+// conditional DELETE for a redeemed pairing grant, which is idempotent and has no
+// merge. screen.status and discovery.scan_status are in-memory by explicit
+// decision, each saying so in its own package doc. Everything else is REL-004
+// additive-ignore.
+//
+// Walking every wire member against every column of this table, the facts with a
+// QUALITY RANK are: address (ranked both sides, re-derived from the value —
+// keepAddressFact), name (ranked both sides, REL-110c — keepNameFact), class
+// (ranked both sides, REL-110d — keepClassFact), and match (ranked in relay
+// memory by deviceplane.keepMatch and DURABLE NOWHERE: there is no column, the
+// read model decodes it as raw JSON it never consumes, and the boot restore
+// synthesizes `{}`. A rank whose fact never reaches disk cannot flap on disk).
+// Every other fact is symmetric between the two planes: model and serial are
+// presence-only on both sides, open_ports is a nil-vs-empty check on both, an
+// entity's state and attributes are carried across on both. So the class this
+// change closes — A FACT WHOSE QUALITY THE RELAY JUDGES AND THE DISK CANNOT —
+// is now EMPTY.
+//
+// "Closed" means the AUTHORITY travels, and the enumeration is worth nothing if
+// it is read as "both planes now decide identically". They deliberately do not,
+// and the difference is not a gap: deviceplane.keepClass additionally breaks an
+// equal-authority tie on how CONCRETE the class is, and keepClassFact refuses to
+// restate that comparison. A tiebreak on concreteness is a bet that a
+// same-authority change is a dropped mDNS record rather than a changed device,
+// and a bet like that is only sound while it EXPIRES. Relay memory expires with
+// the process; this table does not. Applied here the same rule freezes a device
+// that genuinely stops advertising its more concrete service, permanently and
+// with no operator action that clears it. So the rule that needed to travel is
+// the one that could not be re-derived, and the rule that must not travel is the
+// one whose validity is a function of how long it is held. A future rank should
+// be checked against BOTH questions, not just the first.
+//
+// What remains is a DIFFERENT and smaller class, listed here because an unlisted
+// gap is how this recurs: PRESENCE-ONLY MERGES WHERE QUALITY GENUINELY MATTERS.
+// Two members, neither closable by a rank, both deliberately left:
+//
+//  1. THE ENTITY FAN-OUT. The relay knows which DECLARATION authored a device's
+//     entities (deviceplane.Observation.EntitySource) and that authority is
+//     deliberately off the wire, so a withdrawn fan-out is indistinguishable
+//     here from one not learned yet and survives on disk — mergeEntities'
+//     documented KNOWN RESIDUAL, below. It needs an additive REL-110a member
+//     saying "I hold no declaration for this device", NOT a rank: the missing
+//     fact is a WITHDRAWAL, and a ladder cannot express one. Left because that
+//     is a contract change with its own corpus and its own argument to make.
+//
+//  2. MODEL. internal/relay/ecp resolves a precedence between `model-name` and
+//     `model-number` and DISCARDS which element won (deviceinfo.go's
+//     `infoField(doc.ModelName, doc.ModelNumber)`) — the exact shape NameSource
+//     fixed for the name, unfixed one field over. It is additionally reading the
+//     wrong element on the lab's only Roku: 192.168.50.31 answers
+//     `model-name=100012587` while `friendly-model-name=onn•Roku TV` goes
+//     unread, and box .12's row holds the SKU. Left because it is two changes,
+//     not one — which element to read is a product decision with hardware
+//     consequences, and carrying a ModelSource is a third wire member — and
+//     half-fixing it is precisely the habit this ledger exists to break. Model
+//     is rendered, never routed on, so nothing depends on it the way REG-052
+//     depends on the class.
 func mergeDiscovered(prior, next DiscoveredDevice) DiscoveredDevice {
 	row := next
 	// Name is RANKED here now, and it took the contract change the previous
@@ -429,10 +521,24 @@ func mergeDiscovered(prior, next DiscoveredDevice) DiscoveredDevice {
 	// default for a host no lane has recognised yet, so a restarted relay reports
 	// `unclassified` for a device it will classify seconds later once its mDNS
 	// sweep lands — and a blind take wrote that over a learned class DURABLY,
-	// which is worse than the in-memory flicker the relay already fixed. Same
-	// rule, same reason: a specific class wins, the newer of two specific ones
-	// wins (an actual reclassification), the generic default only fills a gap.
-	row.DeviceClass = keepClassFact(next.DeviceClass, prior.DeviceClass)
+	// which is worse than the in-memory flicker the relay already fixed.
+	//
+	// The generic-default guard was only half the rule, exactly as presence was
+	// only half the name's. It defends against a report that recognised NOTHING;
+	// it said nothing about one that recognised something less AUTHORITATIVE —
+	// and the relay's class pick is a function of WHICH RECORDS ONE SWEEP HELD,
+	// so a sweep that misses a device's own product service reports a different
+	// SPECIFIC class for an unchanged device, which this merge took as a
+	// reclassification and wrote to disk (#204; the ecobee at 192.168.39.241 is
+	// one missing `_ecobee._tcp` record from being called a media player).
+	// REL-110d's rank is what tells the two apart, and DeviceClass and ClassRank
+	// move as a PAIR — nothing else here may touch either.
+	//
+	// What this layer deliberately does NOT do is refuse an EQUAL-authority
+	// change; keepClassFact argues why at length. The short form: that refusal is
+	// a bet on a dropped record, it is only sound while it expires, and here it
+	// never would.
+	row.DeviceClass, row.ClassRank = keepClassFact(next.DeviceClass, next.ClassRank, prior.DeviceClass, prior.ClassRank)
 
 	// Ports: only an active scan can assert this list, and only a deployment
 	// carrying the scanning pack runs one at all — every passive re-sighting in
@@ -536,17 +642,223 @@ func orKeepFact(reported, held string) string {
 // deliberately depends on no relay code.
 const classUnclassified = "unclassified"
 
-// keepClassFact is deviceplane.keepClass at the durable layer: the generic
-// default never erases a class some lane already learned, while a genuine
-// reclassification (one specific class to another) lands on the newer report.
-func keepClassFact(reported, held string) string {
-	if reported != "" && reported != classUnclassified {
+// The class-rank vocabulary, restated app-side exactly as classUnclassified and
+// the name ranks are, and for the same reason: the app plane deliberately
+// depends on no relay code, so it restates the tokens relay/1 REL-110d publishes
+// (internal/shared/wire.CandidateClassRank*) rather than importing the relay's
+// own ordered ladder. The two are pinned in agreement by a test.
+//
+// classRankUnrecorded is NOT a token any relay sends — it is the empty string
+// the column carries for a row this build never ranked, deliberately distinct
+// from classRankNone, for the reason the schema comment gives.
+const (
+	classRankUnrecorded = ""
+	classRankNone       = "none"
+	classRankFeature    = "feature"
+	classRankProduct    = "product"
+)
+
+// classRankOrder places a stored or reported class-rank token on this side's
+// ladder. Everything unknown — including unrecorded — sits at the BOTTOM, on
+// nameRankOrder's argument verbatim: a rank is a licence to refuse, a durable
+// rank is that licence at disk lifetime, and a token this build cannot read must
+// never be honoured as one.
+func classRankOrder(token string) int {
+	switch token {
+	case classRankProduct:
+		return 2
+	case classRankFeature:
+		return 1
+	default:
+		// classRankNone, classRankUnrecorded, and any token this build cannot
+		// read.
+		return 0
+	}
+}
+
+// classRankFact is the vocabulary clamp: what a REPORTED token is allowed to
+// become when it is written to disk. Unreadable becomes classRankNone — the
+// honest floor, a class nothing vouches for — rather than verbatim (an untrusted
+// relay's bytes in a column this store reasons over) or unrecorded (untrue: the
+// relay DID state something). nameRankFact's reasoning, one field over.
+func classRankFact(reported string) string {
+	switch reported {
+	case classRankProduct, classRankFeature, classRankNone:
 		return reported
+	case classRankUnrecorded:
+		return classRankUnrecorded
+	default:
+		return classRankNone
 	}
-	if held != "" && held != classUnclassified {
-		return held
+}
+
+// classConcretenessFact is the DERIVABLE half of a class's quality: how much the
+// class narrows what an operator can do with the device. It is
+// deviceplane.ClassConcreteness restated app-side, exactly as classUnclassified
+// is and for the same no-relay-imports reason.
+//
+// It being derivable is the whole reason REL-110d carries authority ONLY. A
+// consumer holding two class tokens can order them for itself; it cannot know
+// which mDNS service type implied each, which is why that half had to go on the
+// wire. Keeping the derivable half app-side also means the guard below still
+// works against a relay too old to send a rank at all — which matters, because
+// the measured instance of #204 is fixed by this half alone.
+func classConcretenessFact(class string) int {
+	switch class {
+	case "", classUnclassified:
+		return 0
+	case "smart-home":
+		return 1
+	default:
+		return 2
 	}
-	return reported
+}
+
+// classAuthorityFact is the rank a class token is ALLOWED to carry —
+// deviceplane.classAuthorityOf at the durable layer, restated for the same
+// no-relay-imports reason as everything else in this block, and load-bearing for
+// a sharper reason than symmetry.
+//
+// A rank is a statement about the RECORD BEHIND a class, and behind a class of
+// zero concreteness there is no record: `unclassified` is what every lane mints
+// for a host it has not recognised, spelled as a value only because REL-110a
+// forbids an empty `device_class`. A report that recognised nothing cannot be
+// authoritative about nothing.
+//
+// This store reads that rank off the wire, and the relay is UNTRUSTED input here
+// — that is why classRankFact exists at all. classRankFact clamps the token's
+// VOCABULARY and says nothing about the pairing, so without this floor an
+// enrolled relay sending {"device_class":"unclassified","class_rank":"product"}
+// out-ranks every real classification on the LAN and pins the row at the generic
+// default for the life of the file: nothing on the LAN mints `product` for a
+// device whose records are all features, MarkStored pushes the pinned value over
+// the live report in the read model, and only relay revocation clears it. The
+// same shape arrives without malice from a pack that registers a device class
+// whose id is literally `unclassified` (REG-010's grammar permits it; nothing
+// reserves the sentinel) — discovery.Watch.observation would stamp it Product.
+// Flooring the pairing is what makes "the generic default only fills a gap" a
+// property of this function rather than a hope about its inputs.
+func classAuthorityFact(class, rank string) string {
+	if classConcretenessFact(class) == 0 && classRankOrder(rank) > 0 {
+		return classRankNone
+	}
+	return rank
+}
+
+// keepClassFact is deviceplane.keepClass at the durable layer — and, like the
+// name's, it returns the PAIR, because a class stamped with a rank that did not
+// author it is a corrupted ladder entry and a silent one.
+//
+// It is keepNameFact's ladder rule with one addition, and the addition is the
+// original guard this function has always carried:
+//
+//  1. A STRICTLY WORSE AUTHORITY IS REFUSED. That is what the durable rank is
+//     for. The ecobee at 192.168.39.241 advertises `_ecobee` (smart-home, at
+//     product) alongside `_airplay` and `_spotify-connect` (media-player, at
+//     feature); a relay restart whose first sweep misses the one `_ecobee`
+//     record honestly reports media-player, and without a rank on disk this
+//     store took that as a reclassification and wrote it. The thermostat is one
+//     missing record from being called a media player, and this is the half that
+//     stops it.
+//  2. THE GENERIC DEFAULT ONLY FILLS A GAP. `unclassified` is a statement of
+//     ignorance, not a competing verdict, so at equal authority it never
+//     displaces a class some lane learned. classAuthorityFact is what keeps that
+//     true when a report claims a rank for it.
+//  3. OTHERWISE THE NEWER REPORT LANDS, exactly as keepNameFact lets a rename
+//     land at equal rank.
+//
+// # WHY RULE 3 IS NOT A CONCRETENESS TIEBREAK, which is the decision here
+//
+// deviceplane.keepClass DOES break an equal-authority tie on concreteness, and
+// that is the fix for the measured #204 instance: 192.168.50.43's `_matter`
+// (smart-home) and `_spotify-connect` (media-player) records are BOTH feature,
+// so authority ties and only concreteness refuses the downgrade when a sweep
+// drops the Spotify record. Restating that comparison here looks like
+// defence-in-depth and is not. It is the same bet — "a same-authority change is
+// a dropped record, not a changed device" — held for a DIFFERENT DURATION, and
+// the duration is the entire content of the bet:
+//
+//   - In relay memory it expires with the process, which is tens of sweeps: long
+//     enough that a dropped record is the likely explanation, short enough that
+//     a real change lands.
+//   - On disk it never expires. A device that PERMANENTLY stops advertising its
+//     more concrete service — 192.168.50.43 with Spotify unlinked, a printer
+//     that stops answering `_ipp` — reports the honest lower class on every
+//     sweep, forever, and every one of them is refused. Restart the relay:
+//     refused. Restart the app: the row is read back and refused. The class an
+//     operator sees, and the command vocabulary REG-052 resolves from it, is
+//     frozen at whatever the device used to be, with no operator action that
+//     clears it short of revoking the relay. The same rule refuses a pack that
+//     CORRECTS its own declared device class, which is the one input where the
+//     newer statement is authoritative by construction.
+//
+// So the tiebreak lives at exactly one layer: the one that can bound it. This
+// one defers. The cost of deferring is a single report's worth of wrong class
+// after a relay restart whose first sweep missed a record — the relay's own
+// cross-sweep memory has taken the field back by the next sweep — against a
+// permanent, unclearable freeze. That is not a close trade.
+//
+// # DECISION: AN ABSENT RANK REFUSES, WHERE AN ABSENT NAME RANK SURRENDERS
+//
+// keepNameFact rule 2 does the opposite of rule 1 above — an unranked report
+// REPLACES a better-ranked name and resets the row to unrecorded — and the class
+// deliberately does not copy it. The two fields genuinely warrant different
+// answers:
+//
+//   - The CONSEQUENCES are not symmetric. A wrong name is cosmetic and an
+//     operator can see it and fix it. A wrong class governs the command
+//     vocabulary (REG-052): it silently removes commands, stops class-targeted
+//     automation matching, and is inherited by any adoption made while it is
+//     wrong.
+//   - Nor is the PRESSURE. Rule 2 exists because operators rename devices and A
+//     RENAME MUST ALWAYS LAND. Nothing on a LAN renames a device's KIND — every
+//     "reclassification" this subsystem has measured was a sweep artifact, which
+//     is the whole content of #204 — so the requirement that shapes rule 2 has
+//     no counterpart here.
+//
+// WHAT THAT COSTS, on the same terms rule 2's own cost is now stated in: a
+// rolled-back or un-upgraded relay speaking for a device (REL-153 incumbency can
+// hand it one) reports a class with no rank, which sits at the bottom, so it can
+// never reclassify a row that already carries a real rank — for as long as that
+// relay speaks. Bounded by the relay being upgraded again, unreachable from a
+// current relay, and announced rather than silent: noteClassRankRefused. The
+// name's hole loses a chosen name; this one loses a correction. Refusing is the
+// right side for a field that removes commands, and the log is what makes it
+// discoverable.
+//
+// The invariant both functions share: AN ABSENT RANK NEVER RAISES WHAT THE STORE
+// WILL REFUSE. An unranked report lands at classRankUnrecorded, the bottom, so
+// it can only lower a row's rank or leave it.
+//
+// # THE UPGRADE CASE, and the mixed-version window this ships into
+//
+// A row written before this column existed carries classRankUnrecorded, at the
+// bottom, so it refuses nothing an authority-ranked report says. And while NO
+// relay ranks classes yet — which is every relay in the fleet on the day this
+// ships — every report ties at unrecorded, so rule 3 decides and this function
+// behaves EXACTLY as the presence-shaped merge it replaces did. That is the
+// point, not a shortfall: the pre-upgrade shape of #204 is fixed on the RELAY,
+// by the cross-sweep memory that stops the flapping report from ever being sent,
+// and a durable guard that tried to fix it here without authority to reason from
+// would have to refuse on concreteness alone — which is the remedy d321893
+// already rejected on live data, and which pins the ecobee as a media player
+// permanently the first time a sweep drops its `_ecobee` record.
+func keepClassFact(reportedClass, reportedRank, heldClass, heldRank string) (class, rank string) {
+	reported := classAuthorityFact(reportedClass, classRankFact(reportedRank))
+	held := classAuthorityFact(heldClass, heldRank)
+	if r, h := classRankOrder(reported), classRankOrder(held); r != h {
+		if r > h {
+			return reportedClass, reported
+		}
+		return heldClass, held
+	}
+	// Equal authority. The generic default is the absence of a verdict rather
+	// than a competing one, so it fills a gap and never takes a learned class;
+	// anything else is the newer statement and lands.
+	if classConcretenessFact(reportedClass) == 0 && classConcretenessFact(heldClass) > 0 {
+		return heldClass, held
+	}
+	return reportedClass, reported
 }
 
 // The name-rank vocabulary, restated app-side exactly as classUnclassified is
@@ -644,6 +956,25 @@ func nameRankFact(reported string) string {
 //     held could otherwise out-rank everything an older relay can ever say, and
 //     the device could never be renamed again.
 //
+//     WHAT RULE 2 COSTS, which this comment used to leave unsaid. It is a hole
+//     by design, and the protection is only as strong as the LEAST-UPGRADED
+//     relay that speaks for a device: A RELAY ROLLBACK SILENTLY RE-OPENS #202.
+//     Unreachable from a current relay — cmd/waiveo-relay's nameRankToken has no
+//     branch returning the empty string — but REL-153 incumbency can hand a
+//     device to an older peer, and a rolled-back binary is one `cp` away on any
+//     box that kept its predecessor. The disposition is still right for the NAME
+//     (see below), so the answer is observability rather than policy:
+//     logNameRankReset announces it once per device instead of discarding the
+//     ladder in silence.
+//
+//     THE CLASS DELIBERATELY DOES NOT COPY THIS RULE, and keepClassFact argues
+//     why at length. The short form: half a class's quality is derivable
+//     app-side, so an unranked class report is not "no information"; a wrong
+//     class removes commands rather than mislabelling a device; and nothing on a
+//     LAN renames a device's KIND, so the rename pressure that shapes this rule
+//     has no counterpart there. The invariant both functions DO share is that an
+//     absent rank never RAISES what the store will refuse.
+//
 //  3. Otherwise the ladder decides, on keepName's own rule: same-or-better rank
 //     wins immediately (a rename is the device restating itself through the
 //     record it always announced, and it MUST land), a strictly worse one is
@@ -681,6 +1012,109 @@ func keepNameFact(reportedName, reportedRank, heldName, heldRank string) (name, 
 		return reportedName, nameRankFact(reportedRank)
 	}
 	return heldName, heldRank
+}
+
+// noteNameRankReset announces, ONCE per device per process, that an unranked
+// report has just discarded a ranked row's name ladder — keepNameFact rule 2
+// firing for real.
+//
+// It exists because rule 2's disposition is right and its SILENCE is not. Rule 2
+// is unreachable from a current relay (cmd/waiveo-relay always sets the member,
+// and nameRankToken has no branch returning the empty string), so the only way
+// to reach it is an older peer speaking for the device — a rolled-back binary,
+// or an un-upgraded relay taking incumbency under REL-153. That is exactly the
+// case where #202's protection quietly stops applying, and "the protection is
+// only as strong as the least-upgraded relay" is not a fact an operator can
+// discover from any surface. Now it is a log line naming the relay to look at.
+//
+// It is NOT a refusal, deliberately. Refusing the report instead would make a
+// rename impossible against an older relay with no symptom an operator could act
+// on, which is the trade keepNameFact already argues; the class's own answer
+// diverges (keepClassFact) because a wrong class removes commands where a wrong
+// name only mislabels.
+//
+// ONCE PER DEVICE, because reports arrive every minute for as long as the box is
+// up: an unconditional line would be one per device per minute forever, which is
+// the shape of logging an operator learns to filter out. The set is per-process
+// and never trimmed — it is bounded by the device count, which the intake caps.
+func (s *Store) noteNameRankReset(prior, reported DiscoveredDevice, relayID string) {
+	if reported.Name == "" || reported.NameRank != nameRankUnrecorded {
+		return
+	}
+	if nameRankOrder(prior.NameRank) == 0 {
+		// Nothing is being given up: the row was already unrecorded, or held the
+		// floor.
+		return
+	}
+	if !s.firstRankNote("name:" + prior.DeviceID) {
+		return
+	}
+	stdlog.Printf("store: relay %s reported device %s with a name and NO name_rank, so the stored rank %q is discarded and "+
+		"the row returns to unrecorded (REL-110c: an absent rank means the peer does not rank names). A relay that speaks "+
+		"REL-110c always sets the member, so this is an older or rolled-back peer — while it speaks for this device the "+
+		"protection against a machine-generated label displacing a chosen one (#202) does not apply. Logged once per device.",
+		relayID, prior.DeviceID, prior.NameRank)
+}
+
+// noteClassRankRefused announces, ONCE per device per process, that an UNRANKED
+// report has just been refused a reclassification because the row carries a real
+// rank — the class's own answer to keepNameFact rule 2, firing for real.
+//
+// It is the mirror of noteNameRankReset and it is deliberately narrower. A
+// refusal of a RANKED report is ordinary, correct, and reachable from a current
+// relay every time one restarts and its first sweep misses a record; logging
+// that would be a burst of noise saying the guard works. An UNRANKED report
+// being refused is not reachable from a current relay at all —
+// cmd/waiveo-relay's classRankToken has no branch returning the empty string —
+// so when it happens the cause is an older or rolled-back peer holding REL-153
+// incumbency, and for as long as it speaks the device's class cannot be
+// corrected by anything. That is a real, permanent-feeling symptom ("this
+// thermostat is stuck as a media player and nothing I do changes it") whose only
+// diagnosis is a relay version, which no surface otherwise connects to it.
+//
+// It is NOT a refusal being softened. The disposition is right — a class governs
+// the command vocabulary (REG-052) and an unranked peer must not be able to
+// remove commands — so what was missing was the symptom, not the policy.
+func (s *Store) noteClassRankRefused(prior, reported DiscoveredDevice, relayID string) {
+	if reported.ClassRank != classRankUnrecorded || reported.DeviceClass == "" {
+		return
+	}
+	if reported.DeviceClass == prior.DeviceClass || classRankOrder(prior.ClassRank) == 0 {
+		// Nothing was refused: the report agrees, or the row had no rank to
+		// refuse with and rule 3 let the report land.
+		return
+	}
+	if classConcretenessFact(reported.DeviceClass) == 0 {
+		// The generic default, refused by the gap rule rather than by the
+		// ladder. That is the highest-traffic path through the merge (every
+		// neighbour-lane sweep) and says nothing about the peer's version.
+		return
+	}
+	if !s.firstRankNote("class:" + prior.DeviceID) {
+		return
+	}
+	stdlog.Printf("store: relay %s reported device %s as %q with NO class_rank, and the stored class %q at rank %q was kept "+
+		"(REL-110d: an absent rank means the peer does not rank classes, which sits at the bottom of the ladder). A relay "+
+		"that speaks REL-110d always sets the member, so this is an older or rolled-back peer — while it speaks for this "+
+		"device its classification cannot be corrected. Upgrade that relay if the stored class is wrong. Logged once per device.",
+		relayID, prior.DeviceID, reported.DeviceClass, prior.DeviceClass, prior.ClassRank)
+}
+
+// firstRankNote reports whether key has not been announced yet this process, and
+// marks it. One set behind one mutex for both rank notes, keyed by note kind so
+// neither suppresses the other. Its own lock rather than the store's: it is
+// called inside a write transaction, which already holds mu.
+func (s *Store) firstRankNote(key string) bool {
+	s.rankResetMu.Lock()
+	defer s.rankResetMu.Unlock()
+	if s.rankResetSeen == nil {
+		s.rankResetSeen = map[string]bool{}
+	}
+	if s.rankResetSeen[key] {
+		return false
+	}
+	s.rankResetSeen[key] = true
+	return true
 }
 
 // keepAddressFact is deviceplane.keepAddress at the durable layer: a report
@@ -781,7 +1215,7 @@ func (s *Store) DiscoveredDevices(ctx context.Context) ([]DiscoveredDevice, erro
 // by every `-store-check` until a report on a working clock replaces it.
 // MirroredFirstSeen carries the raw column out for the one caller that needs it.
 func readDiscoveredDevices(ctx context.Context, q queryer, deviceID string) ([]DiscoveredDevice, error) {
-	query := `SELECT d.device_id, d.relay_id, d.scope_node, d.driver, d.native_id, d.device_class,
+	query := `SELECT d.device_id, d.relay_id, d.scope_node, d.driver, d.native_id, d.device_class, d.class_rank,
 	                 d.name, d.name_rank, d.address, d.model, d.serial, d.first_seen, d.last_seen, d.entities, d.open_ports,
 	                 d.relay_last_seen,
 	                 COALESCE(l.first_seen, 0), COALESCE(l.origin, '')
@@ -804,7 +1238,7 @@ func readDiscoveredDevices(ctx context.Context, q queryer, deviceID string) ([]D
 	for rows.Next() {
 		var d DiscoveredDevice
 		var entities, ports, origin string
-		if err := rows.Scan(&d.DeviceID, &d.RelayID, &d.ScopeNode, &d.Driver, &d.NativeID, &d.DeviceClass,
+		if err := rows.Scan(&d.DeviceID, &d.RelayID, &d.ScopeNode, &d.Driver, &d.NativeID, &d.DeviceClass, &d.ClassRank,
 			&d.Name, &d.NameRank, &d.Address, &d.Model, &d.Serial, &d.MirroredFirstSeen, &d.LastSeen, &entities, &ports,
 			&d.RelayLastSeen, &d.FirstSeen, &origin); err != nil {
 			return nil, fmt.Errorf("store: scan discovered device: %w", err)

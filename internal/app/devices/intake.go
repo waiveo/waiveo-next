@@ -57,6 +57,17 @@ const (
 	// purpose; the two guards are split, and validateCandidate says why.
 	maxNameRankBytes = 32
 
+	// maxClassRankBytes bounds REL-110d's `class_rank`, on the identical
+	// reasoning one field over — the longest token this build knows is 7 bytes
+	// ("product").
+	//
+	// It is its OWN constant rather than a reuse of maxNameRankBytes even though
+	// the two numbers are equal today. They bound different vocabularies in
+	// different requirements; tying them means a later minor that lengthens a
+	// name token silently moves the class bound too, which is a limit changing
+	// for a reason that has nothing to do with the thing it limits.
+	maxClassRankBytes = 32
+
 	// maxOpenPortsPerCandidate bounds the numeric list a relay may report for one
 	// device. The scanning lane's own cap is smaller; this is the wire's limit on
 	// a report from any relay, trusted to have that lane or not.
@@ -228,6 +239,13 @@ func validateCandidate(c wire.DeviceCandidate) error {
 	if err := checkField("device_class", c.DeviceClass, maxIdentityFieldBytes, true); err != nil {
 		return err
 	}
+	// `class_rank` (REL-110d) is bounded and NOT vocabulary-checked, for exactly
+	// the reasons the `name_rank` block below sets out at length — same split,
+	// same clamp location (internal/app/store.classRankFact), same "an unknown
+	// token reads as the bottom of the ladder" direction.
+	if err := checkField("class_rank", c.ClassRank, maxClassRankBytes, false); err != nil {
+		return err
+	}
 	if err := checkField("name", c.Name, maxNameBytes, false); err != nil {
 		return err
 	}
@@ -246,13 +264,28 @@ func validateCandidate(c wire.DeviceCandidate) error {
 	// An unrecognised token is NOT a reason to refuse the report. A refusal here
 	// throws away the whole candidate set (see this file's header: a full-set
 	// replace applied by halves is worse than not applied at all), so one
-	// malformed rank from a newer or a hostile relay would blank a site's device
-	// list — a much bigger lever than the one it is defending. The vocabulary is
-	// clamped instead at the layer that ACTS on the rank
+	// malformed rank from a newer or a hostile relay would cost the site every
+	// LATER report too — a much bigger lever than the one it is defending. The
+	// vocabulary is clamped instead at the layer that ACTS on the rank
 	// (internal/app/store.nameRankFact), where an unknown token reads as the
 	// bottom of the ladder: it can fill a gap and can refuse nothing, which is
 	// the direction that cannot be weaponised. A relay claiming a rank this
 	// build has never heard of therefore gains exactly nothing by it.
+	//
+	// WHAT A REFUSED REPORT ACTUALLY COSTS, traced rather than assumed. This
+	// paragraph used to say a refusal "would blank a site's device list", and
+	// that is not what happens — the trade is still right, but the true sentence
+	// is a better argument for it. ApplyCandidates validates the WHOLE report
+	// before it writes r.views, and the feeder's mirror returns before
+	// ReplaceDiscoveredDevices, so a refused report leaves both the live view and
+	// the durable rows exactly as they were. Nothing is lost. What happens
+	// instead is that the view FREEZES: the relay re-sends the same poisoned
+	// candidate every minute, every report is refused, `last_seen` stops
+	// advancing, and no surface says why — measured as 5 of 5 devices
+	// unrefreshed on a single 33-byte token. Silent and indefinite beats
+	// destructive, which is why the bound stays; and it is precisely why the
+	// VOCABULARY check must not be here, where an unknown token would freeze a
+	// site for the crime of a relay being newer than this build.
 	if err := checkField("name_rank", c.NameRank, maxNameRankBytes, false); err != nil {
 		return err
 	}

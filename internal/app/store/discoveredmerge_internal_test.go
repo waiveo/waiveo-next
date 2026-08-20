@@ -12,11 +12,14 @@ import (
 // that learned nothing, and presence alone cannot tell them apart.
 //
 // A relay-side fix the mirror then undoes is not a fix. These pin all three
-// ranked facts: the address's port and the device class, whose quality this side
-// re-derives from the value itself, and the NAME, whose quality is not in the
-// string and therefore had to travel — REL-110c's `name_rank`. The name was the
-// one this file used to say it deliberately could not rank; the test that said
-// so has been replaced, because it pinned the absence of the fix.
+// ranked facts: the ADDRESS, whose quality this side re-derives entirely from
+// the value; the NAME, whose quality is not in the string at all and therefore
+// had to travel (REL-110c's `name_rank`); and the CLASS, which is HALF of each —
+// how concrete a class is follows from the token and is re-derived here, how
+// authoritative the record behind it was cannot be and travels as REL-110d's
+// `class_rank`. The name was the one this file used to say it deliberately could
+// not rank; the test that said so has been replaced, because it pinned the
+// absence of the fix.
 //
 // EVERY TEST HERE PAIRS THE REFUSAL WITH THE ACCEPTANCE. The rule this replaced
 // was `if reported != "" { return reported }`, which satisfies "the better value
@@ -97,6 +100,274 @@ func TestTheGenericClassFillsAGapAndReclassifiesButNeverDowngrades(t *testing.T)
 	// But the generic default never erases a learned class.
 	if got := mergeDiscovered(DiscoveredDevice{DeviceClass: "media-player"}, DiscoveredDevice{DeviceClass: classUnclassified}).DeviceClass; got != "media-player" {
 		t.Fatalf("device_class = %q, want media-player — the generic default is 'not yet learned', never 'no longer true'", got)
+	}
+}
+
+// THE GENERIC DEFAULT MAY NOT BUY AUTHORITY, which is the way the rank breaks
+// the guard above rather than strengthening it.
+//
+// A rank is a statement about the RECORD BEHIND a class, and behind
+// `unclassified` there is no record — it is what a lane mints for a host it did
+// not recognise. Take the rank from the wire without checking what it ranks and
+// the ladder inverts: the report that recognised NOTHING out-ranks every report
+// that recognised something, and because nothing on a LAN mints `product` for a
+// device whose records are all features, the row is pinned at the generic
+// default for the life of the file.
+//
+// Two producers, neither hypothetical. Any enrolled relay can put the pair on
+// the wire — this store's own header calls relay input untrusted, which is why
+// classRankFact exists, and classRankFact clamps the token's vocabulary while
+// saying nothing about the PAIRING. And a pack may register a device class whose
+// id is literally `unclassified`: REG-010's grammar admits it, nothing reserves
+// the sentinel, and discovery.Watch.observation stamps ClassRankProduct on a
+// declared class unconditionally.
+func TestARankedGenericDefaultNeitherOutranksNorPinsALearnedClass(t *testing.T) {
+	// It cannot displace a learned class, however it is ranked.
+	refused := mergeDiscovered(classRow("media-player", classRankFeature), classRow(classUnclassified, classRankProduct))
+	if refused.DeviceClass != "media-player" || refused.ClassRank != classRankFeature {
+		t.Fatalf("class/rank = %q/%q, want media-player/feature — a report that recognised NOTHING must not out-rank one that recognised something",
+			refused.DeviceClass, refused.ClassRank)
+	}
+
+	// And when it legitimately fills a gap it is STORED at the floor, so the
+	// next honest sighting can take the field. This is the assertion that
+	// matters: stored at `product`, the row would refuse every feature-ranked
+	// report the LAN can produce, forever.
+	filled := mergeDiscovered(DiscoveredDevice{}, classRow(classUnclassified, classRankProduct))
+	if filled.DeviceClass != classUnclassified || filled.ClassRank != classRankNone {
+		t.Fatalf("class/rank = %q/%q, want %q/%q — a generic default must be recorded with no authority behind it, whatever the wire claimed",
+			filled.DeviceClass, filled.ClassRank, classUnclassified, classRankNone)
+	}
+	recovered := mergeDiscovered(filled, classRow("media-player", classRankFeature))
+	if recovered.DeviceClass != "media-player" || recovered.ClassRank != classRankFeature {
+		t.Fatalf("class/rank = %q/%q, want media-player/feature — an honest sighting must be able to classify a host the generic default is holding",
+			recovered.DeviceClass, recovered.ClassRank)
+	}
+}
+
+// THE CLASS, RANKED (#204). The two fixtures are the two real devices the
+// relay-side ladder is built on, and they disagree on purpose: one is fixed by
+// comparing concreteness and the other is BROKEN by comparing concreteness
+// first, so a test using either alone would pass while the ordering was wrong.
+//
+//   - 192.168.50.43, a Google speaker: `_matter` -> smart-home and
+//     `_spotify-connect` -> media-player, BOTH at feature. This is the measured
+//     instance — drop the one Spotify record from a sweep and the relay reports
+//     smart-home for an unchanged device, which this merge used to write to disk.
+//   - 192.168.39.241, an ecobee: `_ecobee` -> smart-home at PRODUCT beside
+//     `_airplay`/`_spotify-connect` -> media-player at feature. Concreteness
+//     alone calls the thermostat a media player.
+func classRow(class, rank string) DiscoveredDevice {
+	return DiscoveredDevice{DeviceClass: class, ClassRank: rank}
+}
+
+// THE CONCRETENESS TIEBREAK IS DELIBERATELY NOT RESTATED HERE, and this test is
+// the pin on that decision.
+//
+// deviceplane.keepClass DOES refuse an equal-authority downgrade, and that is
+// what fixes the measured #204 instance: the speaker's `_matter` and
+// `_spotify-connect` records are both FEATURE, so only concreteness separates
+// them. Restating that comparison at this layer looks like defence-in-depth and
+// is the same bet held for a different duration — and the duration is the whole
+// bet. In relay memory it expires with the process. On disk it never expires, so
+// a device that PERMANENTLY stops advertising its more concrete service reports
+// the honest lower class on every sweep for the rest of the file's life and
+// every one of them is refused: relay restart, refused; app restart, refused; no
+// operator action clears it short of revoking the relay.
+//
+// Both arms, because the first alone is satisfied by a mirror that simply never
+// refuses anything.
+func TestAnEqualAuthorityChangeLandsBecauseThisLayerCannotBoundARefusal(t *testing.T) {
+	// The better record lands: same authority, more concrete.
+	learned := mergeDiscovered(classRow("smart-home", classRankFeature), classRow("media-player", classRankFeature))
+	if learned.DeviceClass != "media-player" || learned.ClassRank != classRankFeature {
+		t.Fatalf("class/rank = %q/%q, want media-player/feature", learned.DeviceClass, learned.ClassRank)
+	}
+
+	// 192.168.50.43 with Spotify unlinked: it genuinely IS a smart-home device
+	// now, it says so at the same authority on every sweep forever, and the
+	// relay's own cross-sweep memory has already decided this is not a dropped
+	// record. A durable refusal here would freeze the row against a device that
+	// really changed.
+	downgraded := mergeDiscovered(classRow("media-player", classRankFeature), classRow("smart-home", classRankFeature))
+	if downgraded.DeviceClass != "smart-home" || downgraded.ClassRank != classRankFeature {
+		t.Fatalf("class/rank = %q/%q, want smart-home/feature — an equal-authority restatement is the relay's settled verdict, and refusing it on disk is a freeze with no expiry and no operator escape",
+			downgraded.DeviceClass, downgraded.ClassRank)
+	}
+
+	// The same rule is what lets a pack CORRECT its own declared device class —
+	// the one input where the newer statement is authoritative by construction,
+	// and equally ranked with the one it replaces.
+	corrected := mergeDiscovered(classRow("media-player", classRankProduct), classRow("smart-home", classRankProduct))
+	if corrected.DeviceClass != "smart-home" {
+		t.Fatalf("device_class = %q, want smart-home — a pack correcting its own declared class must be able to land", corrected.DeviceClass)
+	}
+}
+
+// AUTHORITY IS COMPARED FIRST. This is the remedy d321893 rejected on live data,
+// pinned so it cannot be re-proposed: a durable class rank built on the derivable
+// half ALONE fixes the speaker above and turns this thermostat into a media
+// player.
+func TestTheThermostatsProductServiceOutranksTheMediaFeatureDurably(t *testing.T) {
+	got := mergeDiscovered(classRow("smart-home", classRankProduct), classRow("media-player", classRankFeature))
+	if got.DeviceClass != "smart-home" || got.ClassRank != classRankProduct {
+		t.Fatalf("class/rank = %q/%q, want smart-home/product — an ecobee advertises `_airplay` and `_spotify-connect` beside its own service, and comparing specificity before authority calls it a media player",
+			got.DeviceClass, got.ClassRank)
+	}
+	// And a product statement still corrects a feature guess, which is what keeps
+	// the refusal above from being a freeze.
+	if corrected := mergeDiscovered(classRow("media-player", classRankFeature), classRow("smart-home", classRankProduct)); corrected.DeviceClass != "smart-home" {
+		t.Fatalf("device_class = %q, want smart-home — a product-level statement must be able to correct a feature-level guess", corrected.DeviceClass)
+	}
+}
+
+// DECISION (a), AND THE DIVERGENCE FROM THE NAME, asserted as behaviour rather
+// than left in a comment.
+//
+// keepNameFact rule 2 lets an UNRANKED report overwrite a better-ranked name and
+// resets the row to unrecorded. The class deliberately does the opposite,
+// because half a class's quality is derivable HERE: an unranked class report is
+// not "no information", so refusing on the derivable half asserts nothing an
+// older relay did not say — both sides of the comparison are this store's own
+// derivation.
+func TestAnUnrankedClassReportIsNoOpinionAboveTheFloorAndDoesNotResetTheRow(t *testing.T) {
+	// A pre-REL-110d relay reporting the sweep-artifact class. It must not
+	// displace a class this store holds at a recorded rank...
+	refused := mergeDiscovered(classRow("media-player", classRankFeature), classRow("smart-home", classRankUnrecorded))
+	if refused.DeviceClass != "media-player" {
+		t.Fatalf("device_class = %q, want media-player — an absent rank is no opinion, not a licence to reclassify a device this store holds at a recorded rank", refused.DeviceClass)
+	}
+	// ...and must not RESET the rank either, which would re-open the same hole
+	// one report later.
+	if refused.ClassRank != classRankFeature {
+		t.Fatalf("class_rank = %q, want feature — resetting the row to unrecorded on an unranked report is keepNameFact rule 2, and the class deliberately does not copy it", refused.ClassRank)
+	}
+
+	// It still fills a gap: nothing is being protected, so refusing would lose a
+	// classification for the crime of a relay being older than this build.
+	filled := mergeDiscovered(classRow(classUnclassified, classRankUnrecorded), classRow("media-player", classRankUnrecorded))
+	if filled.DeviceClass != "media-player" || filled.ClassRank != classRankUnrecorded {
+		t.Fatalf("class/rank = %q/%q, want media-player/unrecorded — a gap-fill must land, and must record honestly that nothing ranked it",
+			filled.DeviceClass, filled.ClassRank)
+	}
+
+	// THE INVARIANT that keeps both fields comprehensible: an absent rank never
+	// RAISES what the store will refuse. An unranked report that DOES land lands
+	// at the bottom.
+	landed := mergeDiscovered(classRow("smart-home", classRankUnrecorded), classRow("media-player", classRankUnrecorded))
+	if landed.ClassRank != classRankUnrecorded {
+		t.Fatalf("class_rank = %q, want unrecorded — an unranked report must never be stamped with a rank nothing stated", landed.ClassRank)
+	}
+}
+
+// THE MIXED-VERSION WINDOW, which is every relay in the fleet on the day this
+// ships — and the one place a durable guard MUST NOT try to be clever.
+//
+// With no rank on either side there is no authority to reason from, only the
+// class tokens. Refusing the LESS CONCRETE of two unranked reports looks like a
+// free win: it holds 192.168.50.43 at media-player without any relay upgrade at
+// all. It is not free, and this test is the proof, because concreteness points
+// the WRONG WAY on the other real device. The ecobee at 192.168.39.241
+// advertises `_ecobee` (smart-home) beside `_airplay` and `_spotify-connect`
+// (media-player), so an old relay's sweeps alternate between the two classes as
+// records drop in and out — and a concreteness refusal turns the FIRST sweep
+// that misses `_ecobee` into a permanent verdict. The thermostat becomes a media
+// player on disk and every later correct sweep is refused, forever.
+//
+// So with nothing ranked, this layer does exactly what the presence-shaped merge
+// it replaces did — a flap that self-corrects, never a pin. #204's measured
+// instance is fixed on the RELAY, by the cross-sweep memory that stops the
+// flapping report from ever being sent.
+//
+// Driven as SWEEPS rather than as a single merge, because "does it flap" and
+// "does it pin" are not distinguishable from one call.
+func TestWithNoRankOnEitherSideTheMirrorFlapsButNeverPins(t *testing.T) {
+	// The ecobee, whose sweeps alternate. The last three are the ones that
+	// matter: each must be able to correct the one before it.
+	held := DiscoveredDevice{}
+	for i, sweep := range []string{"smart-home", "media-player", "smart-home", "media-player", "smart-home"} {
+		held = mergeDiscovered(held, classRow(sweep, classRankUnrecorded))
+		if held.DeviceClass != sweep {
+			t.Fatalf("sweep %d reported %q and the row holds %q — with nothing ranked, a report can only be refused permanently, and a thermostat pinned as a media player is worse than one that flaps",
+				i+1, sweep, held.DeviceClass)
+		}
+		if held.ClassRank != classRankUnrecorded {
+			t.Fatalf("sweep %d stored class_rank %q, want unrecorded — an unranked report must never be stamped with a rank nothing stated", i+1, held.ClassRank)
+		}
+	}
+
+	// The generic default is still refused, because that guard needs no
+	// authority to justify it: `unclassified` is a statement of ignorance, not a
+	// competing verdict.
+	if got := mergeDiscovered(classRow("media-player", classRankUnrecorded), classRow(classUnclassified, classRankUnrecorded)).DeviceClass; got != "media-player" {
+		t.Fatalf("device_class = %q, want media-player — the gap rule survives having no ranks to compare", got)
+	}
+
+	// And an authority-ranked report still corrects a pre-upgrade row, so the
+	// unrecorded state is not a pin in the other direction either.
+	if corrected := mergeDiscovered(classRow("media-player", classRankUnrecorded), classRow("smart-home", classRankProduct)); corrected.DeviceClass != "smart-home" {
+		t.Fatalf("device_class = %q, want smart-home — an unrecorded rank sits at the BOTTOM and must refuse nothing an authority-ranked report says", corrected.DeviceClass)
+	}
+}
+
+// An unreadable class rank — a token a NEWER relay minted, or one a hostile
+// relay invented — is clamped to the bottom of this build's ladder rather than
+// refused at intake. Degrade-safe, not degrade-shut, and never stored verbatim.
+func TestAnUnreadableClassRankSitsAtTheBottomAndIsNotStoredVerbatim(t *testing.T) {
+	const hostile = "absolute-truth"
+
+	refused := mergeDiscovered(classRow("media-player", classRankProduct), classRow("smart-home", hostile))
+	if refused.DeviceClass != "media-player" || refused.ClassRank != classRankProduct {
+		t.Fatalf("class/rank = %q/%q, want media-player/product — an uninterpretable rank must never be honoured as a licence to reclassify",
+			refused.DeviceClass, refused.ClassRank)
+	}
+
+	filled := mergeDiscovered(DiscoveredDevice{}, classRow("media-player", hostile))
+	if filled.DeviceClass != "media-player" {
+		t.Fatalf("device_class = %q, want media-player — an unknown rank must still fill a gap", filled.DeviceClass)
+	}
+	if filled.ClassRank != classRankNone {
+		t.Fatalf("class_rank = %q, want %q — an untrusted relay's bytes must not reach a column this store reasons over, and `unrecorded` would be untrue because the relay DID state something",
+			filled.ClassRank, classRankNone)
+	}
+}
+
+// The app plane restates relay/1's vocabulary rather than importing the relay's
+// package (the rule classUnclassified and the name ranks already follow), so the
+// two spellings are pinned in agreement here.
+func TestTheStoredClassRankVocabularyIsRelay1s(t *testing.T) {
+	for _, tc := range []struct{ stored, onTheWire string }{
+		{classRankNone, wire.CandidateClassRankNone},
+		{classRankFeature, wire.CandidateClassRankFeature},
+		{classRankProduct, wire.CandidateClassRankProduct},
+	} {
+		if tc.stored != tc.onTheWire {
+			t.Errorf("stored %q but relay/1 spells it %q", tc.stored, tc.onTheWire)
+		}
+		if classRankFact(tc.onTheWire) != tc.onTheWire {
+			t.Errorf("classRankFact(%q) = %q — a token relay/1 publishes must survive the clamp verbatim", tc.onTheWire, classRankFact(tc.onTheWire))
+		}
+	}
+	if !(classRankOrder(classRankProduct) > classRankOrder(classRankFeature) &&
+		classRankOrder(classRankFeature) > classRankOrder(classRankNone)) {
+		t.Fatalf("the app-side authority ladder is not strictly ordered: none=%d feature=%d product=%d",
+			classRankOrder(classRankNone), classRankOrder(classRankFeature), classRankOrder(classRankProduct))
+	}
+	if classRankOrder(classRankUnrecorded) > classRankOrder(classRankNone) {
+		t.Fatalf("unrecorded (%d) outranks none (%d) — an upgraded row would then refuse an authority-ranked report and could never be reclassified",
+			classRankOrder(classRankUnrecorded), classRankOrder(classRankNone))
+	}
+	// The DERIVED key must agree with the relay's, or the sweep's own pick and
+	// this merge disagree about the same pair of tokens — a flap neither layer's
+	// tests can see. Restated rather than imported (no relay code app-side), so
+	// the agreement is asserted rather than assumed.
+	for _, tc := range []struct {
+		class string
+		want  int
+	}{{"", 0}, {classUnclassified, 0}, {"smart-home", 1}, {"media-player", 2}, {"printer", 2}} {
+		if got := classConcretenessFact(tc.class); got != tc.want {
+			t.Errorf("classConcretenessFact(%q) = %d, want %d — this must match deviceplane.ClassConcreteness exactly", tc.class, got, tc.want)
+		}
 	}
 }
 

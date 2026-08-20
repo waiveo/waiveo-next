@@ -149,8 +149,13 @@ func TestBoundaryRefusals(t *testing.T) {
 		// clamp deliberately is not — see the pair of cases below.
 		"oversize name_rank":      mutate(func(c *wire.DeviceCandidate) { c.NameRank = strings.Repeat("r", maxNameRankBytes+1) }),
 		"invalid utf-8 name_rank": mutate(func(c *wire.DeviceCandidate) { c.NameRank = "\xff\xfe" }),
-		"entity with no key":      mutate(func(c *wire.DeviceCandidate) { c.Entities = []wire.CandidateEntity{{DeviceClass: classMP}} }),
-		"entity with no class":    mutate(func(c *wire.DeviceCandidate) { c.Entities = []wire.CandidateEntity{{Key: entityKey}} }),
+		// REL-110d's rank lands in a durable column on the same terms, with its
+		// own bound so a later change to the name vocabulary cannot silently move
+		// this one.
+		"oversize class_rank":      mutate(func(c *wire.DeviceCandidate) { c.ClassRank = strings.Repeat("r", maxClassRankBytes+1) }),
+		"invalid utf-8 class_rank": mutate(func(c *wire.DeviceCandidate) { c.ClassRank = "\xff\xfe" }),
+		"entity with no key":       mutate(func(c *wire.DeviceCandidate) { c.Entities = []wire.CandidateEntity{{DeviceClass: classMP}} }),
+		"entity with no class":     mutate(func(c *wire.DeviceCandidate) { c.Entities = []wire.CandidateEntity{{Key: entityKey}} }),
 		"duplicate entity key": mutate(func(c *wire.DeviceCandidate) {
 			c.Entities = []wire.CandidateEntity{{Key: entityKey, DeviceClass: classMP}, {Key: entityKey, DeviceClass: classMP}}
 		}),
@@ -381,34 +386,54 @@ func TestAnIncumbentKeepsItsDeviceAgainstARepeatedlyClaimingRelay(t *testing.T) 
 	}
 }
 
-// THE OTHER HALF OF THE name_rank GUARD, stated as a test because it is a
-// decision and the obvious alternative is wrong.
+// THE OTHER HALF OF THE RANK GUARDS, stated as a test because it is a decision
+// and the obvious alternative is wrong.
 //
 // A token this build cannot read does NOT refuse the report. Refusing here
-// throws away a full-set replace (this file's header), so one unreadable rank
-// from a newer — or a hostile — relay would blank a site's entire device list:
-// a far bigger lever than the one it would be defending. The vocabulary is
-// clamped where the rank is ACTED on instead (internal/app/store.nameRankFact),
-// where an unknown token reads as the bottom of the ladder and can refuse
-// nothing.
+// throws away a full-set replace (this file's header), and the cost of that is
+// worth stating precisely, because the version of this comment that said it
+// would "blank a site's entire device list" was WRONG in a way that flattered
+// the guard. Traced end to end, a refused report leaves the read model and the
+// durable mirror exactly as they were — nothing is deleted. What happens instead
+// is that the view FREEZES: the relay re-sends the same token every minute,
+// every report is refused, `last_seen` stops advancing, and no surface says why.
+// Silent and indefinite, which is a better argument for keeping the VOCABULARY
+// check out of here than the false one was: a site should not freeze because a
+// relay is newer than this build.
 //
-// Both arms: an absent rank is accepted (the member is optional, and a relay
-// that predates REL-110c omits it), and an unrecognised one is accepted too,
-// with the device still listed under its own name.
-func TestAnUnreadableNameRankDoesNotThrowAwayTheReport(t *testing.T) {
+// The vocabulary is clamped where each rank is ACTED on instead
+// (internal/app/store's nameRankFact / classRankFact), where an unknown token
+// reads as the bottom of its ladder and can refuse nothing.
+//
+// Both arms for both ranks: an absent rank is accepted (the member is optional,
+// and a relay predating the requirement omits it), and an unrecognised one is
+// accepted too, with the device still listed.
+func TestAnUnreadableRankDoesNotThrowAwayTheReport(t *testing.T) {
 	for name, rank := range map[string]string{
-		"absent (a relay that does not rank names)": "",
-		"a token a newer relay minted":              "impeccable",
-		"a token an attacker invented":              "absolute-truth",
+		"absent (a relay that does not rank)": "",
+		"a token a newer relay minted":        "impeccable",
+		"a token an attacker invented":        "absolute-truth",
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name+"/name_rank", func(t *testing.T) {
 			c := candidate("roku-ecp", "X1")
 			c.Name = "Lobby TV"
 			c.NameRank = rank
 
 			r := New(testSite, func() int64 { return 0 })
 			if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{c}); err != nil {
-				t.Fatalf("name_rank %q refused the whole report (%v) — one candidate the app peer cannot fully interpret must not delete every device on the site", rank, err)
+				t.Fatalf("name_rank %q refused the whole report (%v) — one candidate the app peer cannot fully interpret must not freeze every device on the site", rank, err)
+			}
+			if n := len(r.Devices()); n != 1 {
+				t.Fatalf("the report listed %d devices, want 1", n)
+			}
+		})
+		t.Run(name+"/class_rank", func(t *testing.T) {
+			c := candidate("roku-ecp", "X1")
+			c.ClassRank = rank
+
+			r := New(testSite, func() int64 { return 0 })
+			if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{c}); err != nil {
+				t.Fatalf("class_rank %q refused the whole report (%v) — an unreadable rank must degrade to the bottom of the ladder where it is acted on, never freeze the site here", rank, err)
 			}
 			if n := len(r.Devices()); n != 1 {
 				t.Fatalf("the report listed %d devices, want 1", n)

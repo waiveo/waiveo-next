@@ -60,6 +60,18 @@ type DeviceCandidatesBody struct {
 // reported name is non-empty, and a machine-generated label wins by arriving
 // first after a restart and then sticks. See the token block below.
 //
+// ClassRank is REL-110d, the same shape one field over and for a sharper reason.
+// A `device_class` is not merely rendered — it governs the command vocabulary
+// (`device-class-registry/1` REG-052) — and its quality is only HALF derivable
+// from the value: how CONCRETE a class is follows from the token, but how
+// AUTHORITATIVE the record behind it was does not. `_ecobee._tcp` and
+// `_matter._tcp` both yield `smart-home`, one because the device is a
+// thermostat and one because it joined a fabric, and that difference lives in
+// the mDNS service type, which this wire does not carry and should not start
+// carrying. So the relay states its own verdict instead, and the consumer
+// re-derives the half it can. See the token block below for why the two ranks
+// are separate members with separate vocabularies.
+//
 // Address, Model and Serial are REL-004 additive members beyond REL-110a's own
 // set, and they are what makes a reported candidate actionable rather than
 // merely countable. `native_id` identifies a device; it does not say where the
@@ -78,6 +90,7 @@ type DeviceCandidate struct {
 	Driver       string            `json:"driver"`
 	NativeID     string            `json:"native_id"`
 	DeviceClass  string            `json:"device_class"`
+	ClassRank    string            `json:"class_rank,omitempty"`
 	Name         string            `json:"name,omitempty"`
 	NameRank     string            `json:"name_rank,omitempty"`
 	Address      string            `json:"address,omitempty"`
@@ -132,6 +145,68 @@ const (
 	// the device — an AirPlay or Android-TV-remote instance, a HomeKit accessory,
 	// a device's own configured display name.
 	CandidateNameRankFriendly = "friendly"
+)
+
+// Candidate class-rank values (REL-110d): how strongly the record behind
+// `device_class` asserts what the device IS.
+//
+// Everything the name-rank block above argues carries over verbatim — a token
+// rather than an ordinal because REL-004 forbids renumbering an existing
+// member's meaning, and an unrecognised token read as the LOWEST rank the
+// consumer knows because a rank is a licence to REFUSE. What follows is only
+// what is DIFFERENT about the class, and each difference is a decision.
+//
+// # Only HALF the class's quality is on this wire, on purpose
+//
+// The relay ranks a class on two keys: the AUTHORITY of the record that implied
+// it, and the CONCRETENESS of the class token itself. Concreteness is a pure
+// function of the token — a consumer holding `media-player` and `smart-home` can
+// order them without being told — so putting it here would be a member the
+// consumer could compute, and a second place to keep in agreement. Authority
+// cannot be computed from the token: `_ecobee._tcp` and `_matter._tcp` both
+// yield `smart-home`. So this member carries authority ONLY, and a consumer is
+// expected to compare (rank, its own concreteness) in that order. Comparing
+// concreteness first inverts a real device: an ecobee thermostat advertising
+// `_airplay` and `_spotify-connect` beside its own `_ecobee` service becomes a
+// media player.
+//
+// # This member is SEPARATE from `name_rank`, deliberately
+//
+// The two are not one "rank" member with a wider vocabulary, and not an
+// amendment to REL-110c. They have different vocabularies that must not be
+// interchangeable, different presence obligations (`name` is optional so
+// `name_rank` is conditional on it; `device_class` is REQUIRED by REL-110a so
+// `class_rank` is unconditional), and — the load-bearing one — DIFFERENT
+// ANSWERS FOR ABSENCE. A consumer that implemented one requirement and applied
+// it to both fields would get one of them dangerously wrong.
+//
+// # Absent means "a peer older than REL-110d", and can mean nothing else
+//
+// `name_rank`'s absence has two conceivable producers, because a candidate may
+// legitimately carry no `name` at all. A candidate ALWAYS carries a
+// `device_class` (REL-110a), so a peer that ranks classes always has one to
+// rank: absence is a statement about the PEER, never about the device. The
+// `omitempty` below is therefore never exercised by a relay that speaks this
+// version — see cmd/waiveo-relay's classRankToken, which has no branch returning
+// the empty string. It earns its place all the same, on the DECODE side: this
+// struct is also the shape the feeder rebuilds a candidate into when it restores
+// its mirror at boot, and a row whose rank was never recorded must be rebuilt as
+// ABSENT rather than as a claim it does not have.
+const (
+	// CandidateClassRankNone is a sighting with no opinion about what the device
+	// is — a lane that only knows a host exists. It is the rank of the generic
+	// `unclassified` class and, on a well-formed report, of nothing else.
+	CandidateClassRankNone = "none"
+	// CandidateClassRankFeature is a service any KIND of device may implement,
+	// including membership of a home-automation fabric: a Matter or HomeKit
+	// record, an AirPlay or Spotify-Connect endpoint, a file share. It classifies
+	// a device nothing else recognises, and it must never outrank what the device
+	// says about itself — thermostats advertise media features.
+	CandidateClassRankFeature = "feature"
+	// CandidateClassRankProduct is the device's OWN product service, advertised
+	// because of what the device is rather than as a feature bolted onto
+	// something else, or a pattern a pack DECLARED for a kind of device by name.
+	CandidateClassRankProduct = "product"
 )
 
 // CandidateEntity is one addressable object a candidate device exposes
