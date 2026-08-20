@@ -79,3 +79,7 @@ graphify-out/
 # `git add -A` away from committing a second copy of the whole tree into a
 # public repo. Ignored rather than tidied by hand for that reason.
 .claude/
+
+# Built CLI helper — a stale checked-in binary silently produces an artifact the
+# box rejects as "not a readable zip". Build it with `go run ./scripts/examplepack`.
+/examplepack
