@@ -82,9 +82,13 @@ type DeviceInfo struct {
 	// (internal/relay/deviceplane.NameRank). It is NameSourceNone exactly when
 	// Name is empty.
 	NameSource NameSource
-	// Model is the human-readable model name when the device reports one, else
-	// its model number — a number is a worse label than a name but a much
-	// better one than nothing.
+	// Model is the best human-readable model string the device reports: the
+	// vendor's friendly model name, then the model name, then the model number —
+	// a number is a worse label than a name but a much better one than nothing.
+	//
+	// Unlike Name it carries NO source, and that asymmetry is deliberate rather
+	// than unfinished — see the resolution in QueryDeviceInfo for why a rank here
+	// would have nothing to refuse.
 	Model string
 	// SerialNumber is the physical unit's serial, stable across renames,
 	// reboots and DHCP leases.
@@ -96,14 +100,36 @@ type DeviceInfo struct {
 // dozens more) is deliberately absent: unmarshaling only what is used means a
 // firmware that adds elements cannot change what this returns, and a firmware
 // that drops one leaves an empty string rather than failing the decode.
+//
+// Decoding only what is used is right; deciding what is used from the element
+// NAMES was not. The lab's Roku answers with 80 child elements and this struct
+// read six of them, and the one carrying the only human-readable model string was
+// among the 74 it skipped (#207) — so the merge layers downstream were
+// arbitrating between candidates while the best answer never entered the system
+// at all. A field this small is worth checking against a real document rather
+// than a plausible one.
 type deviceInfoDoc struct {
-	XMLName            xml.Name `xml:"device-info"`
-	SerialNumber       string   `xml:"serial-number"`
-	ModelName          string   `xml:"model-name"`
-	ModelNumber        string   `xml:"model-number"`
-	UserDeviceName     string   `xml:"user-device-name"`
-	FriendlyDeviceName string   `xml:"friendly-device-name"`
-	DefaultDeviceName  string   `xml:"default-device-name"`
+	XMLName      xml.Name `xml:"device-info"`
+	SerialNumber string   `xml:"serial-number"`
+	// FriendlyModelName is not in Roku's published `/query/device-info` reference
+	// (checked 2026-08-20: the documented response lists `model-name` and
+	// `model-number` and not this element). That is weaker evidence against it
+	// than it looks, because `friendly-device-name` and `default-device-name` —
+	// two elements this struct has read since it was written — are absent from the
+	// same list and present on the wire. Undocumented is not rare here.
+	//
+	// SAMPLE SIZE: ONE. The only Roku in the lab is 192.168.50.31, an onn-branded
+	// TV on firmware 15.3.4, and it is the sole real document anyone has read this
+	// against. No claim is made about other vendors or other firmware, because
+	// none was measured. That is exactly why the element rides BEHIND a
+	// fall-through rather than replacing anything: on a firmware that omits it the
+	// candidate is skipped and the result is byte-for-byte what it was before.
+	FriendlyModelName  string `xml:"friendly-model-name"`
+	ModelName          string `xml:"model-name"`
+	ModelNumber        string `xml:"model-number"`
+	UserDeviceName     string `xml:"user-device-name"`
+	FriendlyDeviceName string `xml:"friendly-device-name"`
+	DefaultDeviceName  string `xml:"default-device-name"`
 }
 
 // NewIdentifyClient returns the *http.Client an identification probe should
@@ -125,6 +151,34 @@ func NewIdentifyClient() *http.Client {
 //
 // ctx bounds the exchange alongside the client's own timeout, so a sweep that is
 // canceled mid-probe returns immediately instead of waiting out a wedged host.
+//
+// REACHABILITY — read this before believing any claim that fixing what this
+// function RETURNS changes what an operator SEES. There is exactly one caller
+// (cmd/waiveo-relay/main.go, wired as discovery.Config.Identify), reached only
+// through discovery.identityOf, which has two call sites: searchPattern, which
+// runs once per member of the Discoverer's watch set, and observeAlive, which
+// returns early unless an alive NOTIFY's NT is in that same set. So the probe
+// fires for SSDP-watched targets and nothing else — the scheduled scan's ARP
+// sweep and port scan never call it, and internal/relay/portscan records open
+// ports, never a model.
+//
+// The watch set is not a constant. Core deliberately declares no SSDP pattern
+// (cmd/waiveo-relay/main.go's empty builtinSSDP, guarded by
+// coreisdeviceblind_test.go: recognising a device kind is an extension's
+// contribution, owner 2026-08-17), so every member comes from an installed
+// pack's match pattern. MEASURED on box .12 on 2026-08-20, pid 3135258:
+// "discovery watches: 0 ssdp, 1 mdns live (0 pack pattern(s))". The same box
+// logged "1 ssdp, 1 mdns live (1 pack pattern(s))" until 2026-08-19 18:17:47,
+// when generation 27 applied with the pattern gone — alongside a pack uninstall
+// at 18:17:09. With zero SSDP watches the sweep iterates nothing, no probe is
+// issued, and this function is unreachable on that deployment however correct
+// its body is.
+//
+// That is why nothing here promises a self-heal. The mirror row for
+// 192.168.50.31 holds model=100012587 today and will keep holding it — Model is
+// presence-only at all three merge layers — until some pack re-declares an SSDP
+// pattern this device answers AND a relay carrying this fix scans. Both halves
+// are required; this change supplies only the second.
 func QueryDeviceInfo(ctx context.Context, client *http.Client, addr string) (DeviceInfo, error) {
 	if client == nil {
 		return DeviceInfo{}, fmt.Errorf("ecp: QueryDeviceInfo: no HTTP client")
@@ -170,9 +224,63 @@ func QueryDeviceInfo(ctx context.Context, client *http.Client, addr string) (Dev
 	// apart.
 	name, which := pickField(doc.UserDeviceName, doc.FriendlyDeviceName, doc.DefaultDeviceName)
 	return DeviceInfo{
-		Name:         name,
-		NameSource:   nameSourceAt(which),
-		Model:        infoField(doc.ModelName, doc.ModelNumber),
+		Name:       name,
+		NameSource: nameSourceAt(which),
+		// The model ladder answers "what KIND of thing is this", which is the
+		// question an operator deciding whether to adopt a row is asking. WHICH
+		// unit it is they answer three other ways in the same view — the name the
+		// owner typed, the address, and the serial in the adopt dialog.
+		//
+		// WHAT WAS MEASURED, and it is one device: 192.168.50.31 answers
+		// `model-name=100012587` (a retailer's part number),
+		// `model-number=L810X` (Roku's hardware catalog code) and
+		// `friendly-model-name=onn•Roku TV`. Only the third answers the question,
+		// and the ladder is ordered on that single observation plus the shape of
+		// the three elements: a catalog code is machine-grade by construction, so
+		// `model-number` stays the last rung whatever else is true.
+		//
+		// WHAT WAS NOT MEASURED, stated because the ordering rests on it: no Roku
+		// -branded box, no TCL, no Hisense, no second firmware. The failure mode
+		// that would make this column WORSE than it is today is a firmware whose
+		// `friendly-model-name` carries only a vendor string ("TCL") while
+		// `model-name` carries the real SKU ("TCL 55S435") — every TV in such a
+		// fleet would collapse to one indistinguishable label. No such document has
+		// been seen, and none has been ruled out either. What would detect it is a
+		// second Roku of a different make in the lab; until one exists this rung is
+		// a one-device generalisation and should be read as one.
+		//
+		// The trade is taken because the two directions are not symmetric: an
+		// operator can recover WHICH unit a row is from Name, Address or Serial,
+		// but nobody can recover a model from a part number. If a SKU is genuinely
+		// wanted it should become a SECOND rendered field, not a worse value in the
+		// only one.
+		//
+		// NO SOURCE RIDES OUT WITH IT, and that is a decision, not the omission
+		// NameSource exists to correct. A source is only worth carrying if some
+		// merge downstream must REFUSE a value, and Model has exactly one writer in
+		// the whole relay: this probe. Every other lane reports it empty, and both
+		// merge layers already refuse empty, so there is no competing report for a
+		// rank to rule against. Making one durable would also pin it: Model has no
+		// continuously sweeping producer at all (passive sightings never probe), so
+		// under deviceplane's own invariant — a rank may not sit above any rank a
+		// sweeping lane can produce — every rung would be claimable once and then
+		// permanent. That is harmless only because a TV cannot change model, which
+		// is the argument AGAINST building it: a rank that can never be wrong is a
+		// rank that is never needed. Presence-only is additionally what ALLOWS a
+		// stored part number to be corrected, since a non-empty "onn•Roku TV"
+		// replaces it with no rank to argue past — but ALLOWING is all it does. The
+		// correction happens only if this probe RUNS, and on box .12 as configured
+		// today it does not: see the reachability note on QueryDeviceInfo below.
+		// The day a second lane learns to report a model, this needs a source and
+		// may legally have one; internal/app/store/discovereddevices.go records
+		// that trigger.
+		Model: infoField(doc.FriendlyModelName, doc.ModelName, doc.ModelNumber),
+		// Serial has ONE candidate, so infoField here is the honest wrapper and not
+		// a discarded precedence: there is no ordering to lose. It stays that way
+		// on purpose. The same document carries `<device-id>`, which is Roku's
+		// cloud identifier for the unit and not the serial printed on it — a
+		// tempting-looking fallback that would silently populate the field
+		// identifying physical hardware with a different namespace's value.
 		SerialNumber: infoField(doc.SerialNumber),
 	}, nil
 }

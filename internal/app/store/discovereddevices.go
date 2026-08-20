@@ -458,7 +458,8 @@ func (s *Store) ReplaceDiscoveredDevices(ctx context.Context, relayID string, ro
 //
 // What remains is a DIFFERENT and smaller class, listed here because an unlisted
 // gap is how this recurs: PRESENCE-ONLY MERGES WHERE QUALITY GENUINELY MATTERS.
-// Two members, neither closable by a rank, both deliberately left:
+// Two members, neither closable by a rank — the first still open, the second now
+// closed and kept here for the standing trigger that would reopen it:
 //
 //  1. THE ENTITY FAN-OUT. The relay knows which DECLARATION authored a device's
 //     entities (deviceplane.Observation.EntitySource) and that authority is
@@ -469,18 +470,53 @@ func (s *Store) ReplaceDiscoveredDevices(ctx context.Context, relayID string, ro
 //     fact is a WITHDRAWAL, and a ladder cannot express one. Left because that
 //     is a contract change with its own corpus and its own argument to make.
 //
-//  2. MODEL. internal/relay/ecp resolves a precedence between `model-name` and
-//     `model-number` and DISCARDS which element won (deviceinfo.go's
-//     `infoField(doc.ModelName, doc.ModelNumber)`) — the exact shape NameSource
-//     fixed for the name, unfixed one field over. It is additionally reading the
-//     wrong element on the lab's only Roku: 192.168.50.31 answers
-//     `model-name=100012587` while `friendly-model-name=onn•Roku TV` goes
-//     unread, and box .12's row holds the SKU. Left because it is two changes,
-//     not one — which element to read is a product decision with hardware
-//     consequences, and carrying a ModelSource is a third wire member — and
-//     half-fixing it is precisely the habit this ledger exists to break. Model
-//     is rendered, never routed on, so nothing depends on it the way REG-052
-//     depends on the class.
+//  2. MODEL — and this entry now records a CLOSED question rather than an open
+//     one, because leaving it phrased as a residual is how it gets re-opened and
+//     re-argued from scratch. The previous version of this list called it "two
+//     changes, not one": which element to read, plus a ModelSource to carry the
+//     precedence the way NameSource carries the name's. It was one change (#207).
+//
+//     The whole defect was the element read. internal/relay/ecp decoded six
+//     elements out of the 79 the lab's Roku sends, and `friendly-model-name` —
+//     the only human-readable model string on OEM hardware — was in the 73 it
+//     ignored, so 192.168.50.31 was stored and rendered as `100012587`, a
+//     retailer's part number. The discarded precedence index sitting beside it
+//     was real but was the NAME's problem generalised onto a field that does not
+//     have it, and generalising a fix by shape rather than by cause is its own
+//     version of the habit this ledger exists to break.
+//
+//     NO RANK WAS ADDED, deliberately: no ModelSource in ecp, no wire member, no
+//     column here. Model has exactly ONE writer (the ECP probe); every other lane
+//     reports it empty and both merge layers already refuse empty, so a rank
+//     would have no competing report to rule against. It would also be pinned:
+//     Model has no continuously sweeping producer at all, so by the invariant
+//     above — and by deviceplane's own — every rung would sit above what any
+//     sweeping lane can produce, claimable once and then permanent across
+//     restarts. That is harmless only because a model is immutable, which is the
+//     argument against building it rather than for it. Presence-only also keeps
+//     the door open rather than shut: a rank would have had to be taught that a
+//     stored part number is worse before it could be replaced, whereas a
+//     presence-only merge takes any non-empty "onn•Roku TV" the moment one is
+//     reported.
+//
+//     WHAT THAT DOES NOT MEAN, because the first draft of this entry claimed it
+//     and it was not checked: the stored part numbers are NOT self-healing today.
+//     The ECP probe fires only for SSDP-watched targets, core declares no SSDP
+//     pattern, and box .12 currently runs with zero of them (measured 2026-08-20,
+//     pid 3135258: "0 ssdp, 1 mdns live (0 pack pattern(s))"). Its one row
+//     carrying a model — 192.168.50.31, model=100012587 — will hold that value
+//     through any number of scheduled scans, because the scans that run are ARP
+//     sweep and port scan and neither probes. Fixing which element ecp reads is
+//     necessary for the correction and is not sufficient for it; the other half
+//     is a pack re-declaring an SSDP pattern that device answers.
+//     ecp.QueryDeviceInfo carries the evidence.
+//
+//     THE TRIGGER THAT REOPENS IT, stated so it is not rediscovered: a SECOND
+//     lane learning to report a model. hostmdns reading the `md=` TXT key of
+//     `_googlecast._tcp` is the concrete one, and such a device is already in the
+//     mirror. On that day Model has two writers of different quality, so a rank
+//     becomes necessary — and legal, because mDNS sweeps every 30s and can
+//     therefore refresh what it claims, which today's scan-gated probe cannot.
 func mergeDiscovered(prior, next DiscoveredDevice) DiscoveredDevice {
 	row := next
 	// Name is RANKED here now, and it took the contract change the previous

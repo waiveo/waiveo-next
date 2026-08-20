@@ -33,6 +33,39 @@ const rokuDeviceInfoXML = `<?xml version="1.0" encoding="UTF-8" ?>
 	<supports-suspend>true</supports-suspend>
 </device-info>`
 
+// hangerDeviceInfoXML is the document the lab's only Roku actually answers —
+// 192.168.50.31, an onn-branded Roku TV on firmware 15.3.4 — captured 2026-08-20
+// and trimmed from the 80 child elements it really sends to the ones this probe
+// reads plus several it ignores. Only the MACs and the advertising id were
+// dropped rather than trimmed for brevity: they identify a specific household on
+// a public repo and prove nothing.
+//
+// It is here because rokuDeviceInfoXML above is the ONE document shape in which
+// #207 is invisible: its `model-name` is already human-readable, so reading the
+// wrong element costs nothing and the gate stays green over the defect. This is
+// the only document in the tree captured from a device anyone has actually read
+// — one device, one vendor, one firmware — and on it `model-name` is a retail
+// part number while the only human-readable model string is
+// `friendly-model-name`.
+const hangerDeviceInfoXML = `<?xml version="1.0" encoding="UTF-8" ?>
+<device-info>
+	<udn>28002240-0000-1000-8009-c48b66682125</udn>
+	<serial-number>X029009JC6LF</serial-number>
+	<device-id>S188Y4CJC6LF</device-id>
+	<vendor-name>onn</vendor-name>
+	<model-name>100012587</model-name>
+	<model-number>L810X</model-number>
+	<model-region>US</model-region>
+	<is-tv>true</is-tv>
+	<screen-size>65</screen-size>
+	<friendly-device-name>The Hanger</friendly-device-name>
+	<friendly-model-name>onn•Roku TV</friendly-model-name>
+	<default-device-name>onn•Roku TV - X029009JC6LF</default-device-name>
+	<user-device-name>The Hanger</user-device-name>
+	<software-version>15.3.4</software-version>
+	<power-mode>PowerOn</power-mode>
+</device-info>`
+
 // serveDeviceInfo stands up an httptest server answering GET on the ECP
 // device-info path with body, and returns its host:port authority.
 func serveDeviceInfo(t *testing.T, status int, body string) string {
@@ -131,6 +164,163 @@ func TestQueryDeviceInfoModelFallsBackToTheNumber(t *testing.T) {
 	if got, want := info.Model, "4800X"; got != want {
 		t.Errorf("Model = %q, want %q — a number is a worse label than a name and a much better one than nothing", got, want)
 	}
+}
+
+// TestQueryDeviceInfoReadsTheHumanReadableModel is #207 against the device that
+// exposed it. The probe used to decode six elements out of the document's 79, and
+// `friendly-model-name` — the only one of the three model elements a person can
+// read — was in the 73 it ignored. An operator adopting this TV was shown
+// "100012587", a Walmart part number, for a device whose model is "onn•Roku TV".
+//
+// The serial is asserted alongside deliberately. The same document carries
+// `<device-id>S188Y4CJC6LF</device-id>`, which looks like a serial, sits two lines
+// away from one, and is NOT one — it is Roku's own cloud identifier for the unit.
+// Reading model precedence next door is exactly when someone would be tempted to
+// give the serial a fallback candidate too, and this pins that it has none.
+func TestQueryDeviceInfoReadsTheHumanReadableModel(t *testing.T) {
+	addr := serveDeviceInfo(t, http.StatusOK, hangerDeviceInfoXML)
+
+	info, err := QueryDeviceInfo(context.Background(), NewIdentifyClient(), addr)
+	if err != nil {
+		t.Fatalf("QueryDeviceInfo: %v", err)
+	}
+	if got, want := info.Model, "onn•Roku TV"; got != want {
+		t.Errorf("Model = %q, want %q — friendly-model-name is the only human-readable model element this device sends", got, want)
+	}
+	if got, want := info.SerialNumber, "X029009JC6LF"; got != want {
+		t.Errorf("SerialNumber = %q, want %q (serial-number, never the device-id beside it)", got, want)
+	}
+	if got, want := info.Name, "The Hanger"; got != want {
+		t.Errorf("Name = %q, want %q", got, want)
+	}
+	if got, want := info.NameSource, NameSourceUser; got != want {
+		t.Errorf("NameSource = %d, want %d", got, want)
+	}
+}
+
+// modelCase drives one document through the probe and asserts the resolved
+// Model. Shared by the two tests below, which are split by a property the table
+// alone cannot express: whether the case can detect #207 at all.
+type modelCase struct {
+	name string
+	doc  string
+	want string
+}
+
+func runModelCases(t *testing.T, cases []modelCase) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			addr := serveDeviceInfo(t, http.StatusOK, tc.doc)
+			info, err := QueryDeviceInfo(context.Background(), NewIdentifyClient(), addr)
+			if err != nil {
+				t.Fatalf("QueryDeviceInfo: %v", err)
+			}
+			if info.Model != tc.want {
+				t.Errorf("Model = %q, want %q", info.Model, tc.want)
+			}
+		})
+	}
+}
+
+// TestQueryDeviceInfoModelPrefersTheFriendlyModelName is the half of the ladder
+// that DETECTS #207. Every case here contains a usable `friendly-model-name`, so
+// every case fails against the pre-fix decoder — verified by reverting
+// deviceinfo.go to HEAD and running: all four report the weaker element's value.
+//
+// That property is the point of the split. The rungs below the new one behave
+// identically before and after the change by construction, so a table mixing
+// them in reads as broad coverage while most of its rows would pass on a full
+// revert. Those rows still earn their place — they are the argument that reading
+// an undocumented element is safe — but they live in the test below, under a name
+// that says what they can and cannot prove.
+func TestQueryDeviceInfoModelPrefersTheFriendlyModelName(t *testing.T) {
+	runModelCases(t, []modelCase{
+		{
+			// The defect in one line: both weaker elements are present and
+			// neither may win while the readable one is there.
+			name: "the friendly model outranks the part number and the hardware code",
+			doc:  `<device-info><model-name>100012587</model-name><model-number>L810X</model-number><friendly-model-name>onn•Roku TV</friendly-model-name></device-info>`,
+			want: "onn•Roku TV",
+		},
+		{
+			// The second rung must lose too, not just the first: a document with
+			// no model-name at all still may not fall to the catalog code.
+			name: "the friendly model outranks the hardware code on its own",
+			doc:  `<device-info><model-number>3930X</model-number><friendly-model-name>Roku Express</friendly-model-name></device-info>`,
+			want: "Roku Express",
+		},
+		{
+			// Roku pretty-prints elements onto their own lines. Pre-fix this
+			// document resolved to "" — the element was not read at all.
+			name: "surrounding whitespace is trimmed",
+			doc:  "<device-info><friendly-model-name>\n\t  onn•Roku TV  \n</friendly-model-name></device-info>",
+			want: "onn•Roku TV",
+		},
+		{
+			// The cap's INCLUSIVE edge. pickField skips only what exceeds the cap,
+			// so a value exactly at it is a legal model and must be used rather
+			// than falling through to the weaker element sitting beside it. This
+			// is the case that pins the boundary: an off-by-one to `>=` turns it
+			// into "Roku Ultra".
+			name: "a friendly model exactly at the byte cap is used",
+			doc:  `<device-info><friendly-model-name>` + strings.Repeat("M", maxDeviceInfoFieldBytes) + `</friendly-model-name><model-name>Roku Ultra</model-name></device-info>`,
+			want: strings.Repeat("M", maxDeviceInfoFieldBytes),
+		},
+	})
+}
+
+// TestQueryDeviceInfoModelDegradesToThePreviousBehaviour is the other half, and
+// it is stated plainly: EVERY case here passes on a full revert of #207, and
+// that is the property being asserted rather than a weakness in the test.
+//
+// Reading `friendly-model-name` is reading an element Roku's published
+// device-info reference does not list, on the evidence of exactly one device.
+// The risk that carries is a firmware that omits it or fills it with junk, and
+// the mitigation is that it sits BEHIND a fall-through. These cases pin that
+// mitigation: on every document where the new rung is unusable, the probe must
+// return byte-for-byte what it returned before the rung existed. A future change
+// that made the top rung mandatory, or that truncated an over-long value into a
+// plausible-looking model, would break these and nothing in the test above.
+//
+// Do not "strengthen" these into failing on revert. They cannot, by
+// construction, and a case rewritten until it does would be asserting something
+// other than the degradation guarantee.
+func TestQueryDeviceInfoModelDegradesToThePreviousBehaviour(t *testing.T) {
+	runModelCases(t, []modelCase{
+		{
+			// Roku-branded hardware, and the shape rokuDeviceInfoXML has: no
+			// friendly model at all, and model-name is already a real name.
+			name: "no friendly model falls back to the model name",
+			doc:  `<device-info><model-name>Roku Ultra</model-name><model-number>4800X</model-number></device-info>`,
+			want: "Roku Ultra",
+		},
+		{
+			name: "neither falls back to the model number",
+			doc:  `<device-info><model-number>3930X</model-number></device-info>`,
+			want: "3930X",
+		},
+		{
+			// A blank element is not a model. Falling through is what stops a
+			// device being listed with an empty Model column when a real one
+			// exists two elements down.
+			name: "an empty friendly model falls through",
+			doc:  `<device-info><friendly-model-name></friendly-model-name><model-name>Roku Ultra</model-name></device-info>`,
+			want: "Roku Ultra",
+		},
+		{
+			// The cap SKIPS rather than truncates. A truncated model reads as a
+			// real one, which is worse than falling to the honest weaker element.
+			name: "an over-cap friendly model is skipped, not truncated",
+			doc:  `<device-info><friendly-model-name>` + strings.Repeat("M", maxDeviceInfoFieldBytes+1) + `</friendly-model-name><model-name>Roku Ultra</model-name></device-info>`,
+			want: "Roku Ultra",
+		},
+		{
+			name: "no model at all is empty, not an error",
+			doc:  `<device-info><serial-number>X1</serial-number></device-info>`,
+			want: "",
+		},
+	})
 }
 
 // TestQueryDeviceInfoRefusesNonRokuAnswers is the CLASSIFICATION half: an error

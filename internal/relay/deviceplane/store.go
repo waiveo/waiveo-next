@@ -924,13 +924,26 @@ func (s *Store) Observe(o Observation, atMs int64) {
 		// this is a generalisation of orKeep and not a replacement for it.
 		c.Name, c.NameRank = keepName(o.Name, o.NameRank, c.Name, c.NameRank)
 		c.Address = keepAddress(o.Address, c.Address)
-		// Model and Serial stay presence-only. They have exactly ONE writer today
-		// (the ECP identification probe), so no second lane can undercut them, and
-		// the only worse-value path is a re-probe of a mid-reboot device answering
-		// `model-number` where the first answered `model-name`. Ranking that means
-		// carrying the ECP element up the same way NameRank is — cheap, but it
-		// would be enforcement with no observed instance to enforce against, so it
-		// waits for one rather than shipping untested by reality.
+		// Model and Serial stay presence-only, and #207 confirmed that rather than
+		// changing it. They have exactly ONE writer (the ECP identification probe),
+		// so no second lane can undercut them, and the only worse-value path is a
+		// re-probe of a mid-reboot device answering a lower rung of ecp's model
+		// ladder than the first probe read. Ranking that means carrying the ECP
+		// element up the same way NameRank is — cheap, but enforcement with no
+		// observed instance to enforce against, so it waits for one.
+		//
+		// #207 was that field's real defect and it was NOT this: ecp was reading
+		// the wrong element out of the document entirely, so the best value never
+		// reached this merge to be arbitrated. Worth noting which way that cuts —
+		// presence-only is what would LET a corrected value replace a stored part
+		// number, where a rank would first have had to be taught the old one was
+		// worse. It does not cause that replacement: this merge only ever sees what
+		// the ECP probe reports, and on box .12 the probe is currently issued for no
+		// address at all (zero SSDP watches — see the reachability note on
+		// ecp.QueryDeviceInfo). So the stored 100012587 persists here, correctly and
+		// by design, until a probe actually reports something else. The trigger that
+		// would change this answer is a second lane reporting a model at all;
+		// internal/app/store's mergeDiscovered ledger carries it.
 		c.Model = orKeep(o.Model, c.Model)
 		c.Serial = orKeep(o.Serial, c.Serial)
 		// Ports follow the same rule every LEARNED fact here follows, and the
