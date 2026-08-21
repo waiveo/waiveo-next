@@ -89,7 +89,7 @@ implementation behind it, which is what this note exists to prevent.
 | REL-074 | `contracts/relay-1.md#idempotent-apply--enrollment-anchored-trust` | - | TBD-wave1 |
 | REL-075 | `contracts/relay-1.md#idempotent-apply--enrollment-anchored-trust` | - | TBD-wave1 |
 | REL-090 | `contracts/relay-1.md#telemetry-upstream` | `REL-090-valid-telemetry-overflow-loss-marker` | covered |
-| REL-090a | `contracts/relay-1.md#telemetry-upstream` | `REL-090-valid-telemetry-overflow-loss-marker` | covered |
+| REL-090a | `contracts/relay-1.md#telemetry-upstream` | `REL-090-valid-telemetry-overflow-loss-marker`, `REL-090a-valid-entry-without-usable-trace-id-still-delivered` | covered |
 | REL-091 | `contracts/relay-1.md#telemetry-upstream` | `REL-090-valid-telemetry-overflow-loss-marker` | covered |
 | REL-092 | `contracts/relay-1.md#telemetry-upstream` | `REL-090-valid-telemetry-overflow-loss-marker` | covered |
 | REL-093 | `contracts/relay-1.md#telemetry-upstream` | `REL-090-valid-telemetry-overflow-loss-marker` | covered |

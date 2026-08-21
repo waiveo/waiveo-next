@@ -3,6 +3,7 @@ package relay1
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/maaxton/waiveo-next/internal/shared/ulid"
 	"reflect"
 	"sort"
 	"time"
@@ -517,4 +518,159 @@ func jsonSubsetEqual(got, want json.RawMessage) bool {
 		return true
 	}
 	return reflect.DeepEqual(gt, wt)
+}
+
+// rel090aInput / rel090aExpected decode the REL-090a case's own blocks.
+type rel090aInput struct {
+	BufferCapacity int `json:"buffer_capacity"`
+	TelemetryPush  struct {
+		Body struct {
+			Entries []struct {
+				Seq     int64           `json:"seq"`
+				Schema  string          `json:"schema"`
+				Payload json.RawMessage `json:"payload"`
+				TraceID string          `json:"trace_id"`
+			} `json:"entries"`
+		} `json:"body"`
+	} `json:"telemetry_push"`
+}
+
+type rel090aExpected struct {
+	EntriesDelivered *int  `json:"entries_delivered"`
+	EntriesDropped   *int  `json:"entries_dropped"`
+	SilentLoss       *bool `json:"silent_loss"`
+}
+
+// driveREL090a exercises REL-090a's SECOND must, which nothing exercised before.
+//
+// The requirement: "An entry omitting `trace_id`, or carrying a value that is
+// not a Canonical ULID, MUST still be delivered … and MUST NOT reject or drop
+// the entry — a defect in correlation metadata may not become the durable-class
+// loss REL-093 and REL-103 forbid."
+//
+// The traceability row read `covered` against REL-090's case, and that case's
+// two entries BOTH carry well-formed trace ids. So a relay that refused an entry
+// with a missing or malformed trace_id — discarding telemetry it is obliged to
+// deliver, silently — passed the corpus. This case is the one that fails it.
+//
+// It asserts DELIVERY, not correlation: the trace_id an entry ends up carrying
+// is REL-090a's first must and the app peer's obligation (API-063 exercises it).
+// What is checked here is that none of the three entries went missing, whatever
+// their metadata looked like.
+func driveREL090a(rep *report.Report, cases map[string]corpus.Case) {
+	c, ok := corpus.ByID(cases, "REL-090a")
+	if !ok {
+		rep.Fail("REL-090a", contract, "case not found in frozen corpus")
+		return
+	}
+	raw, err := json.Marshal(c.Input)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("marshal corpus input: %v", err))
+		return
+	}
+	var in rel090aInput
+	if err := json.Unmarshal(raw, &in); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode corpus input: %v", err))
+		return
+	}
+	rawExp, err := json.Marshal(c.Expected)
+	if err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("marshal corpus expected: %v", err))
+		return
+	}
+	var exp rel090aExpected
+	if err := json.Unmarshal(rawExp, &exp); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("decode corpus expected: %v", err))
+		return
+	}
+
+	var diffs []report.Diff
+	buf := telemetry.NewBuffer(in.BufferCapacity)
+	// Recorded exactly as the corpus spells them, malformed values included. A
+	// driver that sanitised here would be testing its own fixture rather than
+	// the buffer's willingness to carry what it was given.
+	for _, e := range in.TelemetryPush.Body.Entries {
+		buf.RecordTraced(e.Schema, e.Payload, "", 0, e.TraceID)
+	}
+
+	pending := buf.Pending()
+	up := &fixedAckUpstream{}
+	if len(pending) > 0 {
+		up.ack = telemetry.Ack{AckThroughSeq: pending[len(pending)-1].Seq}
+	}
+	ch := telemetry.NewChannel(buf, up, telemetry.ExponentialBackoff{Base: time.Millisecond, MaxAttempts: 1})
+	if _, err := ch.Flush(); err != nil {
+		rep.Fail(c.CaseID, contract, fmt.Sprintf("Flush: %v", err))
+		return
+	}
+	if up.pushed == nil {
+		rep.Fail(c.CaseID, contract, "no telemetry.push was delivered at all")
+		return
+	}
+
+	if delivered, missing := declaredInt("entries_delivered", exp.EntriesDelivered); missing != nil {
+		diffs = append(diffs, *missing)
+	} else if len(up.pushed.Entries) != delivered {
+		diffs = append(diffs, report.Diff{
+			Field:    "telemetry.push.entries delivered (REL-090a second MUST)",
+			Expected: delivered, Actual: len(up.pushed.Entries)})
+	}
+
+	// Named individually, because a count alone cannot say WHICH shape was
+	// dropped — and the two shapes fail for different reasons.
+	for _, want := range in.TelemetryPush.Body.Entries {
+		found := false
+		for _, got := range up.pushed.Entries {
+			if got.Schema == want.Schema && string(got.Payload) == string(want.Payload) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			shape := "a well-formed trace_id"
+			switch {
+			case want.TraceID == "":
+				shape = "NO trace_id"
+			case !ulid.Valid(want.TraceID):
+				shape = "a malformed trace_id"
+			}
+			diffs = append(diffs, report.Diff{
+				Field:    fmt.Sprintf("telemetry.push.entries carries the entry with %s (schema=%s)", shape, want.Schema),
+				Expected: "delivered", Actual: "dropped — a metadata defect became durable-class loss (REL-093/REL-103)"})
+		}
+	}
+
+	if dropped, missing := declaredInt("entries_dropped", exp.EntriesDropped); missing != nil {
+		diffs = append(diffs, *missing)
+	} else if got := len(in.TelemetryPush.Body.Entries) - len(up.pushed.Entries); got != dropped {
+		diffs = append(diffs, report.Diff{Field: "entries dropped", Expected: dropped, Actual: got})
+	}
+	if silent, missing := declaredBool("silent_loss", exp.SilentLoss); missing != nil {
+		diffs = append(diffs, *missing)
+	} else if got := len(up.pushed.LossMarkers) > 0; got != silent {
+		// `silent_loss: false` means nothing was lost, so no marker is owed. A
+		// marker appearing here would mean the buffer DID drop something while
+		// the entry count still reconciled — which is the shape this case exists
+		// to refuse.
+		diffs = append(diffs, report.Diff{Field: "loss markers accompany a lossless push", Expected: silent, Actual: got})
+	}
+
+	if len(diffs) > 0 {
+		rep.Fail(c.CaseID, contract, "an entry whose trace_id was absent or malformed was not delivered", diffs...)
+		return
+	}
+	rep.Pass(c.CaseID, contract)
+}
+
+// declaredInt is declaredBool's sibling: an assertion whose expected value the
+// corpus omitted is a check that would pass by not running.
+func declaredInt(field string, v *int) (int, *report.Diff) {
+	if v == nil {
+		return 0, &report.Diff{
+			Field:    field,
+			Expected: "<declared in the corpus expected block>",
+			Actual:   "absent — the assertion this gates would have been skipped silently",
+		}
+	}
+	return *v, nil
 }

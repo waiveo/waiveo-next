@@ -164,6 +164,7 @@
       "REL-070-valid-generation-reapply-idempotent-noop",
       "REL-071-invalid-wrong-peer-key-snapshot-rejected",
       "REL-090-valid-telemetry-overflow-loss-marker",
+      "REL-090a-valid-entry-without-usable-trace-id-still-delivered",
       "REL-094-valid-telemetry-latest-only-heartbeat-superseded",
       "REL-110-valid-device-candidate-and-command",
       "REL-110b-valid-derived-identity-across-relays",

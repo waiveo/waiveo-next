@@ -1,0 +1,50 @@
+{
+  "case_id": "REL-090a-valid-entry-without-usable-trace-id-still-delivered",
+  "contract": "relay/1",
+  "req_ids": ["REL-090a", "REL-093", "REL-103"],
+  "description": "REL-090a's SECOND must: an entry omitting trace_id, or carrying a value that is not a Canonical ULID, MUST still be delivered and MUST NOT be rejected or dropped. The requirement exists so a defect in correlation METADATA cannot become the durable-class LOSS that REL-093 and REL-103 forbid — a relay that refused these entries would be discarding telemetry it is obliged to deliver, and the loss would be silent. Before this case, the only telemetry entries in the corpus both carried well-formed trace ids, so a driver that dropped either shape passed.",
+  "input": {
+    "buffer_capacity": 500,
+    "telemetry_push": {
+      "type": "telemetry.push",
+      "relay_id": "01J8Z4K4N5P6Q7R8S9T0V1W3A1",
+      "body": {
+        "entries": [
+          {
+            "seq": 2001,
+            "schema": "automation.run",
+            "payload": {
+              "rule_id": "01J8Z3K4N5P6Q7R8S9T0V1W2Z1",
+              "rule_revision": 4,
+              "mode_disposition": "ran"
+            },
+            "trace_id": ""
+          },
+          {
+            "seq": 2002,
+            "schema": "content.played",
+            "payload": {
+              "asset_ref": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "screen_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X6"
+            },
+            "trace_id": "not-a-canonical-ulid"
+          },
+          {
+            "seq": 2003,
+            "schema": "entity.state_changed",
+            "payload": {
+              "entity_id": "01J8Z3K4N5P6Q7R8S9T0V1W2X7",
+              "state": "on"
+            },
+            "trace_id": "01J8Z4K4N5P6Q7R8S9T0V1W3T9"
+          }
+        ]
+      }
+    }
+  },
+  "expected": {
+    "entries_delivered": 3,
+    "entries_dropped": 0,
+    "silent_loss": false
+  }
+}
