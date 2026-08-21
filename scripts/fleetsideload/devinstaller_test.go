@@ -307,3 +307,96 @@ func TestInstallChannelHonoursContextDeadline(t *testing.T) {
 		t.Errorf("gave up after %s; the deadline was 100ms", elapsed)
 	}
 }
+
+// rokuLikeInstaller behaves the way a real Roku dev server does, which is what
+// the previous implementation could not survive.
+//
+// The distinguishing behaviour: an UNAUTHENTICATED POST carrying a body is not
+// politely answered 401 — the device hangs up mid-upload. Against real hardware
+// that surfaces as "use of closed network connection" on the write, which reads
+// like a network fault and is not one. A stub that merely returns 401 to the
+// first POST cannot tell the two implementations apart, which is why the
+// existing stub above passed a client that could never install anything.
+type rokuLikeInstaller struct {
+	password string
+	// bodiedPostsWithoutAuth counts speculative uploads — the thing being fixed.
+	bodiedPostsWithoutAuth int
+	installed              bool
+}
+
+func (s *rokuLikeInstaller) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	auth := r.Header.Get("Authorization")
+
+	// A bodyless GET is how a well-behaved client asks for the challenge.
+	if r.Method == http.MethodGet {
+		w.Header().Set("WWW-Authenticate", `Digest qop="auth", realm="rokudev", nonce="1787341409"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	if auth == "" {
+		// The Roku's actual behaviour: refuse by hanging up, not by replying.
+		s.bodiedPostsWithoutAuth++
+		if hj, ok := w.(http.Hijacker); ok {
+			conn, _, err := hj.Hijack()
+			if err == nil {
+				_ = conn.Close()
+				return
+			}
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if !strings.Contains(auth, `realm="rokudev"`) {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	s.installed = true
+	_, _ = io.WriteString(w, "<html><font color=\"red\">Install Success</font></html>")
+}
+
+// TestInstallAuthenticatesBEFORESendingTheArchive is the case the shipped tool
+// failed against real hardware.
+func TestInstallAuthenticatesBEFORESendingTheArchive(t *testing.T) {
+	stub := &rokuLikeInstaller{password: "abcd"}
+	srv := httptest.NewServer(stub)
+	defer srv.Close()
+
+	_, err := digestPost(context.Background(), srv.Client(), stubDevice(t, srv),
+		credentials{User: "rokudev", Password: "abcd"},
+		"/plugin_install", []byte("PK\x03\x04 pretend this is 90 KB of channel"), "multipart/form-data; boundary=x")
+	if err != nil {
+		t.Fatalf("install failed against a Roku-like device: %v", err)
+	}
+	if stub.bodiedPostsWithoutAuth != 0 {
+		t.Errorf("the archive was offered %d time(s) before authenticating — a real Roku hangs up "+
+			"mid-upload and the retry writes into a dead socket", stub.bodiedPostsWithoutAuth)
+	}
+	if !stub.installed {
+		t.Error("the device never received an authenticated upload")
+	}
+}
+
+// TestTheChallengeRequestCarriesNoBody pins the property the fix turns on: what
+// makes the speculative upload avoidable is that `qop="auth"` excludes the
+// entity body, so a challenge can be had for free.
+func TestTheChallengeRequestCarriesNoBody(t *testing.T) {
+	var challengeMethod string
+	var challengeLen int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			challengeMethod, challengeLen = r.Method, r.ContentLength
+		}
+		w.Header().Set("WWW-Authenticate", `Digest qop="auth", realm="rokudev", nonce="n"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	_, _ = digestChallenge(context.Background(), srv.Client(), stubDevice(t, srv))
+	if challengeMethod != http.MethodGet {
+		t.Errorf("challenge fetched with %q, want GET — a POST invites the body this exists to avoid", challengeMethod)
+	}
+	if challengeLen > 0 {
+		t.Errorf("the challenge request carried %d bytes of body; it must risk nothing", challengeLen)
+	}
+}

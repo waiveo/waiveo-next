@@ -119,15 +119,25 @@ func buildInstallForm(zip []byte) ([]byte, string, error) {
 func digestPost(ctx context.Context, client *http.Client, dev device, creds credentials, uri string, body []byte, contentType string) (string, error) {
 	url := "http://" + dev.Addr() + uri
 
-	first, err := postBytes(ctx, client, url, contentType, body, "")
+	// The challenge is taken from a request that carries NO BODY, and that is
+	// the whole of this function's correctness.
+	//
+	// The obvious shape — POST the archive, take the 401, POST it again with the
+	// credential — does not work against a real Roku. It streams ~90 KB to a
+	// device that has already decided to refuse it, and the device closes the
+	// connection mid-write; the retry then writes into a dead socket and the
+	// install fails with "use of closed network connection", which reads like a
+	// network fault and is not one. Measured against a Roku on OS 15.3.4, from
+	// two different network paths, with credentials proven good.
+	//
+	// `qop="auth"` does not cover the entity body (that is `auth-int`), so the
+	// digest response can be computed from a challenge obtained anywhere in the
+	// realm and attached to a single, fully-formed POST. One request, one body,
+	// no speculative upload.
+	challenge, err := digestChallenge(ctx, client, dev)
 	if err != nil {
 		return "", err
 	}
-	if first.status != http.StatusUnauthorized {
-		return first.body, nil
-	}
-
-	challenge := parseDigestChallenge(first.authenticate)
 	if challenge["nonce"] == "" {
 		return "", fmt.Errorf("%s did not present a Digest challenge (is this the dev installer port?)", dev.Addr())
 	}
@@ -158,6 +168,35 @@ func digestPost(ctx context.Context, client *http.Client, dev device, creds cred
 		return "", fmt.Errorf("%s rejected the dev password for user %q", dev.Addr(), creds.User)
 	}
 	return second.body, nil
+}
+
+// digestChallenge fetches a Digest challenge without offering a body.
+//
+// It asks `/plugin_inspect` — a GET on the same dev-installer port, in the same
+// `rokudev` realm — because a challenge is realm-scoped and the point is to
+// obtain one having risked nothing. Any 401 on this port serves; this endpoint
+// is the one verified against real hardware.
+//
+// A non-401 answer is not an error here: a device that does not challenge is one
+// this function has nothing to add to, and the caller's `nonce == ""` check
+// turns that into the "is this the dev installer port?" message an operator can
+// act on.
+func digestChallenge(ctx context.Context, client *http.Client, dev device) (map[string]string, error) {
+	url := "http://" + dev.Addr() + "/plugin_inspect"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build challenge request for %s: %w", url, err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s unreachable: %w", url, err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusUnauthorized {
+		return map[string]string{}, nil
+	}
+	return parseDigestChallenge(resp.Header.Get("WWW-Authenticate")), nil
 }
 
 // httpAnswer is the only three things the caller needs from a response, read
