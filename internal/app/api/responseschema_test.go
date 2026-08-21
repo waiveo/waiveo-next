@@ -944,6 +944,17 @@ var probes = map[string]probe{
 	"listDevices": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		return e.do(t, http.MethodGet, "/api/v1/devices", nil, nil)
 	},
+	"listContent": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// An asset is UPLOADED first so the probe drives a populated listing. An
+		// empty array satisfies the schema without exercising a single member of
+		// ContentAsset, which would leave the shape this check exists to verify
+		// unverified while reporting success.
+		up, raw := e.do(t, http.MethodPost, "/api/v1/content", []byte("a probe asset"), nil)
+		if up.StatusCode != http.StatusCreated {
+			t.Fatalf("seeding an asset for the listing probe: %d (body %s)", up.StatusCode, raw)
+		}
+		return e.do(t, http.MethodGet, "/api/v1/content", nil, nil)
+	},
 	"listDiscoveryRelays": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		// Operator-readable, and no mintOrg: this route reads the live connection
 		// set directly rather than authorizing through the workspace root, which
