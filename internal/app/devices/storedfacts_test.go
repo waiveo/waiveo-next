@@ -153,3 +153,65 @@ func TestForgetDropsTheOverlayWithTheView(t *testing.T) {
 		t.Fatalf("address = %q after the relay was forgotten and re-enrolled — a revoked relay's remembered description must not be stamped back on", d.Address)
 	}
 }
+
+// The mirror commits THREE answers about ports, and the projection must carry
+// all three. This guard read `len(s.OpenPorts) > 0`, which folds the third into
+// the first: a mirror that committed "a scan looked and nothing is open" could
+// not say so, and the API reported "nobody has looked" instead.
+//
+// It only bites after a restart, which is exactly this file's subject — a relay
+// whose in-memory candidate store is empty re-reports passively with no ports at
+// all, so every port an operator sees comes from the mirror. Measured on the dev
+// box: 24 of 63 devices silently reverted to unscanned, one restart after the
+// scan that had cleared them.
+
+func TestTheMirrorsEMPTYPortListReachesTheAPI(t *testing.T) {
+	r := New(testSite, func() int64 { return 0 })
+	// An ignorant report: the restarted relay carries no ports at all.
+	c := candidate("roku-ecp", "X1")
+	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{c}); err != nil {
+		t.Fatalf("ApplyCandidates: %v", err)
+	}
+	id := deviceid.Device(testSite, "roku-ecp", "X1")
+
+	// The mirror knows a scan looked and found nothing open.
+	r.MarkStored(map[string]Stored{id: {RelayID: relayA, OpenPorts: []int{}}})
+
+	d := storedTestDevice(t, r, relayA, "X1")
+	if d.OpenPorts == nil {
+		t.Fatal("the mirror's committed empty list did not reach the device; the API now says nobody has looked")
+	}
+	if len(d.OpenPorts) != 0 {
+		t.Fatalf("want an empty list, got %#v", d.OpenPorts)
+	}
+}
+
+func TestAMirrorThatKNOWSNothingLeavesThePortsAbsent(t *testing.T) {
+	// The other side of the same nil check: a mirror holding nothing about a
+	// device must not be turned into a claim that a scan found nothing.
+	r := New(testSite, func() int64 { return 0 })
+	c := candidate("roku-ecp", "X1")
+	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{c}); err != nil {
+		t.Fatalf("ApplyCandidates: %v", err)
+	}
+	id := deviceid.Device(testSite, "roku-ecp", "X1")
+	r.MarkStored(map[string]Stored{id: {RelayID: relayA}})
+
+	if d := storedTestDevice(t, r, relayA, "X1"); d.OpenPorts != nil {
+		t.Fatalf("a mirror that knows nothing produced %#v, want absent", d.OpenPorts)
+	}
+}
+
+func TestTheMirrorsFINDINGSStillOverrideAnIgnorantReport(t *testing.T) {
+	r := New(testSite, func() int64 { return 0 })
+	c := candidate("roku-ecp", "X1")
+	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{c}); err != nil {
+		t.Fatalf("ApplyCandidates: %v", err)
+	}
+	id := deviceid.Device(testSite, "roku-ecp", "X1")
+	r.MarkStored(map[string]Stored{id: {RelayID: relayA, OpenPorts: []int{22, 8060}}})
+
+	if d := storedTestDevice(t, r, relayA, "X1"); len(d.OpenPorts) != 2 {
+		t.Fatalf("the mirror's findings did not survive an ignorant report: %#v", d.OpenPorts)
+	}
+}

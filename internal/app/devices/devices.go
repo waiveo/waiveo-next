@@ -801,7 +801,22 @@ func (r *Registry) rematerialize() {
 				d.Address = orKeepStored(s.Address, d.Address)
 				d.Model = orKeepStored(s.Model, d.Model)
 				d.Serial = orKeepStored(s.Serial, d.Serial)
-				if len(s.OpenPorts) > 0 {
+				// `!= nil`, not `len() > 0` — the same distinction this member
+				// carries everywhere else, and the last place that was still
+				// collapsing it. The mirror commits THREE answers, not two: no
+				// row for this device (nil, nothing known), a list (a scan found
+				// these), and an EMPTY list (a scan looked and found nothing
+				// open). A length test folds the third into the first, so the
+				// mirror's committed "nothing is open" could never reach the API.
+				//
+				// It showed up exactly where the durable half is load-bearing.
+				// After a restart the relay's candidate store is empty by design
+				// (in-memory, owner decision), so it re-reports passively with no
+				// ports at all and every port an operator sees comes from here.
+				// Devices with findings got them back; devices a scan had cleared
+				// silently reverted to "nobody has looked" — measured as 24 of 63
+				// on the dev box, one restart after the scan that cleared them.
+				if s.OpenPorts != nil {
 					d.OpenPorts = s.OpenPorts
 				}
 			}
