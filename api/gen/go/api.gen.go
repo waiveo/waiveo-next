@@ -1963,6 +1963,42 @@ type DeviceListResponse struct {
 	Items  []Device `json:"items"`
 }
 
+// DiscoveryEngineState One relay's reported discovery-engine state — what it is watching for, and what it was told to watch for but could not.
+type DiscoveryEngineState struct {
+	// MacOuiUnimplemented Declared patterns using the `macOui` match form, which is well-formed and which no lane implements yet. Counted rather than dropped so a pack author is told their declaration is inert instead of watching it vanish.
+	MacOuiUnimplemented int `json:"mac_oui_unimplemented"`
+
+	// Malformed Pattern entries that failed to parse. The section was signed and hash-checked, so a malformed pattern means a producer bug rather than a transport fault.
+	Malformed int `json:"malformed"`
+
+	// MdnsLane Whether the mDNS lane is running. Binding multicast is the deployment's own call, not a pack's, which is why a declared mDNS pattern can be undeliverable without anyone being at fault.
+	MdnsLane bool `json:"mdns_lane"`
+
+	// MdnsUndeliverable Declared mDNS patterns this relay could not install because its mDNS lane is not running.
+	MdnsUndeliverable int `json:"mdns_undeliverable"`
+
+	// MdnsWatches Live mDNS watches, on the same terms as `ssdp_watches`.
+	MdnsWatches int `json:"mdns_watches"`
+
+	// PackPatterns How many `pack_match_patterns` entries the applied generation carried: what packs DECLARED, before any question of whether a lane could take them. Read against the two watch counts, it says whether declarations are reaching the lanes at all.
+	PackPatterns int `json:"pack_patterns"`
+
+	// RelayId A relay's permanent identity, assigned to it by enrollment and unchanged across every later certificate renewal or re-enrollment (`relay/1` REL-012/014). Deliberately NOT typed as a ULID: unlike a resource this API mints, a relay id is issued by the enrollment path and is opaque here — this API reads it, routes a command by it, and never constructs or parses one.
+	RelayId RelayId `json:"relay_id"`
+
+	// ReportedAtMs Epoch ms this app peer RECEIVED the report, stamped from its own clock. The relay's clock is not trusted for app-side ordering, and "how long ago did this box hear this" is a property of the receiver.
+	ReportedAtMs int64 `json:"reported_at_ms"`
+
+	// SsdpLane Whether the SSDP lane is running on this relay.
+	SsdpLane bool `json:"ssdp_lane"`
+
+	// SsdpWatches Live SSDP watches after this generation applied — builtin plus pack-derived, once duplicate declarations are folded into one watch.
+	SsdpWatches int `json:"ssdp_watches"`
+
+	// WatchingNothing True when no lane holds any live watch. Published rather than left for each caller to recompute, so a console, a CLI and a health check cannot disagree about what it means.
+	WatchingNothing bool `json:"watching_nothing"`
+}
+
 // DiscoveryScanOutcome What one relay answered when asked to scan. `started` distinguishes a scan this call began from an accepted no-op (a scan was already running under `scan_id`, so the request was a benign repeat).
 type DiscoveryScanOutcome struct {
 	// Code The Error-taxonomy code, when the relay refused.
@@ -3736,6 +3772,12 @@ type IgnoreDeviceParams struct {
 	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
 }
 
+// ListDiscoveryEngineStateParams defines parameters for ListDiscoveryEngineState.
+type ListDiscoveryEngineStateParams struct {
+	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
+	TraceId *TraceIdParam `json:"Trace-Id,omitempty"`
+}
+
 // ListDiscoveryRelaysParams defines parameters for ListDiscoveryRelays.
 type ListDiscoveryRelaysParams struct {
 	// TraceId Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds.
@@ -4801,6 +4843,9 @@ type ClientInterface interface {
 	// IgnoreDevice request
 	IgnoreDevice(ctx context.Context, deviceId Ulid, params *IgnoreDeviceParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ListDiscoveryEngineState request
+	ListDiscoveryEngineState(ctx context.Context, params *ListDiscoveryEngineStateParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListDiscoveryRelays request
 	ListDiscoveryRelays(ctx context.Context, params *ListDiscoveryRelaysParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -5856,6 +5901,18 @@ func (c *Client) UnignoreDevice(ctx context.Context, deviceId Ulid, params *Unig
 
 func (c *Client) IgnoreDevice(ctx context.Context, deviceId Ulid, params *IgnoreDeviceParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewIgnoreDeviceRequest(c.Server, deviceId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListDiscoveryEngineState(ctx context.Context, params *ListDiscoveryEngineStateParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListDiscoveryEngineStateRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -9967,6 +10024,48 @@ func NewIgnoreDeviceRequest(server string, deviceId Ulid, params *IgnoreDevicePa
 			}
 
 			req.Header.Set("Trace-Id", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewListDiscoveryEngineStateRequest generates requests for ListDiscoveryEngineState
+func NewListDiscoveryEngineStateRequest(server string, params *ListDiscoveryEngineStateParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/discovery/engine-state")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.TraceId != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Trace-Id", *params.TraceId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Trace-Id", headerParam0)
 		}
 
 	}
@@ -15212,6 +15311,9 @@ type ClientWithResponsesInterface interface {
 	// IgnoreDeviceWithResponse request
 	IgnoreDeviceWithResponse(ctx context.Context, deviceId Ulid, params *IgnoreDeviceParams, reqEditors ...RequestEditorFn) (*IgnoreDeviceResponse, error)
 
+	// ListDiscoveryEngineStateWithResponse request
+	ListDiscoveryEngineStateWithResponse(ctx context.Context, params *ListDiscoveryEngineStateParams, reqEditors ...RequestEditorFn) (*ListDiscoveryEngineStateResponse, error)
+
 	// ListDiscoveryRelaysWithResponse request
 	ListDiscoveryRelaysWithResponse(ctx context.Context, params *ListDiscoveryRelaysParams, reqEditors ...RequestEditorFn) (*ListDiscoveryRelaysResponse, error)
 
@@ -17065,6 +17167,40 @@ func (r IgnoreDeviceResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r IgnoreDeviceResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ListDiscoveryEngineStateResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *struct {
+		Engines []DiscoveryEngineState `json:"engines"`
+	}
+	ApplicationproblemJSON401 *Unauthorized
+	ApplicationproblemJSON403 *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ListDiscoveryEngineStateResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListDiscoveryEngineStateResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListDiscoveryEngineStateResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -20199,6 +20335,15 @@ func (c *ClientWithResponses) IgnoreDeviceWithResponse(ctx context.Context, devi
 		return nil, err
 	}
 	return ParseIgnoreDeviceResponse(rsp)
+}
+
+// ListDiscoveryEngineStateWithResponse request returning *ListDiscoveryEngineStateResponse
+func (c *ClientWithResponses) ListDiscoveryEngineStateWithResponse(ctx context.Context, params *ListDiscoveryEngineStateParams, reqEditors ...RequestEditorFn) (*ListDiscoveryEngineStateResponse, error) {
+	rsp, err := c.ListDiscoveryEngineState(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListDiscoveryEngineStateResponse(rsp)
 }
 
 // ListDiscoveryRelaysWithResponse request returning *ListDiscoveryRelaysResponse
@@ -23461,6 +23606,48 @@ func ParseIgnoreDeviceResponse(rsp *http.Response) (*IgnoreDeviceResponse, error
 			return nil, err
 		}
 		response.ApplicationproblemJSON429 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListDiscoveryEngineStateResponse parses an HTTP response from a ListDiscoveryEngineStateWithResponse call
+func ParseListDiscoveryEngineStateResponse(rsp *http.Response) (*ListDiscoveryEngineStateResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListDiscoveryEngineStateResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest struct {
+			Engines []DiscoveryEngineState `json:"engines"`
+		}
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
 
 	}
 

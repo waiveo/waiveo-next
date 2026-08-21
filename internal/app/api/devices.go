@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/devices"
+	"github.com/maaxton/waiveo-next/internal/app/enginestate"
 	"github.com/maaxton/waiveo-next/internal/app/scanstatus"
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	feederrelayconn "github.com/maaxton/waiveo-next/internal/feeder/relayconn"
@@ -97,6 +98,7 @@ func (srv *server) mountDevicePlane(rt *router) {
 	rt.HandleFunc("GET "+apiPrefix+"/discovery/relays", srv.getDiscoveryRelays)
 	rt.HandleFunc("POST "+apiPrefix+"/discovery/scan", srv.startDiscoveryScan)
 	rt.HandleFunc("GET "+apiPrefix+"/discovery/scan-status", srv.getDiscoveryScanStatus)
+	rt.HandleFunc("GET "+apiPrefix+"/discovery/engine-state", srv.getDiscoveryEngineState)
 }
 
 // getDiscoveryRelays reports the connected relays to any authenticated operator
@@ -133,6 +135,31 @@ func (srv *server) getDiscoveryScanStatus(w http.ResponseWriter, r *http.Request
 		out = srv.scanStatus.Statuses()
 	}
 	writeJSONValue(w, http.StatusOK, map[string]any{"scans": out})
+}
+
+// getDiscoveryEngineState reports what each relay's discovery engine is watching
+// for — the answer to "is discovery actually looking for anything", which
+// neither the device list nor the relay-connected list can give.
+//
+// The three surfaces are complementary and none substitutes for another. A relay
+// can be CONNECTED (/discovery/relays), not scanning (/discovery/scan-status is
+// about active sweeps), and watching for nothing at all — in which case the
+// passive lanes will surface no device however long an operator waits, while
+// every other signal on the page reads healthy. Until this route existed those
+// numbers were computed by the relay and written only to its own journal, so the
+// condition was diagnosable over SSH and nowhere else.
+//
+// A relay that has never reported is ABSENT rather than listed with zeroes:
+// zeroes here mean "watching for nothing", which is a real alarm, and minting
+// them for a silent relay would raise a false one. Operator-readable for the
+// same reason its two neighbours are — it depends on no scope node, so it
+// answers even when the owner surface cannot.
+func (srv *server) getDiscoveryEngineState(w http.ResponseWriter, r *http.Request) {
+	out := []enginestate.State{}
+	if srv.engineState != nil {
+		out = srv.engineState.States()
+	}
+	writeJSONValue(w, http.StatusOK, map[string]any{"engines": out})
 }
 
 // discoveryScanRequest is the openapi DiscoveryScanRequest body. Every member is

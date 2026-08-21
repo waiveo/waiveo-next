@@ -3,7 +3,7 @@ import { Link } from "react-router";
 import { ChevronDown, ChevronRight, Cpu, EyeOff, MonitorPlay, Network, Radio } from "lucide-react";
 import { StatCard, StatusBadge, type Status } from "@/components/kit";
 import { formatAge } from "@/lib/format-age";
-import type { DiscoveryScanStatus, RelayHealth } from "@/api";
+import type { DiscoveryEngineState, DiscoveryScanStatus, RelayHealth } from "@/api";
 import {
   MISSING_DEVICE_REASONS,
   type Discovery,
@@ -63,6 +63,66 @@ function describeScan(status: DiscoveryScanStatus | undefined): string {
   return `last swept ${formatAge(Math.max(0, Date.now() - status.finished_at))} ago`;
 }
 
+/** What a relay's PASSIVE discovery engine is watching for, as one short phrase.
+ *
+ * This is the third leg of "is discovery actually running", and the only one
+ * that can answer it in the negative. A relay can be CONNECTED (the row above),
+ * idle rather than mid-sweep (`describeScan`), and watching for absolutely
+ * nothing — in which case the passive lanes will surface no device however long
+ * an operator waits, while every other signal on this page reads healthy. The
+ * relay has always computed these numbers; until `discovery.engine_state` they
+ * went only to its own journal, so this condition was diagnosable over SSH and
+ * nowhere else.
+ *
+ * `undefined` means this relay has reported no engine state at all — distinct
+ * from reporting zeroes, which is the alarm. `null` for the whole map means the
+ * read failed, which is the caller's distinction to make, exactly as for scans.
+ *
+ * Undeliverable declarations are named rather than folded into the watch count,
+ * because "the pack is wrong" and "this relay cannot deliver it here" have
+ * different owners and only one of them is the operator's problem. */
+function describeEngine(state: DiscoveryEngineState | undefined): string {
+  if (state === undefined) return "engine state not reported";
+  if (state.watching_nothing) {
+    // Say WHY it is watching nothing when the numbers can tell us. A relay with
+    // no declarations is an empty deployment; one whose declarations were all
+    // undeliverable is a misconfiguration, and they look identical at zero.
+    if (state.pack_patterns === 0) return "watching for nothing — no pack declares a device";
+    return `watching for nothing — all ${state.pack_patterns} declaration(s) undelivered`;
+  }
+  const lanes = [
+    state.ssdp_lane ? `${state.ssdp_watches} ssdp` : "ssdp off",
+    state.mdns_lane ? `${state.mdns_watches} mdns` : "mdns off",
+  ].join(", ");
+  const undelivered =
+    state.mdns_undeliverable + state.mac_oui_unimplemented + state.malformed;
+  return undelivered === 0 ? `watching ${lanes}` : `watching ${lanes} · ${undelivered} undelivered`;
+}
+
+/** The undelivered breakdown, for the title — each cause with its own owner.
+ *
+ * Deliberately a tooltip rather than a visible line: it is an explanation of a
+ * number already on screen, which is exactly what UIS-079 reserves hover text
+ * for, and the page must stay readable without it. */
+function undeliveredDetail(state: DiscoveryEngineState | undefined): string | undefined {
+  if (state === undefined) return undefined;
+  const parts: string[] = [];
+  if (state.mdns_undeliverable > 0) {
+    parts.push(
+      `${state.mdns_undeliverable} mDNS pattern(s) declared but this deployment never bound multicast — the deployment's call, not the pack's`,
+    );
+  }
+  if (state.mac_oui_unimplemented > 0) {
+    parts.push(
+      `${state.mac_oui_unimplemented} macOui pattern(s) — a valid match form no lane implements yet`,
+    );
+  }
+  if (state.malformed > 0) {
+    parts.push(`${state.malformed} pattern(s) failed to parse — a producer bug, not a transport fault`);
+  }
+  return parts.length === 0 ? undefined : parts.join("\n");
+}
+
 /** Discovery state → the kit's status vocabulary.
  *
  * `all-adopted` is `ok` and `searching` is `pending`, and the difference is the
@@ -102,6 +162,7 @@ export interface DiscoveryPanelProps {
    * read failed. Null is not an empty map: empty would say every connected relay
    * has reported no scan, and a failed read says this console does not know. */
   scanByRelay: Map<string, DiscoveryScanStatus> | null;
+  engineByRelay: Map<string, DiscoveryEngineState> | null;
   /** The installed extensions that teach device RECOGNITION, or `null` when the
    * pack registry could not be read. Empty is a real and consequential state —
    * every host found, none recognised — and only distinguishable from a failed
@@ -120,6 +181,7 @@ export function DiscoveryPanel({
   devicesByRelay,
   entityCount,
   scanByRelay,
+  engineByRelay,
   recognizers,
   scanOwners,
 }: DiscoveryPanelProps) {
@@ -257,6 +319,24 @@ export function DiscoveryPanel({
                     {scanByRelay === null
                       ? "scan state unavailable"
                       : describeScan(scanByRelay.get(relay.relay_id))}
+                  </span>
+                  <span
+                    data-slot="relay-engine-state"
+                    className="text-muted-foreground"
+                    {...(engineByRelay === null
+                      ? {}
+                      : (() => {
+                          const detail = undeliveredDetail(engineByRelay.get(relay.relay_id));
+                          return detail === undefined ? {} : { title: detail };
+                        })())}
+                  >
+                    {/* Same explicit null check as the scan cell beside it, for
+                        the same reason: `?.` would hand describeEngine an
+                        undefined and render "not reported", turning a read this
+                        console was refused into a claim about the relay. */}
+                    {engineByRelay === null
+                      ? "engine state unavailable"
+                      : describeEngine(engineByRelay.get(relay.relay_id))}
                   </span>
                 </li>
               ))}

@@ -153,8 +153,17 @@ func foldMDNSKey(w mdns.Watch) string {
 // whole live set at the moment it changes, so it tells the store, which drops
 // every fan-out no live declaration still authors.
 //
-// candStore may be nil in tests that only exercise the watch merge.
-func discoveryWatchApplier(disc *discovery.Discoverer, mdnsL *mdns.Listener, candStore *deviceplane.Store, builtinSSDP []discovery.Watch, builtinMDNS []mdns.Watch) func(wire.DeviceInventory) {
+// # IT ALSO REPORTS WHAT IT APPLIED
+//
+// The same numbers this hook logs are pushed up as `discovery.engine_state`
+// (enginestate.go). They are computed here and nowhere else, because this is the
+// only place that knows both what the generation DECLARED and what each lane
+// actually took — the difference between the two being the entire diagnostic.
+// Reporting from the log site rather than recomputing elsewhere is what keeps
+// the journal line and the console strip from ever disagreeing.
+//
+// candStore and rep may be nil in tests that only exercise the watch merge.
+func discoveryWatchApplier(disc *discovery.Discoverer, mdnsL *mdns.Listener, candStore *deviceplane.Store, builtinSSDP []discovery.Watch, builtinMDNS []mdns.Watch, rep *engineStateReporter) func(wire.DeviceInventory) {
 	return func(inv wire.DeviceInventory) {
 		ssdpW, mdnsW, macOui, malformed := patternWatchSets(inv.PackMatchPatterns)
 		nSSDP, nMDNS := 0, 0
@@ -203,5 +212,20 @@ func discoveryWatchApplier(disc *discovery.Discoverer, mdnsL *mdns.Listener, can
 		}
 		log.Printf("waiveo-relay discovery watches: %d ssdp, %d mdns live (%d pack pattern(s); %d mdns undeliverable — lane off, %d macOui not yet implemented, %d malformed)",
 			nSSDP, nMDNS, len(inv.PackMatchPatterns), undeliveredMDNS, macOui, malformed)
+
+		// The same six numbers, plus which lanes are running — because a zero
+		// count means two different things depending on that, and the log line
+		// could rely on a human reading the surrounding text where a wire member
+		// cannot (see DiscoveryEngineStateBody).
+		rep.record(wire.DiscoveryEngineStateBody{
+			SSDPLane:            disc != nil,
+			MDNSLane:            mdnsL != nil,
+			SSDPWatches:         nSSDP,
+			MDNSWatches:         nMDNS,
+			PackPatterns:        len(inv.PackMatchPatterns),
+			MDNSUndeliverable:   undeliveredMDNS,
+			MacOUIUnimplemented: macOui,
+			Malformed:           malformed,
+		})
 	}
 }

@@ -830,6 +830,34 @@ func (c *Client) SendDiscoveryScanStatus(body wire.DiscoveryScanStatusBody) erro
 	return nil
 }
 
+// SendDiscoveryEngineState reports this relay's discovery watch set upward
+// (`discovery.engine_state`). Unsolicited and fire-and-forget, like the other
+// two upward reports.
+//
+// It is sent at TWO moments, and the second is what makes it usable:
+//
+//  1. when a desired-state generation applies, because that is the only time the
+//     watch set can change; and
+//  2. on CONNECT, re-sending the last computed state.
+//
+// Without (2) the app's view would be empty until the next pack install — a
+// relay that has been happily watching for hours would report nothing after
+// either peer restarted, and the console would show "no engine state" for a
+// perfectly healthy relay. Configuration state differs from activity state
+// exactly here: a scan that is not running is genuinely nothing to say, whereas
+// a watch set is always current and always worth re-stating to a peer that has
+// not heard it.
+func (c *Client) SendDiscoveryEngineState(body wire.DiscoveryEngineStateBody) error {
+	f, err := wire.NewFrame(wire.FrameTypeDiscoveryEngineState, ulid.New(), c.relayID, body)
+	if err != nil {
+		return fmt.Errorf("relayconn: SendDiscoveryEngineState: %w", err)
+	}
+	if err := c.send(f); err != nil {
+		return fmt.Errorf("relayconn: SendDiscoveryEngineState: send: %w", err)
+	}
+	return nil
+}
+
 // SendPairingRedeemed reports one pairing-grant redemption this relay performed
 // upstream (REL-124), as REL-124a's `pairing.redeemed {grant_id, redeemed_at}`.
 //
