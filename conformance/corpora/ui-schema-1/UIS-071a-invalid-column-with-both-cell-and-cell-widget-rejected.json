@@ -1,0 +1,56 @@
+{
+  "case_id": "UIS-071a-invalid-column-with-both-cell-and-cell-widget-rejected",
+  "contract": "ui-schema/1",
+  "req_ids": [
+    "UIS-071a"
+  ],
+  "description": "A table column declaring BOTH `cell` and `cellWidget` is rejected as WIDGET_PROP_UNKNOWN naming `cellWidget`. The two keys select mutually exclusive column shapes, so a host must never silently pick one and render the other's declaration as dead text \u2014 an author who wrote both has two different renderings in mind and is owed the refusal.",
+  "input": {
+    "pageType": "list-detail",
+    "list": {
+      "source": "devices",
+      "display": {
+        "type": "table",
+        "props": {
+          "source": "devices",
+          "columns": [
+            {
+              "headerMsg": "msg:devices.list.name",
+              "cell": "item.name"
+            },
+            {
+              "headerMsg": "msg:devices.list.status",
+              "cell": "item.status",
+              "cellWidget": {
+                "type": "badge",
+                "props": {
+                  "value": "item.status"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "detail": {
+      "source": "devices[id=$ui.selected]",
+      "emptyMsg": "msg:devices.detail.empty",
+      "root": {
+        "type": "text",
+        "props": {
+          "value": "id"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      {
+        "code": "WIDGET_PROP_UNKNOWN",
+        "field": "list.display.props.columns[1].cellWidget",
+        "message": "a table column declaring `cell` may not also declare `cellWidget` (UIS-071a)"
+      }
+    ]
+  }
+}

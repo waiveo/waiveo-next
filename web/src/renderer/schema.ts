@@ -329,14 +329,26 @@ export const WIDGET_CATALOG: Record<string, WidgetSpec> = {
     // `announce` (UIS-077) makes the node an ARIA live region so text that lands
     // after the page has been read — an ActionOutcome's refusal sentence, most of
     // all — is announced rather than silently painted.
-    props: { value: req("bindingExpr"), announce: p("enum") },
+    // `titleMsg` (UIS-079) is the explanatory hover text a three-state cell needs
+    // to be distinguishable rather than decorative.
+    props: { value: req("bindingExpr"), announce: p("enum"), titleMsg: p("msg") },
     events: {},
   },
   badge: {
     category: "display",
     children: false,
     bind: "none",
-    props: { value: req("bindingExpr"), tone: p("enum") },
+    // `tone` stays the STATIC enum it has always been and `toneFrom` (UIS-078) is
+    // its dynamic sibling, rather than `tone` itself widening to a BindingExpr: a
+    // bare string is a Binding PATH in that grammar (UIS-108), so widening would
+    // silently reinterpret every existing `tone: "warning"` as a lookup of a field
+    // named `warning` and paint the fallback tone on every badge already shipped.
+    props: {
+      value: req("bindingExpr"),
+      tone: p("enum"),
+      toneFrom: p("bindingExpr"),
+      titleMsg: p("msg"),
+    },
     events: {},
   },
   table: {
@@ -350,7 +362,7 @@ export const WIDGET_CATALOG: Record<string, WidgetSpec> = {
     category: "display",
     children: false,
     bind: "none",
-    props: { labelMsg: req("msg"), value: req("bindingExpr"), tone: p("enum") },
+    props: { labelMsg: req("msg"), value: req("bindingExpr"), tone: p("enum"), titleMsg: p("msg") },
     events: {},
   },
   "text-input": {

@@ -615,19 +615,43 @@ function validatePropByKind(def: PropDef, value: unknown, path: string, ctx: Ctx
       });
       break;
     case "columns":
-      // UIS-070: a non-empty array of {headerMsg, cell} — `cell` a BindingExpr per row.
+      // UIS-070/071a: a non-empty array of columns. A column declares EXACTLY ONE
+      // of `cell` (a BindingExpr rendered as a value) or `cellWidget` (a widget
+      // subtree rendered per row, `item` in scope) — never both, never neither.
+      // A `cellWidget` column MAY add `cellValue`, the scalar it contributes for
+      // sorting and search, which a rendered subtree cannot supply on its own.
       if (!Array.isArray(value) || value.length === 0) {
-        fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", path, "table.columns must be a non-empty array of {headerMsg, cell} (UIS-070)");
+        fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", path, "table.columns must be a non-empty array of {headerMsg, cell|cellWidget} (UIS-070/071a)");
         break;
       }
       value.forEach((col, i) => {
         if (!isObject(col) || !("headerMsg" in col)) {
           fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", `${path}[${i}].headerMsg`, "a table column must declare `headerMsg` (UIS-070)");
         }
-        if (!isObject(col) || !("cell" in col)) {
-          fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", `${path}[${i}].cell`, "a table column must declare `cell` (UIS-070)");
-        } else {
-          validateBindingExpr(col.cell, `${path}[${i}].cell`, ctx);
+        const hasCell = isObject(col) && "cell" in col && col.cell !== undefined;
+        const hasWidget = isObject(col) && "cellWidget" in col && col.cellWidget !== undefined;
+        if (!hasCell && !hasWidget) {
+          fail(ctx, "WIDGET_REQUIRED_FIELD_MISSING", `${path}[${i}].cell`, "a table column must declare `cell` or `cellWidget` (UIS-070/071a)");
+          return;
+        }
+        if (hasCell && hasWidget) {
+          // The two keys select mutually exclusive column shapes, so in a `cell`
+          // column `cellWidget` is a key the shape does not declare (UIS-071a).
+          fail(ctx, "WIDGET_PROP_UNKNOWN", `${path}[${i}].cellWidget`, "a table column declaring `cell` may not also declare `cellWidget` (UIS-071a)");
+          return;
+        }
+        if (hasCell) {
+          validateBindingExpr((col as { cell: unknown }).cell, `${path}[${i}].cell`, ctx);
+          if (isObject(col) && "cellValue" in col && col.cellValue !== undefined) {
+            // `cellValue` exists to give a rendered SUBTREE a sort/search key; a
+            // `cell` column's own BindingExpr already is one (UIS-071a).
+            fail(ctx, "WIDGET_PROP_UNKNOWN", `${path}[${i}].cellValue`, "`cellValue` belongs to a `cellWidget` column (UIS-071a)");
+          }
+          return;
+        }
+        validateWidget((col as { cellWidget: unknown }).cellWidget, `${path}[${i}].cellWidget`, ctx);
+        if (isObject(col) && "cellValue" in col && col.cellValue !== undefined) {
+          validateBindingExpr(col.cellValue, `${path}[${i}].cellValue`, ctx);
         }
       });
       break;

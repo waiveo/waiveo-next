@@ -1,0 +1,89 @@
+{
+  "case_id": "UIS-071a-valid-decision-column-with-widget-cell",
+  "contract": "ui-schema/1",
+  "req_ids": [
+    "UIS-071",
+    "UIS-071a",
+    "UIS-078",
+    "UIS-079"
+  ],
+  "description": "A device-inventory table expressing the three constructs that were not authorable in ui-schema/1 before v1.2: a decision column whose cellWidget is a button carrying the row's item to its verb, a status column whose cellWidget is a badge taking its tone per row from toneFrom, and a three-state column whose text carries the titleMsg explaining what the state means. The widget columns declare cellValue so the fleet stays sortable and searchable by a column whose rendering is a subtree.",
+  "input": {
+    "pageType": "list-detail",
+    "list": {
+      "source": "devices",
+      "display": {
+        "type": "table",
+        "props": {
+          "source": "devices",
+          "columns": [
+            {
+              "headerMsg": "msg:devices.list.name",
+              "cell": "item.name"
+            },
+            {
+              "headerMsg": "msg:devices.list.status",
+              "cellValue": "item.status",
+              "cellWidget": {
+                "type": "badge",
+                "props": {
+                  "value": "item.status",
+                  "toneFrom": "item.status_tone",
+                  "titleMsg": "msg:devices.list.statusHelp"
+                }
+              }
+            },
+            {
+              "headerMsg": "msg:devices.list.ports",
+              "cellValue": "item.ports_search",
+              "cellWidget": {
+                "type": "text",
+                "props": {
+                  "value": "item.ports_label",
+                  "titleMsg": "msg:devices.list.portsHelp"
+                }
+              }
+            },
+            {
+              "headerMsg": "msg:devices.list.decision",
+              "cellWidget": {
+                "type": "button",
+                "props": {
+                  "labelMsg": "msg:devices.list.adopt",
+                  "disabledIf": "item.adopted"
+                },
+                "on": {
+                  "press": {
+                    "verb": "call-action",
+                    "action": "adopt-device",
+                    "params": {
+                      "device_id": "item.id"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "detail": {
+      "source": "devices[id=$ui.selected]",
+      "emptyMsg": "msg:devices.detail.empty",
+      "root": {
+        "type": "section",
+        "children": [
+          {
+            "type": "text",
+            "props": {
+              "value": "id"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "expected": {
+    "valid": true
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "case_id": "UIS-071a-invalid-cell-value-on-a-value-column-rejected",
+  "contract": "ui-schema/1",
+  "req_ids": [
+    "UIS-071a"
+  ],
+  "description": "A `cell` column declaring `cellValue` is rejected as WIDGET_PROP_UNKNOWN. `cellValue` exists to give a rendered SUBTREE the scalar it cannot supply for sorting and search; on a `cell` column the BindingExpr already is that scalar, so a second one is a second answer to a settled question and would silently decide which of the two orders the column.",
+  "input": {
+    "pageType": "list-detail",
+    "list": {
+      "source": "devices",
+      "display": {
+        "type": "table",
+        "props": {
+          "source": "devices",
+          "columns": [
+            {
+              "headerMsg": "msg:devices.list.name",
+              "cell": "item.name"
+            },
+            {
+              "headerMsg": "msg:devices.list.status",
+              "cell": "item.status",
+              "cellValue": "item.status_rank"
+            }
+          ]
+        }
+      }
+    },
+    "detail": {
+      "source": "devices[id=$ui.selected]",
+      "emptyMsg": "msg:devices.detail.empty",
+      "root": {
+        "type": "text",
+        "props": {
+          "value": "id"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      {
+        "code": "WIDGET_PROP_UNKNOWN",
+        "field": "list.display.props.columns[1].cellValue",
+        "message": "`cellValue` belongs to a `cellWidget` column (UIS-071a)"
+      }
+    ]
+  }
+}
