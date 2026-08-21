@@ -3,7 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
+	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/feeder/contentgc"
@@ -44,7 +48,7 @@ func newContentSweeper(st *store.Store, contentStore *origin.Store, fleet conten
 // disk usage keep growing — which is the state the box was already in before this
 // existed. There is no failure mode of this loop that removes content it should
 // not have; the guards that prevent that live inside the pass, not here.
-func runContentSweep(ctx context.Context, sweeper *contentgc.Sweeper) {
+func runContentSweep(ctx context.Context, sweeper *contentgc.Sweeper, reporter *sweepReporter) {
 	res, err := sweeper.Sweep(ctx)
 	if err != nil {
 		log.Printf("waiveo-feeder: WARNING — the content retention sweep failed: %v (nothing was reclaimed)", err)
@@ -83,6 +87,81 @@ func runContentSweep(ctx context.Context, sweeper *contentgc.Sweeper) {
 		log.Printf("waiveo-feeder: the content retention sweep reclaimed nothing: %d unreferenced asset(s) are held because an enrolled relay is not connected, so this feeder cannot tell which desired-state generation the fleet is serving",
 			res.Retained[contentgc.ReasonFleetNotConverged])
 	}
+	reporter.report(res)
+}
+
+// sweepReporter says what a sweep DID on the passes where it did nothing.
+//
+// Before this, a sweep that reclaimed nothing logged nothing at all — and one
+// retention reason (fleet-not-converged) was the sole exception. Seven days of
+// silence on a real box was therefore indistinguishable between three very
+// different states: the sweep correctly retaining, the sweep wrongly retaining,
+// and the sweep not running. Every fact needed to tell them apart is already in
+// Result and was being discarded.
+//
+// REPORTED ON CHANGE, NOT ON CADENCE. The sweep runs hourly and a steady box has
+// the same answer every hour, so logging each pass would add twenty-four
+// identical lines a day and bury the pass where something moved — which is how a
+// log stops being read. A summary that repeats its predecessor is dropped, so
+// the record reads as "this is the state, and here is each moment it changed".
+//
+// The first pass after start always reports, because "unchanged since a value
+// nobody has seen" is not a thing an operator can act on.
+type sweepReporter struct {
+	last string
+	seen bool
+	// logf is the sink, injectable ONLY so a test can observe that a line was
+	// emitted. An earlier version of this test inferred "was it logged" from the
+	// reporter's own fields, which meant a build with the change detection
+	// deleted still passed — the test was describing its own closure rather than
+	// this type's behaviour. Nil takes log.Printf, so production has one path.
+	logf func(string, ...any)
+}
+
+// report logs one line when this pass's summary differs from the last.
+//
+// Scanned == 0 is deliberately still reported once: an origin holding no assets
+// at all is a legitimate steady state, and saying it once is what distinguishes
+// it from a sweep that is not running.
+func (r *sweepReporter) report(res contentgc.Result) {
+	summary := summarizeSweep(res)
+	if r.seen && summary == r.last {
+		return
+	}
+	r.last, r.seen = summary, true
+	emit := r.logf
+	if emit == nil {
+		emit = log.Printf
+	}
+	emit("waiveo-feeder: content retention sweep: %s", summary)
+}
+
+// summarizeSweep renders one pass in the terms an operator needs: what it looked
+// at, what it took, and — the part that was missing — WHY it kept the rest.
+//
+// The retention reasons are sorted so two passes with the same outcome produce
+// byte-identical summaries; an unordered map range would defeat the change
+// detection above by making every pass look new.
+func summarizeSweep(res contentgc.Result) string {
+	reasons := make([]string, 0, len(res.Retained))
+	for reason, n := range res.Retained {
+		if n > 0 {
+			reasons = append(reasons, fmt.Sprintf("%s=%d", reason, n))
+		}
+	}
+	sort.Strings(reasons)
+	held := "nothing held"
+	if len(reasons) > 0 {
+		held = "held " + strings.Join(reasons, " ")
+	}
+	fleet := "fleet at generation " + strconv.FormatInt(res.Generation, 10)
+	if !res.FleetKnown {
+		fleet = "fleet generation UNKNOWN"
+	} else if !res.FleetConverged {
+		fleet = "fleet not converged on generation " + strconv.FormatInt(res.Generation, 10)
+	}
+	return fmt.Sprintf("scanned %d, reclaimed %d (%d bytes), %s, %s, from %d asset-bearing row(s)",
+		res.Scanned, res.Reclaimed, res.ReclaimedBytes, held, fleet, res.SourceRows)
 }
 
 // contentSweepFleetFloor answers, for the content retention sweep, "what is the

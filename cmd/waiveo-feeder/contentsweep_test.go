@@ -169,7 +169,7 @@ func TestContentSweepFailureReclaimsNothing(t *testing.T) {
 		t.Fatalf("contentgc.New: %v", err)
 	}
 
-	runContentSweep(context.Background(), sweeper)
+	runContentSweep(context.Background(), sweeper, &sweepReporter{})
 
 	if _, err := os.Stat(filepath.Join(dir, strings.TrimPrefix(ref, "sha256:"))); err != nil {
 		t.Fatalf("an asset was reclaimed by a sweep that could not read the reference set: %v", err)
@@ -317,9 +317,9 @@ func captureLog(t *testing.T, fn func()) string {
 func TestReclaimingFromAZeroRowReferenceSetIsReported(t *testing.T) {
 	sweeper, age := reclaimAllSweeper(t, zeroRowRefs{})
 	out := captureLog(t, func() {
-		runContentSweep(context.Background(), sweeper) // marks
+		runContentSweep(context.Background(), sweeper, &sweepReporter{}) // marks
 		age()
-		runContentSweep(context.Background(), sweeper) // reclaims
+		runContentSweep(context.Background(), sweeper, &sweepReporter{}) // reclaims
 	})
 
 	if !strings.Contains(out, "reclaimed") {
@@ -338,9 +338,9 @@ func TestReclaimingFromAZeroRowReferenceSetIsReported(t *testing.T) {
 func TestReclaimingFromANonEmptyReferenceSetIsNotReported(t *testing.T) {
 	sweeper, age := reclaimAllSweeper(t, oneRowRefs{})
 	out := captureLog(t, func() {
-		runContentSweep(context.Background(), sweeper)
+		runContentSweep(context.Background(), sweeper, &sweepReporter{})
 		age()
-		runContentSweep(context.Background(), sweeper)
+		runContentSweep(context.Background(), sweeper, &sweepReporter{})
 	})
 
 	if !strings.Contains(out, "reclaimed") {

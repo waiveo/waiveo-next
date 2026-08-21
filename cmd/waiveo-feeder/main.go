@@ -2548,6 +2548,9 @@ func main() {
 	// The three arms are independent: one failing must not skip the others, which
 	// is why no arm short-circuits the loop iteration.
 	retentionSweep := time.NewTicker(retentionSweepInterval)
+	// One reporter across every pass, so the content sweep can report on CHANGE
+	// rather than on cadence — see sweepReporter.
+	contentSweepReporter := &sweepReporter{}
 	go func() {
 		for range retentionSweep.C {
 			if pruned, err := eventLog.Prune(); err != nil {
@@ -2560,7 +2563,7 @@ func main() {
 			} else if n > 0 {
 				log.Printf("waiveo-feeder: retired %d abandoned second-factor enrollment(s) past their window", n)
 			}
-			runContentSweep(ctx, contentSweeper)
+			runContentSweep(ctx, contentSweeper, contentSweepReporter)
 		}
 	}()
 
