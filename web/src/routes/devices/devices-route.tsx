@@ -17,6 +17,7 @@ import {
   createApi,
   deviceFacts,
   type Device,
+  type DiscoveryEngineState,
   type DiscoveryScanStatus,
   type Entity,
   type Pack,
@@ -296,6 +297,7 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
   // connected relay reported no scan, and a failure says this console does not
   // know. Only the first is the page's to assert.
   const [scans, setScans] = useState<DiscoveryScanStatus[] | null>(null);
+  const [engines, setEngines] = useState<DiscoveryEngineState[] | null>(null);
   const [dialog, setDialog] = useState<Dialog>({ kind: "closed" });
   const [busy, setBusy] = useState(false);
   // The device whose entities the lower table is narrowed to; null shows every
@@ -336,6 +338,12 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
       .scanStatus()
       .then(setScans)
       .catch(() => setScans(null));
+    // And what each relay is WATCHING for. Same never-fatal treatment: an
+    // operator who cannot read the engine state must still get the device list.
+    void client.diagnostics
+      .engineState()
+      .then(setEngines)
+      .catch(() => setEngines(null));
     try {
       const [deviceRows, entityRows] = await Promise.all([
         collectPages<Device>((cursor) => client.devices.list({ cursor })),
@@ -393,6 +401,15 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
   const scanByRelay = useMemo(
     () => (scans === null ? null : new Map(scans.map((s) => [s.relay_id, s] as const))),
     [scans],
+  );
+
+  /** Engine state by relay id, preserving the same null-vs-empty distinction:
+   * a failed read stays null to the panel rather than becoming an empty map,
+   * which would render every relay as "not reported" — a claim about the relays
+   * rather than about the read. */
+  const engineByRelay = useMemo(
+    () => (engines === null ? null : new Map(engines.map((e) => [e.relay_id, e] as const))),
+    [engines],
   );
 
   const deviceNames = useMemo(
@@ -697,6 +714,7 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
           devicesByRelay={devicesByRelay}
           entityCount={entities.length}
           scanByRelay={scanByRelay}
+          engineByRelay={engineByRelay}
           recognizers={packs === null ? null : deviceRecognizers(packs)}
           scanOwners={packs === null ? null : scanOwners(packs)}
         />

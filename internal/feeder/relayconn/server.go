@@ -240,12 +240,29 @@ type DiscoveryScanStatusSink interface {
 	ApplyDiscoveryScanStatus(relayID string, status wire.DiscoveryScanStatusBody)
 }
 
+// DiscoveryEngineStateSink receives one relay's `discovery.engine_state` report —
+// what its discovery engine is watching for right now
+// (wire.DiscoveryEngineStateBody). Reported when a generation applies and
+// re-stated on connect, so a relay whose packs have not changed still tells a
+// reconnecting app peer what it is watching.
+type DiscoveryEngineStateSink interface {
+	ApplyDiscoveryEngineState(relayID string, state wire.DiscoveryEngineStateBody)
+}
+
 // WithDiscoveryScanStatusSink wires the intake for those reports. Optional, with
 // the same accepted-and-dropped degrade the other sinks document: a deployment
 // that wires none is conformant and simply shows no scan state.
 func WithDiscoveryScanStatusSink(sink DiscoveryScanStatusSink) Option {
 	return func(s *Server) {
 		s.scanStatus = sink
+	}
+}
+
+// WithDiscoveryEngineStateSink wires the intake for engine-state reports. Same
+// optional, accepted-and-dropped degrade as the sinks above.
+func WithDiscoveryEngineStateSink(sink DiscoveryEngineStateSink) Option {
+	return func(s *Server) {
+		s.engineState = sink
 	}
 }
 
@@ -272,6 +289,7 @@ type Server struct {
 	redemptions        RedemptionSink
 	screenStatus       ScreenStatusSink
 	scanStatus         DiscoveryScanStatusSink
+	engineState        DiscoveryEngineStateSink
 	screenStatusNow    func() int64
 	site               hello.SiteBinding
 	implementedMinors  []string
@@ -974,6 +992,10 @@ func (s *Server) serve(req *http.Request, ws *websocket.Conn) {
 			if err := s.handleDiscoveryScanStatus(conn, f, relayID); err != nil {
 				return
 			}
+		case wire.FrameTypeDiscoveryEngineState:
+			if err := s.handleDiscoveryEngineState(conn, f, relayID); err != nil {
+				return
+			}
 		case wire.FrameTypePairingRedeemed:
 			if err := s.handlePairingRedeemed(conn, f, relayID); err != nil {
 				return
@@ -1062,6 +1084,23 @@ func (s *Server) handleDiscoveryScanStatus(conn *serverConn, f wire.Frame, relay
 		return nil // no read model wired: accepted and dropped (REL-004)
 	}
 	s.scanStatus.ApplyDiscoveryScanStatus(relayID, body)
+	return nil
+}
+
+// handleDiscoveryEngineState records one relay's discovery watch set. Same
+// posture as its scan-status sibling: descriptive members only, nothing to
+// validate beyond decoding, filed under the AUTHENTICATED connection identity
+// rather than anything the frame asserts.
+func (s *Server) handleDiscoveryEngineState(conn *serverConn, f wire.Frame, relayID string) error {
+	var body wire.DiscoveryEngineStateBody
+	if err := f.DecodeBody(&body); err != nil {
+		return conn.send(wire.NewErrorFrame(f.ID, f.TraceID, relayID,
+			"MALFORMED_MESSAGE", "discovery.engine_state body did not decode"))
+	}
+	if s.engineState == nil {
+		return nil // no read model wired: accepted and dropped (REL-004)
+	}
+	s.engineState.ApplyDiscoveryEngineState(relayID, body)
 	return nil
 }
 

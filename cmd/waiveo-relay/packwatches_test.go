@@ -132,7 +132,7 @@ func TestDiscoveryWatchApplierInstallsAndForgets(t *testing.T) {
 	}
 	builtinSSDP := []discovery.Watch{{Match: deviceplane.Match{SSDP: testSSDPTarget}, Driver: rokuDriver, DeviceClass: mediaPlayerClass}}
 
-	apply := discoveryWatchApplier(disc, mdnsL, store, builtinSSDP, nil)
+	apply := discoveryWatchApplier(disc, mdnsL, store, builtinSSDP, nil, nil)
 
 	apply(wire.DeviceInventory{PackMatchPatterns: rawPatterns(t,
 		`{"deviceClass":"tv","match":[{"ssdp":"urn:acme:tv:1"},{"mdns":"_acme._tcp"}]}`,
@@ -157,19 +157,29 @@ func TestDiscoveryWatchApplierInstallsAndForgets(t *testing.T) {
 
 	// Nil lanes (discovery off) must not panic: the applier still runs for
 	// its log line.
-	discoveryWatchApplier(nil, nil, nil, nil, nil)(wire.DeviceInventory{})
+	discoveryWatchApplier(nil, nil, nil, nil, nil, nil)(wire.DeviceInventory{})
 }
 
 // main must WIRE the applier, or all of the above is a tested join nothing
 // drives — the exact shape that shipped pack patterns as a counted-but-inert
-// section in the first place. Two calls are load-bearing: the constructor
-// (with the lanes and both builtin sets), and the boot apply.
+// section in the first place. Three things are load-bearing: the constructor
+// (with the lanes, both builtin sets, and the engine-state reporter), the boot
+// apply, and the connect-time RESEND.
+//
+// The resend is asserted here and nowhere else, for the reason this file already
+// exists: REL-070 suppresses re-applying an unchanged generation, so a relay
+// whose packs have not changed reports its engine state exactly once per process
+// and never again. Drop `engineState.resend` from the connect hook and every
+// other test still passes — the frame is still sent, the registry still fills,
+// the console still renders — while a reconnecting relay silently leaves its app
+// peer with no engine state at all. That is a join nothing else drives.
 func TestMainWiresTheDiscoveryWatchApplier(t *testing.T) {
 	mainFn := parseRelayMainFunc(t)
 
-	wantArgs := []string{"disc", "mdnsListener", "candStore", "builtinSSDP", "builtinMDNS"}
+	wantArgs := []string{"disc", "mdnsListener", "candStore", "builtinSSDP", "builtinMDNS", "engineState"}
 	constructed := 0
 	bootApplies := 0
+	resends := 0
 	ast.Inspect(mainFn, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
@@ -190,11 +200,19 @@ func TestMainWiresTheDiscoveryWatchApplier(t *testing.T) {
 		if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "applyDiscoveryWatches" {
 			bootApplies++
 		}
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "resend" {
+			if recv, ok := sel.X.(*ast.Ident); ok && recv.Name == "engineState" {
+				resends++
+			}
+		}
 		return true
 	})
 
 	if constructed != 1 {
 		t.Fatalf("func main constructs discoveryWatchApplier %d time(s), want exactly 1 — unconstructed, every pack-declared pattern stays a counted-but-inert section (REL-064), which is exactly how this shipped before the join existed", constructed)
+	}
+	if resends != 1 {
+		t.Errorf("func main calls engineState.resend %d time(s), want exactly 1 — on connect (REL-117). Without it a relay whose generation has not changed never re-states its watch set, and a reconnecting app peer holds no engine state for a relay that has been watching correctly the whole time", resends)
 	}
 	if bootApplies < 2 {
 		t.Fatalf("func main calls applyDiscoveryWatches %d time(s), want >=2: once at boot (the boot generation's log line) and once inside the rePuller applyInventory hook (live applies) — missing either leaves half the lifecycle unwired", bootApplies)
@@ -220,7 +238,7 @@ func TestAnApplyRetiresTheFanOutOfAWatchItNoLongerDeclares(t *testing.T) {
 	if err != nil {
 		t.Fatalf("discovery.New: %v", err)
 	}
-	apply := discoveryWatchApplier(disc, nil, store, nil, nil)
+	apply := discoveryWatchApplier(disc, nil, store, nil, nil, nil)
 
 	// A pack declares an SSDP watch with a fan-out, and the lane observes a
 	// device through it.

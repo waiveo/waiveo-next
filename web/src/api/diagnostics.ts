@@ -43,6 +43,9 @@ export type StorageHealth = components["schemas"]["StorageHealth"];
 export type RelayHealth = components["schemas"]["RelayHealth"];
 /** One relay's scan-engine state (openapi DiscoveryScanStatus). */
 export type DiscoveryScanStatus = components["schemas"]["DiscoveryScanStatus"];
+/** One relay's discovery-ENGINE state (openapi DiscoveryEngineState) — what it
+ * is watching for, as opposed to what a scan is doing. */
+export type DiscoveryEngineState = components["schemas"]["DiscoveryEngineState"];
 export type ScreenHealth = components["schemas"]["ScreenHealth"];
 /** What a restart request was accepted AS — never a claim that it happened. */
 export type RestartAcceptance = components["schemas"]["RestartAcceptance"];
@@ -86,6 +89,15 @@ export interface DiagnosticsModule {
    * CONNECTED; a connected relay that stopped sweeping is indistinguishable
    * from one whose network is empty without this. */
   scanStatus(): Promise<DiscoveryScanStatus[]>;
+  /** What each relay's PASSIVE discovery engine is watching for.
+   *
+   * The third leg of the discovery-is-actually-running question, and the only
+   * one that can answer it in the negative. `relays()` says a relay is
+   * CONNECTED; `scanStatus()` says whether an active sweep is in flight. Neither
+   * can tell you that a connected, idle, perfectly healthy relay is watching for
+   * nothing at all — in which case the passive lanes surface no device however
+   * long an operator waits. */
+  engineState(): Promise<DiscoveryEngineState[]>;
   /** Ask this box to restart its application server (API-150).
    *
    * It resolves with an ACCEPTANCE, not a completion — the process is still
@@ -133,6 +145,10 @@ export function createDiagnosticsModule(client: ApiClient): DiagnosticsModule {
     async scanStatus() {
       const { data } = await client.read<{ scans: DiscoveryScanStatus[] }>("/discovery/scan-status");
       return data.scans;
+    },
+    async engineState() {
+      const { data } = await client.read<{ engines: DiscoveryEngineState[] }>("/discovery/engine-state");
+      return data.engines;
     },
     async restart() {
       // `action` carries an Idempotency-Key, which matters more here than

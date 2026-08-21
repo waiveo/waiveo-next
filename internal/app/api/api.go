@@ -108,7 +108,8 @@ type server struct {
 	// (internal/app/scanstatus). Optional with the same degrade: the route
 	// mounts either way and answers an empty list, which is what is true of a
 	// deployment no relay has reported scanning to.
-	scanStatus ScanStatusSource
+	scanStatus  ScanStatusSource
+	engineState EngineStateSource
 	// jobs executes the work an async operation accepts with 202 (jobrun.go).
 	// Always non-nil: New builds and starts one when the caller wires none, so
 	// an accepted Job is never a promise nothing is working on.

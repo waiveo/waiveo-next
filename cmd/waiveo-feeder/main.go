@@ -41,6 +41,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/api"
 	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/app/devices"
+	"github.com/maaxton/waiveo-next/internal/app/enginestate"
 	"github.com/maaxton/waiveo-next/internal/app/eventingest"
 	"github.com/maaxton/waiveo-next/internal/app/eventsse"
 	"github.com/maaxton/waiveo-next/internal/app/packrun"
@@ -1918,6 +1919,11 @@ func main() {
 	// The relays' scan-engine state (discovery.scan_status), so the console can
 	// tell "still sweeping" from "finished" from "never scanned".
 	scanStatusRegistry := scanstatus.New()
+	// The relays' discovery ENGINE state (discovery.engine_state), so the console
+	// can tell "watching for 7 patterns" from "watching for nothing" from "this
+	// relay has not said" — a distinction neither the device list nor the
+	// connected-relay list can make.
+	engineStateRegistry := enginestate.New(nowMs)
 
 	relayConnSrv := relayconn.New(
 		src.current,
@@ -1942,6 +1948,7 @@ func main() {
 		// the last report said.
 		relayconn.WithScreenStatusSink(screenRegistry, nowMs),
 		relayconn.WithDiscoveryScanStatusSink(scanStatusRegistry),
+		relayconn.WithDiscoveryEngineStateSink(engineStateRegistry),
 	)
 
 	idem := apihttp.NewIdempotencyStore(nowMs, 0)
@@ -2281,6 +2288,7 @@ func main() {
 		// have observed of them (parity row 5.8, api/screenstatus.go).
 		api.WithScreenStatus(screenRegistry),
 		api.WithScanStatus(scanStatusRegistry),
+		api.WithEngineState(engineStateRegistry),
 		api.WithPackTrust(packsig.FileAnchors{Path: cfg.packTrustPath}),
 		// The marketplace's ONE wiring seam (MKT-060/060a). Without this option
 		// srv.market stays nil, the installer is built with no registry, and every

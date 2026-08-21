@@ -395,6 +395,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/discovery/engine-state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What each relay's discovery engine is watching for
+         * @description Reports what each relay's PASSIVE discovery engine is currently set up to watch for: which lanes are running, how many watches each holds after the current desired-state generation applied, and what packs declared that could not be delivered.
+         *
+         *     This answers a question neither the device list nor `listDiscoveryRelays` can. A relay may be connected, not scanning, and watching for nothing at all — in which case the passive lanes will surface no device however long an operator waits, while every other signal reads healthy. The numbers were previously computed by the relay and written only to its own journal, so the condition was diagnosable over SSH and nowhere else.
+         *
+         *     Every count is present even at zero, and the lane booleans are what make a zero readable: `mdns_watches: 0` with `mdns_lane: true` means the generation declared no mDNS patterns, while the same zero with `mdns_lane: false` means this deployment never bound multicast at all. Those are different problems with different owners.
+         *
+         *     A relay that has never reported is ABSENT rather than listed with zeroes: zeroes mean "watching for nothing", which is a real alarm, and minting them for a silent relay would raise a false one. State is not persisted across a feeder restart, but unlike scan status it refills as soon as each relay reconnects, because a watch set is current configuration rather than an in-flight activity.
+         */
+        get: operations["listDiscoveryEngineState"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/discovery/relays": {
         parameters: {
             query?: never;
@@ -3273,6 +3299,33 @@ export interface components {
             /** @description Why the last scan ended badly, when it did. A scan that ran and found nothing leaves this empty — finding nothing is a result, not an error. */
             error?: string;
         };
+        /** @description One relay's reported discovery-engine state — what it is watching for, and what it was told to watch for but could not. */
+        DiscoveryEngineState: {
+            relay_id: components["schemas"]["RelayId"];
+            /** @description Whether the SSDP lane is running on this relay. */
+            ssdp_lane: boolean;
+            /** @description Whether the mDNS lane is running. Binding multicast is the deployment's own call, not a pack's, which is why a declared mDNS pattern can be undeliverable without anyone being at fault. */
+            mdns_lane: boolean;
+            /** @description Live SSDP watches after this generation applied — builtin plus pack-derived, once duplicate declarations are folded into one watch. */
+            ssdp_watches: number;
+            /** @description Live mDNS watches, on the same terms as `ssdp_watches`. */
+            mdns_watches: number;
+            /** @description How many `pack_match_patterns` entries the applied generation carried: what packs DECLARED, before any question of whether a lane could take them. Read against the two watch counts, it says whether declarations are reaching the lanes at all. */
+            pack_patterns: number;
+            /** @description Declared mDNS patterns this relay could not install because its mDNS lane is not running. */
+            mdns_undeliverable: number;
+            /** @description Declared patterns using the `macOui` match form, which is well-formed and which no lane implements yet. Counted rather than dropped so a pack author is told their declaration is inert instead of watching it vanish. */
+            mac_oui_unimplemented: number;
+            /** @description Pattern entries that failed to parse. The section was signed and hash-checked, so a malformed pattern means a producer bug rather than a transport fault. */
+            malformed: number;
+            /** @description True when no lane holds any live watch. Published rather than left for each caller to recompute, so a console, a CLI and a health check cannot disagree about what it means. */
+            watching_nothing: boolean;
+            /**
+             * Format: int64
+             * @description Epoch ms this app peer RECEIVED the report, stamped from its own clock. The relay's clock is not trusted for app-side ordering, and "how long ago did this box hear this" is a property of the receiver.
+             */
+            reported_at_ms: number;
+        };
         /** @description Optional narrowing for an active scan. An empty body means "every connected relay scans its own default scope", which is what the operator's plain "scan the network" sends. */
         DiscoveryScanRequest: {
             relay_id?: components["schemas"]["RelayId"];
@@ -4547,6 +4600,34 @@ export interface operations {
                 content: {
                     "application/json": {
                         scans: components["schemas"]["DiscoveryScanStatus"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    listDiscoveryEngineState: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Caller-supplied trace ID (ULID- or UUID-class, 20-36 chars). A non-conforming value is discarded and replaced server-side; the request still proceeds. */
+                "Trace-Id"?: components["parameters"]["TraceIdParam"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The engine state each relay has reported. */
+            200: {
+                headers: {
+                    "Trace-Id": components["headers"]["TraceIdResponse"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        engines: components["schemas"]["DiscoveryEngineState"][];
                     };
                 };
             };

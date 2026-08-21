@@ -149,6 +149,7 @@ function seed({
   adopted = [],
   packs = [scannerPack()],
   scans = [scanStatus()],
+  engines = [engineState()],
 }: {
   devices?: Device[];
   entities?: Entity[];
@@ -156,6 +157,7 @@ function seed({
   adopted?: unknown[];
   packs?: unknown[];
   scans?: unknown[];
+  engines?: unknown[];
 } = {}) {
   server.use(
     http.get(`${TEST_BASE}/devices`, () => page(devices)),
@@ -176,7 +178,31 @@ function seed({
     // unstubbed one would leave every test here passing against a panel that
     // permanently believes nothing is known.
     http.get(`${TEST_BASE}/discovery/scan-status`, () => ok({ scans })),
+    // The discovery ENGINE state. Stubbed for the third time on the same
+    // reasoning — and this one was caught by it: the strip was added, every test
+    // in this file still passed, and the panel was rendering "engine state
+    // unavailable" on every one of them because nothing served the route.
+    http.get(`${TEST_BASE}/discovery/engine-state`, () => ok({ engines })),
   );
+}
+
+/** One relay's discovery-engine state — watching for something, nothing
+ * undelivered, which is the healthy steady state. */
+function engineState(over: Record<string, unknown> = {}) {
+  return {
+    relay_id: RELAY,
+    ssdp_lane: true,
+    mdns_lane: true,
+    ssdp_watches: 3,
+    mdns_watches: 2,
+    pack_patterns: 4,
+    mdns_undeliverable: 0,
+    mac_oui_unimplemented: 0,
+    malformed: 0,
+    watching_nothing: false,
+    reported_at_ms: Date.now() - 5_000,
+    ...over,
+  };
 }
 
 /** One relay's scan-engine state — idle, having finished a sweep a minute ago,
@@ -1319,6 +1345,120 @@ describe("Devices — what each relay's scan engine is doing", () => {
     await waitFor(() => expect(within(status).getByText(/relay-/)).toBeInTheDocument());
     expect(within(status).queryByText(/last swept/)).toBeNull();
     expect(within(status).queryByText(/no scan reported/)).toBeNull();
+  });
+});
+
+describe("Devices — what each relay is WATCHING for", () => {
+  // The third leg of "is discovery actually running", and the only one that can
+  // answer it in the negative. A relay can be connected, idle rather than
+  // mid-sweep, and watching for absolutely nothing — in which case the passive
+  // lanes surface no device however long an operator waits, while every other
+  // signal on this page reads healthy. The relay has always computed these
+  // numbers; before `discovery.engine_state` they went only to its journal.
+
+  it("says what the engine is watching, per lane", async () => {
+    seed();
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    await waitFor(() =>
+      expect(within(status).getByText(/watching 3 ssdp, 2 mdns/)).toBeInTheDocument(),
+    );
+  });
+
+  it("names a lane that is OFF rather than reporting it as zero watches", async () => {
+    // The distinction the lane booleans exist for: no live mDNS watch because
+    // this deployment never bound multicast is a different problem, with a
+    // different owner, from a generation that declared no mDNS patterns.
+    seed({ engines: [engineState({ mdns_lane: false, mdns_watches: 0 })] });
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    await waitFor(() => expect(within(status).getByText(/mdns off/)).toBeInTheDocument());
+    expect(within(status).queryByText(/0 mdns/)).toBeNull();
+  });
+
+  it("RAISES watching-for-nothing, and says why", async () => {
+    // The condition the whole frame exists to surface.
+    seed({
+      engines: [
+        engineState({ ssdp_watches: 0, mdns_watches: 0, pack_patterns: 0, watching_nothing: true }),
+      ],
+    });
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    await waitFor(() =>
+      expect(
+        within(status).getByText(/watching for nothing — no pack declares a device/),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("tells 'declared but undelivered' apart from 'nothing declared'", async () => {
+    // Both render zero watches. Only one of them is a misconfiguration, and an
+    // operator cannot act on the right one if they read the same.
+    seed({
+      engines: [
+        engineState({
+          ssdp_watches: 0,
+          mdns_watches: 0,
+          pack_patterns: 2,
+          mdns_undeliverable: 2,
+          watching_nothing: true,
+        }),
+      ],
+    });
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    await waitFor(() =>
+      expect(
+        within(status).getByText(/watching for nothing — all 2 declaration\(s\) undelivered/),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("counts undelivered declarations beside a healthy watch set, and explains each", async () => {
+    seed({
+      engines: [
+        engineState({ mdns_undeliverable: 1, mac_oui_unimplemented: 2, malformed: 1 }),
+      ],
+    });
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    const cell = await waitFor(() => within(status).getByText(/4 undelivered/));
+    // The breakdown rides as hover text: it explains a number already on screen,
+    // and the page stays readable without it.
+    expect(cell.closest("[data-slot='relay-engine-state']")).toHaveAttribute(
+      "title",
+      expect.stringContaining("never bound multicast"),
+    );
+  });
+
+  it("does not turn a REFUSED read into a claim about the relay", async () => {
+    // The same absent-vs-empty rule the scan cell beside it follows: a read this
+    // console was refused is a fact about the console.
+    seed();
+    server.use(
+      http.get(`${TEST_BASE}/discovery/engine-state`, () =>
+        HttpResponse.json({ type: "about:blank", title: "Forbidden", status: 403, code: "FORBIDDEN" }, { status: 403 }),
+      ),
+    );
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    await waitFor(() => expect(within(status).getByText(/relay-/)).toBeInTheDocument());
+    expect(within(status).getByText(/engine state unavailable/)).toBeInTheDocument();
+    expect(within(status).queryByText(/engine state not reported/)).toBeNull();
+    expect(within(status).queryByText(/watching for nothing/)).toBeNull();
+  });
+
+  it("tells a relay that has not reported apart from one watching nothing", async () => {
+    // Zeroes are an alarm; silence is not. Minting the alarm for a relay that
+    // has simply not spoken would fire it on every fresh feeder.
+    seed({ engines: [] });
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    await waitFor(() =>
+      expect(within(status).getByText(/engine state not reported/)).toBeInTheDocument(),
+    );
+    expect(within(status).queryByText(/watching for nothing/)).toBeNull();
   });
 });
 

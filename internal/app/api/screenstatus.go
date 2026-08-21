@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"github.com/maaxton/waiveo-next/internal/app/enginestate"
 	"github.com/maaxton/waiveo-next/internal/app/scanstatus"
 	"net/http"
 
@@ -180,6 +181,21 @@ type ScanStatusSource interface {
 // to tell "no scan state" apart from "route missing".
 func WithScanStatus(src ScanStatusSource) Option {
 	return func(srv *server) { srv.scanStatus = src }
+}
+
+// EngineStateSource reads the latest discovery-engine state each relay reported
+// (`discovery.engine_state`). internal/app/enginestate.Registry satisfies it
+// directly.
+type EngineStateSource interface {
+	States() []enginestate.State
+}
+
+// WithEngineState wires that read model. Optional, on the same terms as
+// WithScanStatus: without it the engine-state route answers an empty list rather
+// than disappearing, so a console never has to tell "no engine state" apart from
+// "route missing".
+func WithEngineState(src EngineStateSource) Option {
+	return func(srv *server) { srv.engineState = src }
 }
 
 // mountScreenStatus registers the read. A distinct top-level path rather than a

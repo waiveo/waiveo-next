@@ -1518,7 +1518,8 @@ func main() {
 	// (installInventory) and the discovery watch sets (REL-064). One composed
 	// hook rather than a second rePuller field, so the two can never be
 	// refreshed from different generations.
-	applyDiscoveryWatches := discoveryWatchApplier(disc, mdnsListener, candStore, builtinSSDP, builtinMDNS)
+	engineState := newEngineStateReporter(liveConn)
+	applyDiscoveryWatches := discoveryWatchApplier(disc, mdnsListener, candStore, builtinSSDP, builtinMDNS, engineState)
 	// Boot generation, once, for the log line: the lanes were SEEDED with these
 	// watches at construction (they must not sweep even once without them), so
 	// this re-install is idempotent — its value is the operator-visible count of
@@ -1616,6 +1617,12 @@ func main() {
 				// screen behind it is whatever it held before the disconnect,
 				// ageing.
 				reportScreenStatus(c, pairingSrv)
+				// And the discovery watch set. This one is NOT recomputed on
+				// reconnect — REL-070 suppresses re-applying an unchanged
+				// generation, so a relay whose packs have not changed would
+				// otherwise leave its app peer with no engine state at all for
+				// a relay that has been watching correctly throughout.
+				engineState.resend(c)
 				// REL-124's "next connection opportunity", taken literally:
 				// every pairing-grant redemption performed while this relay was
 				// disconnected (REL-122) — or before its last restart — is owed
