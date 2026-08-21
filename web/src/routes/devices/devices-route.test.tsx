@@ -456,7 +456,9 @@ describe("Devices — the discovered fleet", () => {
     renderRoute();
     const status = await screen.findByRole("region", { name: "Discovery status" });
     await waitFor(() =>
-      expect(within(status).getByText(/could not be read here/)).toBeInTheDocument(),
+      expect(
+        within(status).getByText(/can also scan on demand could not be read here/),
+      ).toBeInTheDocument(),
     );
     expect(within(status).queryByText(/Nothing installed can scan on demand/)).toBeNull();
   });
@@ -1317,5 +1319,69 @@ describe("Devices — what each relay's scan engine is doing", () => {
     await waitFor(() => expect(within(status).getByText(/relay-/)).toBeInTheDocument());
     expect(within(status).queryByText(/last swept/)).toBeNull();
     expect(within(status).queryByText(/no scan reported/)).toBeNull();
+  });
+});
+
+describe("Devices — why everything reads unclassified", () => {
+  // The question the device table provokes on a real deployment: fifty of
+  // sixty-three rows say `unclassified`, and unexplained that reads as
+  // classification being broken. It is absent by configuration — core declares
+  // no pattern of its own on purpose, and no installed pack declares one either.
+
+  it("says nothing installed recognises a device kind, when nothing does", async () => {
+    // The dev box exactly: one pack, owning scan policy, teaching no recognition.
+    seed({ packs: [scannerPack()] });
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    await waitFor(() =>
+      expect(within(status).getByText(/Nothing installed recognises a device kind/)).toBeInTheDocument(),
+    );
+    // And says the unclassified row is the CORRECT answer, not a failure.
+    expect(within(status).getByText(/correct answer rather than a failure/)).toBeInTheDocument();
+  });
+
+  it("names the recogniser and its classes when one is installed", async () => {
+    seed({
+      packs: [
+        scannerPack(),
+        {
+          ...scannerPack(),
+          id: "waiveo/roku",
+          manifest: {
+            ...scannerPack().manifest,
+            id: "waiveo/roku",
+            displayName: "Roku",
+            devices: [{ deviceClass: "media-player", match: [{ ssdp: "roku:ecp" }] }],
+          },
+        },
+      ],
+    });
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    await waitFor(() =>
+      expect(within(status).getByText(/recognises media-player/)).toBeInTheDocument(),
+    );
+    expect(within(status).queryByText(/Nothing installed recognises/)).toBeNull();
+  });
+
+  it("does NOT claim nothing recognises anything when the registry read failed", async () => {
+    seed();
+    server.use(
+      http.get(`${TEST_BASE}/extensions`, () =>
+        HttpResponse.json(
+          { type: "about:blank", title: "Forbidden", status: 403, code: "FORBIDDEN",
+            detail: "no", trace_id: TRACE_ID },
+          { status: 403, headers: { "Content-Type": "application/problem+json", "Trace-Id": TRACE_ID } },
+        ),
+      ),
+    );
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    await waitFor(() =>
+      expect(
+        within(status).getByText(/recognise a device kind could not be read here/),
+      ).toBeInTheDocument(),
+    );
+    expect(within(status).queryByText(/Nothing installed recognises a device kind/)).toBeNull();
   });
 });

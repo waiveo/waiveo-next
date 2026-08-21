@@ -9,6 +9,7 @@ import {
   type Discovery,
 } from "./discovery";
 import type { ScanOwner } from "./scan-owner";
+import type { Recognizer } from "./recognizers";
 
 /**
  * The Discovery panel — the top of the Devices page, and the whole answer to
@@ -101,6 +102,11 @@ export interface DiscoveryPanelProps {
    * read failed. Null is not an empty map: empty would say every connected relay
    * has reported no scan, and a failed read says this console does not know. */
   scanByRelay: Map<string, DiscoveryScanStatus> | null;
+  /** The installed extensions that teach device RECOGNITION, or `null` when the
+   * pack registry could not be read. Empty is a real and consequential state —
+   * every host found, none recognised — and only distinguishable from a failed
+   * read by keeping the two apart. */
+  recognizers: Recognizer[] | null;
   /** The installed extensions that can start a scan, or `null` when the pack
    * registry could not be read. Empty and null are different claims: empty says
    * this deployment has nothing that scans on demand, null says this console
@@ -114,6 +120,7 @@ export function DiscoveryPanel({
   devicesByRelay,
   entityCount,
   scanByRelay,
+  recognizers,
   scanOwners,
 }: DiscoveryPanelProps) {
   const [showMissing, setShowMissing] = useState(false);
@@ -302,6 +309,48 @@ export function DiscoveryPanel({
         <strong className="font-medium text-foreground">Refresh</strong> re-reads what the relays
         have already reported; it starts nothing.
       </p>
+
+      {/* (6) WHY EVERYTHING READS "UNCLASSIFIED". Discovery enumerates the
+          network pattern-blind and knows what none of it is; recognising a KIND
+          of device is an extension's contribution, and core declares no pattern
+          of its own on purpose. So a deployment with no such pack finds
+          everything and classifies almost nothing — which is the dev box today,
+          fifty of sixty-three rows reading `unclassified` with the page offering
+          no reason. Unexplained, that reads as classification being broken. It
+          is absent by configuration, and one install from working. */}
+      <div
+        data-slot="recognition"
+        className="flex flex-col gap-1 rounded-card border border-border bg-card p-4 text-sm"
+      >
+        <h3 className="font-medium text-foreground">Recognising what a device is</h3>
+        {recognizers === null ? (
+          <p className="text-muted-foreground">
+            Whether anything installed can recognise a device kind could not be read here — the
+            extension registry did not answer, which is not the same as nothing being installed.
+          </p>
+        ) : recognizers.length === 0 ? (
+          <p className="text-muted-foreground">
+            Nothing installed recognises a device kind, so a device is found but not identified.
+            Discovery enumerates the network without knowing what anything is; an extension
+            supplies the patterns that say which host is a Roku, a printer, a speaker. Until one is
+            installed, a row reading <code className="font-mono text-xs">unclassified</code> is the
+            correct answer rather than a failure.
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-1">
+            {recognizers.map((r) => (
+              <li key={r.id} data-slot="recognizer">
+                <span className="font-medium text-foreground">{r.displayName}</span>{" "}
+                <span className="text-muted-foreground">
+                  {r.disabled
+                    ? `declares ${r.classes.join(", ")} — but it is disabled, so it recognises nothing today.`
+                    : `recognises ${r.classes.join(", ")}.`}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
 
       {/* (6) WHERE A SCAN COMES FROM. This page cannot start one — core does not
           perform an extension's work — but it used to leave that as "there is no

@@ -75,6 +75,23 @@ export interface PackManifestAction {
   capabilityScope: string;
 }
 
+/** One manifest-declared device pattern (MAN-071) — a pack teaching this
+ * deployment to RECOGNIZE a kind of device.
+ *
+ * The console reads it for one question: does anything installed here know what
+ * a device IS? Discovery enumerates everything pattern-blind, so with no pack
+ * declaring a pattern every host is found and none is recognised — which is
+ * exactly what the fleet looks like today, and nothing on the page said why.
+ *
+ * `match` is carried as an opaque count rather than parsed: the console never
+ * evaluates a pattern (the relay does, off signed state), so the shapes inside
+ * are none of its business. What it needs is whether any exist and what class
+ * they claim. */
+export interface PackManifestDevice {
+  deviceClass: string;
+  match?: unknown[];
+}
+
 /** The console-relevant slice of an installed pack's manifest. */
 export interface PackManifest {
   id: string;
@@ -94,6 +111,9 @@ export interface PackManifest {
    * none, and an older box may omit the member entirely. Every read of it must
    * therefore tolerate absence rather than treat it as an empty declaration. */
   actions?: PackManifestAction[];
+  /** Optional, and absent on most packs: only a pack that teaches device
+   * recognition declares any. Tolerate absence — it is the common case. */
+  devices?: PackManifestDevice[];
 }
 
 /** An installed pack as the registry returns it: the identity + baseline plus the

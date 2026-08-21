@@ -26,6 +26,7 @@ import {
 import { formatAge } from "@/lib/format-age";
 import { describeDiscovery, type BlindReason } from "./discovery";
 import { scanOwners } from "./scan-owner";
+import { deviceRecognizers } from "./recognizers";
 import { describePort, describePorts, portsSearchText, portsState } from "./open-ports";
 import { DiscoveryPanel } from "./discovery-panel";
 import { AdoptedDevices } from "./adopted-devices";
@@ -696,6 +697,7 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
           devicesByRelay={devicesByRelay}
           entityCount={entities.length}
           scanByRelay={scanByRelay}
+          recognizers={packs === null ? null : deviceRecognizers(packs)}
           scanOwners={packs === null ? null : scanOwners(packs)}
         />
 
