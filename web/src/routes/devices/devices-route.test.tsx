@@ -1088,3 +1088,76 @@ describe("Devices — ignoring, clicked through", () => {
     expect(within(table).getByText("Discovered")).toBeInTheDocument();
   });
 });
+
+describe("Devices — open ports, the three answers as an operator meets them", () => {
+  // The console is the last place the absent/empty collapse could be
+  // reintroduced. Five of six layers beneath it used to report "a scan looked
+  // and found nothing open" as "nobody has looked"; drawing both as an em dash
+  // here would restore that defect exactly where it is felt.
+
+  it("draws NOT SCANNED and NONE OPEN as different answers, not both as blank", async () => {
+    seed({
+      devices: [
+        device({ id: DEVICE_ID, name: "Never looked" }),
+        device({ id: OTHER_DEVICE_ID, name: "Came back clean", open_ports: [] }),
+      ],
+      entities: [],
+    });
+    renderRoute();
+    const table = await screen.findByRole("table", { name: "Discovered devices" });
+    await waitFor(() => expect(within(table).getByText("Came back clean")).toBeInTheDocument());
+
+    expect(within(table).getByText("Not scanned")).toBeInTheDocument();
+    // A RESULT, not a gap — and specifically not the same cell as the one above.
+    expect(within(table).getByText("None open")).toBeInTheDocument();
+  });
+
+  it("names what typically answers on a port, inline", async () => {
+    seed({ devices: [device({ open_ports: [9100] })], entities: [] });
+    renderRoute();
+    const table = await screen.findByRole("table", { name: "Discovered devices" });
+    // The column's whole operator value: this row is `unclassified` and this is
+    // the only thing on the page saying it is a printer.
+    await waitFor(() => expect(within(table).getByText(/9100 printer/)).toBeInTheDocument());
+  });
+
+  it("renders a port it knows nothing about as a bare number", async () => {
+    seed({ devices: [device({ open_ports: [4711] })], entities: [] });
+    renderRoute();
+    const table = await screen.findByRole("table", { name: "Discovered devices" });
+    const cell = await within(table).findByText(/4711/);
+    expect(cell.textContent).toBe("4711");
+  });
+
+  it("finds the printer when an operator searches the WORD, not the port", async () => {
+    seed({
+      devices: [
+        device({ id: DEVICE_ID, name: "Hanger TV", open_ports: [8060] }),
+        device({ id: OTHER_DEVICE_ID, name: "Back office", open_ports: [9100] }),
+      ],
+      entities: [],
+    });
+    const user = renderRoute();
+    await screen.findByRole("table", { name: "Discovered devices" });
+
+    await user.type(screen.getByLabelText("Search devices"), "printer");
+    await waitFor(() => expect(screen.queryByText("Hanger TV")).not.toBeInTheDocument());
+    expect(screen.getByText("Back office")).toBeInTheDocument();
+  });
+
+  it("narrows to what nobody has scanned", async () => {
+    seed({
+      devices: [
+        device({ id: DEVICE_ID, name: "Never looked" }),
+        device({ id: OTHER_DEVICE_ID, name: "Came back clean", open_ports: [] }),
+      ],
+      entities: [],
+    });
+    const user = renderRoute();
+    await screen.findByRole("table", { name: "Discovered devices" });
+
+    await user.type(screen.getByLabelText("Search devices"), "not scanned");
+    await waitFor(() => expect(screen.queryByText("Came back clean")).not.toBeInTheDocument());
+    expect(screen.getByText("Never looked")).toBeInTheDocument();
+  });
+});

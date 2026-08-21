@@ -25,6 +25,7 @@ import {
 import { formatAge } from "@/lib/format-age";
 import { describeDiscovery, type BlindReason } from "./discovery";
 import { scanOwners } from "./scan-owner";
+import { describePort, describePorts, portsSearchText, portsState } from "./open-ports";
 import { DiscoveryPanel } from "./discovery-panel";
 import { AdoptedDevices } from "./adopted-devices";
 
@@ -131,6 +132,62 @@ function ageCell(atMs: number | undefined): string {
  * an absent age. */
 function isObservedAge(device: Device): boolean {
   return device.first_seen_origin === "planted";
+}
+
+/** The `open_ports` cell — THREE states, drawn as three different things.
+ *
+ * api/1 is explicit that the member carries three answers: "absent means nobody
+ * has looked, empty would mean a scan looked and found nothing open, and only a
+ * scan can assert the second." Until the layer under this one was fixed, five of
+ * six layers collapsed the middle answer into the first and no deployment could
+ * produce it. Drawing both as an em dash here would restore the same defect in
+ * the one place an operator actually meets it — showing a scan's finding as the
+ * absence of one, and making the fix beneath invisible.
+ *
+ * So the two decided states are drawn as WORDS rather than punctuation, and only
+ * the genuinely-unknown one is muted-and-empty. "None open" is a result; a blank
+ * cell is not.
+ *
+ * The ports themselves carry their meaning inline (`8060 roku`) because that is
+ * the column's entire operator value: most of a real fleet is `unclassified`
+ * because it announces nothing, and a host answering 9100 is a printer. It stays
+ * EVIDENCE — the hint is what typically answers there, it never sets a class,
+ * and an unlisted port renders as a bare number rather than a guess. */
+function openPortsCell(device: Device): React.ReactNode {
+  const state = portsState(device.open_ports);
+  if (state.kind === "unscanned") {
+    return (
+      <span
+        className="text-muted-foreground"
+        title={
+          "Nothing has scanned this device, so nothing is known about its ports. This is not the same " +
+          "as having no ports open — only a scan can assert that. Start one from the extension that " +
+          "owns scanning."
+        }
+      >
+        Not scanned
+      </span>
+    );
+  }
+  if (state.kind === "none") {
+    return (
+      <span
+        className="text-muted-foreground"
+        title={
+          "A scan looked and nothing answered on the ports Discovery probes. This is a result, not a " +
+          "gap: it is what the platform found, and it is how a port that has since closed stops being " +
+          "reported."
+        }
+      >
+        None open
+      </span>
+    );
+  }
+  return (
+    <span className="font-mono text-xs" title={describePorts(state.ports)}>
+      {state.ports.map(describePort).join("  ")}
+    </span>
+  );
 }
 
 /** The `first_seen` cell.
@@ -428,6 +485,19 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
         accessorFn: (r) => r.entities.length,
         meta: { numeric: true },
       },
+      /* Searchable on the MEANINGS as well as the numbers, so an operator can
+         type "printer" and find the host answering 9100 without knowing which
+         port a printer uses — which is the point of a column of evidence. The
+         two decided states carry words too ("not scanned", "none open"), so a
+         fleet can be narrowed to either; a search that could only match ports
+         would leave the absence of them unsearchable. */
+      {
+        id: "open_ports",
+        header: "Open ports",
+        accessorFn: (r) => portsSearchText(r.device.open_ports),
+        meta: { searchable: true },
+        cell: ({ row }) => openPortsCell(row.original.device),
+      },
       /* The two columns that answer "is this new to my network, or has it been
          here for weeks" — the question this page exists for and the one it could
          not answer at all, because the API served neither field. They are sorted
@@ -565,7 +635,7 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
             data={rows}
             label="Discovered devices"
             loading={devices === null}
-            search={{ label: "Search devices", placeholder: "Name, address, model or class" }}
+            search={{ label: "Search devices", placeholder: "Name, address, model, class or port" }}
             filters
             pagination
             onRowPress={(row) =>
