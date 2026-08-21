@@ -17,6 +17,7 @@ import {
   createApi,
   deviceFacts,
   type Device,
+  type DiscoveryScanStatus,
   type Entity,
   type Pack,
   type RelayHealth,
@@ -289,6 +290,11 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
   // read does not. Saying it on a refusal would be the page inventing an
   // architectural limit out of its own missing permission.
   const [packs, setPacks] = useState<Pack[] | null>(null);
+  // Each relay's scan-engine state, or null when the read failed. Null is not an
+  // empty map, for the same reason `relays` distinguishes them: empty says every
+  // connected relay reported no scan, and a failure says this console does not
+  // know. Only the first is the page's to assert.
+  const [scans, setScans] = useState<DiscoveryScanStatus[] | null>(null);
   const [dialog, setDialog] = useState<Dialog>({ kind: "closed" });
   const [busy, setBusy] = useState(false);
   // The device whose entities the lower table is narrowed to; null shows every
@@ -322,6 +328,13 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
     void collectPages<Pack>((cursor) => client.packs.list({ cursor }))
       .then(setPacks)
       .catch(() => setPacks(null));
+    // Read separately and never fatal, like the two above: the fleet is readable
+    // without knowing when it was last swept, and losing the device list to a
+    // diagnostics refusal would be a far worse trade.
+    void client.diagnostics
+      .scanStatus()
+      .then(setScans)
+      .catch(() => setScans(null));
     try {
       const [deviceRows, entityRows] = await Promise.all([
         collectPages<Device>((cursor) => client.devices.list({ cursor })),
@@ -372,6 +385,14 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
     }
     return counts;
   }, [devices]);
+
+  /** Scan state by relay id, preserving the null-vs-empty distinction the read
+   * makes: a failed read stays null all the way to the panel rather than
+   * becoming an empty map that reads as "no relay has scanned". */
+  const scanByRelay = useMemo(
+    () => (scans === null ? null : new Map(scans.map((s) => [s.relay_id, s] as const))),
+    [scans],
+  );
 
   const deviceNames = useMemo(
     () => new Map((devices ?? []).map((d) => [d.id, d.name] as [string, string])),
@@ -674,6 +695,7 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
           relays={relays}
           devicesByRelay={devicesByRelay}
           entityCount={entities.length}
+          scanByRelay={scanByRelay}
           scanOwners={packs === null ? null : scanOwners(packs)}
         />
 

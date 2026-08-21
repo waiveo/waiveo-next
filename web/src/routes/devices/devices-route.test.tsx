@@ -148,12 +148,14 @@ function seed({
   systemHealth = health(),
   adopted = [],
   packs = [scannerPack()],
+  scans = [scanStatus()],
 }: {
   devices?: Device[];
   entities?: Entity[];
   systemHealth?: SystemHealth;
   adopted?: unknown[];
   packs?: unknown[];
+  scans?: unknown[];
 } = {}) {
   server.use(
     http.get(`${TEST_BASE}/devices`, () => page(devices)),
@@ -169,7 +171,27 @@ function seed({
     // passing against a permanently unreadable registry — the adopted-panel
     // mistake, repeated.
     http.get(`${TEST_BASE}/extensions`, () => page(packs as never[])),
+    // The scan-engine state. Stubbed for the reason this fixture's header
+    // records twice over: the route catches this read's failure, so an
+    // unstubbed one would leave every test here passing against a panel that
+    // permanently believes nothing is known.
+    http.get(`${TEST_BASE}/discovery/scan-status`, () => ok({ scans })),
   );
+}
+
+/** One relay's scan-engine state — idle, having finished a sweep a minute ago,
+ * which is the ordinary steady state a connected relay reports. */
+function scanStatus(over: Record<string, unknown> = {}) {
+  return {
+    relay_id: RELAY,
+    state: "idle",
+    reason: "scheduled",
+    scan_id: "01M0SCAN00000000000000000A",
+    started_at: Date.now() - 62_000,
+    finished_at: Date.now() - 60_000,
+    candidates: 3,
+    ...over,
+  };
 }
 
 /** An installed extension that declares a scan action — the deployment the box
@@ -461,19 +483,17 @@ describe("Devices — the discovered fleet", () => {
     expect(within(row as HTMLElement).getByText("2 devices")).toBeInTheDocument();
   });
 
-  it("says outright that no sweep timestamp is published, rather than omitting the field", async () => {
-    // "When did it last sweep" is the obvious next question. The API cannot
-    // answer it, and an omitted field reads as an oversight — so the page says
-    // what its silence means and what is load-bearing instead.
+  it("explains the sweep-freshness question rather than declaring it unpublishable", async () => {
+    // This assertion used to pin the sentence "No sweep timestamp is published".
+    // api/1 publishes one; the console simply never read it. Keeping the old
+    // assertion would have made the test the reason the falsehood survived.
     seed();
     renderRoute();
     const status = await screen.findByRole("region", { name: "Discovery status" });
     await waitFor(() =>
-      expect(within(status).getByText(/No sweep timestamp is published/)).toBeInTheDocument(),
+      expect(within(status).getByText(/reports what its scan engine is doing/)).toBeInTheDocument(),
     );
-    expect(
-      within(status).getByText(/which relays are connected now, not when each last swept/),
-    ).toBeInTheDocument();
+    expect(within(status).queryByText(/No sweep timestamp is published/)).toBeNull();
   });
 
   it("explains why an expected device might not be listed, on demand", async () => {
@@ -1234,5 +1254,68 @@ describe("Devices — hardware identity", () => {
     await user.type(search, "bc:24");
     await waitFor(() => expect(screen.queryByText("Hanger TV")).not.toBeInTheDocument());
     expect(screen.getByText("Rack box")).toBeInTheDocument();
+  });
+});
+
+
+describe("Devices — what each relay's scan engine is doing", () => {
+  // This panel used to state, as a contract fact, that "No sweep timestamp is
+  // published". api/1 publishes one — `/discovery/scan-status` carries each
+  // relay's engine state and when its last scan started and finished — and
+  // nothing in the console read it. The consequence the old paragraph named was
+  // real and remained real: a relay that had quietly stopped sweeping looked
+  // exactly like one whose network is empty.
+
+  it("says when a relay last swept, instead of that nobody publishes it", async () => {
+    seed();
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    await waitFor(() => expect(within(status).getByText(/last swept/)).toBeInTheDocument());
+    // The retired claim must not come back.
+    expect(within(status).queryByText(/No sweep timestamp is published/)).toBeNull();
+  });
+
+  it("says a relay is scanning NOW, and whether an operator asked for it", async () => {
+    seed({ scans: [scanStatus({ state: "scanning", reason: "operator", finished_at: undefined })] });
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    await waitFor(() =>
+      expect(within(status).getByText(/scanning now \(operator\)/)).toBeInTheDocument(),
+    );
+  });
+
+  it("distinguishes a connected relay that has NEVER reported a scan", async () => {
+    // The case the whole strip exists for: connected is not the same as
+    // sweeping, and before this they rendered identically.
+    seed({ scans: [] });
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    await waitFor(() => expect(within(status).getByText(/no scan reported/)).toBeInTheDocument());
+  });
+
+  it("does not claim a relay never scanned when the read FAILED", async () => {
+    seed();
+    server.use(
+      http.get(`${TEST_BASE}/discovery/scan-status`, () =>
+        HttpResponse.json(
+          {
+            type: "about:blank",
+            title: "Forbidden",
+            status: 403,
+            code: "FORBIDDEN",
+            detail: "Not readable by this principal.",
+            trace_id: TRACE_ID,
+          },
+          { status: 403, headers: { "Content-Type": "application/problem+json", "Trace-Id": TRACE_ID } },
+        ),
+      ),
+    );
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    // A refused read is a fact about this console, not about the relay. It must
+    // not be rendered as the relay having reported nothing.
+    await waitFor(() => expect(within(status).getByText(/relay-/)).toBeInTheDocument());
+    expect(within(status).queryByText(/last swept/)).toBeNull();
+    expect(within(status).queryByText(/no scan reported/)).toBeNull();
   });
 });

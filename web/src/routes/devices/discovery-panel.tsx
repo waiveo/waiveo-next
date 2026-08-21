@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Link } from "react-router";
 import { ChevronDown, ChevronRight, Cpu, EyeOff, MonitorPlay, Network, Radio } from "lucide-react";
 import { StatCard, StatusBadge, type Status } from "@/components/kit";
-import type { RelayHealth } from "@/api";
+import { formatAge } from "@/lib/format-age";
+import type { DiscoveryScanStatus, RelayHealth } from "@/api";
 import {
   MISSING_DEVICE_REASONS,
   type Discovery,
@@ -41,6 +42,26 @@ import type { ScanOwner } from "./scan-owner";
  * discover; this console reads; an extension decides when to look.
  */
 
+/** What a relay's scan engine is doing, as one short phrase.
+ *
+ * Four answers, and the first two are the ones that matter. A relay that is
+ * CONNECTED but has never reported a scan is not the same as one that swept a
+ * minute ago, and until this was rendered they looked identical on this page —
+ * which is precisely the failure the paragraph above used to describe and
+ * attribute to a missing contract member.
+ *
+ * `undefined` means this relay is connected and has reported no scan state at
+ * all; `null` for the whole map means the read failed and nothing is known,
+ * which is the caller's distinction to make, not this function's. */
+function describeScan(status: DiscoveryScanStatus | undefined): string {
+  if (status === undefined) return "no scan reported";
+  if (status.state === "scanning") {
+    return status.reason === "operator" ? "scanning now (operator)" : "scanning now (scheduled)";
+  }
+  if (!status.finished_at) return "idle";
+  return `last swept ${formatAge(Math.max(0, Date.now() - status.finished_at))} ago`;
+}
+
 /** Discovery state → the kit's status vocabulary.
  *
  * `all-adopted` is `ok` and `searching` is `pending`, and the difference is the
@@ -76,6 +97,10 @@ export interface DiscoveryPanelProps {
   devicesByRelay: Map<string, number>;
   /** How many entities the deployment's devices expose in total. */
   entityCount: number;
+  /** Each relay's scan-engine state by relay id, or `null` when the scan-status
+   * read failed. Null is not an empty map: empty would say every connected relay
+   * has reported no scan, and a failed read says this console does not know. */
+  scanByRelay: Map<string, DiscoveryScanStatus> | null;
   /** The installed extensions that can start a scan, or `null` when the pack
    * registry could not be read. Empty and null are different claims: empty says
    * this deployment has nothing that scans on demand, null says this console
@@ -88,6 +113,7 @@ export function DiscoveryPanel({
   relays,
   devicesByRelay,
   entityCount,
+  scanByRelay,
   scanOwners,
 }: DiscoveryPanelProps) {
   const [showMissing, setShowMissing] = useState(false);
@@ -171,16 +197,28 @@ export function DiscoveryPanel({
       {relays !== null ? (
         <div className="flex flex-col gap-2">
           <h3 className="text-sm font-semibold">Which relays are reporting</h3>
-          {/* Said rather than omitted. "When did it last sweep" is the obvious
-              next question and this console cannot answer it: api/1 publishes no
-              per-relay sweep timestamp, only the current connected set. Leaving
-              the field out reads as an oversight; saying so tells an operator
-              what the page's silence means and what IS load-bearing instead. */}
+          {/* "When did it last sweep" is the obvious next question, and this
+              console could not answer it — not because api/1 withheld the
+              answer, but because nothing here read it. `/discovery/scan-status`
+              publishes each relay's engine state, the scan it last ran, and
+              when that scan started and finished. The paragraph that used to
+              stand here explained the absence as a contract gap; the contract
+              had closed it and the console had not noticed.
+          */}
+
+          {/* This paragraph used to say "No sweep timestamp is published", and
+              named the consequence precisely: a relay that stopped sweeping
+              without disconnecting would be indistinguishable from one whose
+              network is empty. api/1 DOES publish it — `/discovery/scan-status`
+              carries each relay's engine state, the scan it last ran and when
+              that scan started and finished — and nothing in this console read
+              it. The gap the paragraph described was real; the reason it gave
+              had stopped being true. */}
           <p data-slot="sweep-time-gap" className="text-xs text-muted-foreground">
-            No sweep timestamp is published — api/1 reports which relays are connected now, not
-            when each last swept. A connected relay is continuously reporting its full current
-            view, so its presence here is the freshness signal; a relay that stopped sweeping
-            without disconnecting would be indistinguishable from one whose network is empty.
+            Each relay sweeps its own network on its own schedule, and reports what its scan
+            engine is doing. A connected relay that had quietly stopped sweeping would otherwise
+            be indistinguishable from one whose network is empty — the state below is what tells
+            them apart.
           </p>
           {relays.length === 0 ? (
             <p className="text-sm text-muted-foreground">
@@ -200,6 +238,18 @@ export function DiscoveryPanel({
                   <span className="text-muted-foreground">
                     {devicesByRelay.get(relay.relay_id) ?? 0} device
                     {(devicesByRelay.get(relay.relay_id) ?? 0) === 1 ? "" : "s"}
+                  </span>
+                  <span data-slot="relay-scan-state" className="text-muted-foreground">
+                    {/* `scanByRelay === null` is checked EXPLICITLY rather than
+                        ridden through with `?.`, which would hand describeScan
+                        an undefined and render "no scan reported" — collapsing a
+                        read this console was refused into a claim about the
+                        relay. That is the same absent-vs-empty collapse this
+                        panel already distinguishes for relay health, and the
+                        optional chain reintroduced it silently. */}
+                    {scanByRelay === null
+                      ? "scan state unavailable"
+                      : describeScan(scanByRelay.get(relay.relay_id))}
                   </span>
                 </li>
               ))}

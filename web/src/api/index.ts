@@ -182,6 +182,7 @@ export {
   type SystemHealth,
   type ServiceHealth,
   type StorageHealth,
+  type DiscoveryScanStatus,
   type RelayHealth,
   type ScreenHealth,
   type RestartAcceptance,

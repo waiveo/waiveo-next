@@ -41,6 +41,8 @@ export type SystemHealth = components["schemas"]["SystemHealth"];
 export type ServiceHealth = components["schemas"]["ServiceHealth"];
 export type StorageHealth = components["schemas"]["StorageHealth"];
 export type RelayHealth = components["schemas"]["RelayHealth"];
+/** One relay's scan-engine state (openapi DiscoveryScanStatus). */
+export type DiscoveryScanStatus = components["schemas"]["DiscoveryScanStatus"];
 export type ScreenHealth = components["schemas"]["ScreenHealth"];
 /** What a restart request was accepted AS — never a claim that it happened. */
 export type RestartAcceptance = components["schemas"]["RestartAcceptance"];
@@ -74,6 +76,16 @@ export interface DiagnosticsModule {
    * reads the live connection set, so — unlike `health()` — it does not depend
    * on the workspace root and cannot 404 when that is missing. */
   relays(): Promise<RelayHealth[]>;
+  /** What each relay's scan ENGINE is doing: scanning now or idle, which scan,
+   * when it started and finished, and how many candidates it holds.
+   *
+   * The answer `startDiscoveryScan` cannot give. A scan outlives the request
+   * that starts it, so that operation returns an acceptance and the progress is
+   * read here — which also makes this the only published answer to "when did
+   * this network last actually get looked at". `relays()` says which relays are
+   * CONNECTED; a connected relay that stopped sweeping is indistinguishable
+   * from one whose network is empty without this. */
+  scanStatus(): Promise<DiscoveryScanStatus[]>;
   /** Ask this box to restart its application server (API-150).
    *
    * It resolves with an ACCEPTANCE, not a completion — the process is still
@@ -117,6 +129,10 @@ export function createDiagnosticsModule(client: ApiClient): DiagnosticsModule {
     async relays() {
       const { data } = await client.read<{ relays: RelayHealth[] }>("/discovery/relays");
       return data.relays;
+    },
+    async scanStatus() {
+      const { data } = await client.read<{ scans: DiscoveryScanStatus[] }>("/discovery/scan-status");
+      return data.scans;
     },
     async restart() {
       // `action` carries an Idempotency-Key, which matters more here than
