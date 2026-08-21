@@ -143,8 +143,33 @@ type Device struct {
 	Address     string            `json:"address,omitempty"`
 	Model       string            `json:"model,omitempty"`
 	Serial      string            `json:"serial,omitempty"`
-	Adopted     bool              `json:"adopted"`
-	Ignored     bool              `json:"ignored"`
+	// MAC is the device's hardware address when discovery learned one, in this
+	// platform's single spelling (lowercase, colon-separated).
+	//
+	// It is a DESCRIPTIVE fact, in the same class as Address and Model, and not
+	// this row's identity: a device is keyed by REL-153's (site, driver,
+	// native_id), that tuple stays off this resource, and adoption remains a
+	// bodyless POST by id. What it adds is the one identifier that survives what
+	// Address does not — a lease expiring, a device moving subnet — which is why
+	// two hosts both calling themselves "NAS" are two rows an operator can only
+	// tell apart by IP today.
+	//
+	// Absent when the reporting lane learned no hardware address: a device named
+	// by a protocol lane carries that protocol's own id, not a MAC.
+	MAC string `json:"mac,omitempty"`
+	// Vendor is the organization that owns MAC's OUI, when the OUI is one this
+	// build recognizes.
+	//
+	// Already computed and already shown — but only ever smuggled into the
+	// fallback NAME ("Proxmox bc:24:11:…", candidateName), and therefore only for
+	// a device that could not name itself. On the measured deployment that left
+	// 12 of 63 devices — every self-named one, including both machines called
+	// "NAS" — with a vendor the platform knew and no surface that said it.
+	// Published as its own fact so it can be read, sorted and filtered rather
+	// than parsed back out of a display string.
+	Vendor  string `json:"vendor,omitempty"`
+	Adopted bool   `json:"adopted"`
+	Ignored bool   `json:"ignored"`
 	// OpenPorts is what an active scan found listening on this device. Absent
 	// until something scanned it: no port list and an empty port list are
 	// different facts, and only a scan can assert the second.

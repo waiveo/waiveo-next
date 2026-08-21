@@ -156,6 +156,12 @@ func (r *Registry) ApplyCandidates(relayID string, candidates []wire.DeviceCandi
 			Model:     c.Model,
 			Serial:    c.Serial,
 			OpenPorts: c.OpenPorts,
+			// Derived here rather than stored, because the input already is:
+			// `native_id` is mirrored and is rebuilt on the restore path, so
+			// recomputing costs a map lookup and adds no column, no migration
+			// and no second copy to drift.
+			MAC:    candidateMAC(c),
+			Vendor: candidateVendor(c),
 		}
 		for _, e := range c.Entities {
 			entityRowID := deviceid.Entity(r.site, c.Driver, c.NativeID, e.Key)
@@ -406,6 +412,31 @@ func checkField(name, value string, maxBytes int, required bool) error {
 // this can never override a better name a lane already learned (macvendor, and
 // the name-quality merge in relay/hostmdns that chose `c.Name` in the first
 // place).
+// candidateMAC is the device's hardware address when its `native_id` IS one.
+//
+// `native_id` is driver-specific: the neighbour lane keys a host by its MAC, and
+// a protocol lane keys by that protocol's id (an ECP serial, a UUID). So this
+// asks whether the value spells an address rather than assuming the driver, and
+// answers "" when it does not — which is the honest answer for a device no lane
+// ever saw at layer 2.
+//
+// Canonical, not raw: the value is shown to an operator and searched by them, and
+// two rows spelling one address differently read as two devices.
+func candidateMAC(c wire.DeviceCandidate) string {
+	return macvendor.Canonical(c.NativeID)
+}
+
+// candidateVendor is the OUI's registered organization, for the same value.
+//
+// It is the fact candidateName has been reading all along and spending on a name
+// fallback. Computed for EVERY device here, not only the unnamed ones — a device
+// that names itself has a vendor too, and it was the only thing standing between
+// an operator and knowing that the box calling itself "NAS" is a Synology.
+func candidateVendor(c wire.DeviceCandidate) string {
+	vendor, _ := macvendor.Vendor(c.NativeID)
+	return vendor
+}
+
 func candidateName(c wire.DeviceCandidate) string {
 	if c.Name != "" {
 		return c.Name

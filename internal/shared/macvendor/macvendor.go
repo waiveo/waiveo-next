@@ -112,6 +112,57 @@ func Vendor(mac string) (string, bool) {
 	return name, ok
 }
 
+// IsMAC reports whether s spells a 48-bit hardware address, in any of the
+// spellings Vendor accepts.
+//
+// It exists because a device's `native_id` is DRIVER-SPECIFIC: for a host the
+// network revealed by its neighbour entry it is the MAC, and for a device a
+// protocol lane named it is that protocol's own id (an ECP serial, a UUID). A
+// caller that wants to publish "the hardware address, when one is known" has to
+// be able to tell those apart, and it cannot use Vendor for the job — Vendor
+// answers false for a perfectly good MAC whose OUI is simply not curated, and
+// for a randomized address, both of which ARE addresses.
+//
+// Twelve hex digits exactly: a longer run is not a longer MAC, it is something
+// else that happens to start like one.
+func IsMAC(s string) bool {
+	hex := normalize(s)
+	if len(hex) != 12 {
+		return false
+	}
+	// normalize stops at the first character it does not recognize, so a
+	// trailing non-hex tail would silently truncate to a valid-looking 12. Check
+	// the input had nothing after the address it spelled.
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r == ':', r == '-', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// Canonical returns s as the one spelling this platform publishes — lowercase
+// hex, colon-separated — or "" when s is not a MAC. One spelling matters
+// because the value is shown to an operator and searched by them: two rows
+// spelling the same address differently read as two devices.
+func Canonical(s string) string {
+	if !IsMAC(s) {
+		return ""
+	}
+	hex := normalize(s)
+	var b strings.Builder
+	b.Grow(17)
+	for i := 0; i < 12; i += 2 {
+		if i > 0 {
+			b.WriteByte(':')
+		}
+		b.WriteString(hex[i : i+2])
+	}
+	return b.String()
+}
+
 // normalize strips the separators a MAC may carry (`:` `-` `.`) and lowercases
 // the rest, returning only the hex run. A non-hex character ends the address —
 // the caller has already length-checked what it needs.

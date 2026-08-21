@@ -1161,3 +1161,78 @@ describe("Devices — open ports, the three answers as an operator meets them", 
     expect(screen.getByText("Never looked")).toBeInTheDocument();
   });
 });
+
+describe("Devices — hardware identity", () => {
+  // The vendor was never missing, only unpublished: it was read out of the MAC
+  // and spent on a fallback name, so it reached an operator only for a device
+  // that could not name itself. On the box that left 12 of 63 — including BOTH
+  // machines called "NAS" — with a vendor the platform knew and nothing showing
+  // it.
+
+  it("shows the vendor for a device that named ITSELF, which the name never could", async () => {
+    seed({
+      devices: [device({ name: "NAS", mac: "bc:24:11:3f:b9:4d", vendor: "Proxmox" })],
+      entities: [],
+    });
+    renderRoute();
+    const table = await screen.findByRole("table", { name: "Discovered devices" });
+    await waitFor(() => expect(within(table).getByText("NAS")).toBeInTheDocument());
+    expect(within(table).getByText("Proxmox")).toBeInTheDocument();
+    expect(within(table).getByText("bc:24:11:3f:b9:4d")).toBeInTheDocument();
+  });
+
+  it("tells two identically-named devices apart", async () => {
+    // The case that justifies the column: same name, and an IP DHCP may move.
+    seed({
+      devices: [
+        device({ id: DEVICE_ID, name: "NAS", address: "192.0.2.10", mac: "bc:24:11:3f:b9:4d" }),
+        device({ id: OTHER_DEVICE_ID, name: "NAS", address: "192.0.2.11", mac: "aa:bb:cc:dd:ee:ff" }),
+      ],
+      entities: [],
+    });
+    renderRoute();
+    const table = await screen.findByRole("table", { name: "Discovered devices" });
+    await waitFor(() => expect(within(table).getAllByText("NAS")).toHaveLength(2));
+    expect(within(table).getByText("bc:24:11:3f:b9:4d")).toBeInTheDocument();
+    expect(within(table).getByText("aa:bb:cc:dd:ee:ff")).toBeInTheDocument();
+  });
+
+  it("shows the MAC alone when the OUI is not recognized, inventing no vendor", async () => {
+    seed({ devices: [device({ mac: "ce:41:9a:7b:22:10" })], entities: [] });
+    renderRoute();
+    const table = await screen.findByRole("table", { name: "Discovered devices" });
+    await waitFor(() => expect(within(table).getByText("ce:41:9a:7b:22:10")).toBeInTheDocument());
+  });
+
+  it("draws an em dash when no hardware address was learned", async () => {
+    // A real state, not a gap: a device a protocol lane named carries that
+    // protocol's id and no MAC.
+    seed({ devices: [device({ name: "Hanger TV" })], entities: [] });
+    renderRoute();
+    const table = await screen.findByRole("table", { name: "Discovered devices" });
+    await waitFor(() => expect(within(table).getByText("Hanger TV")).toBeInTheDocument());
+    expect(within(table).queryByText(/^..:..:..:..:..:..$/)).toBeNull();
+  });
+
+  it("finds a device by VENDOR and by a MAC fragment", async () => {
+    seed({
+      devices: [
+        device({ id: DEVICE_ID, name: "Hanger TV" }),
+        device({ id: OTHER_DEVICE_ID, name: "Rack box", mac: "bc:24:11:3f:b9:4d", vendor: "Proxmox" }),
+      ],
+      entities: [],
+    });
+    const user = renderRoute();
+    await screen.findByRole("table", { name: "Discovered devices" });
+
+    const search = screen.getByLabelText("Search devices");
+    await user.type(search, "Proxmox");
+    await waitFor(() => expect(screen.queryByText("Hanger TV")).not.toBeInTheDocument());
+    expect(screen.getByText("Rack box")).toBeInTheDocument();
+
+    await user.clear(search);
+    await user.type(search, "bc:24");
+    await waitFor(() => expect(screen.queryByText("Hanger TV")).not.toBeInTheDocument());
+    expect(screen.getByText("Rack box")).toBeInTheDocument();
+  });
+});

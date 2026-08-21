@@ -1896,6 +1896,13 @@ type Device struct {
 	// ABSENT for the same reason `first_seen` is.
 	LastSeen *int64 `json:"last_seen,omitempty"`
 
+	// Mac The device's hardware address, when discovery learned one, in this platform's single spelling: lowercase hex, colon-separated.
+	//
+	// A DESCRIPTIVE fact, in the same class as `address` and `model` — not this row's identity. A device is keyed by REL-153's `(site, driver, native_id)`; that tuple is not published here and adoption remains a bodyless POST by device id. What this adds is the one identifier that survives what `address` does not — a lease expiring, a device moving subnet — so two hosts both calling themselves "NAS" stop being distinguishable only by an IP that DHCP may reassign.
+	//
+	// ABSENT when the reporting lane learned no hardware address: a device a protocol lane named carries that protocol's own id rather than a MAC, and no address is invented for it.
+	Mac *string `json:"mac,omitempty"`
+
 	// Model The model the device reported when the relay probed it over the driver's own protocol. Absent when the probe did not answer.
 	Model *string `json:"model,omitempty"`
 	Name  string  `json:"name"`
@@ -1913,6 +1920,11 @@ type Device struct {
 
 	// Serial The serial number of the physical unit, as the device reported it. Absent when the probe did not answer.
 	Serial *string `json:"serial,omitempty"`
+
+	// Vendor The organization that owns the `mac` OUI, when it is one this build recognizes.
+	//
+	// A locally-administered (randomized) address deliberately resolves to no vendor — its OUI identifies no maker — and an OUI outside the curated set yields nothing rather than a guess. So absent means "not known", never "no vendor".
+	Vendor *string `json:"vendor,omitempty"`
 }
 
 // DeviceFirstSeenOrigin Where `first_seen` came from, and therefore whether it may be presented as an exact instant. ABSENT exactly when `first_seen` is.

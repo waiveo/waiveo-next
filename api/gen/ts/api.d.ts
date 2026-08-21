@@ -3312,6 +3312,20 @@ export interface components {
             /** @description The serial number of the physical unit, as the device reported it. Absent when the probe did not answer. */
             serial?: string;
             /**
+             * @description The device's hardware address, when discovery learned one, in this platform's single spelling: lowercase hex, colon-separated.
+             *
+             *     A DESCRIPTIVE fact, in the same class as `address` and `model` — not this row's identity. A device is keyed by REL-153's `(site, driver, native_id)`; that tuple is not published here and adoption remains a bodyless POST by device id. What this adds is the one identifier that survives what `address` does not — a lease expiring, a device moving subnet — so two hosts both calling themselves "NAS" stop being distinguishable only by an IP that DHCP may reassign.
+             *
+             *     ABSENT when the reporting lane learned no hardware address: a device a protocol lane named carries that protocol's own id rather than a MAC, and no address is invented for it.
+             */
+            mac?: string;
+            /**
+             * @description The organization that owns the `mac` OUI, when it is one this build recognizes.
+             *
+             *     A locally-administered (randomized) address deliberately resolves to no vendor — its OUI identifies no maker — and an OUI outside the curated set yields nothing rather than a guess. So absent means "not known", never "no vendor".
+             */
+            vendor?: string;
+            /**
              * @description The ports an active scan found listening on this device, from the small curated set Discovery probes (a printer answers 9100 or 631, a Roku answers 8060, file storage answers 445). It is the cheapest honest evidence of what a device DOES, for the many hosts that announce nothing over mDNS or SSDP.
              *
              *     ABSENT until something scanned this device — passive discovery never sets it. Absent and empty are different facts: absent means nobody has looked, empty would mean a scan looked and found nothing open, and only a scan can assert the second.

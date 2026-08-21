@@ -134,6 +134,34 @@ function isObservedAge(device: Device): boolean {
   return device.first_seen_origin === "planted";
 }
 
+/** The hardware-identity cell: the vendor over the MAC, or an em dash.
+ *
+ * An em dash here means what an em dash should mean — no hardware address was
+ * learned — and that is a real and ordinary state: `native_id` is
+ * driver-specific, so a device a protocol lane named carries that protocol's own
+ * id and no MAC. Nothing is invented for it.
+ *
+ * The vendor sits above the address rather than beside it because it is the
+ * coarser fact and the one that answers a scan of the whole fleet; the MAC is
+ * monospaced because it is read character by character when it is read at all.
+ * A device whose OUI this build does not recognize shows the MAC alone — absent
+ * means "not known", never "no vendor". */
+function hardwareCell(device: Device): React.ReactNode {
+  if (!device.mac) return <span className="text-muted-foreground">—</span>;
+  return (
+    <span className="flex flex-col leading-tight">
+      {device.vendor ? <span>{device.vendor}</span> : null}
+      <span className="font-mono text-xs text-muted-foreground">{device.mac}</span>
+    </span>
+  );
+}
+
+/** What a search matches on: vendor and address together, so "Proxmox" and
+ * "bc:24" both find the row. */
+function macSearchText(device: Device): string {
+  return [device.vendor, device.mac].filter(Boolean).join(" ") || "—";
+}
+
 /** The `open_ports` cell — THREE states, drawn as three different things.
  *
  * api/1 is explicit that the member carries three answers: "absent means nobody
@@ -466,6 +494,27 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
     () => [
       { id: "name", header: "Device", accessorFn: (r) => r.device.name, meta: { searchable: true } },
       { id: "address", header: "Address", accessorFn: (r) => r.address ?? "—", meta: { searchable: true } },
+      /* The hardware identity, beside the address because they answer the same
+         question and only one of them survives a lease expiring. Two hosts on
+         this deployment both call themselves "NAS"; until this column they were
+         distinguishable only by an IP that DHCP may reassign.
+
+         Vendor and MAC in ONE cell on purpose: they are one fact at two
+         resolutions — who made it, and which one it is — and an operator
+         scanning a fleet wants the maker while an operator chasing a specific
+         box wants the address. Searchable together, so "Proxmox" and "bc:24"
+         both find it.
+
+         The vendor was never missing, only unpublished: candidateName has been
+         reading it out of the MAC all along and spending it on a fallback name,
+         so it reached an operator only for a device that could not name itself. */
+      {
+        id: "mac",
+        header: "Hardware",
+        accessorFn: (r) => macSearchText(r.device),
+        meta: { searchable: true },
+        cell: ({ row }) => hardwareCell(row.original.device),
+      },
       { id: "model", header: "Model", accessorFn: (r) => r.model ?? "—", meta: { searchable: true } },
       {
         id: "class",
@@ -635,7 +684,7 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
             data={rows}
             label="Discovered devices"
             loading={devices === null}
-            search={{ label: "Search devices", placeholder: "Name, address, model, class or port" }}
+            search={{ label: "Search devices", placeholder: "Name, address, vendor, MAC, model, class or port" }}
             filters
             pagination
             onRowPress={(row) =>

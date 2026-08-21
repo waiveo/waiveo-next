@@ -215,3 +215,69 @@ func TestTheMirrorsFINDINGSStillOverrideAnIgnorantReport(t *testing.T) {
 		t.Fatalf("the mirror's findings did not survive an ignorant report: %#v", d.OpenPorts)
 	}
 }
+
+// MAC and vendor are published as FACTS, not as a name fragment. Both were
+// already known: candidateName has been reading the vendor out of the MAC all
+// along and spending it on a fallback name, which means it reached an operator
+// only for a device that could not name itself — 12 of 63 on the box, including
+// both machines called "NAS", had a vendor the platform knew and no surface
+// that said it.
+
+func TestAVendorIsPublishedEvenWhenTheDeviceNamedItself(t *testing.T) {
+	r := New(testSite, func() int64 { return 0 })
+	c := candidate("net", "bc:24:11:3f:b9:4d")
+	c.Name = "NAS" // self-named, so the fallback never runs
+	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{c}); err != nil {
+		t.Fatalf("ApplyCandidates: %v", err)
+	}
+	d, ok := r.Device(deviceid.Device(testSite, "net", "bc:24:11:3f:b9:4d"))
+	if !ok {
+		t.Fatal("device missing")
+	}
+	if d.Name != "NAS" {
+		t.Fatalf("the device's own name was overwritten: %q", d.Name)
+	}
+	if d.Vendor != "Proxmox" {
+		t.Errorf("Vendor = %q, want Proxmox — the fact was known and reached nobody", d.Vendor)
+	}
+	if d.MAC != "bc:24:11:3f:b9:4d" {
+		t.Errorf("MAC = %q", d.MAC)
+	}
+}
+
+func TestANativeIDThatIsNotAnAddressPublishesNoMAC(t *testing.T) {
+	// `native_id` is driver-specific. A device a protocol lane named carries
+	// that protocol's id, and inventing a MAC from it would be a fabricated
+	// identifier for hardware nobody saw at layer 2.
+	r := New(testSite, func() int64 { return 0 })
+	c := candidate("roku-ecp", "X01500ABCDEF")
+	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{c}); err != nil {
+		t.Fatalf("ApplyCandidates: %v", err)
+	}
+	d, ok := r.Device(deviceid.Device(testSite, "roku-ecp", "X01500ABCDEF"))
+	if !ok {
+		t.Fatal("device missing")
+	}
+	if d.MAC != "" {
+		t.Errorf("MAC = %q, want empty for a non-address native_id", d.MAC)
+	}
+	if d.Vendor != "" {
+		t.Errorf("Vendor = %q, want empty", d.Vendor)
+	}
+}
+
+func TestTheMACIsPublishedInOneSpelling(t *testing.T) {
+	// Two rows spelling one address differently read as two devices.
+	r := New(testSite, func() int64 { return 0 })
+	c := candidate("net", "BC-24-11-3F-B9-4D")
+	if err := r.ApplyCandidates(relayA, []wire.DeviceCandidate{c}); err != nil {
+		t.Fatalf("ApplyCandidates: %v", err)
+	}
+	d, ok := r.Device(deviceid.Device(testSite, "net", "BC-24-11-3F-B9-4D"))
+	if !ok {
+		t.Fatal("device missing")
+	}
+	if d.MAC != "bc:24:11:3f:b9:4d" {
+		t.Errorf("MAC = %q, want the canonical spelling", d.MAC)
+	}
+}
