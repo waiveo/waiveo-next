@@ -603,7 +603,13 @@ func mergeDiscovered(prior, next DiscoveredDevice) DiscoveredDevice {
 	//          land, because it is the only way a port that has CLOSED is ever
 	//          retracted. Keeping the prior list here would serve a device's
 	//          8060 forever after the Roku behind it was unplugged.
-	if next.OpenPorts == nil && len(prior.OpenPorts) > 0 {
+	// No length test on PRIOR either, and that omission is the whole rule: if
+	// this report did not scan, the mirror keeps whatever it holds — a list, an
+	// empty list, or nothing. `len(prior) > 0` survived the first draft of this
+	// change and quietly re-erased the empties one relay restart later, because
+	// an empty prior is exactly the answer being preserved and a length test
+	// reads it as nothing worth keeping.
+	if next.OpenPorts == nil {
 		row.OpenPorts = prior.OpenPorts
 	}
 

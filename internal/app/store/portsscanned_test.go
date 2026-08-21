@@ -179,3 +179,37 @@ func TestTheREALTypesSerializeEmptyRatherThanVanishing(t *testing.T) {
 		t.Errorf("the wire dropped a scan's empty finding: %s", out)
 	}
 }
+
+func TestAPassiveReportDoesNotERASEAScansEmptyFinding(t *testing.T) {
+	// The case the first draft of this change missed, and hardware caught: a
+	// prior of [] with a nil next. The guard read `len(prior) > 0`, so an EMPTY
+	// prior — the exact answer the durable half exists to preserve — fell
+	// through and was blanked back to "nobody looked".
+	//
+	// It needs a relay restart to appear, because only then does a report arrive
+	// carrying no ports at all: measured as 24 of 63 devices on the dev box,
+	// erased on disk one restart after the scan that recorded them.
+	st := openFileStoreAt(t, filepath.Join(t.TempDir(), "app.db"), func() int64 { return ddAppNowMs })
+	ctx := context.Background()
+
+	if _, err := st.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{
+		mirrored("dev-z", []int{}),
+	}); err != nil {
+		t.Fatalf("scan found nothing open: %v", err)
+	}
+	if _, err := st.ReplaceDiscoveredDevices(ctx, "relay-a", []store.DiscoveredDevice{
+		mirrored("dev-z", nil),
+	}); err != nil {
+		t.Fatalf("passive re-observation: %v", err)
+	}
+
+	rows, err := st.DiscoveredDevices(ctx)
+	if err != nil {
+		t.Fatalf("DiscoveredDevices: %v", err)
+	}
+	if p := rows[0].OpenPorts; p == nil {
+		t.Fatal("a report that did not scan erased the scan's empty finding; the mirror now says nobody looked")
+	} else if len(p) != 0 {
+		t.Fatalf("want the empty finding preserved, got %#v", p)
+	}
+}
