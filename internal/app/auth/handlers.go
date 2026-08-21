@@ -491,12 +491,31 @@ func (h *Handlers) Claim(w http.ResponseWriter, r *http.Request) {
 	h.auth.auditor.Success(traceID, principal.PrincipalID, ActionPrincipalCreate, "principal:"+principal.PrincipalID)
 	h.auth.auditor.Success(traceID, principal.PrincipalID, ActionSetupClaimed, "principal:"+principal.PrincipalID)
 
+	// Minted OUTSIDE the redemption transaction, and the failure here is NOT the
+	// failure the status code suggests.
+	//
+	// Everything the claim actually does — the owner principal, its password
+	// credential, its role binding — committed with the grant's consumption in
+	// one transaction above. So a failure at this point means the workspace IS
+	// claimed and the operator's credentials DO work; only the convenience of
+	// being signed in automatically was lost.
+	//
+	// A bare "an unexpected server error occurred" is therefore actively
+	// misleading at exactly the moment it is most costly: the setup code is
+	// one-time and now spent, so an operator who reads that as "the claim
+	// failed" will retry, be told the workspace is already claimed, and
+	// reasonably conclude the box is broken — while their own credentials would
+	// have let them straight in.
+	//
+	// The status stays 500 (the request did not do all it promised) and the
+	// DETAIL says what is true and what to do. There is no safe way to undo the
+	// claim here and no reason to want to.
 	minted, err := store.MintSession(ctx, principal.PrincipalID, TokenKindSession, "", AALStandard, map[string]string{
 		"user_agent": r.UserAgent(),
 		"ip_class":   RequestIPClass(r),
 	})
 	if err != nil {
-		writeInternal(w, r, traceID)
+		writeClaimedButNoSession(w, r, traceID)
 		return
 	}
 	h.auth.auditor.Success(traceID, principal.PrincipalID, ActionSessionIssued, "session:"+minted.Session.SessionID)
@@ -803,6 +822,30 @@ func writeValidationProblem(w http.ResponseWriter, r *http.Request, traceID stri
 	apihttp.WriteProblemExt(w, r, traceID, http.StatusUnprocessableEntity,
 		"VALIDATION_FAILED", "Validation Failed", "One or more fields failed validation.",
 		map[string]any{"errors": errs})
+}
+
+// claimedButNoSessionDetail is what an operator is told when the workspace claim
+// COMMITTED and only the session mint failed.
+//
+// Extracted and named so the wording is testable on its own: the branch that
+// uses it needs a MintSession failure to reach, which no test here can force
+// without a seam that would exist purely for the test.
+const claimedButNoSessionDetail = "The workspace was claimed and this owner's credentials are in " +
+	"place, but issuing a session failed. Do not retry the claim — the setup code is spent and a " +
+	"second attempt will be refused. Sign in normally instead."
+
+// writeClaimedButNoSession answers the one 500 on this route that does not mean
+// "your request did nothing".
+//
+// The status stays 500 because the request did not do all it promised. The
+// DETAIL carries what is true, because the generic "an unexpected server error
+// occurred" is actively misleading at the most expensive moment: the setup code
+// is one-time and now spent, so an operator reading it as "the claim failed"
+// retries, is told the workspace is already claimed, and reasonably concludes
+// the box is broken — while their own credentials would have let them in.
+func writeClaimedButNoSession(w http.ResponseWriter, r *http.Request, traceID string) {
+	apihttp.WriteProblemExt(w, r, traceID, http.StatusInternalServerError,
+		"INTERNAL", "Internal Server Error", claimedButNoSessionDetail, nil)
 }
 
 func writeInternal(w http.ResponseWriter, r *http.Request, traceID string) {
