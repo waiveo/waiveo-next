@@ -74,6 +74,7 @@ import (
 	"github.com/maaxton/waiveo-next/internal/app/auth"
 	"github.com/maaxton/waiveo-next/internal/app/auth/authtest"
 	"github.com/maaxton/waiveo-next/internal/app/devices"
+	"github.com/maaxton/waiveo-next/internal/app/enginestate"
 	"github.com/maaxton/waiveo-next/internal/app/platformlog"
 	"github.com/maaxton/waiveo-next/internal/app/scanstatus"
 	"github.com/maaxton/waiveo-next/internal/app/store"
@@ -368,6 +369,10 @@ type schemaProbeEnv struct {
 	// scan-status probe can seed a report — a relay that never reported is
 	// absent by design, so an unseeded probe would validate an empty array.
 	scanStatus *scanstatus.Registry
+	// engineState is the same engine-state read model the handler serves, on the
+	// same terms as scanStatus above: a relay that has never reported is absent
+	// by design, so an unseeded probe would validate an empty array.
+	engineState *enginestate.Registry
 	// logs is the SAME captured-log buffer the handler serves the diagnostics
 	// read from, kept so the platform-logs probe can put a line in it. That
 	// operation's item schema declares required members, so an empty page would
@@ -425,11 +430,13 @@ func newSchemaProbeEnv(t *testing.T) *schemaProbeEnv {
 	dataDir := t.TempDir()
 	restartOrders := &[]api.RestartOrder{}
 	scanStatusReg := scanstatus.New()
+	engineStateReg := enginestate.New(func() int64 { return 1_700_000_005_000 })
 	ts := httptest.NewServer(api.New(st, apihttp.NewIdempotencyStore(clock, 0), clock, ulid.Monotonic(),
 		content, testContentBase, fixture.Auth,
 		api.WithJobRunner(jobs),
 		api.WithDevicePlane(registry, &fakeDispatcher{result: wire.DeviceCommandResultBody{OK: true}}),
 		api.WithScanStatus(scanStatusReg),
+		api.WithEngineState(engineStateReg),
 		// The REAL sealing construction, over the same workspace key the TOTP
 		// probes seal under — a stub would let the rotate probe pass against an
 		// implementation that never sealed the signing secret it was handed.
@@ -464,12 +471,13 @@ func newSchemaProbeEnv(t *testing.T) *schemaProbeEnv {
 	t.Cleanup(ts.Close)
 
 	return &schemaProbeEnv{
-		testEnv:    &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture, jobs: jobs},
-		authStore:  fixture.Store,
-		registry:   registry,
-		scanStatus: scanStatusReg,
-		logs:       logs,
-		dataDir:    dataDir,
+		testEnv:     &testEnv{ts: ts, store: st, content: content, contentBase: testContentBase, auth: fixture, jobs: jobs},
+		authStore:   fixture.Store,
+		registry:    registry,
+		scanStatus:  scanStatusReg,
+		engineState: engineStateReg,
+		logs:        logs,
+		dataDir:     dataDir,
 
 		restartOrders: restartOrders,
 	}
@@ -974,6 +982,19 @@ var probes = map[string]probe{
 			StartedAt: 1_700_000_000_000, FinishedAt: 1_700_000_003_000, Candidates: 35,
 		})
 		return e.do(t, http.MethodGet, "/api/v1/discovery/scan-status", nil, nil)
+	},
+	"listDiscoveryEngineState": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
+		// Seeded for the same reason its scan-status neighbour is: a relay that
+		// has never reported is deliberately ABSENT from this list, so an
+		// unseeded probe would validate an empty array and prove nothing about
+		// the item shape. Seeded with a non-zero value on every count so a
+		// member the handler drops cannot pass as a legitimate zero.
+		e.engineState.ApplyDiscoveryEngineState(rsRelayID, wire.DiscoveryEngineStateBody{
+			SSDPLane: true, MDNSLane: true,
+			SSDPWatches: 3, MDNSWatches: 2, PackPatterns: 4,
+			MDNSUndeliverable: 1, MacOUIUnimplemented: 1, Malformed: 1,
+		})
+		return e.do(t, http.MethodGet, "/api/v1/discovery/engine-state", nil, nil)
 	},
 	"startDiscoveryScan": func(t *testing.T, e *schemaProbeEnv) (*http.Response, []byte) {
 		// The env's pairing directory wires one connected relay, so the response
