@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/store"
 	"github.com/maaxton/waiveo-next/internal/shared/wire"
@@ -288,5 +289,140 @@ func TestRetirePairingGrantOnlyForTheRelayItIsBoundTo(t *testing.T) {
 	retired, err = s.RetirePairingGrant(ctx, g.GrantID, relayA)
 	if err != nil || retired {
 		t.Fatalf("re-report of a retired grant = (%v, %v), want (false, nil)", retired, err)
+	}
+}
+
+// TestRetirePairingGrantMatchesTheBOUNDRelayAndNotAPosition closes the hole the
+// case above leaves open.
+//
+// That case holds ONE grant, bound to relay A, and proves relay B is refused and
+// relay A succeeds. Both assertions survive an implementation that never
+// compares identities at all — one that returned the only grant on record, or
+// the first row of a scan, would pass the whole corpus. The property being
+// claimed is "a relay may retire the grant BOUND TO IT", and a fixture with one
+// grant cannot distinguish that from "a relay may retire THE grant".
+//
+// So: two grants, bound to different relays, and the relay whose grant is NOT
+// first redeems its own. A positional implementation now retires the wrong row —
+// and retiring the wrong row is not a cosmetic failure. A pairing grant is a
+// one-time credential a screen redeems to become a principal; consuming another
+// relay's grant would burn a credential that screen still needs while leaving
+// the reporting relay's own grant riding desired state as if unspent.
+func TestRetirePairingGrantMatchesTheBOUNDRelayAndNotAPosition(t *testing.T) {
+	const relayA, relayB = "01J8ZRELAYAAAAAAAAAAAAAAA1", "01J8ZRELAYBBBBBBBBBBBBBBB2"
+
+	s := openMem(t)
+	ctx := context.Background()
+	if err := s.SeedDemo(ctx, seedAssetRef); err != nil {
+		t.Fatalf("SeedDemo: %v", err)
+	}
+
+	// Ordered so relay B's grant is the SECOND one on record: the first-row
+	// implementation this case exists to catch would reach for relay A's.
+	// Issued NOW, not at the fixture's usual fixed instant. AddPairingGrant
+	// deletes rows past their ttl before inserting, and the shared fixture's
+	// issued_at is long past with a 900s ttl — harmless while a case holds ONE
+	// grant, but adding a second sweeps the first as expired and the test then
+	// proves nothing. The single-grant case above never had to notice.
+	issued := time.Now().UnixMilli()
+	first := boundGrant("grant-bound-to-relay-a-000000000000000000", store.SeedScreenID, issued)
+	first.RelayID = relayA
+	if err := s.AddPairingGrant(ctx, first, "01J8Z4DEM0SCREENF1RSTPH0TN", "api"); err != nil {
+		t.Fatalf("AddPairingGrant(A): %v", err)
+	}
+	second := boundGrant("grant-bound-to-relay-b-000000000000000000", store.SeedScreenID, issued+1)
+	second.RelayID = relayB
+	if err := s.AddPairingGrant(ctx, second, "01J8Z4DEM0SCREENF1RSTPH0TN", "api"); err != nil {
+		t.Fatalf("AddPairingGrant(B): %v", err)
+	}
+
+	// Relay B retires ITS OWN grant, which is not the first on record.
+	retired, err := s.RetirePairingGrant(ctx, second.GrantID, relayB)
+	if err != nil || !retired {
+		t.Fatalf("RetirePairingGrant(B's own grant, as B) = (%v, %v), want (true, nil)", retired, err)
+	}
+
+	// And relay A's grant is untouched — the assertion a positional match fails.
+	ds, err := s.DesiredState(ctx)
+	if err != nil {
+		t.Fatalf("DesiredState: %v", err)
+	}
+	if len(ds.PairingGrants) != 1 {
+		t.Fatalf("desired state carries %d grant(s) after one retirement, want 1: %+v",
+			len(ds.PairingGrants), ds.PairingGrants)
+	}
+	if ds.PairingGrants[0].GrantID != first.GrantID {
+		t.Fatalf("the surviving grant is %q, want relay A's %q — relay B's report retired the "+
+			"WRONG grant, burning a credential its screen still needs while leaving B's own "+
+			"grant riding desired state as if unspent",
+			ds.PairingGrants[0].GrantID, first.GrantID)
+	}
+	if ds.PairingGrants[0].RelayID != relayA {
+		t.Errorf("the surviving grant is bound to %q, want relay A", ds.PairingGrants[0].RelayID)
+	}
+}
+
+// TestRetiringOneGrantDoesNotBurnTheRelaysOTHERGrants closes a hole neither of
+// the cases above can see.
+//
+// Both of them hold at most one grant per relay, so a retirement scoped to the
+// RELAY rather than to the GRANT — `DELETE ... WHERE relay_id = ?` in place of
+// `WHERE grant_id = ?` — removes exactly the row it should and passes. I found
+// that empirically by making the mutation: the single-grant case and the
+// two-relay case both stayed green.
+//
+// The bug it would hide is not subtle. A pairing grant is a one-time credential
+// a screen redeems to become a principal, and a relay serves many screens. One
+// screen completing its pairing would silently destroy every other pending
+// grant on that relay, and each of those screens would fail to pair with no
+// record of why — the grant it was told to redeem simply no longer exists.
+func TestRetiringOneGrantDoesNotBurnTheRelaysOTHERGrants(t *testing.T) {
+	const relay = "01J8ZRELAYBBBBBBBBBBBBBBB2"
+	const secondScreen = "01J8Z9DEM0SCREENR0WSEC0ND2"
+
+	s := openMem(t)
+	ctx := context.Background()
+	if err := s.SeedDemo(ctx, seedAssetRef); err != nil {
+		t.Fatalf("SeedDemo: %v", err)
+	}
+	// A second screen at the seeded screen's own node, so both grants are
+	// legitimately mintable and the fixture describes one relay serving two
+	// screens — the ordinary case, not a contrived one.
+	if _, err := s.Create(ctx, store.KindScreen, mustJSON(t, map[string]any{
+		"id": secondScreen, "scope_node": "01J8Z4DEM0SCREENF1RSTPH0TN", "name": "Second Screen",
+	})); err != nil {
+		var verr *store.ValidationError
+		if errors.As(err, &verr) {
+			t.Fatalf("create the second screen: %v", verr.Errors)
+		}
+		t.Fatalf("create the second screen: %v", err)
+	}
+
+	issued := time.Now().UnixMilli()
+	keep := boundGrant("grant-for-the-other-screen-0000000000000", secondScreen, issued)
+	keep.RelayID = relay
+	if err := s.AddPairingGrant(ctx, keep, "01J8Z4DEM0SCREENF1RSTPH0TN", "api"); err != nil {
+		t.Fatalf("AddPairingGrant(keep): %v", err)
+	}
+	spend := boundGrant("grant-about-to-be-redeemed-000000000000", store.SeedScreenID, issued+1)
+	spend.RelayID = relay
+	if err := s.AddPairingGrant(ctx, spend, "01J8Z4DEM0SCREENF1RSTPH0TN", "api"); err != nil {
+		t.Fatalf("AddPairingGrant(spend): %v", err)
+	}
+
+	retired, err := s.RetirePairingGrant(ctx, spend.GrantID, relay)
+	if err != nil || !retired {
+		t.Fatalf("RetirePairingGrant(spend) = (%v, %v), want (true, nil)", retired, err)
+	}
+
+	ds, err := s.DesiredState(ctx)
+	if err != nil {
+		t.Fatalf("DesiredState: %v", err)
+	}
+	if len(ds.PairingGrants) != 1 || ds.PairingGrants[0].GrantID != keep.GrantID {
+		t.Fatalf("after retiring ONE of this relay's two grants, desired state carries %+v — want only "+
+			"%q. Retiring by relay rather than by grant destroys every other screen's pending "+
+			"credential, and each of them fails to pair with no record of why",
+			ds.PairingGrants, keep.GrantID)
 	}
 }
