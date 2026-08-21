@@ -53,8 +53,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/maaxton/waiveo-next/internal/app/auth"
@@ -370,6 +372,48 @@ func (s *Supervisor) Running() []Running {
 
 // launch starts the process, hands it its code, and waits for readiness. It
 // either returns a pack that is up, or an error having left no process behind.
+// ErrEntryNotExecutable is returned when the kernel refuses to exec a pack's
+// entry at all — `ENOEXEC`, which it surfaces as the famously unhelpful "exec
+// format error".
+//
+// A sentinel because the condition is PERMANENT in a way almost nothing else
+// here is. A pack that cannot be exec'd will not become executable by being
+// tried again: no backoff, no restart and no amount of waiting changes the bytes
+// on disk. Callers that decide whether to keep trying need to be able to tell
+// this apart from the transient failures retrying exists for.
+var ErrEntryNotExecutable = errors.New("packhost: the pack's entry cannot be executed on this machine")
+
+// startError turns a failed exec into a sentence an operator can act on.
+//
+// It exists for one failure that this platform is about to start producing on
+// purpose. The multi-arch decision (2026-08-16) is PER-ARCH ARTIFACTS: one
+// manifest and version, one signed zip per architecture, and the index serves
+// the one matching the box. The failure mode that design creates is landing the
+// wrong zip — an amd64 entry on an arm64 appliance, which is the ordinary shape
+// of a Raspberry Pi install — and what the operator saw was:
+//
+//	extension waiveo/x did NOT start: packhost: start waiveo/x:
+//	fork/exec /…/bin/x: exec format error
+//
+// which names neither the machine nor the remedy. It now names both.
+//
+// DELIBERATELY NOT CLAIMING "wrong architecture", because ENOEXEC does not say
+// that. The kernel raises the same error for a file that is not an executable at
+// all — a text file with the exec bit, a truncated download, a zip entry that
+// was never a binary — and asserting an architecture mismatch would send an
+// operator hunting a cross-compile when the real problem is a corrupt artifact.
+// So both candidates are named, and the box's own GOOS/GOARCH is stated as the
+// fact the operator can compare their artifact against.
+func startError(spec Spec, err error) error {
+	if errors.Is(err, syscall.ENOEXEC) {
+		return fmt.Errorf("%w: %s could not exec %q on %s/%s — the entry is either built for a "+
+			"different architecture (install the artifact matching this machine) or is not an "+
+			"executable at all (a truncated or wrong-typed file in the artifact): %w",
+			ErrEntryNotExecutable, spec.ID, spec.Argv[0], runtime.GOOS, runtime.GOARCH, err)
+	}
+	return fmt.Errorf("packhost: start %s: %w", spec.ID, err)
+}
+
 func (s *Supervisor) launch(ctx context.Context, spec Spec) (*process, error) {
 	if len(spec.Argv) == 0 {
 		return nil, fmt.Errorf("packhost: %s has no argv to start", spec.ID)
@@ -407,7 +451,7 @@ func (s *Supervisor) launch(ctx context.Context, spec Spec) (*process, error) {
 		return nil, fmt.Errorf("packhost: %s stdin: %w", spec.ID, err)
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("packhost: start %s: %w", spec.ID, err)
+		return nil, startError(spec, err)
 	}
 	p := &process{spec: spec, cmd: cmd, stdin: stdin, startedAt: time.Now(), ctx: ctx, exited: make(chan struct{})}
 	// ONE waiter, started here and never anywhere else. It reaps the child the
