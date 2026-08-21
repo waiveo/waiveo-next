@@ -1628,6 +1628,26 @@ type ClaimRequest struct {
 	Password   string `json:"password"`
 }
 
+// ContentAsset One asset the content origin holds: its content-addressed ref, a signed URL to fetch it, its size, when it was stored, and whether anything currently references it.
+type ContentAsset struct {
+	// AssetRef The content-addressed reference, `sha256:` + the lowercase hex digest.
+	AssetRef string `json:"asset_ref"`
+
+	// Referenced Whether any persisted asset-bearing row names this asset. False means nothing currently uses it, which is the condition the retention sweep reclaims on.
+	//
+	// A snapshot at request time, not a guarantee, and never a licence to delete: the sweep reads the same projection under a lock held across its deletions precisely because it acts on the answer. When the reference set cannot be read at all, every asset reports `true` — the conservative direction, because an unreadable set rendering as "nothing is referenced" would invite an operator to treat content in use as disposable.
+	Referenced bool `json:"referenced"`
+
+	// SizeBytes The stored size in bytes.
+	SizeBytes int64 `json:"size_bytes"`
+
+	// StoredAt When the origin took delivery of this asset, in epoch milliseconds.
+	StoredAt int64 `json:"stored_at"`
+
+	// Url A signed, expiring URL that serves the bytes. Minted per response — two listings of the same asset return different URLs, and neither is a durable identifier. `asset_ref` is the identifier.
+	Url string `json:"url"`
+}
+
 // CredentialResetHandoff What the issuing admin receives (SEC-050). Every member is an identifier or the one-time code itself; none is, or can become, the credential value the target eventually sets.
 type CredentialResetHandoff struct {
 	// Code The one-time code, returned exactly once and recoverable from nowhere else — the grant row stores only its hash (SEC-051). It identifies a grant; it is not itself a rendered credential.
@@ -16621,8 +16641,11 @@ func (r ExportCastResponse) ContentType() string {
 }
 
 type ListContentResponse struct {
-	Body                      []byte
-	HTTPResponse              *http.Response
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *struct {
+		Content []ContentAsset `json:"content"`
+	}
 	ApplicationproblemJSON401 *Unauthorized
 }
 
@@ -22845,6 +22868,15 @@ func ParseListContentResponse(rsp *http.Response) (*ListContentResponse, error) 
 	}
 
 	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest struct {
+			Content []ContentAsset `json:"content"`
+		}
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
 		var dest Unauthorized
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {

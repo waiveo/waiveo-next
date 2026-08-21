@@ -4014,16 +4014,43 @@ paths:
       summary: List the assets in the content origin
       description: >-
         Every asset the content origin currently serves, each carrying the same
-        `{asset_ref, url}` an upload returns plus `size_bytes` and `stored_at`.
-        Upload is otherwise write-only, so an authoring surface that did not keep
-        an upload's `asset_ref` has no other way to rediscover it; this is the
-        read half a media browser and an editor's image picker resolve against.
+        `{asset_ref, url}` an upload returns plus `size_bytes`, `stored_at` and
+        `referenced`. Upload is otherwise write-only, so an authoring surface
+        that did not keep an upload's `asset_ref` has no other way to rediscover
+        it; this is the read half a media browser and an editor's image picker
+        resolve against.
+
+
+        `referenced` is what makes this more than an inventory: the retention
+        sweep reclaims content that is unreferenced, so an asset reporting
+        `referenced: false` is a candidate for reclamation and one reporting
+        `true` is in use. It is a SNAPSHOT taken at request time, never a
+        promise — a row authored a moment later may reference an asset this
+        response called unreferenced — and nothing may delete on the strength of
+        it. The sweep answers the same question under a lock held across its own
+        deletions, because it acts on the answer.
+
+
+        The reclamation THRESHOLDS are deliberately not stated here: the sweep's
+        windows are implementation-defined today and governed by no contract, so
+        this operation reports the reference fact and not a prediction of when
+        anything will be removed.
       tags: [content]
       parameters:
         - $ref: "#/components/parameters/TraceIdParam"
       responses:
         "200":
-          description: The content origin's current listing. Shape stub — the response schema is a later minor.
+          description: The content origin's current listing.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [content]
+                additionalProperties: false
+                properties:
+                  content:
+                    type: array
+                    items: { $ref: "#/components/schemas/ContentAsset" }
         "401":
           $ref: "#/components/responses/Unauthorized"
     post:
@@ -8514,6 +8541,48 @@ components:
         message:
           type: string
           description: The refusal's human-readable detail.
+    ContentAsset:
+      type: object
+      description: >-
+        One asset the content origin holds: its content-addressed ref, a signed
+        URL to fetch it, its size, when it was stored, and whether anything
+        currently references it.
+      required: [asset_ref, url, size_bytes, stored_at, referenced]
+      additionalProperties: false
+      properties:
+        asset_ref:
+          type: string
+          description: The content-addressed reference, `sha256:` + the lowercase hex digest.
+          example: "sha256:262eba16d81ab19353a542b03bded1550e54e5181ca8c2f2db061ab28275f89f"
+        url:
+          type: string
+          description: >-
+            A signed, expiring URL that serves the bytes. Minted per response —
+            two listings of the same asset return different URLs, and neither is
+            a durable identifier. `asset_ref` is the identifier.
+        size_bytes:
+          type: integer
+          format: int64
+          description: The stored size in bytes.
+        stored_at:
+          type: integer
+          format: int64
+          description: When the origin took delivery of this asset, in epoch milliseconds.
+        referenced:
+          type: boolean
+          description: >-
+            Whether any persisted asset-bearing row names this asset. False
+            means nothing currently uses it, which is the condition the
+            retention sweep reclaims on.
+
+
+            A snapshot at request time, not a guarantee, and never a licence to
+            delete: the sweep reads the same projection under a lock held across
+            its deletions precisely because it acts on the answer. When the
+            reference set cannot be read at all, every asset reports `true` —
+            the conservative direction, because an unreadable set rendering as
+            "nothing is referenced" would invite an operator to treat content in
+            use as disposable.
     Device:
       type: object
       description: >-

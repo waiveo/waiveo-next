@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/shared/signhash"
+	"github.com/maaxton/waiveo-next/internal/shared/wire"
 )
 
 // contentUploadResponse is the 201 body POST /api/v1/content returns: the
@@ -183,10 +184,11 @@ func (e *testEnv) uploadContent(t *testing.T, asset []byte) contentUploadRespons
 // the size and store time a media browser sorts on.
 type contentListResponse struct {
 	Content []struct {
-		AssetRef  string `json:"asset_ref"`
-		URL       string `json:"url"`
-		SizeBytes int64  `json:"size_bytes"`
-		StoredAt  int64  `json:"stored_at"`
+		AssetRef   string `json:"asset_ref"`
+		URL        string `json:"url"`
+		SizeBytes  int64  `json:"size_bytes"`
+		StoredAt   int64  `json:"stored_at"`
+		Referenced bool   `json:"referenced"`
 	} `json:"content"`
 }
 
@@ -255,5 +257,101 @@ func TestContentListReturnsUploadedAssets(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Fatalf("%d uploaded asset(s) missing from the listing", len(want))
+	}
+}
+
+// The listing used to be an inventory: it said what EXISTS. The retention sweep
+// reclaims what is UNREFERENCED, so the one question an operator asks before
+// content disappears — "what is due to go?" — could not be answered from the
+// API. `referenced` is that fact, read through the sweep's own projection so the
+// two cannot disagree about what counts as a reference.
+
+func TestAFreshlyUploadedAssetIsReportedUNREFERENCED(t *testing.T) {
+	e := newEnv(t)
+	asset := []byte("an orphan nobody has scheduled")
+	up, upRaw := e.do(t, http.MethodPost, "/api/v1/content", asset, nil)
+	if up.StatusCode != http.StatusCreated {
+		t.Fatalf("upload status = %d (body %s)", up.StatusCode, upRaw)
+	}
+
+	_, raw := e.do(t, http.MethodGet, "/api/v1/content", nil, nil)
+	var got contentListResponse
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode: %v (body %s)", err, raw)
+	}
+	if len(got.Content) != 1 {
+		t.Fatalf("listed %d asset(s), want 1", len(got.Content))
+	}
+	if got.Content[0].Referenced {
+		t.Fatal("an asset no row names reported referenced: true — the operator cannot see " +
+			"that it is a candidate for reclamation, which is the whole point of the member")
+	}
+}
+
+func TestAnAssetACastNamesIsReportedREFERENCED(t *testing.T) {
+	// The other side, and the one that matters most: reporting content-in-use as
+	// unreferenced would invite an operator to treat a live asset as disposable.
+	e := newEnv(t)
+	asset := []byte("a slide background that is actually used")
+	up, upRaw := e.do(t, http.MethodPost, "/api/v1/content", asset, nil)
+	if up.StatusCode != http.StatusCreated {
+		t.Fatalf("upload status = %d (body %s)", up.StatusCode, upRaw)
+	}
+	var uploaded struct {
+		AssetRef string `json:"asset_ref"`
+	}
+	if err := json.Unmarshal(upRaw, &uploaded); err != nil {
+		t.Fatalf("decode upload: %v", err)
+	}
+
+	// Only the AUTHORABLE members. Marshalling the whole datamodel.Cast carries
+	// the server-owned envelope (created_at and friends), which the request-body
+	// gate correctly refuses with `additionalProperties: false` — the same guard
+	// verified in #135, doing its job on this test.
+	body, err := json.Marshal(map[string]any{
+		"scope_node": seedSchedulingScope(t, e),
+		"name":       "Uses The Asset",
+		"slides": []any{map[string]any{
+			"id": "s1",
+			"layers": []any{map[string]any{
+				"kind": string(wire.LayerKindImage), "x": 0, "y": 0, "w": 1920, "h": 1080,
+				"asset_ref": uploaded.AssetRef,
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal cast: %v", err)
+	}
+	cr, crRaw := e.do(t, http.MethodPost, "/api/v1/casts", body, nil)
+	if cr.StatusCode != http.StatusCreated {
+		t.Fatalf("cast create status = %d, want 201 (body %s)", cr.StatusCode, crRaw)
+	}
+
+	_, raw := e.do(t, http.MethodGet, "/api/v1/content", nil, nil)
+	var got contentListResponse
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode: %v (body %s)", err, raw)
+	}
+	// Found by REF, not by position: creating a cast can bring assets of its own,
+	// and a positional assertion would be describing whichever one happened to
+	// sort first.
+	var mine *struct {
+		AssetRef   string `json:"asset_ref"`
+		URL        string `json:"url"`
+		SizeBytes  int64  `json:"size_bytes"`
+		StoredAt   int64  `json:"stored_at"`
+		Referenced bool   `json:"referenced"`
+	}
+	for i := range got.Content {
+		if got.Content[i].AssetRef == uploaded.AssetRef {
+			mine = &got.Content[i]
+		}
+	}
+	if mine == nil {
+		t.Fatalf("the uploaded asset %s is not in the listing at all", uploaded.AssetRef)
+	}
+	if !mine.Referenced {
+		t.Fatal("an asset a stored cast names reported referenced: false — an operator reading " +
+			"this would treat content in use as due for reclamation")
 	}
 }

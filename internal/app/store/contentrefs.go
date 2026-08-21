@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 )
 
@@ -95,9 +96,57 @@ func (s *Store) WithContentReferences(ctx context.Context, use func(ContentRefer
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	gen, err := readGeneration(ctx, s.db)
+	refs, err := collectContentReferences(ctx, s.db)
 	if err != nil {
 		return err
+	}
+	return use(refs)
+}
+
+// ContentReferenceSnapshot returns the same reference set WithContentReferences
+// builds, under a READ lock and with no callback — an advisory answer to "what
+// does this workspace currently reference?"
+//
+// It is deliberately a different method rather than a flag on the one above,
+// because the difference is not locking style but WHAT THE ANSWER MAY BE USED
+// FOR.
+//
+// The sweep holds the WRITE lock across the read AND its deletions, and that
+// atomicity is the whole guard: without it a playlist naming an asset can commit
+// between the two, and the client is told its playlist was accepted while every
+// screen that plays it fetches a 404. A caller that merely REPORTS makes no such
+// decision, so it does not need — and must not take — a lock that stalls every
+// api write on the box for the duration of a listing.
+//
+// THE ANSWER IS A SNAPSHOT AND MUST NEVER DECIDE A DELETION. It is true at the
+// instant it is taken and may be stale by the time it is read; a caller that
+// deleted on the strength of it would reintroduce the exact interleaving the
+// write lock exists to make unrepresentable. Reporting is the only sanctioned
+// use.
+//
+// Both paths build the set through collectContentReferences, so the listing and
+// the sweep cannot disagree about what counts as a reference — a listing that
+// called an asset unreferenced while the sweep considered it retained (or worse,
+// the reverse) would be a surface that quietly contradicts the machinery it is
+// describing.
+func (s *Store) ContentReferenceSnapshot(ctx context.Context) (ContentReferences, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return collectContentReferences(ctx, s.db)
+}
+
+// collectContentReferences is the ONE projection both callers read through. The
+// caller holds the appropriate lock; this function takes none of its own.
+//
+// Its failure posture is the sweep's, and it belongs here rather than at either
+// call site: an asset-bearing row body that will not decode ABORTS. A skipped
+// row is a row whose references are silently treated as absent, which is how a
+// sweep deletes content that is very much in use — and, now, how a listing tells
+// an operator that content in use is due for reclamation.
+func collectContentReferences(ctx context.Context, db *sql.DB) (ContentReferences, error) {
+	gen, err := readGeneration(ctx, db)
+	if err != nil {
+		return ContentReferences{}, err
 	}
 	refs := ContentReferences{Digests: map[string]bool{}, Generation: gen}
 	// Every kind that can name content, through the one shared projection —
@@ -106,20 +155,20 @@ func (s *Store) WithContentReferences(ctx context.Context, use func(ContentRefer
 	// playing it, and that asymmetry is only avoidable if all three read the
 	// same list.
 	for _, kind := range AssetBearingKinds {
-		bodies, err := readBodies(ctx, s.db, string(kind))
+		bodies, err := readBodies(ctx, db, string(kind))
 		if err != nil {
-			return err
+			return ContentReferences{}, err
 		}
 		refs.SourceRows += len(bodies)
 		for i, body := range bodies {
 			rowRefs, err := RowAssetReferences(kind, body)
 			if err != nil {
-				return fmt.Errorf("store: %s row %d: %w", kind, i, err)
+				return ContentReferences{}, fmt.Errorf("store: %s row %d: %w", kind, i, err)
 			}
 			for _, r := range rowRefs {
 				refs.Digests[r.HexDigest()] = true
 			}
 		}
 	}
-	return use(refs)
+	return refs, nil
 }

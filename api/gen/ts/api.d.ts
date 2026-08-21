@@ -1543,7 +1543,11 @@ export interface paths {
         };
         /**
          * List the assets in the content origin
-         * @description Every asset the content origin currently serves, each carrying the same `{asset_ref, url}` an upload returns plus `size_bytes` and `stored_at`. Upload is otherwise write-only, so an authoring surface that did not keep an upload's `asset_ref` has no other way to rediscover it; this is the read half a media browser and an editor's image picker resolve against.
+         * @description Every asset the content origin currently serves, each carrying the same `{asset_ref, url}` an upload returns plus `size_bytes`, `stored_at` and `referenced`. Upload is otherwise write-only, so an authoring surface that did not keep an upload's `asset_ref` has no other way to rediscover it; this is the read half a media browser and an editor's image picker resolve against.
+         *
+         *     `referenced` is what makes this more than an inventory: the retention sweep reclaims content that is unreferenced, so an asset reporting `referenced: false` is a candidate for reclamation and one reporting `true` is in use. It is a SNAPSHOT taken at request time, never a promise — a row authored a moment later may reference an asset this response called unreferenced — and nothing may delete on the strength of it. The sweep answers the same question under a lock held across its own deletions, because it acts on the answer.
+         *
+         *     The reclamation THRESHOLDS are deliberately not stated here: the sweep's windows are implementation-defined today and governed by no contract, so this operation reports the reference fact and not a prediction of when anything will be removed.
          */
         get: operations["listContent"];
         put?: never;
@@ -3293,6 +3297,32 @@ export interface components {
             code?: string;
             /** @description The refusal's human-readable detail. */
             message?: string;
+        };
+        /** @description One asset the content origin holds: its content-addressed ref, a signed URL to fetch it, its size, when it was stored, and whether anything currently references it. */
+        ContentAsset: {
+            /**
+             * @description The content-addressed reference, `sha256:` + the lowercase hex digest.
+             * @example sha256:262eba16d81ab19353a542b03bded1550e54e5181ca8c2f2db061ab28275f89f
+             */
+            asset_ref: string;
+            /** @description A signed, expiring URL that serves the bytes. Minted per response — two listings of the same asset return different URLs, and neither is a durable identifier. `asset_ref` is the identifier. */
+            url: string;
+            /**
+             * Format: int64
+             * @description The stored size in bytes.
+             */
+            size_bytes: number;
+            /**
+             * Format: int64
+             * @description When the origin took delivery of this asset, in epoch milliseconds.
+             */
+            stored_at: number;
+            /**
+             * @description Whether any persisted asset-bearing row names this asset. False means nothing currently uses it, which is the condition the retention sweep reclaims on.
+             *
+             *     A snapshot at request time, not a guarantee, and never a licence to delete: the sweep reads the same projection under a lock held across its deletions precisely because it acts on the answer. When the reference set cannot be read at all, every asset reports `true` — the conservative direction, because an unreadable set rendering as "nothing is referenced" would invite an operator to treat content in use as disposable.
+             */
+            referenced: boolean;
         };
         /** @description One physical device a relay has found on its own LAN. Its descriptive members are read-only on this API — a device is DISCOVERED by its relay's device plane (`relay/1` Device plane), not authored here, so this resource carries no `revision` and no optimistic-concurrency envelope. The two decisions this API does make about a device are `adopted`, taken through the `adoptDevice` operation, and `ignored`, taken through `ignoreDevice`. A device exposes one or more entities; commands are addressed to those entities, never to the device. */
         Device: {
@@ -6804,12 +6834,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The content origin's current listing. Shape stub — the response schema is a later minor. */
+            /** @description The content origin's current listing. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        content: components["schemas"]["ContentAsset"][];
+                    };
+                };
             };
             401: components["responses"]["Unauthorized"];
         };
