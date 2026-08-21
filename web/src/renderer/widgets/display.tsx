@@ -7,13 +7,14 @@
 
 import type { ReactNode } from "react";
 import { DataTable, StatCard, StatusBadge, type ColumnDef, type Status } from "@/components/kit";
-import { evalBindingExpr, toDisplay } from "../bindings";
+import { evalBindingExpr, toDisplay, type RenderEnv, type RenderScope } from "../bindings";
 import { asLiveBinding, useLive } from "../live";
 import { runAction } from "../actions";
 import { useRenderer } from "../state";
-import type { ActionRef } from "../types";
+import type { ActionRef, WidgetNode } from "../types";
 import { narrowToItem, resolveArray, type WidgetProps } from "./common";
 import { useWizard } from "./wizard-context";
+import { WidgetNodeView } from "./widget-node";
 
 /** `announce` (UIS-077) → the ARIA live-region role of that politeness.
  *
@@ -27,6 +28,18 @@ function announceRole(announce: unknown): "status" | "alert" | undefined {
   return announce === "assertive" ? "alert" : "status";
 }
 
+/** `titleMsg` (UIS-079) → the resolved hover text, or nothing.
+ *
+ * Resolved through `env.msg` like every other operator-facing string, so an
+ * explanation stays translatable. Absent stays ABSENT rather than becoming an
+ * empty `title`: an empty title attribute is a real thing to a screen reader,
+ * and this prop's whole purpose is that the states it explains are
+ * distinguishable rather than decorative. */
+function titleText(node: { props?: Record<string, unknown> }, msg: (k: string) => string): string | undefined {
+  const key = node.props?.titleMsg;
+  return key === undefined ? undefined : msg(String(key));
+}
+
 export function TextWidget({ node, scope }: WidgetProps) {
   const { env } = useRenderer();
   const value = node.props?.value;
@@ -34,8 +47,14 @@ export function TextWidget({ node, scope }: WidgetProps) {
   const staticValue = evalBindingExpr(value, scope, env);
   const resolved = useLive(live ? live.path : null, staticValue);
   const role = announceRole(node.props?.announce);
+  const title = titleText(node, env.msg);
   return (
-    <span data-slot="widget-text" className="text-sm text-foreground" {...(role ? { role } : {})}>
+    <span
+      data-slot="widget-text"
+      className="text-sm text-foreground"
+      {...(role ? { role } : {})}
+      {...(title === undefined ? {} : { title })}
+    >
       {toDisplay(resolved)}
     </span>
   );
@@ -48,14 +67,38 @@ const BADGE_TONE: Record<string, Status> = {
   critical: "error",
 };
 
+/** The rendered tone of a `badge`: `toneFrom` (UIS-078) when declared, else the
+ * static `tone` (UIS-070).
+ *
+ * `toneFrom` WINS when present — a document that declares both has said the tone
+ * depends on data, and silently preferring the static one would paint a single
+ * tone over every row of exactly the table the prop exists for.
+ *
+ * A resolved value outside the closed tone vocabulary degrades to `neutral`,
+ * matching `announce`'s existing rule for an unrecognized politeness. A dynamic
+ * tone CANNOT be refused at page load — the value does not exist until the data
+ * does — so the choice is which wrong answer to give, and `neutral` is the only
+ * one that does not assert something false: falling back to `positive` would
+ * paint a broken device green. */
+function badgeTone(node: { props?: Record<string, unknown> }, scope: RenderScope, env: RenderEnv): Status {
+  const expr = node.props?.toneFrom;
+  const raw = expr === undefined ? node.props?.tone : evalBindingExpr(expr, scope, env);
+  return BADGE_TONE[String(raw ?? "neutral")] ?? "off";
+}
+
 export function BadgeWidget({ node, scope }: WidgetProps) {
   const { env } = useRenderer();
   const value = node.props?.value;
   const live = asLiveBinding(value);
   const staticValue = evalBindingExpr(value, scope, env);
   const resolved = useLive(live ? live.path : null, staticValue);
-  const tone = BADGE_TONE[String(node.props?.tone ?? "neutral")] ?? "off";
-  return <StatusBadge status={tone}>{toDisplay(resolved)}</StatusBadge>;
+  const tone = badgeTone(node, scope, env);
+  const title = titleText(node, env.msg);
+  return (
+    <StatusBadge status={tone} {...(title === undefined ? {} : { title })}>
+      {toDisplay(resolved)}
+    </StatusBadge>
+  );
 }
 
 export function StatTileWidget({ node, scope }: WidgetProps) {
@@ -65,12 +108,24 @@ export function StatTileWidget({ node, scope }: WidgetProps) {
   const staticValue = evalBindingExpr(value, scope, env);
   const resolved = useLive(live ? live.path : null, staticValue);
   const label = env.msg(String(node.props?.labelMsg ?? ""));
-  return <StatCard label={label} value={toDisplay(resolved)} />;
+  const title = titleText(node, env.msg);
+  return (
+    <StatCard
+      label={label}
+      value={toDisplay(resolved)}
+      {...(title === undefined ? {} : { title })}
+    />
+  );
 }
 
 interface ColumnDecl {
   headerMsg: string;
-  cell: unknown;
+  /** A value rendered per row (UIS-070) — mutually exclusive with `cellWidget`. */
+  cell?: unknown;
+  /** A widget subtree rendered per row with `item` in scope (UIS-071a). */
+  cellWidget?: WidgetNode;
+  /** The scalar a `cellWidget` column contributes for sorting and search (UIS-071a). */
+  cellValue?: unknown;
 }
 
 /** Above this many rows a schema-driven table gets the kit's paging and search.
@@ -144,16 +199,38 @@ export function TableWidget({ node, scope, depth }: WidgetProps) {
   // not have worked even if it had been enabled. The accessor returns the RAW
   // bound value and the cell renders it, so a numeric column sorts numerically
   // rather than by its rendered text.
-  const columns: ColumnDef<Record<string, unknown>>[] = decls.map((col, ci) => ({
-    id: `col-${ci}`,
-    header: env.msg(String(col.headerMsg)),
-    enableSorting: cellIsRowValue(col.cell),
-    accessorFn: (row: Record<string, unknown>, index: number) => {
-      const itemScope = narrowToItem(scope, row, index, loc, tree, "item");
-      return evalBindingExpr(col.cell, itemScope, env);
-    },
-    cell: ({ getValue }) => toDisplay(getValue()) as ReactNode,
-  }));
+  // A column is one of two shapes (UIS-071a). A `cell` column is unchanged: the
+  // accessor evaluates its BindingExpr and the cell renders that value. A
+  // `cellWidget` column renders a widget SUBTREE per row under the same `item`
+  // scope, and its accessor evaluates `cellValue` — the scalar the column
+  // contributes for sorting and search, which a subtree cannot supply itself.
+  //
+  // The accessor is populated for BOTH shapes rather than omitted for widgets,
+  // because it feeds the kit's search as well as its sort: a widget column with
+  // no accessor is a column an operator cannot find a row by, and on the device
+  // table the port-hint column is exactly the one worth searching.
+  const columns: ColumnDef<Record<string, unknown>>[] = decls.map((col, ci) => {
+    const widget = col.cellWidget;
+    const sortExpr = widget ? col.cellValue : col.cell;
+    return {
+      id: `col-${ci}`,
+      header: env.msg(String(col.headerMsg)),
+      // A widget column with no `cellValue` has no sort key at all, so it sorts
+      // no more than a Computed one does — same rule, same reason.
+      enableSorting: sortExpr !== undefined && cellIsRowValue(sortExpr),
+      accessorFn: (row: Record<string, unknown>, index: number) => {
+        if (sortExpr === undefined) return undefined;
+        const itemScope = narrowToItem(scope, row, index, loc, tree, "item");
+        return evalBindingExpr(sortExpr, itemScope, env);
+      },
+      cell: widget
+        ? ({ row }) => {
+            const itemScope = narrowToItem(scope, row.original, row.index, loc, tree, "item");
+            return <WidgetNodeView node={widget} scope={itemScope} depth={depth + 1} />;
+          }
+        : ({ getValue }) => toDisplay(getValue()) as ReactNode,
+    };
+  });
 
   const data = array as Record<string, unknown>[];
   const label = typeof node.id === "string" ? node.id : leafName(sourcePath);
@@ -170,7 +247,6 @@ export function TableWidget({ node, scope, depth }: WidgetProps) {
       }
     : undefined;
 
-  void depth;
   return (
     <DataTable
       columns={columns}

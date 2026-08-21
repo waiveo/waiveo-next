@@ -29,7 +29,8 @@ One row per requirement ID `contracts/ui-schema-1.md` defines. Format: `conforma
 | UIS-065 | `contracts/ui-schema-1.md#widget-node-envelope` | `UIS-020-valid-list-detail-presets` | covered |
 | UIS-066 | `contracts/ui-schema-1.md#widget-node-envelope` | - | TBD-wave1 |
 | UIS-070 | `contracts/ui-schema-1.md#widget-catalog` | `UIS-020-valid-list-detail-presets`, `UIS-040-valid-dashboard` | covered |
-| UIS-071 | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
+| UIS-071 | `contracts/ui-schema-1.md#widget-catalog` | `UIS-071a-valid-decision-column-with-widget-cell` | covered |
+| UIS-071a | `contracts/ui-schema-1.md#widget-catalog` | `UIS-071a-valid-decision-column-with-widget-cell`, `UIS-071a-invalid-column-with-both-cell-and-cell-widget-rejected`, `UIS-071a-invalid-column-with-neither-cell-nor-cell-widget-rejected`, `UIS-071a-invalid-cell-value-on-a-value-column-rejected` | covered |
 | UIS-072 | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
 | UIS-073 | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
 | UIS-073a | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
@@ -37,6 +38,8 @@ One row per requirement ID `contracts/ui-schema-1.md` defines. Format: `conforma
 | UIS-075 | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
 | UIS-076 | `contracts/ui-schema-1.md#widget-catalog` | `UIS-166-valid-outcome-renders-refusal-code` | covered |
 | UIS-077 | `contracts/ui-schema-1.md#widget-catalog` | `UIS-166-valid-outcome-renders-refusal-code` | covered |
+| UIS-078 | `contracts/ui-schema-1.md#widget-catalog` | `UIS-071a-valid-decision-column-with-widget-cell` | covered |
+| UIS-079 | `contracts/ui-schema-1.md#widget-catalog` | `UIS-071a-valid-decision-column-with-widget-cell` | covered |
 | UIS-100 | `contracts/ui-schema-1.md#binding-grammar-data-paths` | `UIS-100-invalid-malformed-binding-rejected` | covered |
 | UIS-101 | `contracts/ui-schema-1.md#binding-grammar-data-paths` | `UIS-101-valid-predicate-index-binding` | covered |
 | UIS-102 | `contracts/ui-schema-1.md#binding-grammar-data-paths` | - | TBD-wave1 |

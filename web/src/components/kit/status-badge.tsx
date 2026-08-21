@@ -42,14 +42,20 @@ export interface StatusBadgeProps {
   /** The visible label — status is flat + icon + label, so the text is required. */
   children: ReactNode;
   className?: string;
+  /** Supplementary hover text explaining what this status MEANS (ui-schema/1
+   * UIS-079). Never the only carrier of information needed to operate the page:
+   * hover text is unreachable by touch and inconsistently surfaced by assistive
+   * technology, so it explains what is already visible. */
+  title?: string;
 }
 
-export function StatusBadge({ status, children, className }: StatusBadgeProps) {
+export function StatusBadge({ status, children, className, title }: StatusBadgeProps) {
   const { icon, className: tone } = STATUS[status];
   return (
     <span
       data-slot="status-badge"
       data-status={status}
+      {...(title === undefined ? {} : { title })}
       className={cn(
         "inline-flex w-fit items-center gap-1.5 rounded-pill px-2 py-0.5",
         "text-[11px] font-semibold tracking-[0.10em] uppercase whitespace-nowrap",

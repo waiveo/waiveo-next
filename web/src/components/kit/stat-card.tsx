@@ -18,11 +18,18 @@ export interface StatCardProps {
   /** A small caption under the value (e.g. a delta or a hint). */
   hint?: ReactNode;
   className?: string;
+  /** Supplementary hover text (ui-schema/1 UIS-079) — see StatusBadge's own
+   * note: it explains what is already visible, never carries it alone. */
+  title?: string;
 }
 
-export function StatCard({ label, value, icon: Icon, hint, className }: StatCardProps) {
+export function StatCard({ label, value, icon: Icon, hint, className, title }: StatCardProps) {
   return (
-    <Card data-slot="stat-card" className={cn("min-w-0 gap-0 p-5", className)}>
+    <Card
+      data-slot="stat-card"
+      className={cn("min-w-0 gap-0 p-5", className)}
+      {...(title === undefined ? {} : { title })}
+    >
       <div className="flex min-w-0 items-center justify-between gap-3">
         <span className="min-w-0 text-[11px] font-semibold tracking-[0.10em] text-muted-foreground uppercase break-words">
           {label}

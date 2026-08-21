@@ -21,7 +21,7 @@ import type { ActionHandler } from "./types";
 //     field's own path — never partially painted (UIS-200);
 //   • a binding-resolution case (UIS-101) evaluates through the binding engine to
 //     the record the contract fixes.
-// An accounting test asserts all sixteen cases are driven (none pending — the Go
+// An accounting test asserts all twenty cases are driven (none pending — the Go
 // drivers' driven/pending discipline), and a teeth block proves the oracle bites:
 // a mutated expectation must fail.
 //
@@ -101,6 +101,17 @@ const messages: Record<string, string> = {
   "msg:system.restart.pending": "Restarting — asking this box to stop and start again.",
   "msg:system.restart.blocked": "Not now: this box is busy with work a restart would break rather than resume. {0}",
   "msg:system.restart.back": "Back up — {0} started it again.",
+  // v1.2 — the decision column (UIS-071a), per-row tone (UIS-078), explanatory
+  // hover text (UIS-079)
+  "msg:devices.list.name": "Name",
+  "msg:devices.list.status": "Status",
+  "msg:devices.list.statusHelp": "Discovered means seen but not yet adopted.",
+  "msg:devices.list.ports": "Open ports",
+  "msg:devices.list.portsHelp":
+    "Nothing has scanned this device — which is not the same as having no ports open.",
+  "msg:devices.list.decision": "Decision",
+  "msg:devices.list.adopt": "Adopt",
+  "msg:devices.detail.empty": "Select a device.",
 };
 
 // ── The valid page-document render oracle ───────────────────────────────────
@@ -272,6 +283,42 @@ const RENDER_FIXTURES: Record<string, RenderFixture> = {
       expect(screen.getByRole("button", { name: "Restart this box" })).toBeEnabled();
     },
   },
+  // v1.2 — the decision column (UIS-071a): a table whose columns render widget
+  // SUBTREES per row. The assertion drives the third row's control, because a
+  // subtree wired to the page scope (or to row 0) paints identically and only
+  // shows itself when a row other than the first is acted on.
+  "UIS-071a-valid-decision-column-with-widget-cell": {
+    data: {
+      devices: [
+        { id: "d1", name: "Zulu", status: "Discovered", status_tone: "warning", adopted: false, ports_label: "8060 roku", ports_search: "roku" },
+        { id: "d2", name: "Alpha", status: "Adopted", status_tone: "positive", adopted: true, ports_label: "Not scanned", ports_search: "not scanned" },
+      ],
+    },
+    handler: { callAction: vi.fn() },
+    assert: async () => {
+      const user = userEvent.setup();
+      const table = screen.getByRole("table", { name: "devices" });
+      const rows = within(table).getAllByRole("row").slice(1);
+
+      // UIS-078: each row's badge takes its own tone from the row.
+      expect(
+        within(rows[0]!).getByText("Discovered").closest("[data-slot='status-badge']"),
+      ).toHaveAttribute("data-status", "warn");
+      expect(
+        within(rows[1]!).getByText("Adopted").closest("[data-slot='status-badge']"),
+      ).toHaveAttribute("data-status", "ok");
+
+      // UIS-079: the explanation rides along, resolved through the catalog.
+      expect(
+        within(rows[0]!).getByText("Discovered").closest("[data-slot='status-badge']"),
+      ).toHaveAttribute("title", "Discovered means seen but not yet adopted.");
+
+      // UIS-071a: a per-row control, disabled per row, dispatching that row's id.
+      expect(within(rows[0]!).getByRole("button", { name: "Adopt" })).toBeEnabled();
+      expect(within(rows[1]!).getByRole("button", { name: "Adopt" })).toBeDisabled();
+      await user.click(within(rows[0]!).getByRole("button", { name: "Adopt" }));
+    },
+  },
 };
 
 // ── Pure assertion helpers (throwable, so the teeth block can wrap them) ──────
@@ -316,8 +363,8 @@ function assertResolved(binding: string, data: Record<string, unknown>, expected
 // ── The driver ──────────────────────────────────────────────────────────────
 
 describe("ui-schema/1 corpus — the render + reject driver", () => {
-  it("drives every one of the sixteen frozen corpus cases (no copies, none pending)", () => {
-    expect(cases.length).toBe(16);
+  it("drives every one of the twenty frozen corpus cases (no copies, none pending)", () => {
+    expect(cases.length).toBe(20);
     // Each case is driven by exactly one arm — page-document or binding — so the
     // partition covers all nine with nothing left over (the Go driver discipline).
     expect(validPageCases.length + invalidPageCases.length + bindingCases.length).toBe(
@@ -335,6 +382,10 @@ describe("ui-schema/1 corpus — the render + reject driver", () => {
         "UIS-040-valid-dashboard",
         "UIS-050-valid-wizard",
         "UIS-060-invalid-unknown-widget-rejected",
+        "UIS-071a-invalid-cell-value-on-a-value-column-rejected",
+        "UIS-071a-invalid-column-with-both-cell-and-cell-widget-rejected",
+        "UIS-071a-invalid-column-with-neither-cell-nor-cell-widget-rejected",
+        "UIS-071a-valid-decision-column-with-widget-cell",
         "UIS-100-invalid-malformed-binding-rejected",
         "UIS-101-valid-predicate-index-binding",
         "UIS-132-invalid-incomplete-vocab-labels-rejected",

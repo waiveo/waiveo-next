@@ -1,0 +1,49 @@
+{
+  "case_id": "UIS-071a-invalid-column-with-neither-cell-nor-cell-widget-rejected",
+  "contract": "ui-schema/1",
+  "req_ids": [
+    "UIS-071a"
+  ],
+  "description": "A table column declaring NEITHER `cell` nor `cellWidget` is rejected as WIDGET_REQUIRED_FIELD_MISSING naming `cell`. A column with no rendering declaration would otherwise paint an empty column under a real header, which reads as data the device does not have rather than as a document defect.",
+  "input": {
+    "pageType": "list-detail",
+    "list": {
+      "source": "devices",
+      "display": {
+        "type": "table",
+        "props": {
+          "source": "devices",
+          "columns": [
+            {
+              "headerMsg": "msg:devices.list.name",
+              "cell": "item.name"
+            },
+            {
+              "headerMsg": "msg:devices.list.status"
+            }
+          ]
+        }
+      }
+    },
+    "detail": {
+      "source": "devices[id=$ui.selected]",
+      "emptyMsg": "msg:devices.detail.empty",
+      "root": {
+        "type": "text",
+        "props": {
+          "value": "id"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      {
+        "code": "WIDGET_REQUIRED_FIELD_MISSING",
+        "field": "list.display.props.columns[1].cell",
+        "message": "a table column must declare `cell` or `cellWidget` (UIS-070/071a)"
+      }
+    ]
+  }
+}
