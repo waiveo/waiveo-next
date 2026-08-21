@@ -6,9 +6,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/maaxton/waiveo-next/internal/deviceclass"
@@ -323,5 +325,79 @@ func TestTraceID_MalformedNeverPoisonsAnEnvelope(t *testing.T) {
 		if err := events.Validate(env); err != nil {
 			t.Errorf("a delivered envelope failed the EVT-013 gate: %v (trace_id %q)", err, env.TraceID)
 		}
+	}
+}
+
+// TestTraceID_AMalformedValueIsCLIPPEDBeforeItReachesTheLog bounds what a peer
+// can write into this box's journal.
+//
+// Both values in that log line come from the pushing relay and neither is
+// length-checked anywhere on the way here — the only bound in the path is the
+// 1 MiB inbound frame cap, which a single entry can very nearly fill. So a relay
+// (compromised, or merely broken) could put close to a megabyte of its own bytes
+// into the journal per malformed record, repeatedly, with no ceiling but how
+// often it reconnects. On an appliance whose disk filling is a real outage mode,
+// that is a lever a peer should not have.
+//
+// `%q` already covers the other half — it escapes newlines and control
+// characters, so a peer cannot forge log lines. Length was what was left open.
+func TestTraceID_AMalformedValueIsCLIPPEDBeforeItReachesTheLog(t *testing.T) {
+	log := events.NewEventLog(0)
+	h := New(log, siteScope, seqIDs(), testWallMs, testRelay().Authorizer(), nil)
+	var lines []string
+	h.logf = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+
+	// Malformed (so it is logged at all) and very long (so the bound matters).
+	huge := strings.Repeat("Z", 200_000)
+	entry := telemetry.Entry{
+		Seq: 1, Schema: events.SchemaAutomationRun,
+		Payload: validAutomationRunPayload(), TraceID: huge,
+	}
+	postBatch(t, h, telemetry.PushBatch{Entries: []telemetry.Entry{entry}, LossMarkers: []telemetry.LossMarker{}})
+
+	if len(lines) != 1 {
+		t.Fatalf("a malformed trace_id is a peer defect worth one line per record; got %d", len(lines))
+	}
+	line := lines[0]
+	if len(line) > 1_000 {
+		t.Fatalf("one malformed record wrote %d bytes to the log from a peer-supplied value — "+
+			"a relay can repeat that per record, bounded only by how often it reconnects", len(line))
+	}
+	// The clip must SAY how much it withheld, or an operator cannot tell a long
+	// value from a truncated one.
+	if !strings.Contains(line, "200000 bytes") {
+		t.Errorf("the clipped line does not state the withheld length: %s", line)
+	}
+	// And the event still delivers — clipping is about the log, never about
+	// whether the record survives.
+	if delivered := log.After(""); len(delivered) != 1 {
+		t.Fatalf("clipping the log changed delivery: got %d envelopes, want 1", len(delivered))
+	}
+}
+
+func TestTraceID_AShortMalformedValueIsNotClipped(t *testing.T) {
+	// The ordinary case an operator actually has to debug: a peer sending a
+	// plausible-but-wrong identifier. It must appear in full, or the log stops
+	// being useful for the case it exists to serve.
+	log := events.NewEventLog(0)
+	h := New(log, siteScope, seqIDs(), testWallMs, testRelay().Authorizer(), nil)
+	var lines []string
+	h.logf = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+
+	const wrong = "trace-42-from-some-other-system"
+	entry := telemetry.Entry{
+		Seq: 1, Schema: events.SchemaAutomationRun,
+		Payload: validAutomationRunPayload(), TraceID: wrong,
+	}
+	postBatch(t, h, telemetry.PushBatch{Entries: []telemetry.Entry{entry}, LossMarkers: []telemetry.LossMarker{}})
+
+	if len(lines) != 1 {
+		t.Fatalf("want one line, got %d", len(lines))
+	}
+	if !strings.Contains(lines[0], wrong) {
+		t.Errorf("a short malformed value was not shown in full, so the line cannot be acted on: %s", lines[0])
+	}
+	if strings.Contains(lines[0], "bytes)") {
+		t.Errorf("a value inside the bound was clipped anyway: %s", lines[0])
 	}
 }

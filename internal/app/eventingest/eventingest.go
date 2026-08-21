@@ -124,6 +124,7 @@ package eventingest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	stdlog "log"
 	"net/http"
 	"runtime/debug"
@@ -778,6 +779,33 @@ func (in *Ingest) buildEnvelope(e telemetry.Entry) (events.Envelope, error) {
 	return env, nil
 }
 
+// maxLoggedPeerValue bounds how much of a PEER-SUPPLIED string this ingest
+// writes into the log.
+//
+// Both values in the line below arrive from the pushing relay and neither is
+// length-checked anywhere on the way here: the only bound in the path is the
+// 1 MiB inbound frame cap, which one entry can very nearly fill on its own. So a
+// relay — compromised, or merely broken — could put close to a megabyte of its
+// own bytes into this box's journal per malformed record, repeatedly, and the
+// only ceiling would be how often it reconnects. On an appliance whose disk
+// filling is a real outage mode, that is a lever a peer should not have.
+//
+// This is the same reasoning, and the same shape, as api/1's maxEchoedKey for a
+// client-supplied property name echoed into a Problem: a value too long to read
+// is a value too long to fix by reading, so clipping costs an operator nothing.
+// The full length is stated so a clipped line still says how much was withheld.
+//
+// `%q` already handles the OTHER half of this — it escapes newlines and control
+// characters, so a peer cannot forge log lines. Length was the part left open.
+const maxLoggedPeerValue = 96
+
+func clipPeerValue(v string) string {
+	if len(v) <= maxLoggedPeerValue {
+		return v
+	}
+	return v[:maxLoggedPeerValue] + fmt.Sprintf("… (%d bytes)", len(v))
+}
+
 // resolveTraceID decides the envelope's trace_id from the wire record's own
 // (relay/1 REL-006, events/1 EVT-010, api/1 API-063). The caller holds mu.
 //
@@ -833,7 +861,7 @@ func (in *Ingest) resolveTraceID(e telemetry.Entry) string {
 		in.logf("eventingest: telemetry seq %d schema %q carried a malformed trace_id %q "+
 			"(events/1 EVT-010 types it as a ULID); substituting a fresh one — the event is still delivered, "+
 			"but it no longer correlates to the operation that produced it (api/1 API-063)",
-			e.Seq, e.Schema, e.TraceID)
+			e.Seq, clipPeerValue(e.Schema), clipPeerValue(e.TraceID))
 	}
 	return ulid.New()
 }
