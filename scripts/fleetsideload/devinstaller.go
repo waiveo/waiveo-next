@@ -134,9 +134,20 @@ func digestPost(ctx context.Context, client *http.Client, dev device, creds cred
 	// digest response can be computed from a challenge obtained anywhere in the
 	// realm and attached to a single, fully-formed POST. One request, one body,
 	// no speculative upload.
-	challenge, err := digestChallenge(ctx, client, dev)
+	challenge, challenged, err := digestChallenge(ctx, client, dev)
 	if err != nil {
 		return "", err
+	}
+	if !challenged {
+		// Firmware that wants no credential at all. It gets the archive once,
+		// unauthenticated, which is the whole exchange — offering a credential
+		// it never asked for buys nothing and re-POSTing to "confirm" would
+		// double every sideload.
+		answer, err := postBytes(ctx, client, url, contentType, body, "")
+		if err != nil {
+			return "", err
+		}
+		return answer.body, nil
 	}
 	if challenge["nonce"] == "" {
 		return "", fmt.Errorf("%s did not present a Digest challenge (is this the dev installer port?)", dev.Addr())
@@ -177,26 +188,28 @@ func digestPost(ctx context.Context, client *http.Client, dev device, creds cred
 // obtain one having risked nothing. Any 401 on this port serves; this endpoint
 // is the one verified against real hardware.
 //
-// A non-401 answer is not an error here: a device that does not challenge is one
-// this function has nothing to add to, and the caller's `nonce == ""` check
-// turns that into the "is this the dev installer port?" message an operator can
-// act on.
-func digestChallenge(ctx context.Context, client *http.Client, dev device) (map[string]string, error) {
+// Three outcomes, and they are genuinely different: a 401 WITH a nonce (the
+// ordinary case — authenticate, then upload once); a 401 WITHOUT one (a port
+// that challenges but is not the dev installer, which the caller reports as
+// such); and NO challenge at all (firmware wanting no credential, whose archive
+// goes up unauthenticated in a single request). The bool distinguishes the third
+// from the second, which an empty map alone cannot.
+func digestChallenge(ctx context.Context, client *http.Client, dev device) (map[string]string, bool, error) {
 	url := "http://" + dev.Addr() + "/plugin_inspect"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("build challenge request for %s: %w", url, err)
+		return nil, false, fmt.Errorf("build challenge request for %s: %w", url, err)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%s unreachable: %w", url, err)
+		return nil, false, fmt.Errorf("%s unreachable: %w", url, err)
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode != http.StatusUnauthorized {
-		return map[string]string{}, nil
+		return map[string]string{}, false, nil
 	}
-	return parseDigestChallenge(resp.Header.Get("WWW-Authenticate")), nil
+	return parseDigestChallenge(resp.Header.Get("WWW-Authenticate")), true, nil
 }
 
 // httpAnswer is the only three things the caller needs from a response, read

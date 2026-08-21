@@ -115,6 +115,10 @@ type devInstallerStub struct {
 	// requests counts POSTs received, so a test can assert the body was
 	// replayed rather than re-sent from a consumed stream.
 	requests int
+	// bodied counts requests that actually CARRIED the archive. It is the count
+	// that matters for "was the upload doubled?", which requests cannot answer
+	// now that a bodyless challenge probe precedes the upload (#224).
+	bodied int
 	// lastArchive is the archive part's bytes as the server received them.
 	lastArchive []byte
 	// lastSubmit is the `mysubmit` action the server received.
@@ -130,6 +134,9 @@ type devInstallerStub struct {
 
 func (s *devInstallerStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.requests++
+	if r.ContentLength > 0 {
+		s.bodied++
+	}
 	if s.delay > 0 {
 		select {
 		case <-time.After(s.delay):
@@ -267,8 +274,13 @@ func TestInstallChannelWithoutChallenge(t *testing.T) {
 	if !outcome.OK {
 		t.Fatalf("outcome = %+v, want OK", outcome)
 	}
-	if stub.requests != 1 {
-		t.Errorf("stub saw %d request(s), want 1 — an unchallenged answer must not be retried", stub.requests)
+	// Counts UPLOADS, not requests. The concern this case exists for is the one
+	// its comment names — re-sending a multi-megabyte archive — and a bodyless
+	// challenge probe does not do that. Asserting total requests instead would
+	// forbid the very fix that stops the archive being sent to a device that has
+	// not authorised it yet (#224).
+	if stub.bodied != 1 {
+		t.Errorf("the archive was uploaded %d time(s), want exactly 1", stub.bodied)
 	}
 }
 
@@ -392,7 +404,7 @@ func TestTheChallengeRequestCarriesNoBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, _ = digestChallenge(context.Background(), srv.Client(), stubDevice(t, srv))
+	_, _, _ = digestChallenge(context.Background(), srv.Client(), stubDevice(t, srv))
 	if challengeMethod != http.MethodGet {
 		t.Errorf("challenge fetched with %q, want GET — a POST invites the body this exists to avoid", challengeMethod)
 	}
