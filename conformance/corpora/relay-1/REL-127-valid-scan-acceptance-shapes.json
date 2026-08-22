@@ -1,0 +1,34 @@
+{
+  "case_id": "REL-127-valid-scan-acceptance-shapes",
+  "contract": "relay/1",
+  "req_ids": [
+    "REL-127"
+  ],
+  "description": "A discovery.scan is answered by an ACCEPTANCE, never by findings, and the three answers it can give are told apart by shape rather than by prose. A scan that starts carries ok/started and the id progress will be read under. A request arriving while a scan already runs is ok with started FALSE and the RUNNING scan's id \u2014 a benign repeat, an operator double-click or a retry, which reporting as an error would make look like a failure. A refusal carries ok:false AND an error object bearing a taxonomy code, because a refusal an operator cannot read is indistinguishable from a fault in the transport.",
+  "input": {
+    "started_scan_id": "01J8Z8SCAN0000000000000001",
+    "already_running_scan_id": "01J8Z8SCAN0000000000000009",
+    "refusal_code": "UNAVAILABLE",
+    "refusal_message": "this relay is not running discovery, so it cannot scan"
+  },
+  "expected": {
+    "accepted": {
+      "ok": true,
+      "started": true,
+      "carries_scan_id": true,
+      "carries_error": false
+    },
+    "busy": {
+      "ok": true,
+      "started": false,
+      "carries_scan_id": true,
+      "carries_error": false
+    },
+    "refused": {
+      "ok": false,
+      "started": false,
+      "carries_scan_id": false,
+      "carries_error": true
+    }
+  }
+}

@@ -134,7 +134,7 @@ implementation behind it, which is what this note exists to prevent.
 | REL-124d | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-125 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
 | REL-126 | `contracts/relay-1.md#player-credential-authority` | - | TBD-wave1 |
-| REL-127 | `contracts/relay-1.md#device-plane` | - | TBD-wave1 |
+| REL-127 | `contracts/relay-1.md#device-plane` | `REL-127-valid-scan-acceptance-shapes` | covered |
 | REL-128 | `contracts/relay-1.md#device-plane` | - | TBD-wave1 |
 | REL-129 | `contracts/relay-1.md#device-plane` | - | TBD-wave1 |
 | REL-130 | `contracts/relay-1.md#clock-trust` | `REL-133-valid-clock-hint-bounded` | covered |
