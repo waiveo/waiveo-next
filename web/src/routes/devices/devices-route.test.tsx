@@ -1227,7 +1227,7 @@ describe("Devices — hardware identity", () => {
     await waitFor(() => expect(within(table).getByText("NAS")).toBeInTheDocument());
     // ONE line since the ui-schema/1 port: `ui-schema/1` has no layout-neutral
     // container, so the vendor and MAC that used to stack are joined
-    // (waiveo/program#230, G-R6). The vendor is still SHOWN and still
+    // (renderer gap G-R6). The vendor is still SHOWN and still
     // searchable — the test below types "Proxmox" and finds this row — so what
     // changed is its separateness as a text node, not whether an operator can
     // see it or find by it. Asserted as a substring rather than dropped.

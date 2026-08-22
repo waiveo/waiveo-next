@@ -56,7 +56,8 @@ import { describePort, portsSearchText, portsState } from "./open-ports";
  *
  * # The one renderer gap still open, and what it cost
  *
- * G-R6 (waiveo/program#230): `ui-schema/1` has no layout-neutral container. The
+ * G-R6, the one renderer gap still open: `ui-schema/1` has no
+ * layout-neutral container. The
  * only children-bearing widget is `section`, which emits a landmark with a
  * heading affordance and `gap-4` — wrong inside a table cell. It forced two
  * choices here, both recorded rather than worked around silently:
