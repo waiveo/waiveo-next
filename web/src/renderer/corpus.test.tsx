@@ -21,7 +21,7 @@ import type { ActionHandler } from "./types";
 //     field's own path — never partially painted (UIS-200);
 //   • a binding-resolution case (UIS-101) evaluates through the binding engine to
 //     the record the contract fixes.
-// An accounting test asserts all twenty cases are driven (none pending — the Go
+// An accounting test asserts all twenty-three cases are driven (none pending — the Go
 // drivers' driven/pending discipline), and a teeth block proves the oracle bites:
 // a mutated expectation must fail.
 //
@@ -112,6 +112,12 @@ const messages: Record<string, string> = {
   "msg:devices.list.decision": "Decision",
   "msg:devices.list.adopt": "Adopt",
   "msg:devices.detail.empty": "Select a device.",
+  // v1.2 — column list affordances (UIS-071b)
+  "msg:devices.list.address": "Address",
+  "msg:devices.list.class": "Class",
+  "msg:devices.list.entities": "Entities",
+  "msg:devices.filter.class": "Device class",
+  "msg:devices.filter.decision": "Decision",
 };
 
 // ── The valid page-document render oracle ───────────────────────────────────
@@ -287,6 +293,30 @@ const RENDER_FIXTURES: Record<string, RenderFixture> = {
   // SUBTREES per row. The assertion drives the third row's control, because a
   // subtree wired to the page scope (or to row 0) paints identically and only
   // shows itself when a row other than the first is acted on.
+  // v1.2 — column list affordances (UIS-071b). Asserted through the RENDERED
+  // controls, not the document: a declaration the renderer drops still validates.
+  "UIS-071b-valid-searchable-filtered-inventory": {
+    data: {
+      devices: [
+        { id: "d1", name: "Zulu", address: "192.168.50.31", device_class: "media_player", entity_count: 2, status: "Discovered", status_tone: "warning" },
+        { id: "d2", name: "Alpha", address: "192.168.50.12", device_class: "printer", entity_count: 1, status: "Adopted", status_tone: "positive" },
+      ],
+    },
+    assert: () => {
+      // Both declared filters exist as real, labelled controls.
+      expect(screen.getByLabelText("Device class")).toBeInTheDocument();
+      expect(screen.getByLabelText("Decision")).toBeInTheDocument();
+      // Faceted from the rows themselves, so the options cannot drift from the data.
+      const cls = screen.getByLabelText("Device class");
+      // Faceted options carry their own row COUNT ("printer (1)"), which is the
+      // kit's doing and is the proof the set came from the data rather than from
+      // anything the document declared — an author states no option list at all.
+      expect(within(cls).getByRole("option", { name: /^printer \(1\)$/ })).toBeInTheDocument();
+      expect(within(cls).getByRole("option", { name: /^media_player \(1\)$/ })).toBeInTheDocument();
+      // A column that declared no filter gets no control.
+      expect(screen.queryByLabelText("Address")).toBeNull();
+    },
+  },
   "UIS-071a-valid-decision-column-with-widget-cell": {
     data: {
       devices: [
@@ -363,8 +393,8 @@ function assertResolved(binding: string, data: Record<string, unknown>, expected
 // ── The driver ──────────────────────────────────────────────────────────────
 
 describe("ui-schema/1 corpus — the render + reject driver", () => {
-  it("drives every one of the twenty frozen corpus cases (no copies, none pending)", () => {
-    expect(cases.length).toBe(20);
+  it("drives every one of the twenty-three frozen corpus cases (no copies, none pending)", () => {
+    expect(cases.length).toBe(23);
     // Each case is driven by exactly one arm — page-document or binding — so the
     // partition covers all nine with nothing left over (the Go driver discipline).
     expect(validPageCases.length + invalidPageCases.length + bindingCases.length).toBe(
@@ -386,6 +416,9 @@ describe("ui-schema/1 corpus — the render + reject driver", () => {
         "UIS-071a-invalid-column-with-both-cell-and-cell-widget-rejected",
         "UIS-071a-invalid-column-with-neither-cell-nor-cell-widget-rejected",
         "UIS-071a-valid-decision-column-with-widget-cell",
+        "UIS-071b-invalid-filter-label-without-filter-rejected",
+        "UIS-071b-invalid-unknown-column-filter-rejected",
+        "UIS-071b-valid-searchable-filtered-inventory",
         "UIS-100-invalid-malformed-binding-rejected",
         "UIS-101-valid-predicate-index-binding",
         "UIS-132-invalid-incomplete-vocab-labels-rejected",

@@ -1,0 +1,53 @@
+{
+  "case_id": "UIS-071b-invalid-filter-label-without-filter-rejected",
+  "contract": "ui-schema/1",
+  "req_ids": [
+    "UIS-071b"
+  ],
+  "description": "A column declaring filterLabelMsg without declaring filter is rejected as WIDGET_PROP_UNKNOWN: it labels a control that does not exist, and silently ignoring it would leave an author believing they had named a filter they never asked for.",
+  "input": {
+    "pageType": "list-detail",
+    "list": {
+      "source": "devices",
+      "display": {
+        "type": "table",
+        "id": "Devices",
+        "props": {
+          "source": "devices",
+          "columns": [
+            {
+              "headerMsg": "msg:devices.list.name",
+              "cell": "item.name",
+              "searchable": true
+            },
+            {
+              "headerMsg": "msg:devices.list.class",
+              "cell": "item.device_class",
+              "filterLabelMsg": "msg:devices.filter.class"
+            }
+          ]
+        }
+      }
+    },
+    "detail": {
+      "source": "devices[id=$ui.selected]",
+      "emptyMsg": "msg:devices.detail.empty",
+      "root": {
+        "type": "text",
+        "props": {
+          "value": "id"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      {
+        "code": "WIDGET_PROP_UNKNOWN",
+        "field": "list.display.props.columns[1].filterLabelMsg",
+        "message": "`filterLabelMsg` labels a filter control this column does not declare (UIS-071b)"
+      }
+    ]
+  }
+}

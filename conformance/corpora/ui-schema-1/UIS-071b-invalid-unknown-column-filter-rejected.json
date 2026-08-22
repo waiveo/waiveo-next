@@ -1,0 +1,53 @@
+{
+  "case_id": "UIS-071b-invalid-unknown-column-filter-rejected",
+  "contract": "ui-schema/1",
+  "req_ids": [
+    "UIS-071b"
+  ],
+  "description": "A column naming a filter kind outside the closed set is rejected as BINDING_TYPE_MISMATCH rather than resolved to a default or dropped. An unrecognised kind renders NO control, and a filter an author declared and cannot find on the page is indistinguishable from one the data made empty \u2014 the same enforced-not-skipped treatment UIS-073a gives bindShape.",
+  "input": {
+    "pageType": "list-detail",
+    "list": {
+      "source": "devices",
+      "display": {
+        "type": "table",
+        "id": "Devices",
+        "props": {
+          "source": "devices",
+          "columns": [
+            {
+              "headerMsg": "msg:devices.list.name",
+              "cell": "item.name",
+              "searchable": true
+            },
+            {
+              "headerMsg": "msg:devices.list.class",
+              "cell": "item.device_class",
+              "filter": "range"
+            }
+          ]
+        }
+      }
+    },
+    "detail": {
+      "source": "devices[id=$ui.selected]",
+      "emptyMsg": "msg:devices.detail.empty",
+      "root": {
+        "type": "text",
+        "props": {
+          "value": "id"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      {
+        "code": "BINDING_TYPE_MISMATCH",
+        "field": "list.display.props.columns[1].filter",
+        "message": "a table column's `filter` must be one of enum (UIS-071b)"
+      }
+    ]
+  }
+}

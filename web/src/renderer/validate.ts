@@ -25,6 +25,7 @@ import {
   PAGE_TYPES,
   RESERVED_ROOTS,
   VOCAB_TABLE,
+  COLUMN_FILTER_KINDS,
   WIDGET_CATALOG,
   WIZARD_ONLY_VERBS,
   type ActionVerb,
@@ -652,6 +653,22 @@ function validatePropByKind(def: PropDef, value: unknown, path: string, ctx: Ctx
         validateWidget((col as { cellWidget: unknown }).cellWidget, `${path}[${i}].cellWidget`, ctx);
         if (isObject(col) && "cellValue" in col && col.cellValue !== undefined) {
           validateBindingExpr(col.cellValue, `${path}[${i}].cellValue`, ctx);
+        }
+      });
+      // UIS-071b: `filter` is enforced against its closed set rather than
+      // presence-checked. An unrecognized value would otherwise render no
+      // control at all, and a filter an author declared and cannot see is
+      // indistinguishable from one the data made empty — the same
+      // enforced-not-skipped treatment UIS-073a gives `bindShape`.
+      value.forEach((col, i) => {
+        if (!isObject(col)) return;
+        if (col.filter !== undefined && !COLUMN_FILTER_KINDS.includes(col.filter as string)) {
+          fail(ctx, "BINDING_TYPE_MISMATCH", `${path}[${i}].filter`,
+            `a table column's \`filter\` must be one of ${COLUMN_FILTER_KINDS.join(", ")} (UIS-071b)`);
+        }
+        if (col.filterLabelMsg !== undefined && col.filter === undefined) {
+          fail(ctx, "WIDGET_PROP_UNKNOWN", `${path}[${i}].filterLabelMsg`,
+            "`filterLabelMsg` labels a filter control this column does not declare (UIS-071b)");
         }
       });
       break;

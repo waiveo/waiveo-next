@@ -230,6 +230,14 @@ export const ENTITY_PICKER_SCALAR_SHAPE: EntityPickerBindShape = "entityId";
  * discriminant, so `selector`/`deviceClass` have nowhere to live (UIS-073a). */
 export const ENTITY_PICKER_SCALAR_MODES: readonly string[] = ["entity"];
 
+// ── table column filter kinds (UIS-071b) ────────────────────────────────────
+// The closed set a `table` column's `filter` may name. `enum` renders a select
+// whose options are FACETED from the column's own distinct values, so the
+// option set cannot drift from what the rows actually contain — which is why
+// this needs no options declaration beside it.
+
+export const COLUMN_FILTER_KINDS: readonly string[] = ["enum"];
+
 // ── Widget catalog (UIS-070) ────────────────────────────────────────────────
 
 export type WidgetCategory = "structural" | "display" | "input" | "action";

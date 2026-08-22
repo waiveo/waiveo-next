@@ -126,6 +126,14 @@ interface ColumnDecl {
   cellWidget?: WidgetNode;
   /** The scalar a `cellWidget` column contributes for sorting and search (UIS-071a). */
   cellValue?: unknown;
+  /** Narrow the search box to this column (UIS-071b). */
+  searchable?: boolean;
+  /** Give this column its own filter control (UIS-071b). */
+  filter?: string;
+  /** That control's visible label, `msg:`-resolved (UIS-071b). */
+  filterLabelMsg?: string;
+  /** Right-align and order this column as a figure (UIS-071b). */
+  numeric?: boolean;
 }
 
 /** Above this many rows a schema-driven table gets the kit's paging and search.
@@ -212,9 +220,28 @@ export function TableWidget({ node, scope, depth }: WidgetProps) {
   const columns: ColumnDef<Record<string, unknown>>[] = decls.map((col, ci) => {
     const widget = col.cellWidget;
     const sortExpr = widget ? col.cellValue : col.cell;
+    // UIS-071b: the column's own search/filter/alignment declarations, passed
+    // through to the kit's ColumnMeta.
+    //
+    // Built as a sparse object, but NOT because a `false` flag would break
+    // anything — that was the justification originally written here and it is
+    // wrong. The kit tests `columns.some((c) => c.meta?.searchable === true)`,
+    // strictly, so an all-false set reads as "none marked" and every valued
+    // column is searched, exactly as an absent set does. Sparse is kept because
+    // it makes the emitted meta say only what the DOCUMENT said, which is what
+    // a reader debugging a column will compare against — not because omitting
+    // is load-bearing. Verified by mutation, not assumed.
+    const meta: { numeric?: boolean; searchable?: boolean; filter?: "enum"; filterLabel?: string } = {};
+    if (col.numeric === true) meta.numeric = true;
+    if (col.searchable === true) meta.searchable = true;
+    if (col.filter === "enum") {
+      meta.filter = "enum";
+      if (col.filterLabelMsg !== undefined) meta.filterLabel = env.msg(String(col.filterLabelMsg));
+    }
     return {
       id: `col-${ci}`,
       header: env.msg(String(col.headerMsg)),
+      ...(Object.keys(meta).length > 0 ? { meta } : {}),
       // A widget column with no `cellValue` has no sort key at all, so it sorts
       // no more than a Computed one does — same rule, same reason.
       enableSorting: sortExpr !== undefined && cellIsRowValue(sortExpr),
@@ -239,6 +266,20 @@ export function TableWidget({ node, scope, depth }: WidgetProps) {
   // just hides rows behind a Next button, which is the "find one device in the
   // fleet" problem with extra clicks.
   const long = data.length > RENDERER_PAGE_SIZE;
+  // The kit splits this deliberately — "the column says WHICH, the call site says
+  // WHETHER" — because a shared column array must not switch filter chrome on for
+  // a four-row table. For a schema-authored table the renderer IS the call site,
+  // and the document's own declaration is the opt-in.
+  //
+  // Honest about its weight: this is NOT load-bearing today. The kit derives its
+  // controls as `filters ? columns.filter(meta.filter === "enum") : []`, so a
+  // table with no declaring column renders no control either way — passing
+  // `filters` unconditionally would look identical. It is kept because it states
+  // the intent at the call site the kit's contract asks for it at, and because
+  // "declared none" meaning "shown none" should not depend on a downstream
+  // filter() that could reasonably change. A mutation forcing it true does NOT
+  // fail the suite, and that is expected rather than a hole.
+  const anyFilter = decls.some((c) => c.filter === "enum");
 
   const onRowPress = rowPress
     ? (row: Record<string, unknown>, index: number) => {
@@ -253,6 +294,7 @@ export function TableWidget({ node, scope, depth }: WidgetProps) {
       data={data}
       label={label}
       {...(onRowPress ? { onRowPress } : {})}
+      {...(anyFilter ? { filters: true } : {})}
       {...(long
         ? {
             pagination: { pageSize: RENDERER_PAGE_SIZE },
