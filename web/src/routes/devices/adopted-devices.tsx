@@ -130,16 +130,11 @@ export function toRow(record: AdoptedDevice): AdoptedRow {
 export function AdoptedDevices({ api }: { api: WaiveoApi }) {
   const [records, setRecords] = useState<AdoptedDevice[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  // PageRenderer seeds its editable store ONCE from the initial resource, so a
-  // panel that fetches after first paint shows its empty state forever without a
-  // remount. Bumping a key is how the pack page route solves the same thing.
-  //
-  // Consequence worth knowing before writing a test against this: the remount
-  // REPLACES the table element, so a node captured before the data lands is
-  // detached, and every `within(thatTable)` query then fails while the screen is
-  // visibly correct. Query the document after the rows arrive, not the table
-  // before them. That cost a whole iteration to find.
-  const [generation, setGeneration] = useState(0);
+  // No remount key here any more. The renderer re-seeds its store when the host
+  // hands it a new resource identity, unless the page has edited it — so a fetch
+  // that lands after first paint reaches this panel without throwing away the
+  // table's search, sort and selection, and an operator halfway through editing
+  // a cadence is not reverted underneath by a refetch.
 
   const load = useCallback(async () => {
     try {
@@ -148,8 +143,6 @@ export function AdoptedDevices({ api }: { api: WaiveoApi }) {
     } catch (err) {
       setRecords([]);
       setLoadError(problemMessage(err));
-    } finally {
-      setGeneration((g) => g + 1);
     }
   }, [api]);
 
@@ -229,7 +222,7 @@ export function AdoptedDevices({ api }: { api: WaiveoApi }) {
           is a decision — the relay reports what exists, not how it should be polled or shown.
         </p>
       </div>
-      <PageRenderer key={generation} doc={adoptedDevicesDoc} data={data} messages={MESSAGES} handler={handler} />
+      <PageRenderer doc={adoptedDevicesDoc} data={data} messages={MESSAGES} handler={handler} />
     </section>
   );
 }

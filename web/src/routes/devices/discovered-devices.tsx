@@ -35,24 +35,17 @@ import { describePort, portsSearchText, portsState } from "./open-ports";
  * binding renders as empty rather than as an error, which is how a column goes
  * quietly blank for a subset of a fleet.
  *
- * # The renderer LIMIT this hit, recorded rather than worked around
+ * # The renderer limit this hit, and where it was fixed
  *
- * `RendererProvider` seeds its resource store ONCE at mount and never re-syncs
- * (`state.tsx`: "The store SEEDS from `data` once, at mount, and is thereafter
- * owned by the..."). This route fetches AFTER first paint, so without a remount
- * the panel would hold the empty seed forever — the same trap
- * `adopted-devices.tsx` documents and solves with a generation key.
+ * The store used to seed ONCE at mount and never re-sync, so this route — which
+ * fetches after first paint — held the empty seed forever and had to REMOUNT the
+ * renderer to escape it. That cost the table's search, filters, sort and `$ui`
+ * selection every time a read resolved.
  *
- * The key here is a SIGNATURE of what the document reads, not a load counter,
- * because rows also change in place: adopting flips a status, ignoring flips a
- * flag, and neither goes through a fresh load in a way a counter would catch.
- *
- * The cost is real and worth stating: a remount clears the table's own search,
- * filter and sort. It is acceptable HERE only because this route does not poll
- * — `load()` runs on mount and after a mutation the operator just performed,
- * which already changes the list under them. On a polling surface this would be
- * unusable, and the honest fix is for the renderer to re-sync a resource whose
- * identity changed rather than for every host to remount around it.
+ * Fixed in the renderer rather than worked around here: a new `initialResource`
+ * identity now re-seeds the store unless the page has edited it. This file
+ * carries no remount key as a result — which is the point, since three hosts had
+ * been carrying one.
  *
  * # The one renderer gap still open, and what it cost
  *
@@ -230,26 +223,6 @@ export function DiscoveredDevices({
     [rows, loading, emptyKind],
   );
 
-  // See the module header: the store seeds once, so the panel must remount when
-  // what it reads changes. Signature over the fields the document actually
-  // binds, so an unrelated field arriving does not throw away the operator's
-  // search box.
-  const seedKey = useMemo(
-    () =>
-      [
-        loading ? "1" : "0",
-        emptyKind,
-        rows.length,
-        // first_seen too: retiring an age changes the row without changing
-        // its status, and a signature that missed it left the old ~age on
-        // screen after the retire succeeded.
-        rows
-          .map((r) => `${r.id}:${r.status}:${r.ignored ? 1 : 0}:${r.first_seen_display}`)
-          .join(","),
-      ].join("|"),
-    [rows, loading, emptyKind],
-  );
-
   const handler: ActionHandler = useMemo(
     () => ({
       callAction: (name, params) => {
@@ -266,7 +239,6 @@ export function DiscoveredDevices({
 
   return (
     <PageRenderer
-      key={seedKey}
       doc={discoveredDevicesDoc as unknown as Record<string, unknown>}
       data={data}
       messages={DISCOVERED_MESSAGES}
