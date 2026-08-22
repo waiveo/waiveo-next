@@ -1,0 +1,90 @@
+{
+  "case_id": "UIS-071c-valid-classified-empty-state",
+  "contract": "ui-schema/1",
+  "req_ids": [
+    "UIS-071c"
+  ],
+  "description": "A device inventory whose empty state says WHICH emptiness it is \u2014 no relay connected, health unreadable, or a sweep still running \u2014 as a switch over a bound discriminant, plus a loadingIf that stops any of those sentences being said while the first fetch is still in flight, and a placeholder naming what the search box matches. An empty list is the most misread state on an operator surface: the reading reached for is 'there is nothing out there', which is exactly wrong when the truth is 'nothing has been able to look'.",
+  "input": {
+    "pageType": "list-detail",
+    "list": {
+      "source": "devices",
+      "display": {
+        "type": "table",
+        "id": "Devices",
+        "props": {
+          "source": "devices",
+          "columns": [
+            {
+              "headerMsg": "msg:devices.list.name",
+              "cell": "item.name"
+            }
+          ],
+          "loadingIf": "$root.loading",
+          "searchPlaceholderMsg": "msg:devices.search.placeholder",
+          "emptyWidget": {
+            "type": "switch",
+            "props": {
+              "discriminant": "$root.discovery_kind",
+              "cases": [
+                {
+                  "when": "no-relay",
+                  "render": {
+                    "type": "text",
+                    "props": {
+                      "value": {
+                        "compute": "msg",
+                        "args": [
+                          "msg:devices.empty.noRelay"
+                        ]
+                      },
+                      "titleMsg": "msg:devices.empty.noRelayHelp"
+                    }
+                  }
+                },
+                {
+                  "when": "blind",
+                  "render": {
+                    "type": "text",
+                    "props": {
+                      "value": {
+                        "compute": "msg",
+                        "args": [
+                          "msg:devices.empty.blind"
+                        ]
+                      }
+                    }
+                  }
+                }
+              ],
+              "default": {
+                "type": "text",
+                "props": {
+                  "value": {
+                    "compute": "msg",
+                    "args": [
+                      "msg:devices.empty.searching"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "detail": {
+      "source": "devices[id=$ui.selected]",
+      "emptyMsg": "msg:devices.detail.empty",
+      "root": {
+        "type": "text",
+        "props": {
+          "value": "id"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true
+  }
+}

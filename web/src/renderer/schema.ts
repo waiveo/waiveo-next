@@ -363,7 +363,18 @@ export const WIDGET_CATALOG: Record<string, WidgetSpec> = {
     category: "display",
     children: false,
     bind: "none",
-    props: { source: req("binding"), columns: req("columns") },
+    // The list AFFORDANCES (UIS-071c) sit beside the content props. `emptyMsg`
+    // and `emptyWidget` are the two spellings of "what this table says when it
+    // has no rows", mutually exclusive; `loadingIf` is what stops that sentence
+    // being said while the rows are still arriving.
+    props: {
+      source: req("binding"),
+      columns: req("columns"),
+      emptyMsg: p("msg"),
+      emptyWidget: p("widget"),
+      loadingIf: p("bindingExpr"),
+      searchPlaceholderMsg: p("msg"),
+    },
     events: { rowPress: { required: false } },
   },
   "stat-tile": {

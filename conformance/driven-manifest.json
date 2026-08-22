@@ -240,6 +240,8 @@
       "UIS-071b-invalid-filter-label-without-filter-rejected",
       "UIS-071b-invalid-unknown-column-filter-rejected",
       "UIS-071b-valid-searchable-filtered-inventory",
+      "UIS-071c-invalid-both-empty-forms-rejected",
+      "UIS-071c-valid-classified-empty-state",
       "UIS-100-invalid-malformed-binding-rejected",
       "UIS-101-valid-predicate-index-binding",
       "UIS-132-invalid-incomplete-vocab-labels-rejected",

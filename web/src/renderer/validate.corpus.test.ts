@@ -46,8 +46,8 @@ const pageCases = cases.filter((c) => typeof c.input.pageType === "string");
 const bindingCases = cases.filter((c) => typeof c.input.binding === "string");
 
 describe("ui-schema/1 corpus — validation oracle", () => {
-  it("loads all twenty-three frozen corpus cases (no copies)", () => {
-    expect(cases.length).toBe(23);
+  it("loads all twenty-five frozen corpus cases (no copies)", () => {
+    expect(cases.length).toBe(25);
     // Every case is accounted for by exactly one shape (page-document or binding).
     expect(pageCases.length + bindingCases.length).toBe(cases.length);
   });
@@ -104,6 +104,7 @@ describe("ui-schema/1 corpus — validation oracle", () => {
       "UIS-071a-invalid-column-with-neither-cell-nor-cell-widget-rejected",
       "UIS-071b-invalid-filter-label-without-filter-rejected",
       "UIS-071b-invalid-unknown-column-filter-rejected",
+      "UIS-071c-invalid-both-empty-forms-rejected",
       "UIS-100-invalid-malformed-binding-rejected",
       "UIS-132-invalid-incomplete-vocab-labels-rejected",
       "UIS-165-invalid-confirm-missing-title-rejected",

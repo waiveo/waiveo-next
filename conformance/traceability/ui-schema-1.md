@@ -32,6 +32,7 @@ One row per requirement ID `contracts/ui-schema-1.md` defines. Format: `conforma
 | UIS-071 | `contracts/ui-schema-1.md#widget-catalog` | `UIS-071a-valid-decision-column-with-widget-cell` | covered |
 | UIS-071a | `contracts/ui-schema-1.md#widget-catalog` | `UIS-071a-valid-decision-column-with-widget-cell`, `UIS-071a-invalid-column-with-both-cell-and-cell-widget-rejected`, `UIS-071a-invalid-column-with-neither-cell-nor-cell-widget-rejected`, `UIS-071a-invalid-cell-value-on-a-value-column-rejected` | covered |
 | UIS-071b | `contracts/ui-schema-1.md#widget-catalog` | `UIS-071b-valid-searchable-filtered-inventory`, `UIS-071b-invalid-unknown-column-filter-rejected`, `UIS-071b-invalid-filter-label-without-filter-rejected` | covered |
+| UIS-071c | `contracts/ui-schema-1.md#widget-catalog` | `UIS-071c-valid-classified-empty-state`, `UIS-071c-invalid-both-empty-forms-rejected` | covered |
 | UIS-072 | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
 | UIS-073 | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
 | UIS-073a | `contracts/ui-schema-1.md#widget-catalog` | - | TBD-wave1 |
