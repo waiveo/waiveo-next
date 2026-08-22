@@ -112,6 +112,66 @@ type Result struct {
 // It returns when every probe has been attempted or ctx is done. A probe error
 // is not a sweep error: a host that refuses, is absent, or is unreachable is the
 // ordinary case — the point was to make the kernel try, and it did.
+// ReachableSubnets reports the subnets a Sweep under cfg would actually cover:
+// this machine's own private IPv4 networks, filtered by exactly the rule Sweep
+// applies (sweepableHosts).
+//
+// It exists so a caller can REFUSE a requested scope instead of silently
+// discarding it. A relay physically cannot probe a network it has no interface
+// on — that safety is structural, not a check — but "cannot" and "will tell you
+// it did not" are different things, and an operator who scopes a scan to a
+// subnet this relay cannot see must learn that, rather than be told the scan
+// started and shown results from somewhere else entirely.
+//
+// Deliberately derived from the same helper Sweep uses rather than
+// re-implementing the filter: a check that disagreed with the sweep would refuse
+// scopes that would have worked, or admit ones that would not.
+func ReachableSubnets(cfg Config) ([]*net.IPNet, error) {
+	addrs := cfg.InterfaceAddrs
+	if addrs == nil {
+		addrs = net.InterfaceAddrs
+	}
+	found, err := addrs()
+	if err != nil {
+		return nil, fmt.Errorf("arpsweep: read interface addresses: %w", err)
+	}
+	var out []*net.IPNet
+	for _, a := range found {
+		ipnet, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		if _, ok := sweepableHosts(ipnet); ok {
+			out = append(out, ipnet)
+		}
+	}
+	return out, nil
+}
+
+// CoversRequestedScope reports whether `requested` — a CIDR an app peer asked a
+// scan be scoped to — is one this relay can actually sweep.
+//
+// Matched by network identity rather than by string: `192.168.50.0/23` and
+// `192.168.51.14/23` name the same network, and an operator typing either has
+// asked for the same thing. A requested CIDR that does not parse is not
+// reachable, so it draws the same refusal as one that is simply elsewhere —
+// there is no reading of an unparseable scope that makes it safe to widen to
+// the default.
+func CoversRequestedScope(reachable []*net.IPNet, requested string) bool {
+	_, want, err := net.ParseCIDR(requested)
+	if err != nil || want == nil {
+		return false
+	}
+	wantOnes, wantBits := want.Mask.Size()
+	for _, have := range reachable {
+		haveOnes, haveBits := have.Mask.Size()
+		if haveOnes == wantOnes && haveBits == wantBits && have.IP.Mask(have.Mask).Equal(want.IP) {
+			return true
+		}
+	}
+	return false
+}
+
 func Sweep(ctx context.Context, cfg Config) (Result, error) {
 	addrs := cfg.InterfaceAddrs
 	if addrs == nil {
