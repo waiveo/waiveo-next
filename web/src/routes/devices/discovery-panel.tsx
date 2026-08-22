@@ -94,9 +94,20 @@ function describeEngine(state: DiscoveryEngineState | undefined): string {
     state.ssdp_lane ? `${state.ssdp_watches} ssdp` : "ssdp off",
     state.mdns_lane ? `${state.mdns_watches} mdns` : "mdns off",
   ].join(", ");
-  const undelivered =
-    state.mdns_undeliverable + state.mac_oui_unimplemented + state.malformed;
-  return undelivered === 0 ? `watching ${lanes}` : `watching ${lanes} · ${undelivered} undelivered`;
+  const parts = [`watching ${lanes}`];
+  // `pack_patterns: 0` is said even when the lanes DO hold watches, because the
+  // relay ships builtin watches of its own: a deployment where no pack declares
+  // anything still reports a live lane, and the watch count alone reads as
+  // healthy. This is the state the dev box was actually in — `0 ssdp, 1 mdns
+  // live (0 pack pattern(s))`, one builtin mDNS watch and nothing pack-declared
+  // — and it is the very condition #218 was opened about, so hiding it behind
+  // the watching-nothing alarm would have shipped this feature without its
+  // point. No fixture caught it: every one had either a pack pattern or an
+  // empty lane.
+  if (state.pack_patterns === 0) parts.push("no pack declares a device");
+  const undelivered = state.mdns_undeliverable + state.mac_oui_unimplemented + state.malformed;
+  if (undelivered > 0) parts.push(`${undelivered} undelivered`);
+  return parts.join(" · ");
 }
 
 /** The undelivered breakdown, for the title — each cause with its own owner.

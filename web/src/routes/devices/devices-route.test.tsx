@@ -1363,6 +1363,11 @@ describe("Devices — what each relay is WATCHING for", () => {
     await waitFor(() =>
       expect(within(status).getByText(/watching 3 ssdp, 2 mdns/)).toBeInTheDocument(),
     );
+    // And says NOTHING about packs when packs are declaring — the default
+    // fixture carries 4 patterns. Asserted explicitly because a note that fires
+    // unconditionally would read as an alarm on every healthy relay, and every
+    // positive test would still pass.
+    expect(within(status).queryByText(/no pack declares a device/)).toBeNull();
   });
 
   it("names a lane that is OFF rather than reporting it as zero watches", async () => {
@@ -1429,6 +1434,30 @@ describe("Devices — what each relay is WATCHING for", () => {
     expect(cell.closest("[data-slot='relay-engine-state']")).toHaveAttribute(
       "title",
       expect.stringContaining("never bound multicast"),
+    );
+  });
+
+  it("says 'no pack declares a device' even when a lane holds a BUILTIN watch", async () => {
+    // THE DEV BOX'S ACTUAL STATE, pinned as a regression case. It reports
+    // `0 ssdp, 1 mdns live (0 pack pattern(s))`: one builtin mDNS watch, nothing
+    // pack-declared. watching_nothing is correctly FALSE — a lane does hold a
+    // watch — so the alarm branch never fires, and before this the strip read
+    // "watching 0 ssdp, 1 mdns" and an operator could not see that zero of it
+    // came from a pack. That is the exact number #218 was opened about.
+    //
+    // No fixture caught it because every one of them had either a pack pattern
+    // or an empty lane. Only the box had both at once.
+    seed({
+      engines: [
+        engineState({ ssdp_watches: 0, mdns_watches: 1, pack_patterns: 0, watching_nothing: false }),
+      ],
+    });
+    renderRoute();
+    const status = await screen.findByRole("region", { name: "Discovery status" });
+    await waitFor(() =>
+      expect(
+        within(status).getByText(/watching 0 ssdp, 1 mdns · no pack declares a device/),
+      ).toBeInTheDocument(),
     );
   });
 
