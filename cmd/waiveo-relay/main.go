@@ -1317,6 +1317,28 @@ func main() {
 				if body.Reason == wire.DiscoveryScanReasonScheduled {
 					reason = wire.DiscoveryScanReasonScheduled
 				}
+				// REL-128: a requested scope is REFUSED when this relay cannot
+				// reach it, never silently discarded.
+				//
+				// The safety half was already structural — arpsweep reads this
+				// machine's own interfaces and nothing else, so no message can
+				// point a relay's probes at a foreign network. What was missing
+				// is the HONESTY half: the requested subnet reached no code at
+				// all, so an operator scoping a scan to a network this relay
+				// cannot see was told the scan STARTED and then shown findings
+				// from the relay's own segment instead. The scope was ignored
+				// and the answer looked like success.
+				if body.Subnet != "" {
+					reachable, err := arpsweep.ReachableSubnets(arpsweep.Config{})
+					if err != nil {
+						return wire.NewDiscoveryScanError("INTERNAL",
+							"this relay could not read its own interface addresses, so it cannot say whether it can reach "+body.Subnet)
+					}
+					if !arpsweep.CoversRequestedScope(reachable, body.Subnet) {
+						return wire.NewDiscoveryScanError("UNAVAILABLE",
+							"this relay has no interface on "+body.Subnet+", so it cannot scan it — a relay sweeps only networks it is itself attached to")
+					}
+				}
 				scanMu.Lock()
 				if scanRunning != "" {
 					id := scanRunning
