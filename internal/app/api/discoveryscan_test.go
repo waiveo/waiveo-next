@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -164,6 +165,43 @@ func TestScanReportsARelaysRefusalWithoutFailingTheCall(t *testing.T) {
 	}
 	if scans[0]["ok"] != false || scans[0]["code"] != "UNAVAILABLE" {
 		t.Errorf("outcome = %+v, want ok=false with the relay's own code", scans[0])
+	}
+}
+
+// TestATransportFailureIsStillAREADABLERefusal covers REL-127's rule that no
+// `ok:false` outcome may reach an operator without a code.
+//
+// The relay-refusal path was covered; this one was not, and it is the path that
+// can produce a code-less refusal. When the dispatcher returns a Go ERROR the
+// body it returns alongside is a ZERO value — `ok:false`, no error object — and
+// a handler that read it instead of the error would publish exactly the
+// unreadable refusal the requirement forbids: an operator told the scan failed
+// and given nothing to act on.
+//
+// The handler is correct today (it reads the error and continues). This pins it,
+// because the failure mode is silent: the outcome still has the right SHAPE, it
+// just says nothing.
+func TestATransportFailureIsStillAREADABLERefusal(t *testing.T) {
+	e := newScanEnv(t, scanRelayA)
+	e.dispatcher.scanErr = errors.New("relay connection closed mid-request")
+
+	resp, raw := e.do(t, http.MethodPost, "/api/v1/discovery/scan", []byte(`{}`), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST scan = %d, want 200 — one relay being unreachable is that relay's outcome (%s)", resp.StatusCode, raw)
+	}
+	scans := decodeScans(t, raw)
+	if len(scans) != 1 {
+		t.Fatalf("reported %d outcome(s), want 1", len(scans))
+	}
+	if scans[0]["ok"] != false {
+		t.Fatalf("outcome = %+v, want ok=false", scans[0])
+	}
+	code, _ := scans[0]["code"].(string)
+	if code == "" {
+		t.Error("a refused outcome reached the operator with NO code — a refusal nobody can read is indistinguishable from a fault in the transport (REL-127)")
+	}
+	if msg, _ := scans[0]["message"].(string); msg == "" {
+		t.Error("a refused outcome carried no message either, so the operator has neither a code nor a sentence")
 	}
 }
 
