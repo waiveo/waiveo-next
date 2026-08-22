@@ -1,0 +1,57 @@
+{
+  "case_id": "REL-119-valid-screen-status-replace-and-clear",
+  "contract": "relay/1",
+  "req_ids": [
+    "REL-119",
+    "REL-119a",
+    "REL-119b"
+  ],
+  "description": "A relay's screen.status report is a FULL-SET replace of that relay's view, and an EMPTY report is the value that clears it. The same case fixes the two entry-level rules the frame's shape depends on: a never-observed age is reported as -1 and stays distinguishable from a just-now 0, and what a screen was HANDED stays separate from what it ACCEPTED \u2014 a screen that refused its program still reports the intent it refused, and a consumer reading intent as playback describes a wall as showing something it is not.",
+  "input": {
+    "relay_id": "01J8Z0RELAYA00000000000001",
+    "taken_at_ms": 1700000010000,
+    "first_report": [
+      {
+        "screen_id": "01J8Z9SCREEN0000000000000A",
+        "paired": true,
+        "last_pull_age_ms": 2000,
+        "last_ack_age_ms": 1500,
+        "last_render_start_age_ms": 1000,
+        "unacked_pulls": 0,
+        "program_revision": "rev-handed",
+        "priority": "scheduled",
+        "display": "content",
+        "content_count": 3,
+        "acked_program_revision": "rev-accepted",
+        "acked_display": "content",
+        "acked_content_count": 1,
+        "rejected": false,
+        "render_asset_ref": "sha256:aa"
+      },
+      {
+        "screen_id": "01J8Z9SCREEN0000000000000B",
+        "paired": false,
+        "last_pull_age_ms": -1,
+        "last_ack_age_ms": -1,
+        "last_render_start_age_ms": -1,
+        "unacked_pulls": 0,
+        "program_revision": "rev-waiting",
+        "priority": "scheduled",
+        "display": "content",
+        "content_count": 2,
+        "acked_content_count": 0,
+        "rejected": false
+      }
+    ],
+    "second_report": []
+  },
+  "expected": {
+    "screens_after_first_report": 2,
+    "screens_after_empty_report": 0,
+    "never_observed_age_ms": -1,
+    "never_observed_is_distinct_from_just_now": true,
+    "handed_revision": "rev-handed",
+    "accepted_revision": "rev-accepted",
+    "intent_and_acceptance_are_separate": true
+  }
+}
