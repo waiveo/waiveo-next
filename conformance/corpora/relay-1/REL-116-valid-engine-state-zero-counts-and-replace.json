@@ -1,0 +1,53 @@
+{
+  "case_id": "REL-116-valid-engine-state-zero-counts-and-replace",
+  "contract": "relay/1",
+  "req_ids": [
+    "REL-116",
+    "REL-118"
+  ],
+  "description": "A relay reporting that it is watching for NOTHING must survive the trip intact. Every count is present at zero and each lane's running flag rides beside it, because a zero is unreadable alone: no mDNS watch with the lane ON means the generation declared no mDNS patterns, and the same zero with the lane OFF means this deployment never bound multicast \u2014 different problems with different owners. A second report then REPLACES the first wholesale rather than merging, so a count from a retired generation cannot survive into the view of a current one; and a relay that has never reported stays ABSENT rather than being minted with zeroes, since zeroes are the alarm and minting them would raise it on every fresh feeder. A third report models the dev box's own state \u2014 one BUILTIN mDNS watch and no SSDP \u2014 because that is the case that tells the watching-nothing judgement apart from a per-lane one: a relay holding a watch in either lane is discovering, and an OR would raise the alarm on a fleet that is working.",
+  "input": {
+    "reporting_relay_id": "01J8Z0RELAYA00000000000001",
+    "silent_relay_id": "01J8Z0RELAYB00000000000002",
+    "first_report": {
+      "ssdp_lane": true,
+      "mdns_lane": false,
+      "ssdp_watches": 0,
+      "mdns_watches": 0,
+      "pack_patterns": 3,
+      "mdns_undeliverable": 2,
+      "mac_oui_unimplemented": 1,
+      "malformed": 1
+    },
+    "second_report": {
+      "ssdp_lane": true,
+      "mdns_lane": true,
+      "ssdp_watches": 4,
+      "mdns_watches": 1,
+      "pack_patterns": 5,
+      "mdns_undeliverable": 0,
+      "mac_oui_unimplemented": 0,
+      "malformed": 0
+    },
+    "one_lane_report": {
+      "ssdp_lane": true,
+      "mdns_lane": true,
+      "ssdp_watches": 0,
+      "mdns_watches": 1,
+      "pack_patterns": 0,
+      "mdns_undeliverable": 0,
+      "mac_oui_unimplemented": 0,
+      "malformed": 0
+    }
+  },
+  "expected": {
+    "watching_nothing_after_first": true,
+    "mdns_lane_after_first": false,
+    "malformed_after_first": 1,
+    "watching_nothing_after_second": false,
+    "malformed_after_second": 0,
+    "states_after_both_reports": 1,
+    "silent_relay_is_absent": true,
+    "watching_nothing_with_one_lane_holding_a_watch": false
+  }
+}
