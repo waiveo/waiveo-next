@@ -21,7 +21,7 @@ import type { ActionHandler } from "./types";
 //     field's own path — never partially painted (UIS-200);
 //   • a binding-resolution case (UIS-101) evaluates through the binding engine to
 //     the record the contract fixes.
-// An accounting test asserts all twenty-three cases are driven (none pending — the Go
+// An accounting test asserts all twenty-five cases are driven (none pending — the Go
 // drivers' driven/pending discipline), and a teeth block proves the oracle bites:
 // a mutated expectation must fail.
 //
@@ -118,6 +118,12 @@ const messages: Record<string, string> = {
   "msg:devices.list.entities": "Entities",
   "msg:devices.filter.class": "Device class",
   "msg:devices.filter.decision": "Decision",
+  // v1.2 — classified empty state + loading (UIS-071c)
+  "msg:devices.search.placeholder": "Name, address, vendor, MAC, model, class or port",
+  "msg:devices.empty.noRelay": "No relay is connected, so nothing is discovering.",
+  "msg:devices.empty.noRelayHelp": "An empty list here says nothing about your network.",
+  "msg:devices.empty.blind": "This console could not read relay health.",
+  "msg:devices.empty.searching": "Searching — nothing has answered yet.",
 };
 
 // ── The valid page-document render oracle ───────────────────────────────────
@@ -295,6 +301,17 @@ const RENDER_FIXTURES: Record<string, RenderFixture> = {
   // shows itself when a row other than the first is acted on.
   // v1.2 — column list affordances (UIS-071b). Asserted through the RENDERED
   // controls, not the document: a declaration the renderer drops still validates.
+  // v1.2 — UIS-071c. Asserted through the RENDERED sentence, because the whole
+  // point is WHICH emptiness is being reported: a document that validates and
+  // then paints the generic "no rows" card has failed at exactly the thing.
+  "UIS-071c-valid-classified-empty-state": {
+    data: { devices: [], loading: false, discovery_kind: "no-relay" },
+    assert: () => {
+      expect(
+        screen.getByText("No relay is connected, so nothing is discovering."),
+      ).toBeInTheDocument();
+    },
+  },
   "UIS-071b-valid-searchable-filtered-inventory": {
     data: {
       devices: [
@@ -393,8 +410,8 @@ function assertResolved(binding: string, data: Record<string, unknown>, expected
 // ── The driver ──────────────────────────────────────────────────────────────
 
 describe("ui-schema/1 corpus — the render + reject driver", () => {
-  it("drives every one of the twenty-three frozen corpus cases (no copies, none pending)", () => {
-    expect(cases.length).toBe(23);
+  it("drives every one of the twenty-five frozen corpus cases (no copies, none pending)", () => {
+    expect(cases.length).toBe(25);
     // Each case is driven by exactly one arm — page-document or binding — so the
     // partition covers all nine with nothing left over (the Go driver discipline).
     expect(validPageCases.length + invalidPageCases.length + bindingCases.length).toBe(
@@ -419,6 +436,8 @@ describe("ui-schema/1 corpus — the render + reject driver", () => {
         "UIS-071b-invalid-filter-label-without-filter-rejected",
         "UIS-071b-invalid-unknown-column-filter-rejected",
         "UIS-071b-valid-searchable-filtered-inventory",
+        "UIS-071c-invalid-both-empty-forms-rejected",
+        "UIS-071c-valid-classified-empty-state",
         "UIS-100-invalid-malformed-binding-rejected",
         "UIS-101-valid-predicate-index-binding",
         "UIS-132-invalid-incomplete-vocab-labels-rejected",

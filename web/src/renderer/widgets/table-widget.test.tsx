@@ -199,3 +199,97 @@ describe("TableWidget — list affordances are declared, never assumed (UIS-071b
       });
   });
 });
+
+describe("TableWidget — an empty table says WHICH emptiness (UIS-071c)", () => {
+  function docWithTableProps(extra: Record<string, unknown>) {
+    return {
+      pageType: "list-detail",
+      list: {
+        source: "casts",
+        display: {
+          type: "table",
+          id: "Casts",
+          props: { source: "casts", columns: boundColumns, ...extra },
+        },
+      },
+      detail: {
+        source: "selected",
+        root: { type: "text", props: { value: "id" } },
+        emptyMsg: "msg:col.summary",
+      },
+    };
+  }
+
+  const CLASSIFIED = {
+    emptyWidget: {
+      type: "switch",
+      props: {
+        discriminant: "$root.why",
+        cases: [
+          { when: "no-relay", render: { type: "text", props: { value: { compute: "msg", args: ["msg:empty.noRelay"] } } } },
+        ],
+        default: { type: "text", props: { value: { compute: "msg", args: ["msg:empty.searching"] } } },
+      },
+    },
+  };
+  const msgs = {
+    ...messages,
+    "msg:empty.noRelay": "No relay is connected, so nothing is discovering.",
+    "msg:empty.searching": "Searching — nothing has answered yet.",
+  };
+
+  it("renders the CAUSE, not a generic no-rows card", () => {
+    render(<PageRenderer doc={docWithTableProps(CLASSIFIED)} data={{ casts: [], why: "no-relay" }} messages={msgs} />);
+    expect(screen.getByText("No relay is connected, so nothing is discovering.")).toBeInTheDocument();
+    expect(screen.queryByText("Searching — nothing has answered yet.")).toBeNull();
+  });
+
+  it("switches the sentence when the cause changes", () => {
+    // The discriminant is bound, so the same empty table says something else
+    // when the reason differs. A hardcoded sentence would pass the test above.
+    render(<PageRenderer doc={docWithTableProps(CLASSIFIED)} data={{ casts: [], why: "swept" }} messages={msgs} />);
+    expect(screen.getByText("Searching — nothing has answered yet.")).toBeInTheDocument();
+    expect(screen.queryByText(/No relay is connected/)).toBeNull();
+  });
+
+  it("says NOTHING about emptiness while loadingIf is true", () => {
+    // The sharp one. A table that has not fetched and a table that fetched
+    // nothing are identical in the data; painting the empty sentence over the
+    // first states that the network is empty while it is still being read.
+    render(
+      <PageRenderer
+        doc={docWithTableProps({ ...CLASSIFIED, loadingIf: "$root.loading" })}
+        data={{ casts: [], why: "no-relay", loading: true }}
+        messages={msgs}
+      />,
+    );
+    expect(screen.queryByText(/No relay is connected/)).toBeNull();
+  });
+
+  it("says it once loading finishes", () => {
+    render(
+      <PageRenderer
+        doc={docWithTableProps({ ...CLASSIFIED, loadingIf: "$root.loading" })}
+        data={{ casts: [], why: "no-relay", loading: false }}
+        messages={msgs}
+      />,
+    );
+    expect(screen.getByText("No relay is connected, so nothing is discovering.")).toBeInTheDocument();
+  });
+
+  it("carries a search placeholder naming what is matched", () => {
+    const many: Row[] = Array.from({ length: 40 }, (_, i) => ({
+      id: `01J8Z3K4N5P6Q7R8S9T0V1W2${String(i).padStart(2, "0")}`,
+      name: `Board ${String(i).padStart(2, "0")}`,
+      slides: i,
+    }));
+    render(
+      <PageRenderer
+        doc={docWithTableProps({ searchPlaceholderMsg: "msg:search.hint" })}
+        data={{ casts: many }}
+        messages={{ ...msgs, "msg:search.hint": "Name or slide count" }}
+      />,
+    );
+    expect(screen.getByLabelText("Search Casts")).toHaveAttribute("placeholder", "Name or slide count");
+  });
+});

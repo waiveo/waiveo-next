@@ -694,6 +694,27 @@ function validatePropByKind(def: PropDef, value: unknown, path: string, ctx: Ctx
   }
 }
 
+/** UIS-071c: a `table` says what it shows with no rows EITHER as a message OR as
+ * a widget subtree, never both.
+ *
+ * Two spellings exist because the two cases are genuinely different sizes. A
+ * list whose emptiness means one thing wants one sentence; a list whose
+ * emptiness has several causes — no relay connected, a sweep that found
+ * nothing, health that could not be read — needs to say WHICH, and that is a
+ * `switch` over a bound discriminant, i.e. a widget.
+ *
+ * Declaring both is refused rather than resolved by precedence: an author who
+ * wrote both has two different empty states in mind, and silently picking one
+ * would leave the other rendered nowhere and looking authored. */
+function validateTableEmptyShape(props: Record<string, unknown>, path: string, ctx: Ctx): void {
+  const hasMsg = props.emptyMsg !== undefined;
+  const hasWidget = props.emptyWidget !== undefined;
+  if (hasMsg && hasWidget) {
+    fail(ctx, "WIDGET_PROP_UNKNOWN", `${path}.props.emptyWidget`,
+      "a table declaring `emptyMsg` may not also declare `emptyWidget` (UIS-071c)");
+  }
+}
+
 /** UIS-073a: an `entity-picker`'s declared binding shape and the forms it can
  * carry. A `bindShape` outside the closed set would otherwise fall back to the
  * object shape and paint an empty control over a record that does carry an
@@ -769,6 +790,7 @@ function validateWidget(node: unknown, path: string, ctx: Ctx): void {
   // the `entity` form, so a `modes` naming `selector`/`deviceClass` beside it is
   // a static contradiction.
   if (type === "entity-picker") validateEntityPickerShape(props, path, ctx);
+  if (type === "table") validateTableEmptyShape(props, path, ctx);
 
   // on (UIS-062): only declared events, required events present, each an ActionRef
   const on = isObject(node.on) ? node.on : {};

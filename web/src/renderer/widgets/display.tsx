@@ -260,6 +260,22 @@ export function TableWidget({ node, scope, depth }: WidgetProps) {
   });
 
   const data = array as Record<string, unknown>[];
+
+  // UIS-071c. `loadingIf` is what keeps an empty state from being a LIE: a table
+  // that has not fetched yet and a table that fetched nothing look identical in
+  // the data, and painting "nothing is on your network" over the first is the
+  // wrong sentence at the moment it is most likely to be believed.
+  const loading = evalBindingExpr(node.props?.loadingIf, scope, env) === true;
+  const emptyWidget = node.props?.emptyWidget as WidgetNode | undefined;
+  const emptyMsgRef = node.props?.emptyMsg;
+  // A subtree, so an emptiness with several CAUSES can say which — a `switch`
+  // over a bound discriminant is an ordinary widget and needs no new grammar.
+  const emptyState: ReactNode | undefined = emptyWidget
+    ? <WidgetNodeView node={emptyWidget} scope={scope} depth={depth + 1} />
+    : emptyMsgRef !== undefined
+      ? <span data-slot="table-empty-msg">{env.msg(String(emptyMsgRef))}</span>
+      : undefined;
+  const placeholder = node.props?.searchPlaceholderMsg;
   const label = typeof node.id === "string" ? node.id : leafName(sourcePath);
   // Long-list affordances, decided from the data (see RENDERER_PAGE_SIZE). Search
   // comes WITH paging rather than separately: paging a list you cannot search
@@ -295,10 +311,15 @@ export function TableWidget({ node, scope, depth }: WidgetProps) {
       label={label}
       {...(onRowPress ? { onRowPress } : {})}
       {...(anyFilter ? { filters: true } : {})}
+      {...(loading ? { loading: true } : {})}
+      {...(emptyState === undefined ? {} : { emptyState })}
       {...(long
         ? {
             pagination: { pageSize: RENDERER_PAGE_SIZE },
-            search: { label: `Search ${label}` },
+            search: {
+              label: `Search ${label}`,
+              ...(placeholder === undefined ? {} : { placeholder: env.msg(String(placeholder)) }),
+            },
           }
         : {})}
     />

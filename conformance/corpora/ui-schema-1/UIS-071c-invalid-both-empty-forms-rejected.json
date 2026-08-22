@@ -1,0 +1,59 @@
+{
+  "case_id": "UIS-071c-invalid-both-empty-forms-rejected",
+  "contract": "ui-schema/1",
+  "req_ids": [
+    "UIS-071c"
+  ],
+  "description": "A table declaring both emptyMsg and emptyWidget is rejected as WIDGET_PROP_UNKNOWN. An author who wrote both has two different empty states in mind, and silently applying one would leave the other rendered nowhere while still looking authored.",
+  "input": {
+    "pageType": "list-detail",
+    "list": {
+      "source": "devices",
+      "display": {
+        "type": "table",
+        "id": "Devices",
+        "props": {
+          "source": "devices",
+          "columns": [
+            {
+              "headerMsg": "msg:devices.list.name",
+              "cell": "item.name"
+            }
+          ],
+          "emptyMsg": "msg:devices.empty.searching",
+          "emptyWidget": {
+            "type": "text",
+            "props": {
+              "value": {
+                "compute": "msg",
+                "args": [
+                  "msg:devices.empty.blind"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "detail": {
+      "source": "devices[id=$ui.selected]",
+      "emptyMsg": "msg:devices.detail.empty",
+      "root": {
+        "type": "text",
+        "props": {
+          "value": "id"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": false,
+    "errors": [
+      {
+        "code": "WIDGET_PROP_UNKNOWN",
+        "field": "list.display.props.emptyWidget",
+        "message": "a table declaring `emptyMsg` may not also declare `emptyWidget` (UIS-071c)"
+      }
+    ]
+  }
+}
