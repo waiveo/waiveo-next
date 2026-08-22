@@ -1,0 +1,319 @@
+{
+  "pageType": "list-detail",
+  "list": {
+    "source": "devices",
+    "display": {
+      "type": "table",
+      "id": "Discovered devices",
+      "props": {
+        "source": "devices",
+        "columns": [
+          {
+            "headerMsg": "msg:dev.col.name",
+            "cell": "item.name",
+            "searchable": true
+          },
+          {
+            "headerMsg": "msg:dev.col.address",
+            "cell": "item.address_display",
+            "searchable": true
+          },
+          {
+            "headerMsg": "msg:dev.col.hardware",
+            "cell": "item.hardware_display",
+            "searchable": true
+          },
+          {
+            "headerMsg": "msg:dev.col.model",
+            "cell": "item.model_display",
+            "searchable": true
+          },
+          {
+            "headerMsg": "msg:dev.col.class",
+            "cell": "item.device_class",
+            "searchable": true,
+            "filter": "enum",
+            "filterLabelMsg": "msg:dev.filter.class"
+          },
+          {
+            "headerMsg": "msg:dev.col.relay",
+            "cell": "item.relay_id",
+            "filter": "enum",
+            "filterLabelMsg": "msg:dev.filter.relay"
+          },
+          {
+            "headerMsg": "msg:dev.col.entities",
+            "cell": "item.entity_count",
+            "numeric": true
+          },
+          {
+            "headerMsg": "msg:dev.col.ports",
+            "searchable": true,
+            "cellValue": "item.ports_search",
+            "cellWidget": {
+              "type": "switch",
+              "props": {
+                "discriminant": "item.ports_state",
+                "cases": [
+                  {
+                    "when": "unscanned",
+                    "render": {
+                      "type": "text",
+                      "props": {
+                        "value": {
+                          "compute": "msg",
+                          "args": [
+                            "msg:dev.ports.unscanned"
+                          ]
+                        },
+                        "titleMsg": "msg:dev.ports.unscannedHelp"
+                      }
+                    }
+                  },
+                  {
+                    "when": "none",
+                    "render": {
+                      "type": "text",
+                      "props": {
+                        "value": {
+                          "compute": "msg",
+                          "args": [
+                            "msg:dev.ports.none"
+                          ]
+                        },
+                        "titleMsg": "msg:dev.ports.noneHelp"
+                      }
+                    }
+                  }
+                ],
+                "default": {
+                  "type": "text",
+                  "props": {
+                    "value": "item.ports_display",
+                    "titleMsg": "msg:dev.ports.openHelp"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "headerMsg": "msg:dev.col.firstSeen",
+            "numeric": true,
+            "cellValue": "item.first_seen_sort",
+            "cellWidget": {
+              "type": "switch",
+              "props": {
+                "discriminant": "item.first_seen_kind",
+                "cases": [
+                  {
+                    "when": "inherited",
+                    "render": {
+                      "type": "text",
+                      "props": {
+                        "value": "item.first_seen_display",
+                        "titleMsg": "msg:dev.firstSeen.inheritedHelp"
+                      }
+                    }
+                  }
+                ],
+                "default": {
+                  "type": "text",
+                  "props": {
+                    "value": "item.first_seen_display"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "headerMsg": "msg:dev.col.lastSeen",
+            "cell": "item.last_seen_display",
+            "numeric": true
+          },
+          {
+            "headerMsg": "msg:dev.col.status",
+            "cellValue": "item.status",
+            "filter": "enum",
+            "filterLabelMsg": "msg:dev.filter.decision",
+            "cellWidget": {
+              "type": "badge",
+              "props": {
+                "value": "item.status",
+                "toneFrom": "item.status_tone"
+              }
+            }
+          },
+          {
+            "headerMsg": "msg:dev.col.retire",
+            "cellWidget": {
+              "type": "button",
+              "visibleIf": "item.can_retire",
+              "props": {
+                "labelMsg": "msg:dev.act.retire",
+                "style": "ghost"
+              },
+              "on": {
+                "press": {
+                  "verb": "call-action",
+                  "action": "retire-first-seen",
+                  "params": {
+                    "device_id": "item.id"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "headerMsg": "msg:dev.col.ignore",
+            "cellWidget": {
+              "type": "switch",
+              "visibleIf": "item.can_decide",
+              "props": {
+                "discriminant": "item.ignored",
+                "cases": [
+                  {
+                    "when": true,
+                    "render": {
+                      "type": "button",
+                      "visibleIf": "item.can_decide",
+                      "props": {
+                        "labelMsg": "msg:dev.act.unignore",
+                        "style": "ghost"
+                      },
+                      "on": {
+                        "press": {
+                          "verb": "call-action",
+                          "action": "unignore-device",
+                          "params": {
+                            "device_id": "item.id"
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "default": {
+                  "type": "button",
+                  "visibleIf": "item.can_decide",
+                  "props": {
+                    "labelMsg": "msg:dev.act.ignore",
+                    "style": "ghost"
+                  },
+                  "on": {
+                    "press": {
+                      "verb": "call-action",
+                      "action": "ignore-device",
+                      "params": {
+                        "device_id": "item.id"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "headerMsg": "msg:dev.col.adopt",
+            "cellWidget": {
+              "type": "button",
+              "visibleIf": "item.can_decide",
+              "props": {
+                "labelMsg": "msg:dev.act.adopt",
+                "style": "secondary"
+              },
+              "on": {
+                "press": {
+                  "verb": "call-action",
+                  "action": "adopt-device",
+                  "params": {
+                    "device_id": "item.id"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "loadingIf": "$root.loading",
+        "searchPlaceholderMsg": "msg:dev.search.placeholder",
+        "emptyWidget": {
+          "type": "switch",
+          "props": {
+            "discriminant": "$root.empty_kind",
+            "cases": [
+              {
+                "when": "no-relay",
+                "render": {
+                  "type": "text",
+                  "props": {
+                    "value": {
+                      "compute": "msg",
+                      "args": [
+                        "msg:dev.empty.noRelay"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "when": "blind",
+                "render": {
+                  "type": "text",
+                  "props": {
+                    "value": {
+                      "compute": "msg",
+                      "args": [
+                        "msg:dev.empty.blind"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "when": "unreadable",
+                "render": {
+                  "type": "text",
+                  "props": {
+                    "value": {
+                      "compute": "msg",
+                      "args": [
+                        "msg:dev.empty.unreadable"
+                      ]
+                    }
+                  }
+                }
+              }
+            ],
+            "default": {
+              "type": "text",
+              "props": {
+                "value": {
+                  "compute": "msg",
+                  "args": [
+                    "msg:dev.empty.searching"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "on": {
+        "rowPress": {
+          "verb": "set",
+          "target": "$ui.selected",
+          "value": "item.id"
+        }
+      }
+    }
+  },
+  "detail": {
+    "source": "devices[id=$ui.selected]",
+    "emptyMsg": "msg:dev.detail.empty",
+    "root": {
+      "type": "text",
+      "props": {
+        "value": "id"
+      }
+    }
+  }
+}

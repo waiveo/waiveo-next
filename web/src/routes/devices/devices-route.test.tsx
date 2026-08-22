@@ -893,7 +893,7 @@ describe("Devices — finding one device in a fleet", () => {
     const table = await screen.findByRole("table", { name: "Discovered devices" });
     expect(within(table).getByText("Cafe TV")).toBeInTheDocument();
 
-    const box = screen.getByLabelText("Search devices");
+    const box = screen.getByLabelText("Search Discovered devices");
     await user.type(box, "Stock");
     await waitFor(() => expect(screen.queryByText("Cafe TV")).not.toBeInTheDocument());
     expect(screen.getByText("Stock room light")).toBeInTheDocument();
@@ -1188,7 +1188,7 @@ describe("Devices — open ports, the three answers as an operator meets them", 
     const user = renderRoute();
     await screen.findByRole("table", { name: "Discovered devices" });
 
-    await user.type(screen.getByLabelText("Search devices"), "printer");
+    await user.type(screen.getByLabelText("Search Discovered devices"), "printer");
     await waitFor(() => expect(screen.queryByText("Hanger TV")).not.toBeInTheDocument());
     expect(screen.getByText("Back office")).toBeInTheDocument();
   });
@@ -1204,7 +1204,7 @@ describe("Devices — open ports, the three answers as an operator meets them", 
     const user = renderRoute();
     await screen.findByRole("table", { name: "Discovered devices" });
 
-    await user.type(screen.getByLabelText("Search devices"), "not scanned");
+    await user.type(screen.getByLabelText("Search Discovered devices"), "not scanned");
     await waitFor(() => expect(screen.queryByText("Came back clean")).not.toBeInTheDocument());
     expect(screen.getByText("Never looked")).toBeInTheDocument();
   });
@@ -1225,8 +1225,14 @@ describe("Devices — hardware identity", () => {
     renderRoute();
     const table = await screen.findByRole("table", { name: "Discovered devices" });
     await waitFor(() => expect(within(table).getByText("NAS")).toBeInTheDocument());
-    expect(within(table).getByText("Proxmox")).toBeInTheDocument();
-    expect(within(table).getByText("bc:24:11:3f:b9:4d")).toBeInTheDocument();
+    // ONE line since the ui-schema/1 port: `ui-schema/1` has no layout-neutral
+    // container, so the vendor and MAC that used to stack are joined
+    // (waiveo/program#230, G-R6). The vendor is still SHOWN and still
+    // searchable — the test below types "Proxmox" and finds this row — so what
+    // changed is its separateness as a text node, not whether an operator can
+    // see it or find by it. Asserted as a substring rather than dropped.
+    expect(within(table).getByText(/Proxmox/)).toBeInTheDocument();
+    expect(within(table).getByText(/bc:24:11:3f:b9:4d/)).toBeInTheDocument();
   });
 
   it("tells two identically-named devices apart", async () => {
@@ -1273,7 +1279,7 @@ describe("Devices — hardware identity", () => {
     const user = renderRoute();
     await screen.findByRole("table", { name: "Discovered devices" });
 
-    const search = screen.getByLabelText("Search devices");
+    const search = screen.getByLabelText("Search Discovered devices");
     await user.type(search, "Proxmox");
     await waitFor(() => expect(screen.queryByText("Hanger TV")).not.toBeInTheDocument());
     expect(screen.getByText("Rack box")).toBeInTheDocument();

@@ -253,7 +253,24 @@ export function TableWidget({ node, scope, depth }: WidgetProps) {
       cell: widget
         ? ({ row }) => {
             const itemScope = narrowToItem(scope, row.original, row.index, loc, tree, "item");
-            return <WidgetNodeView node={widget} scope={itemScope} depth={depth + 1} />;
+            // A press on a control INSIDE a cell must not also fire `rowPress`.
+            // Both are real and they mean different things — "decide about this
+            // device" versus "select this device" — and letting one click do
+            // both makes every decision silently retarget whatever else on the
+            // page is scoped to the selection. The React table kept its actions
+            // in a separate slot and never had to answer this; a `cellWidget`
+            // puts them in the row, so the row is where it gets answered.
+            return (
+              <div
+                data-slot="widget-cell"
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+                }}
+              >
+                <WidgetNodeView node={widget} scope={itemScope} depth={depth + 1} />
+              </div>
+            );
           }
         : ({ getValue }) => toDisplay(getValue()) as ReactNode,
     };
@@ -281,7 +298,15 @@ export function TableWidget({ node, scope, depth }: WidgetProps) {
   // comes WITH paging rather than separately: paging a list you cannot search
   // just hides rows behind a Next button, which is the "find one device in the
   // fleet" problem with extra clicks.
+  // Search comes from the DATA (a long list needs it) or from the DOCUMENT (a
+  // page that narrowed search to particular columns, UIS-071b, has asked for
+  // it). The threshold alone was wrong for a ported page: an inventory whose
+  // spec requires "search + filters" would lose its search box on every fleet
+  // under 25 rows, and a control that appears only once a deployment grows is
+  // one an operator cannot learn.
+  const anySearchable = decls.some((c) => c.searchable === true);
   const long = data.length > RENDERER_PAGE_SIZE;
+  const wantsSearch = long || anySearchable;
   // The kit splits this deliberately — "the column says WHICH, the call site says
   // WHETHER" — because a shared column array must not switch filter chrome on for
   // a four-row table. For a schema-authored table the renderer IS the call site,
@@ -313,9 +338,9 @@ export function TableWidget({ node, scope, depth }: WidgetProps) {
       {...(anyFilter ? { filters: true } : {})}
       {...(loading ? { loading: true } : {})}
       {...(emptyState === undefined ? {} : { emptyState })}
-      {...(long
+      {...(long ? { pagination: { pageSize: RENDERER_PAGE_SIZE } } : {})}
+      {...(wantsSearch
         ? {
-            pagination: { pageSize: RENDERER_PAGE_SIZE },
             search: {
               label: `Search ${label}`,
               ...(placeholder === undefined ? {} : { placeholder: env.msg(String(placeholder)) }),

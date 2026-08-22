@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Cpu, RefreshCw, Radio } from "lucide-react";
+import { Cpu, RefreshCw } from "lucide-react";
 import {
   Button,
   DataTable,
@@ -25,10 +25,10 @@ import {
   type WaiveoApi,
 } from "@/api";
 import { formatAge } from "@/lib/format-age";
+import { DiscoveredDevices, toDiscoveredRow } from "./discovered-devices";
 import { describeDiscovery, type BlindReason } from "./discovery";
 import { scanOwners } from "./scan-owner";
 import { deviceRecognizers } from "./recognizers";
-import { describePort, describePorts, portsSearchText, portsState } from "./open-ports";
 import { DiscoveryPanel } from "./discovery-panel";
 import { AdoptedDevices } from "./adopted-devices";
 
@@ -124,135 +124,10 @@ function ageCell(atMs: number | undefined): string {
   return formatAge(Math.max(0, Date.now() - atMs));
 }
 
-/** Whether a device's `first_seen` is an instant this deployment OBSERVED, and
- * may therefore be drawn as an exact age.
- *
- * Only `planted` is. `adopted` was copied from a pre-ledger column at an upgrade,
- * having been written off the reporting relay's own unattested clock at that
- * relay's last restart; `unrecorded` is a row from a build that did not record
- * which of the two it was, so it cannot be shown not to be the first. Both get
- * the same treatment because the caution is the same. An absent origin belongs to
- * an absent age. */
-function isObservedAge(device: Device): boolean {
-  return device.first_seen_origin === "planted";
-}
 
-/** The hardware-identity cell: the vendor over the MAC, or an em dash.
- *
- * An em dash here means what an em dash should mean — no hardware address was
- * learned — and that is a real and ordinary state: `native_id` is
- * driver-specific, so a device a protocol lane named carries that protocol's own
- * id and no MAC. Nothing is invented for it.
- *
- * The vendor sits above the address rather than beside it because it is the
- * coarser fact and the one that answers a scan of the whole fleet; the MAC is
- * monospaced because it is read character by character when it is read at all.
- * A device whose OUI this build does not recognize shows the MAC alone — absent
- * means "not known", never "no vendor". */
-function hardwareCell(device: Device): React.ReactNode {
-  if (!device.mac) return <span className="text-muted-foreground">—</span>;
-  return (
-    <span className="flex flex-col leading-tight">
-      {device.vendor ? <span>{device.vendor}</span> : null}
-      <span className="font-mono text-xs text-muted-foreground">{device.mac}</span>
-    </span>
-  );
-}
 
-/** What a search matches on: vendor and address together, so "Proxmox" and
- * "bc:24" both find the row. */
-function macSearchText(device: Device): string {
-  return [device.vendor, device.mac].filter(Boolean).join(" ") || "—";
-}
 
-/** The `open_ports` cell — THREE states, drawn as three different things.
- *
- * api/1 is explicit that the member carries three answers: "absent means nobody
- * has looked, empty would mean a scan looked and found nothing open, and only a
- * scan can assert the second." Until the layer under this one was fixed, five of
- * six layers collapsed the middle answer into the first and no deployment could
- * produce it. Drawing both as an em dash here would restore the same defect in
- * the one place an operator actually meets it — showing a scan's finding as the
- * absence of one, and making the fix beneath invisible.
- *
- * So the two decided states are drawn as WORDS rather than punctuation, and only
- * the genuinely-unknown one is muted-and-empty. "None open" is a result; a blank
- * cell is not.
- *
- * The ports themselves carry their meaning inline (`8060 roku`) because that is
- * the column's entire operator value: most of a real fleet is `unclassified`
- * because it announces nothing, and a host answering 9100 is a printer. It stays
- * EVIDENCE — the hint is what typically answers there, it never sets a class,
- * and an unlisted port renders as a bare number rather than a guess. */
-function openPortsCell(device: Device): React.ReactNode {
-  const state = portsState(device.open_ports);
-  if (state.kind === "unscanned") {
-    return (
-      <span
-        className="text-muted-foreground"
-        title={
-          "Nothing has scanned this device, so nothing is known about its ports. This is not the same " +
-          "as having no ports open — only a scan can assert that. Start one from the extension that " +
-          "owns scanning."
-        }
-      >
-        Not scanned
-      </span>
-    );
-  }
-  if (state.kind === "none") {
-    return (
-      <span
-        className="text-muted-foreground"
-        title={
-          "A scan looked and nothing answered on the ports Discovery probes. This is a result, not a " +
-          "gap: it is what the platform found, and it is how a port that has since closed stops being " +
-          "reported."
-        }
-      >
-        None open
-      </span>
-    );
-  }
-  return (
-    <span className="font-mono text-xs" title={describePorts(state.ports)}>
-      {state.ports.map(describePort).join("  ")}
-    </span>
-  );
-}
 
-/** The `first_seen` cell.
- *
- * This is the whole of #197 as an operator meets it. `first_seen` is served
- * identically whether this deployment WATCHED the device appear or inherited a
- * number from an upgrade, and drawing both as "3d ago" under a column headed
- * "First seen" claims a precision the second does not have. On the one measured
- * deployment every age on the page was inherited and 57 of them were the same
- * instant to the millisecond — a whole inventory reading as three days old, which
- * a reasonable operator takes to mean the devices arrived three days ago.
- *
- * So an inherited age is drawn with a `~` and carries the caveat in its title:
- * approximately, not at least, because the value overstates the age when the
- * reporting relay's clock ran behind and understates it otherwise, and "≥ 3d"
- * would be a second false guarantee in place of the first. The affordance for
- * doing something about it is the row's own Retire action. */
-function firstSeenCell(device: Device): React.ReactNode {
-  const age = ageCell(device.first_seen);
-  if (age === "—" || isObservedAge(device)) return age;
-  return (
-    <span
-      className="text-muted-foreground"
-      title={
-        "Inherited, not observed. This age was copied from an older build's column, where it had been " +
-        "written from the reporting relay's own unattested clock — so it is an estimate rather than an " +
-        "instant this deployment watched, it is not comparable with an observed one, and it can overstate " +
-        "the device's age as well as understate it. Retire it to have the next report plant a real one."
-      }
-    >
-      ~{age}
-    </span>
-  );
-}
 
 /** A discovered device, flattened with the facts it reported and the entities
  * it exposes. `adopted` is the row's own flag, not a computed join — see the
@@ -378,6 +253,14 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
       };
     });
   }, [devices, entities]);
+
+  /** The rows as `discovered-devices.uis.json` binds them. Kept beside `rows`
+   * rather than inside the panel so the SAME DeviceRow list still backs the
+   * entities join and the dialogs, and only the presentation crossed over. */
+  const discoveredRows = useMemo(
+    () => rows.map((r) => toDiscoveredRow(r.device, r.entities)),
+    [rows],
+  );
 
   const discovery = useMemo(
     () => describeDiscovery({ devices, devicesError: loadError, relays, blind }),
@@ -529,118 +412,6 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
      device class or a second relay appears in the filter without anyone editing
      a list. Adoption state is a `StatusBadge` cell, so it needs an ACCESSOR too:
      the badge is the presentation, the word is the value a filter reads. */
-  const deviceColumns = useMemo<ColumnDef<DeviceRow>[]>(
-    () => [
-      { id: "name", header: "Device", accessorFn: (r) => r.device.name, meta: { searchable: true } },
-      { id: "address", header: "Address", accessorFn: (r) => r.address ?? "—", meta: { searchable: true } },
-      /* The hardware identity, beside the address because they answer the same
-         question and only one of them survives a lease expiring. Two hosts on
-         this deployment both call themselves "NAS"; until this column they were
-         distinguishable only by an IP that DHCP may reassign.
-
-         Vendor and MAC in ONE cell on purpose: they are one fact at two
-         resolutions — who made it, and which one it is — and an operator
-         scanning a fleet wants the maker while an operator chasing a specific
-         box wants the address. Searchable together, so "Proxmox" and "bc:24"
-         both find it.
-
-         The vendor was never missing, only unpublished: candidateName has been
-         reading it out of the MAC all along and spending it on a fallback name,
-         so it reached an operator only for a device that could not name itself. */
-      {
-        id: "mac",
-        header: "Hardware",
-        accessorFn: (r) => macSearchText(r.device),
-        meta: { searchable: true },
-        cell: ({ row }) => hardwareCell(row.original.device),
-      },
-      { id: "model", header: "Model", accessorFn: (r) => r.model ?? "—", meta: { searchable: true } },
-      {
-        id: "class",
-        header: "Class",
-        accessorFn: (r) => r.device.device_class,
-        meta: { searchable: true, filter: "enum", filterLabel: "Device class" },
-      },
-      {
-        id: "relay",
-        header: "Reported by",
-        accessorFn: (r) => r.device.relay_id,
-        meta: { filter: "enum", filterLabel: "Reported by" },
-      },
-      {
-        id: "entities",
-        header: "Entities",
-        accessorFn: (r) => r.entities.length,
-        meta: { numeric: true },
-      },
-      /* Searchable on the MEANINGS as well as the numbers, so an operator can
-         type "printer" and find the host answering 9100 without knowing which
-         port a printer uses — which is the point of a column of evidence. The
-         two decided states carry words too ("not scanned", "none open"), so a
-         fleet can be narrowed to either; a search that could only match ports
-         would leave the absence of them unsearchable. */
-      {
-        id: "open_ports",
-        header: "Open ports",
-        accessorFn: (r) => portsSearchText(r.device.open_ports),
-        meta: { searchable: true },
-        cell: ({ row }) => openPortsCell(row.original.device),
-      },
-      /* The two columns that answer "is this new to my network, or has it been
-         here for weeks" — the question this page exists for and the one it could
-         not answer at all, because the API served neither field. They are sorted
-         on the raw instant and RENDERED as an age: an operator scanning a fleet
-         is comparing recency, not reading dates, and "3d ago" is the comparison
-         made legible. Absent (the API omits both until a device has been durably
-         mirrored) renders as an em dash rather than as the epoch.
-
-         `first_seen` additionally distinguishes an OBSERVED age from an
-         INHERITED one (firstSeenCell). The sort deliberately still runs on the
-         raw instant — an inherited value is a real number and ranking it among
-         the rest is more use than exiling it, and the cell is what says not to
-         read the ranking as exact. */
-      {
-        id: "first_seen",
-        header: "First seen",
-        accessorFn: (r) => r.device.first_seen ?? 0,
-        meta: { numeric: true },
-        cell: ({ row }) => firstSeenCell(row.original.device),
-      },
-      {
-        id: "last_seen",
-        header: "Last seen",
-        accessorFn: (r) => r.device.last_seen ?? 0,
-        meta: { numeric: true },
-        cell: ({ row }) => ageCell(row.original.device.last_seen),
-      },
-      /* THREE states, not two. `adopted` and `ignored` are independent flags on
-         the row and a device can carry both, so the order here is the decision:
-         adoption SUPERSEDES ignoring in this console's reading (Device.Ignored,
-         internal/app/devices). Reading them in the other order would show a
-         device that is actively polled and driveable as merely set aside.
-
-         Ignored is `warn`, not `pending`: pending is an OPEN question and this
-         one is answered. Spending the muted/pending colour on it would make a
-         decision look like an omission, which is the reading that turns an
-         ignore list into a place things get lost. */
-      {
-        id: "status",
-        header: "Status",
-        accessorFn: (r) => (r.adopted ? "Adopted" : r.ignored ? "Ignored" : "Discovered"),
-        meta: { filter: "enum", filterLabel: "Decision" },
-        cell: ({ row }) =>
-          row.original.adopted ? (
-            <StatusBadge status="ok">Adopted</StatusBadge>
-          ) : row.original.ignored ? (
-            <StatusBadge status="warn">Ignored</StatusBadge>
-          ) : (
-            <StatusBadge status="pending">Discovered</StatusBadge>
-          ),
-      },
-    ],
-    [],
-  );
-
   const entityColumns = useMemo<ColumnDef<Entity>[]>(
     () => [
       { id: "name", header: "Entity", accessorFn: (e) => e.name, meta: { searchable: true } },
@@ -721,66 +492,32 @@ export default function DevicesRoute({ api }: { api?: WaiveoApi }) {
 
         <section aria-label="Discovered devices" className="flex flex-col gap-3">
           <h2 className="text-lg font-semibold">Discovered devices</h2>
-          <DataTable<DeviceRow>
-            columns={deviceColumns}
-            data={rows}
-            label="Discovered devices"
+          {/* Authored as `ui-schema/1` — discovered-devices.uis.json is the
+              table, this is the data half. See that module's header for what
+              the format cost and what it bought; the short version is that a
+              page in this format is portable into a pack (device-discovery is
+              one of the nine extractions) and the same page in TSX is thrown
+              away. */}
+          <DiscoveredDevices
+            rows={discoveredRows}
             loading={devices === null}
-            search={{ label: "Search devices", placeholder: "Name, address, vendor, MAC, model, class or port" }}
-            filters
-            pagination
-            onRowPress={(row) =>
-              setSelectedDeviceId((current) =>
-                current === row.device.id ? null : row.device.id,
-              )
-            }
-            emptyState={
-              /* The empty state IS the classification. "No devices reported"
-                 was the same sentence for "no relay is connected" and "a relay
-                 swept and found nothing" and "health could not be read" — three
-                 different problems wearing one message. It now says which. */
-              <EmptyState title={discovery.headline} description={discovery.detail} icon={Radio} />
-            }
-            rowActions={(row) => {
-              /* Retire is offered only on a row whose age is INHERITED, which is
-                 the population it exists for: on an observed instant it would
-                 discard a fact this deployment actually watched and replace it
-                 with a later one, making the device read younger than it is. */
-              const canRetire =
-                row.device.first_seen !== undefined && !isObservedAge(row.device);
-              /* EVERY undecided row carries both decisions (discovery spec §7),
-                 and an ignored row carries the reversal — an ignore an operator
-                 cannot see and undo from the list is the hidden trash can the
-                 spec forbids. An ADOPTED row offers neither: ignoring something
-                 this deployment actively polls and drives is not a decision that
-                 means anything, and the flag would contradict the status badge
-                 beside it. */
-              const canDecide = !row.adopted;
-              if (!canDecide && !canRetire) return null;
-              return (
-                <div className="flex justify-end gap-2">
-                  {canRetire ? (
-                    <Button size="sm" variant="ghost" onClick={() => openRetireAge(row)}>
-                      Retire age
-                    </Button>
-                  ) : null}
-                  {canDecide ? (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={busy}
-                      onClick={() => void toggleIgnored(row)}
-                    >
-                      {row.ignored ? "Un-ignore" : "Ignore"}
-                    </Button>
-                  ) : null}
-                  {canDecide ? (
-                    <Button size="sm" variant="outline" onClick={() => openAdopt(row)}>
-                      Adopt
-                    </Button>
-                  ) : null}
-                </div>
-              );
+            emptyKind={discovery.kind}
+            onSelect={setSelectedDeviceId}
+            onAdopt={(id) => {
+              const row = rows.find((r) => r.device.id === id);
+              if (row) openAdopt(row);
+            }}
+            onIgnore={(id) => {
+              const row = rows.find((r) => r.device.id === id);
+              if (row) void toggleIgnored(row);
+            }}
+            onUnignore={(id) => {
+              const row = rows.find((r) => r.device.id === id);
+              if (row) void toggleIgnored(row);
+            }}
+            onRetireAge={(id) => {
+              const row = rows.find((r) => r.device.id === id);
+              if (row) openRetireAge(row);
             }}
           />
         </section>
