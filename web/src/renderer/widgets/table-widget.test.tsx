@@ -162,3 +162,40 @@ describe("TableWidget — long lists get the kit's paging and search", () => {
     expect(screen.queryByText("Board 30")).not.toBeInTheDocument();
   });
 });
+
+describe("TableWidget — list affordances are declared, never assumed (UIS-071b)", () => {
+  const many: Row[] = Array.from({ length: 40 }, (_, i) => ({
+    id: `01J8Z3K4N5P6Q7R8S9T0V1W2${String(i).padStart(2, "0")}`,
+    name: `Board ${String(i).padStart(2, "0")}`,
+    slides: i,
+  }));
+
+  it("gives a table that declares NO filter no filter chrome at all", () => {
+    // The kit splits this deliberately — the column says WHICH, the call site
+    // says WHETHER — because a shared column array must not switch filter chrome
+    // on for a four-row table. For a schema table the renderer is the call site,
+    // so "declared none" has to mean "shown none", or every page in the console
+    // grows a filter bar it never asked for.
+    render(
+      <PageRenderer doc={docWithColumns(boundColumns)} data={{ casts: rows }} messages={messages} />,
+    );
+    expect(document.querySelector('[data-slot="table-filter"]')).toBeNull();
+  });
+
+  it("searches EVERY column when no column declares searchable", () => {
+    // `searchable` is opt-in NARROWING, not opt-in enabling: the kit searches
+    // every valued column when none declares it. So the renderer must OMIT the
+    // flag rather than write `searchable: false`, which would leave a search box
+    // that matches nothing — the dead control the kit says it exists to avoid.
+    render(
+      <PageRenderer doc={docWithColumns(boundColumns)} data={{ casts: many }} messages={messages} />,
+    );
+    return userEvent
+      .setup()
+      .type(screen.getByLabelText("Search Casts"), "Board 07")
+      .then(async () => {
+        await waitFor(() => expect(screen.getByText("Board 07")).toBeInTheDocument());
+        expect(screen.queryByText("Board 30")).not.toBeInTheDocument();
+      });
+  });
+});

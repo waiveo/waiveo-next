@@ -1,0 +1,70 @@
+{
+  "case_id": "UIS-071b-valid-searchable-filtered-inventory",
+  "contract": "ui-schema/1",
+  "req_ids": [
+    "UIS-071b"
+  ],
+  "description": "A device inventory declaring the list affordances Discovery spec 7 asks for: search narrowed to the two columns worth typing into, an enum filter on device class and another on the adopt/ignore decision (each labelled through the message catalogue), and a numeric entity count. None of this was expressible under UIS-070 alone, so a page authored from that catalogue was strictly worse at finding a row than the hand-written page it would replace.",
+  "input": {
+    "pageType": "list-detail",
+    "list": {
+      "source": "devices",
+      "display": {
+        "type": "table",
+        "id": "Devices",
+        "props": {
+          "source": "devices",
+          "columns": [
+            {
+              "headerMsg": "msg:devices.list.name",
+              "cell": "item.name",
+              "searchable": true
+            },
+            {
+              "headerMsg": "msg:devices.list.address",
+              "cell": "item.address",
+              "searchable": true
+            },
+            {
+              "headerMsg": "msg:devices.list.class",
+              "cell": "item.device_class",
+              "filter": "enum",
+              "filterLabelMsg": "msg:devices.filter.class"
+            },
+            {
+              "headerMsg": "msg:devices.list.entities",
+              "cell": "item.entity_count",
+              "numeric": true
+            },
+            {
+              "headerMsg": "msg:devices.list.decision",
+              "cellValue": "item.status",
+              "filter": "enum",
+              "filterLabelMsg": "msg:devices.filter.decision",
+              "cellWidget": {
+                "type": "badge",
+                "props": {
+                  "value": "item.status",
+                  "toneFrom": "item.status_tone"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "detail": {
+      "source": "devices[id=$ui.selected]",
+      "emptyMsg": "msg:devices.detail.empty",
+      "root": {
+        "type": "text",
+        "props": {
+          "value": "id"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true
+  }
+}
