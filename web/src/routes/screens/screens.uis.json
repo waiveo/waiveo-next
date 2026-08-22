@@ -1,0 +1,191 @@
+{
+  "pageType": "list-detail",
+  "list": {
+    "source": "screens",
+    "display": {
+      "type": "table",
+      "id": "Screens",
+      "props": {
+        "source": "screens",
+        "columns": [
+          {
+            "headerMsg": "msg:scr.col.name",
+            "cell": "item.name",
+            "searchable": true
+          },
+          {
+            "headerMsg": "msg:scr.col.reach",
+            "cellValue": "item.reachability",
+            "filter": "enum",
+            "filterLabelMsg": "msg:scr.filter.reach",
+            "cellWidget": {
+              "type": "badge",
+              "props": {
+                "value": "item.reachability_label",
+                "toneFrom": "item.reachability_tone",
+                "titleMsg": "msg:scr.reach.help"
+              }
+            }
+          },
+          {
+            "headerMsg": "msg:scr.col.showing",
+            "searchable": true,
+            "cellValue": "item.showing_sort",
+            "cellWidget": {
+              "type": "switch",
+              "props": {
+                "discriminant": "item.showing_kind",
+                "cases": [
+                  {
+                    "when": "never",
+                    "render": {
+                      "type": "text",
+                      "props": {
+                        "value": {
+                          "compute": "msg",
+                          "args": [
+                            "msg:scr.showing.never"
+                          ]
+                        },
+                        "titleMsg": "msg:scr.showing.neverHelp"
+                      }
+                    }
+                  },
+                  {
+                    "when": "refused",
+                    "render": {
+                      "type": "text",
+                      "props": {
+                        "value": "item.showing_display",
+                        "titleMsg": "msg:scr.showing.refusedHelp"
+                      }
+                    }
+                  }
+                ],
+                "default": {
+                  "type": "text",
+                  "props": {
+                    "value": "item.showing_display",
+                    "titleMsg": "msg:scr.showing.acceptedHelp"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "headerMsg": "msg:scr.col.handed",
+            "cell": "item.handed_display",
+            "searchable": true
+          },
+          {
+            "headerMsg": "msg:scr.col.lastSeen",
+            "cell": "item.last_seen_display",
+            "numeric": true
+          },
+          {
+            "headerMsg": "msg:scr.col.relay",
+            "cell": "item.relay_display",
+            "filter": "enum",
+            "filterLabelMsg": "msg:scr.filter.relay"
+          }
+        ],
+        "loadingIf": "$root.loading",
+        "searchPlaceholderMsg": "msg:scr.search.placeholder",
+        "emptyWidget": {
+          "type": "switch",
+          "props": {
+            "discriminant": "$root.empty_kind",
+            "cases": [
+              {
+                "when": "unreadable",
+                "render": {
+                  "type": "text",
+                  "props": {
+                    "value": {
+                      "compute": "msg",
+                      "args": [
+                        "msg:scr.empty.unreadable"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "when": "none",
+                "render": {
+                  "type": "text",
+                  "props": {
+                    "value": {
+                      "compute": "msg",
+                      "args": [
+                        "msg:scr.empty.none"
+                      ]
+                    }
+                  }
+                }
+              }
+            ],
+            "default": {
+              "type": "text",
+              "props": {
+                "value": {
+                  "compute": "msg",
+                  "args": [
+                    "msg:scr.empty.none"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "on": {
+        "rowPress": {
+          "verb": "set",
+          "target": "$ui.selected",
+          "value": "item.screen_id"
+        }
+      }
+    }
+  },
+  "detail": {
+    "source": "screens[screen_id=$ui.selected]",
+    "emptyMsg": "msg:scr.detail.empty",
+    "root": {
+      "type": "section",
+      "props": {
+        "titleMsg": "msg:scr.detail.title"
+      },
+      "children": [
+        {
+          "type": "text",
+          "props": {
+            "value": "item.showing_display",
+            "titleMsg": "msg:scr.showing.acceptedHelp"
+          }
+        },
+        {
+          "type": "text",
+          "props": {
+            "value": "item.handed_display",
+            "titleMsg": "msg:scr.handed.help"
+          }
+        },
+        {
+          "type": "text",
+          "props": {
+            "value": "item.render_display",
+            "titleMsg": "msg:scr.render.help"
+          }
+        },
+        {
+          "type": "text",
+          "props": {
+            "value": "item.pulls_display",
+            "titleMsg": "msg:scr.pulls.help"
+          }
+        }
+      ]
+    }
+  }
+}
