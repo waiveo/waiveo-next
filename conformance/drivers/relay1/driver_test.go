@@ -38,6 +38,7 @@ var expectedDriven = []string{
 	"REL-119-valid-screen-status-replace-and-clear",
 	"REL-121b-invalid-second-relay-redeems-bound-grant",
 	"REL-123-valid-revocation-enforced-while-disconnected",
+	"REL-127-valid-scan-acceptance-shapes",
 	"REL-133-valid-clock-hint-bounded",
 	"REL-136-valid-coldboot-skew-tolerant-connect",
 }

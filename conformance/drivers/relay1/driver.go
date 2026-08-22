@@ -195,6 +195,7 @@ func Run(client RelayClient, feeder Feeder) report.Report {
 	driveREL110b(&rep, cases)
 	driveREL116(&rep, cases)
 	driveREL119(&rep, cases)
+	driveREL127(&rep, cases)
 	driveREL121b(&rep, client, feeder, cases)
 	driveREL123(&rep, client, feeder, cases)
 	driveREL133(&rep, cases)

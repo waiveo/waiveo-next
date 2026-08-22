@@ -252,6 +252,35 @@ describe("TableWidget — an empty table says WHICH emptiness (UIS-071c)", () =>
     expect(screen.queryByText(/No relay is connected/)).toBeNull();
   });
 
+  it("SHOWS a loading affordance while loadingIf is true", () => {
+    // UIS-071c has two halves and the suite only had one. Suppressing the empty
+    // sentence is necessary and not sufficient: a table that rendered nothing at
+    // all would satisfy that and still leave an operator staring at a blank
+    // panel with no way to tell "still fetching" from "broken". The requirement
+    // says the host MUST SHOW a loading affordance, so this asserts the thing
+    // that appears rather than only the thing that does not.
+    render(
+      <PageRenderer
+        doc={docWithTableProps({ ...CLASSIFIED, loadingIf: "$root.loading" })}
+        data={{ casts: [], why: "no-relay", loading: true }}
+        messages={msgs}
+      />,
+    );
+    const table = screen.getByRole("table", { name: /Casts/ });
+    expect(table).toHaveAttribute("aria-busy", "true");
+  });
+
+  it("drops the loading affordance once the data is in", () => {
+    render(
+      <PageRenderer
+        doc={docWithTableProps({ ...CLASSIFIED, loadingIf: "$root.loading" })}
+        data={{ casts: rows, why: "no-relay", loading: false }}
+        messages={msgs}
+      />,
+    );
+    expect(screen.getByRole("table", { name: "Casts" })).toHaveAttribute("aria-busy", "false");
+  });
+
   it("says NOTHING about emptiness while loadingIf is true", () => {
     // The sharp one. A table that has not fetched and a table that fetched
     // nothing are identical in the data; painting the empty sentence over the
