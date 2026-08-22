@@ -192,8 +192,51 @@ export function RendererProvider({
       resourceMountedRef.current = true;
       return;
     }
+    // A RE-SYNC is not an edit. The host just handed us this value; telling it
+    // back would look like the operator had changed something, and a host that
+    // treats the seam as "there are unsaved changes" would be wrong every time
+    // its own fetch resolved.
+    if (resyncedRef.current) {
+      resyncedRef.current = false;
+      return;
+    }
     onResourceChangeRef.current?.(state.resource);
   }, [state.resource]);
+
+  // ── Re-seeding from a host whose data arrived later ─────────────────────────
+  //
+  // The store seeds at mount, and for a page whose record is already in hand
+  // that is the whole story. It is NOT the whole story for a host that fetches
+  // after first paint: without this, such a host holds the empty seed forever
+  // and has to REMOUNT the renderer to escape it. Three hosts were doing exactly
+  // that, and a remount is not free — it throws away the table's search, its
+  // filters, its sort, and the `$ui` selection, so an operator's list resets
+  // every time a background read resolves.
+  //
+  // So a NEW `initialResource` identity re-seeds the store — UNLESS this page
+  // has written to the resource since mount. That exception is the whole reason
+  // this is safe: a settings-form the operator is halfway through typing into
+  // must not be silently reverted by a refetch landing underneath them. A
+  // read-only page never writes, so it always re-seeds; an edited page never
+  // does, so its edits always survive. Nothing has to declare which kind it is.
+  //
+  // Identity, not deep equality — and the reason is COST, not correctness. A
+  // mutation swapping this for a deep compare does not fail the suite, because
+  // the dirty guard already protects edits and an equal value re-seeds to the
+  // same thing: the two rules are behaviourally identical here. What differs is
+  // that a deep compare walks the whole resource on every render of every page.
+  // Stated this way because the first version of this comment claimed a
+  // correctness difference, and a mutation showed there was none.
+  const seededRef = useRef(initialResource);
+  const resourceDirtyRef = useRef(false);
+  const resyncedRef = useRef(false);
+  useEffect(() => {
+    if (Object.is(seededRef.current, initialResource)) return;
+    seededRef.current = initialResource;
+    if (resourceDirtyRef.current) return;
+    resyncedRef.current = true;
+    setState((s) => ({ ...s, resource: initialResource }));
+  }, [initialResource]);
 
   const store = useMemo<RendererStore>(
     () => ({
@@ -204,6 +247,7 @@ export function RendererProvider({
         return stateRef.current.ui;
       },
       write({ tree, loc }, value) {
+        if (tree !== "ui") resourceDirtyRef.current = true;
         setState((s) =>
           tree === "ui"
             ? { ...s, ui: setIn(s.ui, loc, value) as Record<string, unknown> }
@@ -211,6 +255,7 @@ export function RendererProvider({
         );
       },
       appendItem({ tree, loc }, item) {
+        if (tree !== "ui") resourceDirtyRef.current = true;
         setState((s) =>
           tree === "ui"
             ? { ...s, ui: appendIn(s.ui, loc, item) as Record<string, unknown> }
@@ -218,6 +263,7 @@ export function RendererProvider({
         );
       },
       removeItem({ tree, loc }, index) {
+        if (tree !== "ui") resourceDirtyRef.current = true;
         setState((s) =>
           tree === "ui"
             ? { ...s, ui: removeIn(s.ui, loc, index) as Record<string, unknown> }
