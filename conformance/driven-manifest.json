@@ -168,6 +168,7 @@
       "REL-094-valid-telemetry-latest-only-heartbeat-superseded",
       "REL-110-valid-device-candidate-and-command",
       "REL-110b-valid-derived-identity-across-relays",
+      "REL-116-valid-engine-state-zero-counts-and-replace",
       "REL-119-valid-screen-status-replace-and-clear",
       "REL-121b-invalid-second-relay-redeems-bound-grant",
       "REL-123-valid-revocation-enforced-while-disconnected",

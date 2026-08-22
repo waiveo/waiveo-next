@@ -114,9 +114,9 @@ implementation behind it, which is what this note exists to prevent.
 | REL-113 | `contracts/relay-1.md#device-plane` | `REL-110-valid-device-candidate-and-command` | covered |
 | REL-114 | `contracts/relay-1.md#device-plane` | - | TBD-wave1 |
 | REL-115 | `contracts/relay-1.md#device-plane` | - | TBD-wave1 |
-| REL-116 | `contracts/relay-1.md#device-plane` | - | TBD-wave1 |
+| REL-116 | `contracts/relay-1.md#device-plane` | `REL-116-valid-engine-state-zero-counts-and-replace` | covered |
 | REL-117 | `contracts/relay-1.md#device-plane` | - | TBD-wave1 |
-| REL-118 | `contracts/relay-1.md#device-plane` | - | TBD-wave1 |
+| REL-118 | `contracts/relay-1.md#device-plane` | `REL-116-valid-engine-state-zero-counts-and-replace` | covered |
 | REL-119 | `contracts/relay-1.md#device-plane` | `REL-119-valid-screen-status-replace-and-clear` | covered |
 | REL-119a | `contracts/relay-1.md#device-plane` | `REL-119-valid-screen-status-replace-and-clear` | covered |
 | REL-119b | `contracts/relay-1.md#device-plane` | `REL-119-valid-screen-status-replace-and-clear` | covered |
